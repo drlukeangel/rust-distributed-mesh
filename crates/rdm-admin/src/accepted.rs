@@ -643,7 +643,7 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
 }
 
 /// How far an attempt's action got, from the Build's receipts. The view alone cannot say: a stopped
-/// birth leaves every book, and a recovered or renamed path names another birth.
+/// birth leaves every view, and a recovered or renamed path names another birth.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ActionProgress {
     /// A standalone node.connections.delete, stop, start or delete began for its birth: its first step's receipt.

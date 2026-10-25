@@ -193,7 +193,7 @@ async fn a_join_to_an_endpoint_no_record_names_is_adopted_by_the_birth_and_purge
     assert_eq!(client.pooled(), vec![rdm_transport::PoolKey { scope: None, peer: key.public(), incarnation: None }]);
     assert!(observed.0.lock().unwrap().is_empty(), "no record named the commander at the join");
 
-    // The resolver learns the commander's birth (as GetTopology / membership installs it).
+    // The resolver learns the commander's birth (as GetTopology / the topology view installs it).
     resolver.insert(p.resolved.clone());
     let exact = NodeTarget::ExactNode(p.resolved.node_id.clone());
     let (out, exact_ev) = client.call::<Ping>(&exact, &echo(), &CallOptions::default()).await;

@@ -640,7 +640,7 @@ impl Hub {
                         let now = Instant::now();
                         assemblies.retain(|(source, id), a| {
                             if a.deadline > now { return true; }
-                            tracing::info_span!("rdm.mesh.membership.reject.via-chunk-incomplete", source = %source.uri(), event_id = id, event_type = %state.kind).in_scope(|| tracing::info!("unfinished event evicted after the staleness floor"));
+                            tracing::info_span!("rdm.mesh.topology.reject.via-chunk-incomplete", source = %source.uri(), event_id = id, event_type = %state.kind).in_scope(|| tracing::info!("unfinished event evicted after the staleness floor"));
                             state.loss(); false
                         });
                         continue;
@@ -669,11 +669,11 @@ impl Hub {
                 let header =
                     crate::envelope::decode_header(&message.content, &mut trace, &mut dropped, MAX);
                 if let Err(error) = &header {
-                    tracing::info_span!("rdm.mesh.membership.reject.via-undecodable-frame", event_type = %state.kind, bytes = message.content.len(), error = ?error).in_scope(|| tracing::info!("application envelope refused"));
+                    tracing::info_span!("rdm.mesh.topology.reject.via-undecodable-frame", event_type = %state.kind, bytes = message.content.len(), error = ?error).in_scope(|| tracing::info!("application envelope refused"));
                 }
                 if let Ok(mut h) = header {
                     if h.source.fabric != fabric {
-                        tracing::info_span!("rdm.mesh.membership.reject.via-undecodable-frame", event_type = %state.kind, error = "source fabric differs from the channel").in_scope(|| tracing::info!("application envelope refused"));
+                        tracing::info_span!("rdm.mesh.topology.reject.via-undecodable-frame", event_type = %state.kind, error = "source fabric differs from the channel").in_scope(|| tracing::info!("application envelope refused"));
                         continue;
                     }
                     if h.kind == CHUNK {
@@ -757,12 +757,12 @@ impl Hub {
                         continue;
                     }
                     seen.insert(identity, (), (Instant::now() + retention).into());
-                    let span = tracing::info_span!("rdm.mesh.membership.update.via-frame", r#type = %h.kind, subject = %h.subject, sequence = ?sequence, source = %h.source.uri(), bytes = h.data.len());
+                    let span = tracing::info_span!("rdm.mesh.topology.update.via-frame", r#type = %h.kind, subject = %h.subject, sequence = ?sequence, source = %h.source.uri(), bytes = h.data.len());
                     if let Some(parent) = trace.traceparent.as_deref() {
                         crate::set_remote_parent(&span, parent, trace.tracestate.as_deref());
                     }
                     if !dropped.is_empty() {
-                        span.in_scope(|| tracing::info_span!("rdm.mesh.membership.update.via-context-dropped", context_dropped = %rdm_core::context::dropped_as_str(&dropped)).in_scope(|| tracing::info!("malformed tracing metadata dropped; the event continues")));
+                        span.in_scope(|| tracing::info_span!("rdm.mesh.topology.update.via-context-dropped", context_dropped = %rdm_core::context::dropped_as_str(&dropped)).in_scope(|| tracing::info!("malformed tracing metadata dropped; the event continues")));
                     }
                     deliver(
                         &state,
@@ -950,7 +950,7 @@ mod tests {
                 dataschema: None,
                 time_ms: 1,
                 data: Bytes::new(),
-                span: tracing::info_span!("rdm.mesh.membership.update.via-frame", subject = n),
+                span: tracing::info_span!("rdm.mesh.topology.update.via-frame", subject = n),
             };
             for n in 0..QUEUE {
                 deliver(&state, &tx, event(n));

@@ -43,8 +43,8 @@ the same order starts the workflow again, resuming the attempt from its recorded
    the attempt and broadcasts it. Any other admin that notices tells it; it acts only when its own view
    agrees; repeats answer `AlreadyApplied`.
    - *Its own mesh*: the lowest ReadyForTraffic node-admin starts fabric recovery at the first tick after
-     the mark, once the record has named the unheard primary for one staleness floor in its own book: a
-     record learned after a heal names a primary whose silence in this admin's book began before the
+     the mark, once the record has named the unheard primary for one staleness floor in its own view: a
+     record learned after a heal names a primary whose silence in this admin's view began before the
      record did. It takes no primary role. It needs no probe to know it is alive.
    - *Outside its mesh*: a mesh-primary hears nothing of that mesh once its aggregate stops, so it runs
      [mesh investigation](mesh-investigation.md)'s ladder on it: the fabric-primary first, then its other
@@ -56,14 +56,14 @@ the same order starts the workflow again, resuming the attempt from its recorded
    hook, cert and rafka-time (Q87). Any other verdict, node recovery re-creates it at the same path.name
    with a new node.id: over the inherited data dir with the same endpoint key when the investigation's
    provider step found the old runtime exited, over a newly allocated data dir, `inherited = false`,
-   otherwise (`R-FM2`). An old birth that comes back after that is a deleted birth: every book refuses its
+   otherwise (`R-FM2`). An old birth that comes back after that is a deleted birth: every view refuses its
    Digest by name, its mesh-primary reports it, and the fabric-primary terminates its runtime (Q110).
    Nothing holds, and nothing waits for proof. From the backbone the re-create terminates nothing in the
    mesh. On `exited`, `os-stopped` or `unproven`, its node.delete of the exact lost birth writes that
    birth's row deleted with no `TerminateRuntime` and releases the name, then node.create at the
    path.name; a delete that finds another birth at the path writes nothing; a lost birth that comes back
    is a deleted birth (Q142, Q148). On `running`, the investigation's report stands and the executor
-   writes nothing: no row, no name release, no mark against the birth in its own book, no create. A
+   writes nothing: no row, no name release, no mark against the birth in its own view, no create. A
    runtime the executor can inspect running but cannot reach is unreachable from the executor, not lost; a
    running fabric-primary its own mesh cannot reach is the own-mesh arm's (Q153).
 4. **The fabric-primary is back.** When the node at the fabric-primary's path.name, returned or

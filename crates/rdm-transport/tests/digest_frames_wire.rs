@@ -1,4 +1,4 @@
-//! Fixed bytes for a member's heartbeat and its mesh-primary's member projection on the membership
+//! Fixed bytes for a member's heartbeat and its mesh-primary's member projection on the topology
 //! channels (gossip.md §3.1: the `Digest` carries "`node_state`" and "no status: a member's status
 //! comes only from its mesh-primary"; `Members` and `MembersDelta` carry the mesh-primary's own-mesh
 //! member projection, each entry its digest and its status). Postcard, positional, append-only. The

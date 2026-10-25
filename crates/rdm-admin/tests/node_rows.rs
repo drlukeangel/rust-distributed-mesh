@@ -1493,7 +1493,7 @@ mod writer {
     /// CONTRACT (the lost-executor rule stops only a birth that never joined; a recoverable refusal
     /// over a terminated member): A claims `mesh1.rpc.10` in attempt 1 and is lost; the provider holds
     /// a running runtime of the exact deployment A's claim names, and that birth has joined fabric
-    /// membership. B, holding none of A's receipts past the claim, refuses by name at
+    /// the topology view. B, holding none of A's receipts past the claim, refuses by name at
     /// `AllocateIdentity`: nothing is stopped, the claim is not withdrawn, nothing is minted or
     /// launched, and A's birth holds the row. Must NOT happen: B stopping a joined member on `find`
     /// alone.

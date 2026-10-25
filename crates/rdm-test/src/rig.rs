@@ -6,7 +6,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rdm_transport::topology::{Backbone, Membership};
+use rdm_transport::topology::{Backbone, TopologyView};
 use rdm_admin::deployment::pipeline::NodeObserver;
 use rdm_admin::model::Node;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
@@ -17,15 +17,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Joined = the node's own digest for exactly this birth reached the admin's
-/// membership; ready = the admin side holds the birth ready-for-traffic, set from the node.started
+/// the topology view; ready = the admin side holds the birth ready-for-traffic, set from the node.started
 /// it reported (as the node-admin's own observer decides it), and a Ping is answered;
 /// admission closed = no Ping runs any more.
 pub struct LiveMesh {
-    pub membership: Membership,
+    pub topology_view: TopologyView,
     pub client: NodeRpcClient,
     pub resolver: Arc<StaticResolver>,
     /// The commands this admin side sent and awaits a completion call for.
-    pub commands: Arc<rdm_admin::node_commands::CommandBook>,
+    pub commands: Arc<rdm_admin::node_commands::CommandView>,
     /// Every state check-in (`StateCommitted`, `TrafficOpened`) a node made to this admin side, in
     /// arrival order: the request as it came.
     pub check_ins: Arc<tokio::sync::watch::Sender<Vec<rdm_core::status::StatusRequest>>>,
@@ -59,8 +59,8 @@ impl LiveMesh {
 #[async_trait::async_trait]
 impl NodeObserver for LiveMesh {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_admin::deployment::pipeline::Publication> {
-        self.membership
-            .book
+        self.topology_view
+            .digest_view
             .get(node_id.as_str())
             .filter(|(d, _)| &d.node.incarnation == incarnation)
             .map(|(d, _)| rdm_admin::deployment::pipeline::Publication { runtime: d.node.runtime, data_dir: d.data_dir })
@@ -70,9 +70,9 @@ impl NodeObserver for LiveMesh {
         // A joined node answers Ping while it is still Pending (its hook runs, it serves status and
         // the lifecycle commands): ready is the status this admin side set from its node.started,
         // never the Ping alone and never its heartbeat.
-        match self.membership.book.get(node.node_id.as_str()).filter(|(d, _)| node.incarnation_id.as_ref() == Some(&d.node.incarnation)) {
+        match self.topology_view.digest_view.get(node.node_id.as_str()).filter(|(d, _)| node.incarnation_id.as_ref() == Some(&d.node.incarnation)) {
             Some((d, _)) if d.status == rdm_core::digest::MemberStatus::ReadyForTraffic => {}
-            Some((d, _)) => return Err(format!("{} is held {:?}, not ready-for-traffic: the member status the admin side holds for the birth is {:?}", node.name, d.status, self.membership.book.member_status(&node.node_id, &d.node.incarnation))),
+            Some((d, _)) => return Err(format!("{} is held {:?}, not ready-for-traffic: the member status the admin side holds for the birth is {:?}", node.name, d.status, self.topology_view.digest_view.member_status(&node.node_id, &d.node.incarnation))),
             None => return Err(format!("no digest from {} for this birth", node.name)),
         }
         let target = self.echo_target(node)?;
@@ -89,7 +89,7 @@ impl NodeObserver for LiveMesh {
         // The same probe the node-admin's own observer sends (node-start.md step 3), to the birth
         // this launcher resolves by its own digest.
         self.echo_target(node).ok()?;
-        rdm_admin::admin::probed_ready_blocker(&self.client, &self.membership.book, node).await
+        rdm_admin::admin::probed_ready_blocker(&self.client, &self.topology_view.digest_view, node).await
     }
 
     async fn send_command(&self, node: &Node, cmd: rdm_admin::node_commands::NodeCommand, ctx: &rdm_admin::deployment::pipeline::CommandContext) -> rdm_admin::deployment::pipeline::CommandAdmission {
@@ -100,11 +100,11 @@ impl NodeObserver for LiveMesh {
         if matches!(cmd, rdm_admin::node_commands::NodeCommand::Stop | rdm_admin::node_commands::NodeCommand::Start) {
             // Use the real mesh-primary frame owner; the fixture supplies its held view and stores.
             let birth = self.client.delivery().me().clone();
-            let mut me = Node::allocated(self.membership.node_name().parse().expect("the fixture admin's path"));
+            let mut me = Node::allocated(self.topology_view.node_name().parse().expect("the fixture admin's path"));
             me.node_id = birth.node_id.clone();
             me.incarnation_id = Some(birth.incarnation.clone());
             me.is_primary = true;
-            let fabric_id = self.membership.book.get(node.node_id.as_str()).expect("the fixture holds its commanded birth").0.fabric_id;
+            let fabric_id = self.topology_view.digest_view.get(node.node_id.as_str()).expect("the fixture holds its commanded birth").0.fabric_id;
             let authority = rdm_admin::status_rpc::StatusAuthority {
                 certs: None,
                 app_channels: None,
@@ -120,7 +120,7 @@ impl NodeObserver for LiveMesh {
                 commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
                 hold_next_reply: Default::default(), wake: Default::default(), fabric_states: Default::default(), fabric_recovery: Default::default(), configs: Default::default(),
                 republish: Default::default(), configure: Default::default(), before_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
-                book: Some(self.membership.book.clone()), first_ready: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
+                digest_view: Some(self.topology_view.digest_view.clone()), first_ready: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };
             assert!(authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default(), Default::default()))).is_ok());
             return authority.carry_lifecycle(node, cmd == rdm_admin::node_commands::NodeCommand::Start, ctx).await;
@@ -226,7 +226,7 @@ impl Pidfd {
 pub const TEST_MESH_ID: &str = "meshd0000001";
 
 /// The admin side of a fabric: one endpoint serving gossip on `ip`, used as
-/// the nodes' membership seed, and the observer over it. It is the launcher of every node a cell
+/// the nodes' topology seed, and the observer over it. It is the launcher of every node a cell
 /// launches from its template, and owns their teardown: dropped, it stops every node launched under
 /// its data root and ends its publications.
 pub struct AdminSide {
@@ -244,7 +244,7 @@ pub struct AdminSide {
     /// The node rows this admin side holds by `path.name` (what a mesh-primary's store answers
     /// `node_row_at` with): its join door reads the row's config to hand a joiner.
     rows: Arc<std::sync::Mutex<std::collections::HashMap<rdm_core::PathName, rdm_admin::storage::NodeRow>>>,
-    /// The digest this admin side publishes as itself, on the membership cadence as a node-admin does.
+    /// The digest this admin side publishes as itself, on the topology cadence as a node-admin does.
     digest: Arc<std::sync::Mutex<rdm_core::digest::MeshDigest>>,
     /// Over the data root where every launch from this admin side's template keeps its births'
     /// data dirs and the fabric's store root: stops every node launched under it, before the
@@ -252,14 +252,14 @@ pub struct AdminSide {
     reap: ReapOnDrop,
     /// Its publications as its mesh's primary (`None` for a silent admin side).
     _publications: Option<AbortOnDrop>,
-    /// Its own digest, published on the membership cadence (`None` for a silent admin side).
+    /// Its own digest, published on the topology cadence (`None` for a silent admin side).
     _publisher: Option<AbortOnDrop>,
     _router: Router,
 }
 
 /// How an admin side takes its place in its mesh.
 enum SideSeat {
-    /// Its mesh's primary: it says its own digest on the membership cadence and publishes its
+    /// Its mesh's primary: it says its own digest on the topology cadence and publishes its
     /// member projection on its own mesh channel.
     Primary,
     /// A node-admin of the mesh that says nothing of itself: no digest on the mesh channel and no
@@ -268,7 +268,7 @@ enum SideSeat {
     Silent { seed: iroh::EndpointAddr },
 }
 
-/// An admin side's digest held in another admin side's book, re-heard on the membership cadence
+/// An admin side's digest held in another admin side's view, re-heard on the topology cadence
 /// while this lives: the other's member projection carries it ([`AdminSide::carry_in_projection`]).
 pub struct Carried(AbortOnDrop);
 
@@ -287,7 +287,7 @@ impl AdminSide {
             held.status = status;
             held.clone()
         };
-        self.observer.membership.publish(&d).await.expect("the admin's digest publishes");
+        self.observer.topology_view.publish(&d).await.expect("the admin's digest publishes");
     }
 
     /// Register the birth `launch` describes, as this admin deployed it, before the node starts:
@@ -328,16 +328,16 @@ impl AdminSide {
         self.digest.lock().unwrap().clone()
     }
 
-    /// Hold `other`'s digest in this admin side's book as heard, again on the membership cadence while
+    /// Hold `other`'s digest in this admin side's view as heard, again on the topology cadence while
     /// the answer lives: this admin side, its mesh's primary, carries `other` in the member projection
     /// it publishes, while `other` itself says nothing on the mesh channel.
     pub fn carry_in_projection(&self, other: &AdminSide) -> Carried {
-        let (book, mut digest) = (self.observer.membership.book.clone(), other.own_digest());
+        let (digest_view, mut digest) = (self.observer.topology_view.digest_view.clone(), other.own_digest());
         Carried(AbortOnDrop(tokio::spawn(async move {
             loop {
                 digest.digest_seq += 1;
                 digest.emitted_at_rafka_ms += 1;
-                book.record(digest.clone());
+                digest_view.record(digest.clone());
                 tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
             }
         })))
@@ -368,7 +368,7 @@ pub async fn admin_side_serving_as(ip: std::net::IpAddr, fabric: &FabricId, name
 }
 
 /// The node-admin `name` of `primary`'s mesh, taking joins and serving the topology it holds, that
-/// says nothing of itself on the mesh channel: no digest, so no node's heartbeat book holds it, and
+/// says nothing of itself on the mesh channel: no digest, so no node's heartbeat view holds it, and
 /// no member projection. A node holds it only where `primary` carries it in its member projection
 /// ([`AdminSide::carry_in_projection`]).
 pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, name: &str) -> AdminSide {
@@ -408,7 +408,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
 #[allow(clippy::too_many_arguments)]
 async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice, seat: SideSeat) -> AdminSide {
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
-    // within the membership silence window, so gossip redials instead of holding it.
+    // within the topology silence window, so gossip redials instead of holding it.
     let transport = iroh::endpoint::QuicTransportConfig::builder()
         .keep_alive_interval(Duration::from_secs(1))
         .max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap()))
@@ -433,7 +433,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             vec![seed.clone()]
         }
     };
-    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), name, Arc::new(rafka_time.clone()), seeds, &[]).await.unwrap();
+    let topology_view = TopologyView::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), name, Arc::new(rafka_time.clone()), seeds, &[]).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
     let nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
@@ -442,7 +442,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let (admin_node_id, admin_incarnation) = (NodeId::mint(), IncarnationId::mint());
     let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let door = {
-        let learner = membership.clone();
+        let learner = topology_view.clone();
         Arc::new(rdm_admin::join::JoinDoor { nodes: None, types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             me: name.parse().unwrap(),
             joins: joins.clone(),
@@ -463,15 +463,15 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             // The admin side records the accepted join report's Pending as a node-admin's status
             // authority does, before the join is answered (node-mesh-join.md step 10).
             pending: {
-                let book = membership.book.clone();
+                let digest_view = topology_view.digest_view.clone();
                 Arc::new(move |d, _| {
-                    book.reported(&d.node.node_id, &d.node.incarnation, rdm_core::MemberStatus::Pending);
+                    digest_view.reported(&d.node.node_id, &d.node.incarnation, rdm_core::MemberStatus::Pending);
                     Box::pin(async {})
                 })
             },
             primary: {
-                let membership = membership.clone();
-                Arc::new(move || membership.mesh_primary().ok().map(|p| p.node.name.to_string()))
+                let topology_view = topology_view.clone();
+                Arc::new(move || topology_view.mesh_primary().ok().map(|p| p.node.name.to_string()))
             },
             issuer: Arc::new({
                 // The admin side holds the testkit fabric's one CA, kept where an admin keeps it.
@@ -509,20 +509,20 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     };
     // A silent admin side holds only what its primary publishes into the mesh.
     if matches!(seat, SideSeat::Primary) {
-        assert!(matches!(membership.take_read_chunk(held, "peer"), rdm_transport::snapshot::Taken::Installed(_)));
+        assert!(matches!(topology_view.take_read_chunk(held, "peer"), rdm_transport::snapshot::Taken::Installed(_)));
     }
     let topology_slot: rdm_admin::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // The completion calls a commanded node makes back (`node.connections.deleted`, `node-left`) resolve the
     // open commands of this admin side.
-    let commands = Arc::new(rdm_admin::node_commands::CommandBook::default());
+    let commands = Arc::new(rdm_admin::node_commands::CommandView::default());
     // The state check-ins a node makes to this admin side as its commander are held in order and
     // acknowledged; the admin side keeps no checklist.
     let check_ins = Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
     let serve_commands = {
-        let (commands, check_ins, receiver, book) = (commands.clone(), check_ins.clone(), name.to_string(), membership.book.clone());
+        let (commands, check_ins, receiver, digest_view) = (commands.clone(), check_ins.clone(), name.to_string(), topology_view.digest_view.clone());
         move |b: rdm_transport::ServerBuilder| {
             b.serve::<rdm_core::status::Status, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer: rdm_transport::PeerContext, req: rdm_core::status::StatusRequest| {
-                let (commands, check_ins, receiver, book) = (commands.clone(), check_ins.clone(), receiver.clone(), book.clone());
+                let (commands, check_ins, receiver, digest_view) = (commands.clone(), check_ins.clone(), receiver.clone(), digest_view.clone());
                 async move {
                     use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest as R};
                     if matches!(req, R::StateCommitted { .. } | R::TrafficOpened { .. }) {
@@ -531,19 +531,19 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
                     }
                     // A member's report to its mesh's primary sets its status (node-status.md "Status
                     // report": "A node reports to its mesh's primary, which sets its status"), as a
-                    // node-admin's status authority applies it into its book: its node.started sets
-                    // it ready-for-traffic. A birth the book does not hold yet is not known here: the
+                    // node-admin's status authority applies it into its view: its node.started sets
+                    // it ready-for-traffic. A birth the view does not hold yet is not known here: the
                     // member reports again.
                     if let R::DeclareNodeState { node_id, incarnation, state, .. } = &req {
-                        let Some(name) = book.get(node_id.as_str()).filter(|(d, _)| d.node.incarnation == *incarnation).map(|(d, _)| d.node.name) else {
+                        let Some(name) = digest_view.get(node_id.as_str()).filter(|(d, _)| d.node.incarnation == *incarnation).map(|(d, _)| d.node.name) else {
                             return Ok(rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown));
                         };
                         use rdm_core::MemberStatus as M;
                         match state {
-                            NodeState::ReadyForTraffic => book.started(node_id, incarnation, &name),
-                            NodeState::Pending => book.reported(node_id, incarnation, M::Pending),
-                            NodeState::ConnectionsDeleting => book.reported(node_id, incarnation, M::ConnectionsDeleting),
-                            NodeState::Stopped => book.reported(node_id, incarnation, M::Leaving),
+                            NodeState::ReadyForTraffic => digest_view.started(node_id, incarnation, &name),
+                            NodeState::Pending => digest_view.reported(node_id, incarnation, M::Pending),
+                            NodeState::ConnectionsDeleting => digest_view.reported(node_id, incarnation, M::ConnectionsDeleting),
+                            NodeState::Stopped => digest_view.reported(node_id, incarnation, M::Leaving),
                         };
                         return Ok(rdm_core::reply::applied());
                     }
@@ -564,9 +564,9 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rdm_transport::ALPN, rpc_server).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
     // The admin side publishes its digest as a real node-admin does on joining: a node addresses a
-    // drain's completion and its start's join to the admin its membership book holds.
+    // drain's completion and its start's join to the admin its topology view holds.
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-    let admin_digest = rdm_core::digest::MeshDigest { held_hash: membership.held_hash(),
+    let admin_digest = rdm_core::digest::MeshDigest { held_hash: topology_view.held_hash(),
         fabric_id: fabric.clone(),
         node: rdm_core::digest::MeshNode {
             node_id: admin_node_id.clone(),
@@ -591,7 +591,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     };
     let primary = matches!(seat, SideSeat::Primary);
     if primary {
-        membership.publish(&admin_digest).await.expect("the admin's digest publishes");
+        topology_view.publish(&admin_digest).await.expect("the admin's digest publishes");
     }
     // The launcher is its mesh's primary, as a node-admin holding the seat is: it executes its
     // members' lifecycle, sets each member's status from what it reports (its node.started, its ConnectionsDeleting and
@@ -601,31 +601,31 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // from that projection.
     let digest_cell = Arc::new(std::sync::Mutex::new(admin_digest.clone()));
     let (publications, publisher) = if primary {
-        let backbone = Backbone::join(&gossip, &admin_ep, &membership, "mesh1", rdm_core::PublisherId { node: name.to_string(), incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() }, vec![]).await.expect("the launcher joins the backbone");
+        let backbone = Backbone::join(&gossip, &admin_ep, &topology_view, "mesh1", rdm_core::PublisherId { node: name.to_string(), incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() }, vec![]).await.expect("the launcher joins the backbone");
         backbone.set_mesh_primary(true);
         if name == "mesh1.admin.1" {
             backbone.hold_primary(rdm_core::Seat::MeshPrimary, rdm_core::Primary { mesh: "mesh1".into(), node_id: admin_node_id.clone(), incarnation: admin_incarnation.clone(), revision: 1 });
         }
         let publications = {
-            let (backbone, membership) = (backbone.clone(), membership.clone());
+            let (backbone, topology_view) = (backbone.clone(), topology_view.clone());
             AbortOnDrop(tokio::spawn(async move {
                 loop {
-                    backbone.publish(&membership, backbone.own_members(&membership)).await;
-                    backbone.publication_wake(&membership, tokio::time::Instant::now() + rdm_transport::topology::gossip_interval()).await;
+                    backbone.publish(&topology_view, backbone.own_members(&topology_view)).await;
+                    backbone.publication_wake(&topology_view, tokio::time::Instant::now() + rdm_transport::topology::gossip_interval()).await;
                 }
             }))
         };
         let cell = digest_cell.clone();
-        (Some(publications), Some(AbortOnDrop(membership.publish_every(rdm_transport::topology::gossip_interval(), move || cell.lock().unwrap().clone()))))
+        (Some(publications), Some(AbortOnDrop(topology_view.publish_every(rdm_transport::topology::gossip_interval(), move || cell.lock().unwrap().clone()))))
     } else {
         (None, None)
     };
     let _ = own_digest_slot.set(admin_digest.clone());
-    let own_membership = membership.clone();
-    let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_membership.with_config(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
+    let own_topology_view = topology_view.clone();
+    let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.with_config(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
-        observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, check_ins },
+        observer: LiveMesh { topology_view, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, check_ins },
         seed: (admin_ep.id().to_string(), addr),
         fabric: fabric.clone(),
         joins,

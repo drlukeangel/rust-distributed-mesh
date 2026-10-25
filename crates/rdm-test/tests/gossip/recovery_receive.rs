@@ -2,7 +2,7 @@
 use tracing::Instrument;
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PublisherId, Seat, Primary};
-use rdm_transport::topology::{learn_addresses, mesh_channel, Frame, Membership, StatusEvent};
+use rdm_transport::topology::{learn_addresses, mesh_channel, Frame, TopologyView, StatusEvent};
 use rdm_transport::snapshot::{Chunk, Taken};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use std::{sync::{Arc, OnceLock}, time::Duration};
@@ -12,7 +12,7 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip) {
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     (ep, gossip)
 }
-async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, frame: Frame, serial: u64, author: &rdm_transport::envelope::Birth) {
+async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, frame: Frame, serial: u64, author: &rdm_transport::envelope::Birth) {
     let source = match frame.data() { Frame::Digest { digest } => rdm_transport::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() }, _ => author.clone() };
     sender.broadcast_neighbors(frame.authored(&source, 10, 1).encode().into()).await.unwrap();
     sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(author, 10, 1).encode().into()).await.unwrap();
@@ -45,7 +45,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let publisher=PublisherId::from(&own.node);
         let author=rdm_transport::envelope::Birth::publisher(&fabric,&publisher);
         let time=rdm_transport::clock::RafkaTime::unadopted();time.adopt(5_000_000);
-        let server_membership=Membership::join(&server_gossip,&server_ep,&fabric,"mesh1",&mesh,"mesh1.admin.1",Arc::new(time.clone()),vec![], &[]).await.unwrap();
+        let server_topology_view=TopologyView::join(&server_gossip,&server_ep,&fabric,"mesh1",&mesh,"mesh1.admin.1",Arc::new(time.clone()),vec![], &[]).await.unwrap();
         let slot:rdm_node::topology_read::TopologySlot=Arc::new(OnceLock::new());
         let rpc=rdm_node::topology_read::serve(ServerBuilder::new(),slot.clone()).build(ServedBirth{node_id:own.node.node_id.to_string(),incarnation:own.node.incarnation.to_string()}).unwrap();
         let _server_router=iroh::protocol::Router::builder(server_ep.clone()).accept(iroh_gossip::ALPN,server_gossip.clone()).accept(rdm_transport::ALPN,rpc).spawn();
@@ -55,7 +55,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         learn_addresses(&receiver_ep,&[addr.clone()]).unwrap();
         learn_addresses(&server_ep,&[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a|a.is_ipv4()).unwrap())]).unwrap();
         let mut topic=server_gossip.subscribe(mesh_channel(&fabric,&mesh),vec![]).await.unwrap();
-        let receiver=Membership::join(&receiver_gossip,&receiver_ep,&fabric,"mesh1",&mesh,"mesh1.rpc.9",rdm_transport::clock::os_clock(),vec![addr], &[]).await.unwrap();
+        let receiver=TopologyView::join(&receiver_gossip,&receiver_ep,&fabric,"mesh1",&mesh,"mesh1.rpc.9",rdm_transport::clock::os_clock(),vec![addr], &[]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5),topic.joined()).await.unwrap().unwrap();
         let (sender,_rx)=topic.split();
         let (restarted,started,deleted,holder)=(birth(&fabric,&mesh,"mesh1.rpc.1",1),birth(&fabric,&mesh,"mesh1.rpc.2",2),birth(&fabric,&mesh,"mesh1.rpc.3",3),birth(&fabric,&mesh,"mesh1.rpc.4",4));
@@ -63,10 +63,10 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         // The version the read serves carries the rpc node-type primary record its publisher put in it:
         // a read serves a version's content as published, never records taken since (gossip.md §3.1).
         let full=vec![own.clone(),restarted.clone(),started.clone(),MeshDigest{is_primary:Some(10),..holder.clone()}];
-        assert!(matches!(server_membership.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],departed:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));
+        assert!(matches!(server_topology_view.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],departed:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));
         let seat_of=|d:&MeshDigest,revision|Primary{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
-        for (seat,d) in [(Seat::MeshPrimary,&own),(Seat::FabricPrimary,&own),(Seat::Cohort(NodeKind::RpcNode),&holder)] {server_membership.primaries().take(seat,&seat_of(d,10));}
-        let answer_own=own.clone();assert!(slot.set(Arc::new(rdm_node::topology_read::TopologyDoor::new(server_membership.clone(),Arc::new(move||answer_own.clone()),time))).is_ok());
+        for (seat,d) in [(Seat::MeshPrimary,&own),(Seat::FabricPrimary,&own),(Seat::Cohort(NodeKind::RpcNode),&holder)] {server_topology_view.primaries().take(seat,&seat_of(d,10));}
+        let answer_own=own.clone();assert!(slot.set(Arc::new(rdm_node::topology_read::TopologyDoor::new(server_topology_view.clone(),Arc::new(move||answer_own.clone()),time))).is_ok());
         let mut serial=0;
         for d in [&own,&restarted,&started,&deleted,&holder] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial,&author).await;}
         let old_full=vec![own.clone(),restarted.clone(),deleted.clone(),holder.clone()].into_iter().map(|mut d|{d.digest_seq=1;d}).collect();
@@ -78,14 +78,14 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let read=rdm_node::topology_read::get_topology(&client,&NodeTarget::ExactNode(own.node.node_id.clone()),"mesh1",&receiver,None,None).await.unwrap();
         assert!(read.installed.iter().any(|s|s.mesh=="mesh1"&&s.topology_version==100));
         assert_eq!(receiver.held_source_version("mesh1"),Some((publisher.clone(),100)));
-        assert!(receiver.book.in_flight().is_empty(),"the read installs the operations' completion/later lifecycle evidence");
-        assert!(receiver.book.is_deleted(deleted.node.node_id.as_str()));
-        assert!(receiver.book.get(deleted.node.node_id.as_str()).is_none());
+        assert!(receiver.digest_view.in_flight().is_empty(),"the read installs the operations' completion/later lifecycle evidence");
+        assert!(receiver.digest_view.is_deleted(deleted.node.node_id.as_str()));
+        assert!(receiver.digest_view.get(deleted.node.node_id.as_str()).is_none());
         assert_eq!(receiver.primaries().cohort("mesh1",NodeKind::RpcNode),Some(seat_of(&holder,10)));
-        for d in [&restarted,&started,&holder] {assert_eq!(receiver.book.get(d.node.node_id.as_str()).unwrap().0.digest_seq,100);}
-        let before:Vec<_>=full.iter().map(|d|receiver.book.get(d.node.node_id.as_str()).unwrap().0).collect();
+        for d in [&restarted,&started,&holder] {assert_eq!(receiver.digest_view.get(d.node.node_id.as_str()).unwrap().0.digest_seq,100);}
+        let before:Vec<_>=full.iter().map(|d|receiver.digest_view.get(d.node.node_id.as_str()).unwrap().0).collect();
         let statuses=(receiver.mesh_status("mesh1"),receiver.fabric_status());
-        let (births,changes,overlays,seats)=(receiver.book.birth_changes(),receiver.book.digest_changes(),receiver.book.overlay_changes(),receiver.primaries().subscribe());
+        let (births,changes,overlays,seats)=(receiver.digest_view.birth_changes(),receiver.digest_view.digest_changes(),receiver.digest_view.overlay_changes(),receiver.primaries().subscribe());
         let counts=(*births.borrow(),*changes.borrow(),*overlays.borrow(),*seats.borrow());
         let bad=iroh::SecretKey::generate().public();
         let mut stale=restarted.clone();stale.digest_seq=99;stale.node.endpoint_id=EndpointId(bad.to_string());stale.config.insert("obsolete".into(),"yes".into());
@@ -104,22 +104,22 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         for frame in frames.drain(..) {
             serial+=1;send(&sender,&receiver,frame,serial,&author).await;
             assert_eq!(receiver.held_source_version("mesh1"),Some((publisher.clone(),100)));
-            for held in &before {assert_eq!(receiver.book.get(held.node.node_id.as_str()).unwrap().0,*held,"no category rolls back the read-installed birth");}
+            for held in &before {assert_eq!(receiver.digest_view.get(held.node.node_id.as_str()).unwrap().0,*held,"no category rolls back the read-installed birth");}
             assert_eq!((receiver.mesh_status("mesh1"),receiver.fabric_status()),statuses);
             assert_eq!(receiver.primaries().cohort("mesh1",NodeKind::RpcNode),Some(seat_of(&holder,10)));
             assert_eq!(receiver.primaries().mesh("mesh1"),Some(seat_of(&own,10)));assert_eq!(receiver.primaries().fabric(),Some(seat_of(&own,10)));
             assert_eq!((*births.borrow(),*changes.borrow(),*overlays.borrow(),*seats.borrow()),counts);
-            assert!(receiver.book.in_flight().is_empty());assert!(receiver.book.is_deleted(deleted.node.node_id.as_str()));assert!(receiver.book.get(deleted.node.node_id.as_str()).is_none());
-            assert!(receiver.desynced_sources().is_empty());assert!(receiver.location_book().addrs(bad).is_empty(),"refused gossip supplies no endpoint");
+            assert!(receiver.digest_view.in_flight().is_empty());assert!(receiver.digest_view.is_deleted(deleted.node.node_id.as_str()));assert!(receiver.digest_view.get(deleted.node.node_id.as_str()).is_none());
+            assert!(receiver.desynced_sources().is_empty());assert!(receiver.location_view().addrs(bad).is_empty(),"refused gossip supplies no endpoint");
         }
         server_ep.close().await;receiver_ep.close().await;
         }.instrument(root).await;
     });
     let spans=capture.spans().unwrap();
-    assert!(!spans.iter().any(|s| s["name"]=="rdm.mesh.membership.reject.via-undecodable-frame"), "every category reaches its receive rule on a valid envelope");
-    for s in &spans {if s["name"].as_str().is_some_and(|n|n.starts_with("rdm.mesh.membership.")||n.contains("topology")){println!("{}",serde_json::to_string(s).unwrap());}}
-    assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.update.via-snapshot-installed"&&s["attributes"]["node"]=="mesh1.rpc.9"&&s["attributes"]["channel"]=="topology-read"&&s["attributes"]["topology_version"]=="100"));
-    for frame in ["digest","mesh-status","fabric-status","members","members-delta"] {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.reject.via-stale"&&s["attributes"]["frame"]==frame),"{frame} names its stale refusal after the read");}
-    assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.update.via-duplicate"&&s["attributes"]["frame"]=="node-deleted"));
-    for position in 10..=15 {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.reject.via-reserved"&&s["attributes"]["position"]==position.to_string()));}
+    assert!(!spans.iter().any(|s| s["name"]=="rdm.mesh.topology.reject.via-undecodable-frame"), "every category reaches its receive rule on a valid envelope");
+    for s in &spans {if s["name"].as_str().is_some_and(|n|n.starts_with("rdm.mesh.topology.")||n.contains("topology")){println!("{}",serde_json::to_string(s).unwrap());}}
+    assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.update.via-snapshot-installed"&&s["attributes"]["node"]=="mesh1.rpc.9"&&s["attributes"]["channel"]=="topology-read"&&s["attributes"]["topology_version"]=="100"));
+    for frame in ["digest","mesh-status","fabric-status","members","members-delta"] {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.reject.via-stale"&&s["attributes"]["frame"]==frame),"{frame} names its stale refusal after the read");}
+    assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.update.via-duplicate"&&s["attributes"]["frame"]=="node-deleted"));
+    for position in 10..=15 {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.reject.via-reserved"&&s["attributes"]["position"]==position.to_string()));}
 }

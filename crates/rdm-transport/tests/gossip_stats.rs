@@ -1,7 +1,7 @@
 //! A node's own digest tells how its mesh channel is doing.
 //!
 //! CONTRACT: the digest a node publishes carries the members it holds as heard, its ACTIVE gossip
-//! neighbours on the mesh channel (never the seeded peer list), and the membership frames it sent
+//! neighbours on the mesh channel (never the seeded peer list), and the topology frames it sent
 //! and decoded since it started. A node whose neighbours all went away publishes `neighbours = 0`
 //! while still holding the members it heard; when delivery returns it publishes neighbours again.
 //! What must NOT happen: a neighbour count read from the seeded peer list (it would stay 1 through
@@ -9,7 +9,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, GossipStats, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::Membership;
+use rdm_transport::topology::TopologyView;
 use std::time::{Duration, Instant};
 
 fn digest(name: &str, ep: &iroh::Endpoint) -> MeshDigest {
@@ -58,11 +58,11 @@ fn addr_of(n: &Node) -> iroh::EndpointAddr {
 }
 
 /// Publish `m` repeatedly until its own sampled stats satisfy `ok`; the last sampled stats.
-async fn published_until(m: &Membership, own: &MeshDigest, ok: impl Fn(&GossipStats) -> bool) -> GossipStats {
+async fn published_until(m: &TopologyView, own: &MeshDigest, ok: impl Fn(&GossipStats) -> bool) -> GossipStats {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         m.publish(own).await.unwrap();
-        let mine = m.book.current(m.book.staleness_floor()).into_iter().find(|d| d.node.node_id == own.node.node_id).expect("the node holds its own digest");
+        let mine = m.digest_view.current(m.digest_view.staleness_floor()).into_iter().find(|d| d.node.node_id == own.node.node_id).expect("the node holds its own digest");
         let g = mine.gossip.expect("a published digest carries gossip stats");
         if ok(&g) {
             return g;
@@ -80,8 +80,8 @@ async fn node_digest_counts_active_neighbours_through_isolation_and_return() {
     let (a, b) = (node().await, node().await);
     let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
     let clock = rdm_transport::clock::os_clock;
-    let ma = Membership::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![], &[]).await.unwrap();
-    let mb = Membership::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![addr_of(&a)], &[]).await.unwrap();
+    let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![], &[]).await.unwrap();
+    let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![addr_of(&a)], &[]).await.unwrap();
     let (da, db) = (digest("mesh1.rpc.1", &a.ep), digest("mesh1.rpc.2", &b.ep));
 
     // Joined: A has a neighbour, has heard B, and frames flowed both ways.
@@ -99,7 +99,7 @@ async fn node_digest_counts_active_neighbours_through_isolation_and_return() {
 
     // Delivery returns: a new node reaches A and A counts it as a neighbour again.
     let c = node().await;
-    let mc = Membership::join(&c.gossip, &c.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.3", clock(), vec![addr_of(&a)], &[]).await.unwrap();
+    let mc = TopologyView::join(&c.gossip, &c.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.3", clock(), vec![addr_of(&a)], &[]).await.unwrap();
     let dc = digest("mesh1.rpc.3", &c.ep);
     let pc = mc.publish_every(Duration::from_millis(200), move || dc.clone());
     let returned = published_until(&ma, &da, |g| g.neighbours >= 1 && g.frames_received > isolated.frames_received).await;

@@ -367,7 +367,7 @@ async fn a_leave_whose_primary_is_lost_after_a_members_exit_proof_finishes_that_
     let published: Vec<&Value> = named(&run.spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == rpc1 && s(&sp["attributes"]["build_id"]) == run.b).collect();
     assert_eq!(published.len(), 1, "rpc.1's NodeDeleted is published once, by the executor that finished its delete: {published:?}");
     assert_eq!(s(&published[0]["trace_id"]), s(&deleted[0]["trace_id"]), "the publication belongs to the resumed delete's own trace");
-    let heard: Vec<&Value> = named(&run.spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == rpc1 || s(&sp["attributes"]["name"]) == rpc1).collect();
+    let heard: Vec<&Value> = named(&run.spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == rpc1 || s(&sp["attributes"]["name"]) == rpc1).collect();
     assert!(!heard.is_empty(), "a peer applies rpc.1's NodeDeleted");
     eprintln!("trace {} rpc.1 TerminateRuntime reused, NodeDeleted complete + published; amendment trace {}", s(&deleted[0]["trace_id"]), s(&eprint_trace["trace_id"]));
 }

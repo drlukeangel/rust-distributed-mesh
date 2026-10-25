@@ -490,7 +490,7 @@ pub struct BirthFacts {
     /// A node-admin birth's signing cert dates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_cert: Option<SigningCertDates>,
-    /// The birth's fabric endpoint id, as its mesh's writer's book holds it (the mesh rows writer,
+    /// The birth's fabric endpoint id, as its mesh's writer's view holds it (the mesh rows writer,
     /// `crate::admin::rows_writer`): with [`Self::transport_addr`], where the birth is reached. A birth
     /// its writer has not written it for carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -598,7 +598,7 @@ pub struct NodeRecord {
 }
 
 impl NodeRecord {
-    /// Where this birth's gossip was last reachable: its transport address, as membership dials.
+    /// Where this birth's gossip was last reachable: its transport address, as the topology view dials.
     pub fn gossip_addr(&self) -> Option<iroh::EndpointAddr> {
         let key = self.endpoint_id.0.parse::<iroh::PublicKey>().ok()?;
         Some(iroh::EndpointAddr::new(key).with_ip_addr(self.transport_addr))
@@ -606,7 +606,7 @@ impl NodeRecord {
 }
 
 /// One birth's exact runtime as this admin first held it: the durable map a successor fabric
-/// primary proves an exit from when its own membership never heard the birth, and the validated
+/// primary proves an exit from when its own topology view never heard the birth, and the validated
 /// report its accepting authority admitted (written first at the join's admission,
 /// `crate::join::Joins::keep_admitted`, before the report is released: a re-run of the create after
 /// that admin restarted completes WaitForMeshJoin from it, node-create.md step 5). Its own keyed row

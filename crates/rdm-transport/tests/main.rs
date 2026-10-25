@@ -29,12 +29,12 @@ pub(crate) fn evidence_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var_os("RDM_EVIDENCE_DIR").expect("main.rs sets RDM_EVIDENCE_DIR before any test runs"))
 }
 
-// gossip & membership cells
+// gossip & topology cells
 mod nodes_snapshot;
 mod status_reinforcement;
 mod refeed_scheduler;
 mod channel_stopped;
-mod peer_location_book;
+mod peer_location_view;
 mod gossip_stats;
 mod heartbeat_spans;
 mod lifecycle_frames_wire;

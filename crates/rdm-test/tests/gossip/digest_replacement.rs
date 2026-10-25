@@ -1,6 +1,6 @@
 //! Digest replacement: exact birth, digest_seq, and the heartbeat's wire content (never status).
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{learn_addresses, mesh_channel, Frame, Membership};
+use rdm_transport::topology::{learn_addresses, mesh_channel, Frame, TopologyView};
 use std::time::Duration;
 
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {
@@ -11,7 +11,7 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol
     (ep, gossip, router)
 }
 
-async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, digest: MeshDigest, serial: u64) {
+async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, digest: MeshDigest, serial: u64) {
     // Neighbor delivery passes identical heartbeat bytes to RDM without waiting for swarm dedup
     // retention. A following status on the same channel proves receipt has finished.
     sender.broadcast_neighbors(Frame::Digest { digest }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
@@ -37,7 +37,7 @@ fn story(story: Story) {
         learn_addresses(&sender_ep, &[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let mut topic = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
+        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
         let (sender, _rx) = topic.split();
         let key = iroh::SecretKey::generate().public();
@@ -54,11 +54,11 @@ fn story(story: Story) {
         } else {
             send(&sender, &receiver, digest.clone(), 1).await;
         }
-        assert!(receiver.book.started(&node_id, &incarnation, &digest.node.name));
-        let before = receiver.book.get(node_id.as_str()).unwrap().0;
-        let changes = receiver.book.digest_changes();
-        let births = receiver.book.birth_changes();
-        let overlays = receiver.book.overlay_changes();
+        assert!(receiver.digest_view.started(&node_id, &incarnation, &digest.node.name));
+        let before = receiver.digest_view.get(node_id.as_str()).unwrap().0;
+        let changes = receiver.digest_view.digest_changes();
+        let births = receiver.digest_view.birth_changes();
+        let overlays = receiver.digest_view.overlay_changes();
         let counts = (*changes.borrow(), *births.borrow(), *overlays.borrow());
         let mut offered = digest.clone();
         match story {
@@ -66,7 +66,7 @@ fn story(story: Story) {
             Story::Duplicate => {
                 offered.status = MemberStatus::Leaving; // absent from the wire; the held status is Ready.
                 assert_eq!(Frame::Digest { digest: offered.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode(), Frame::Digest { digest: digest.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode());
-                receiver.location_book().forget(key);
+                receiver.location_view().forget(key);
             }
             Story::Inconsistent => { offered.node.endpoint_id = EndpointId(other_key.to_string()); }
             Story::Newer => { offered.digest_seq = 101; offered.node.transport_addr = "127.0.0.1:12002".parse().unwrap(); offered.config.insert("new".into(), "yes".into()); }
@@ -78,37 +78,37 @@ fn story(story: Story) {
             send(&sender, &receiver, even_older, 3).await;
         }
         if matches!(story, Story::Newer | Story::NewBirth) {
-            let held = receiver.book.get(node_id.as_str()).unwrap().0;
+            let held = receiver.digest_view.get(node_id.as_str()).unwrap().0;
             assert_eq!(held.digest_seq, offered.digest_seq);
             assert_eq!(held.node, offered.node);
             assert_eq!(*changes.borrow(), counts.0 + 1);
             if matches!(story, Story::Newer) { assert_eq!(held.status, MemberStatus::ReadyForTraffic); }
         } else {
-            assert_eq!(receiver.book.get(node_id.as_str()).unwrap().0, before, "refused or duplicate heartbeat changes no projection or held status");
+            assert_eq!(receiver.digest_view.get(node_id.as_str()).unwrap().0, before, "refused or duplicate heartbeat changes no projection or held status");
             assert_eq!((*changes.borrow(), *births.borrow(), *overlays.borrow()), counts);
         }
-        assert!(receiver.book.in_flight().is_empty());
-        assert!(!receiver.book.is_deleted(node_id.as_str()));
-        if matches!(story, Story::Duplicate) { assert!(receiver.location_book().addrs(key).is_empty(), "a duplicate cannot fill a forgotten address"); }
-        if matches!(story, Story::Inconsistent) { assert!(receiver.location_book().addrs(other_key).is_empty(), "an inconsistent digest cannot install its offered endpoint"); }
+        assert!(receiver.digest_view.in_flight().is_empty());
+        assert!(!receiver.digest_view.is_deleted(node_id.as_str()));
+        if matches!(story, Story::Duplicate) { assert!(receiver.location_view().addrs(key).is_empty(), "a duplicate cannot fill a forgotten address"); }
+        if matches!(story, Story::Inconsistent) { assert!(receiver.location_view().addrs(other_key).is_empty(), "an inconsistent digest cannot install its offered endpoint"); }
         sender_ep.close().await; receiver_ep.close().await;
         (node_id, incarnation)
     });
     let spans = capture.spans().unwrap();
-    for s in spans.iter().filter(|s| s["attributes"]["frame"] == "digest" || matches!(s["name"].as_str(), Some("rdm.mesh.membership.update.via-digest" | "rdm.mesh.membership.update.via-digest-receipt"))) { println!("{}", serde_json::to_string(s).unwrap()); }
+    for s in spans.iter().filter(|s| s["attributes"]["frame"] == "digest" || matches!(s["name"].as_str(), Some("rdm.mesh.topology.update.via-digest" | "rdm.mesh.topology.update.via-digest-receipt"))) { println!("{}", serde_json::to_string(s).unwrap()); }
     let apply_count = match story { Story::Newer | Story::NewBirth => 2, Story::ReadFloor => 0, _ => 1 };
-    assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-digest" && s["attributes"]["node_id"] == node_id.to_string()).count(), apply_count);
+    assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-digest" && s["attributes"]["node_id"] == node_id.to_string()).count(), apply_count);
     {
-        let receipt = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-digest-receipt").last().unwrap();
+        let receipt = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-digest-receipt").last().unwrap();
         let accepted = matches!(story, Story::Newer | Story::NewBirth);
         assert_eq!(receipt["attributes"]["addresses_registered"], if accepted { "1" } else { "0" });
         assert_eq!(receipt["attributes"]["applied"], if accepted { "true" } else { "false" });
     }
     if matches!(story, Story::ReadFloor) {
-        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.membership.reject.via-stale" && s["attributes"]["held_key"] == "digest_seq=100" && s["attributes"]["frame_key"] == "digest_seq=80"), "a refused frame never becomes the held floor; both refusals must name the installed 100");
+        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["held_key"] == "digest_seq=100" && s["attributes"]["frame_key"] == "digest_seq=80"), "a refused frame never becomes the held floor; both refusals must name the installed 100");
     }
     let subject = format!("{node_id}/{incarnation}");
-    let outcome = match story { Story::Stale | Story::ReadFloor => "rdm.mesh.membership.reject.via-stale", Story::Duplicate => "rdm.mesh.membership.update.via-duplicate", Story::Inconsistent => "rdm.mesh.membership.reject.via-inconsistent", _ => return };
+    let outcome = match story { Story::Stale | Story::ReadFloor => "rdm.mesh.topology.reject.via-stale", Story::Duplicate => "rdm.mesh.topology.update.via-duplicate", Story::Inconsistent => "rdm.mesh.topology.reject.via-inconsistent", _ => return };
     let refusal = spans.iter().find(|s| s["name"] == outcome && s["attributes"]["frame"] == "digest").expect("the receive framework names the digest outcome");
     if matches!(story, Story::Duplicate) {
         assert_eq!(refusal["attributes"]["identity"], format!("{subject} digest_seq=100"));

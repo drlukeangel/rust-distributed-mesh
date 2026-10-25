@@ -14,7 +14,7 @@ The control plane has deliberately separate mechanisms:
 fabric-primary + the current Build
     the one topology writer, and the Build the Builds read newest first name current (§4)
 
-Membership + RuntimeFacts + current runtime metadata
+Topology + RuntimeFacts + current runtime metadata
     current exact births/runtimes that actually exist
 
 Build / Reconciler
@@ -57,7 +57,7 @@ Allowed customer seams are:
 - product Build-input/shape normalization and explicit desired path config policy;
 - deployment-provider bindings, resolved launch/listener configuration, and mapping of customer
   runtime-management metadata into the imported current-runtime projection;
-- current membership/runtime fact feeds and projection/public-API mappings;
+- current topology/runtime fact feeds and projection/public-API mappings;
 - product authorization and the hooks of [Fabric and node hooks](fabric-node-hooks.md).
 
 RDM retains Build compilation/reconciliation and attempts, the leadership election,
@@ -96,8 +96,8 @@ Rafka imports these RDM packages at one exact revision:
 | package | what it holds |
 |---|---|
 | `rdm-core` | the Node RPC protocol contract: framing, outcomes, reserved codes and protocol traits, with no transport dependency |
-| `rdm-core` | the generic Mesh entity: exact-node identity, process incarnation, membership, endpoint freshness, RuntimeFact and connection projections |
-| `rdm-transport` | the gossip substrate on Iroh: the membership digest book, versioned cross-mesh topology snapshots and deltas, and the gossip frame codec |
+| `rdm-core` | the generic Mesh entity: exact-node identity, process incarnation, topology, endpoint freshness, RuntimeFact and connection projections |
+| `rdm-transport` | the gossip substrate on Iroh: the topology digest view, versioned cross-mesh topology snapshots and deltas, and the gossip frame codec |
 | `rdm-transport` | the Node RPC runtime over Iroh: exact-target client and server, pool, commit cut and admission |
 | `rdm-admin` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, the leadership election, the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
 | `rdm-client` | the typed client and DTOs for the node-admin control API |
@@ -480,7 +480,7 @@ For a node-admin's `Pending -> ReadyForTraffic` transition, required generic hyd
 
 ```text
 the current Build and its accepted topology
-current topology/membership required by its role
+current topology required by its role
 RuntimeFacts + required runtime metadata for held births it may need to manage
 provider-control-domain reachability or valid domain-local execution path
 ```
@@ -581,7 +581,7 @@ A primary of any type moves first. Nothing else in the fabric changes.
 
 ## 13. Held-member repair when a peer is heard again
 
-Held-member repair is a generic membership mechanism owned by [gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours), with its heal path in [§12](gossip.md#12-an-unheard-peer-mesh). Repair dials a held member with a known transport identity and address; the accepted topology alone is not dial material. Rafka adds no second repair loop beside it (§15).
+Held-member repair is a generic topology mechanism owned by [gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours), with its heal path in [§12](gossip.md#12-an-unheard-peer-mesh). Repair dials a held member with a known transport identity and address; the accepted topology alone is not dial material. Rafka adds no second repair loop beside it (§15).
 
 ---
 
@@ -659,4 +659,4 @@ The RDM-generic proofs of this page's mechanisms:
 - leadership proof uses [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) as its only expected-result specification;
 - private maps are not E2E truth.
 
-Membership, hydration, late-admin adoption and repair proofs are [gossip.md §14](gossip.md#14-required-proofs).
+Topology, hydration, late-admin adoption and repair proofs are [gossip.md §14](gossip.md#14-required-proofs).

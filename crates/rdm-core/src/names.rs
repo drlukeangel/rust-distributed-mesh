@@ -181,7 +181,7 @@ impl BuildOp {
 pub enum NodeEvent {
     /// `node.created`: the node exists and is started; the last event of a create.
     Created,
-    /// `node.joined`: the node's own membership digest reached its authority.
+    /// `node.joined`: the node's own topology digest reached its authority.
     Joined,
     /// `node.started`: the node reports its hook passed, nothing pending.
     Started,

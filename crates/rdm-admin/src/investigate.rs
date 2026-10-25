@@ -24,7 +24,7 @@
 use crate::admin::Records;
 use crate::model::{Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use rdm_transport::topology::Membership;
+use rdm_transport::topology::TopologyView;
 use crate::offline::{tickle, PeerProbe, ProbeEnd, Tickle, TickleCalls, Unreached, VIA_PEER_TICKLE_FANOUT};
 use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
@@ -227,7 +227,7 @@ impl Ladder {
 
     /// What the R-D1 fence reads of `mesh`, for the Build door, the drive and the drift check alike:
     /// `unheard` is the elapsed time since this admin's last valid direct backbone receipt from the
-    /// mesh (`DigestBook::mesh_unheard`, mesh-investigation.md: "Let t be the elapsed monotonic time
+    /// mesh (`DigestView::mesh_unheard`, mesh-investigation.md: "Let t be the elapsed monotonic time
     /// since the fabric-primary's last valid direct backbone receipt from mesh-x"), `None` for a mesh
     /// the backbone never carried here.
     /// A mesh heard on the backbone is fenced from the rung the ladder tracks it from
@@ -343,8 +343,8 @@ pub struct Watch {
     pub me_id: crate::model::NodeId,
     /// The length of a backbone interval.
     pub interval: Duration,
-    /// The admin's membership.
-    pub membership: Membership,
+    /// The admin's topology view.
+    pub topology_view: TopologyView,
     /// The admin's observed topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// The records this admin holds.
@@ -368,7 +368,7 @@ pub struct Watch {
 
 impl Watch {
     fn held_name_in(&self, view: &Topology) -> PathName {
-        self.membership.book.held_path_name().unwrap_or_else(|| view.held_name_of(&self.me, Some(&self.me_id)))
+        self.topology_view.digest_view.held_path_name().unwrap_or_else(|| view.held_name_of(&self.me, Some(&self.me_id)))
     }
 }
 
@@ -423,9 +423,9 @@ pub async fn run(w: Watch) {
             match fabric_primary_mesh_to_investigate(&w, &view, &me) {
                 Some(mesh) => {
                     forget_unheard_meshes(&w.ladder, &BTreeSet::from([mesh.clone()]));
-                    if let Some(unheard) = w.membership.book.mesh_unheard(&mesh, Instant::now()) {
+                    if let Some(unheard) = w.topology_view.digest_view.mesh_unheard(&mesh, Instant::now()) {
                         investigate(&w, &inv, &view, mesh.clone(), unheard).await;
-                        if let Some(due) = w.membership.book.mesh_unheard(&mesh, Instant::now()).and_then(|u| w.ladder.lock().unwrap().next_due(&mesh, u)) {
+                        if let Some(due) = w.topology_view.digest_view.mesh_unheard(&mesh, Instant::now()).and_then(|u| w.ladder.lock().unwrap().next_due(&mesh, u)) {
                             wait = wait.min(due);
                         }
                         // No node-admin of that mesh answered by the decision step: fabric recovery starts at the
@@ -438,8 +438,8 @@ pub async fn run(w: Watch) {
             }
             continue;
         }
-        let book = &w.membership.book;
-        let heard = book.backbone_meshes();
+        let digest_view = &w.topology_view.digest_view;
+        let heard = digest_view.backbone_meshes();
         let current_never = never_heard(&view, &me.mesh, &heard);
         never_since.retain(|m, _| current_never.contains(m));
         // The clock of a mesh never heard starts once the accepted Build is settled: from the seat,
@@ -465,7 +465,7 @@ pub async fn run(w: Watch) {
         let mut tasks = Vec::new();
         let mut unheard_now = Vec::new();
         for mesh in heard.into_iter().filter(|m| *m != me.mesh) {
-            let Some(unheard) = book.mesh_unheard(&mesh, Instant::now()) else { continue };
+            let Some(unheard) = digest_view.mesh_unheard(&mesh, Instant::now()) else { continue };
             unheard_now.push(mesh.clone());
             tasks.push(investigate(&w, &inv, &view, mesh, unheard));
         }
@@ -477,7 +477,7 @@ pub async fn run(w: Watch) {
         // The next wake: a receipt is looked for every interval, and a rung is stepped when it falls
         // due, not on the interval after it.
         for mesh in unheard_now {
-            if let Some(due) = book.mesh_unheard(&mesh, Instant::now()).and_then(|u| w.ladder.lock().unwrap().next_due(&mesh, u)) {
+            if let Some(due) = digest_view.mesh_unheard(&mesh, Instant::now()).and_then(|u| w.ladder.lock().unwrap().next_due(&mesh, u)) {
                 wait = wait.min(due);
             }
         }
@@ -498,7 +498,7 @@ fn fabric_primary_mesh_to_investigate(w: &Watch, view: &Topology, me: &PathName)
     if !view.is_mesh_primary(&me.mesh, &w.me_id) {
         return None;
     }
-    let record = w.membership.primaries().fabric()?;
+    let record = w.topology_view.primaries().fabric()?;
     if record.mesh == me.mesh {
         return None;
     }
@@ -644,7 +644,7 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
     let at = local_now_ms().saturating_sub(unheard.as_millis() as u64);
     let start = |n: u8| {
         let (w, view, mesh) = (w.clone(), view.clone(), mesh.clone());
-        async move { probe(&WatchCalls(&w), &w.carriers, &view, w.membership.book.seats.mesh(&mesh), &mesh, n).await }
+        async move { probe(&WatchCalls(&w), &w.carriers, &view, w.topology_view.digest_view.seats.mesh(&mesh), &mesh, n).await }
     };
     let steps = inv.tick(&mesh, unheard, start).await;
     for step in steps {
@@ -663,14 +663,14 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
                 // node-admin of that mesh answered either probe, so the backbone rule applies and the
                 // lowest ReadyForTraffic mesh-primary is fabric-primary (fabric-recovery.md "Outside its
                 // mesh"; elections §4.3). The re-creation of the lost mesh's node-admin follows it.
-                let record = w.membership.primaries().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
+                let record = w.topology_view.primaries().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
                 if let (Some(_), false) = (record, view.is_fabric_primary(&w.me_id)) {
                     verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, "no node-admin of the fabric-primary's mesh answered by the decision step: the backbone rule applies");
                     continue;
                 }
                 verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, if recover { "the latest probe says a member cannot reach its own node-admin: the mesh is recovered" } else { "no member could say: the mesh is held" });
                 if recover {
-                    let verdict_ms = w.membership.clock().now_rafka_ms();
+                    let verdict_ms = w.topology_view.clock().now_rafka_ms();
                     let lost = view.nodes_of_type(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
                     w.records.open_mesh_recovery(&me, crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: Some(verdict_ms), opened_at: Instant::now(), lost }, "carrier-edge-lost", true);
                 }
@@ -809,7 +809,7 @@ impl TickleCalls for WatchCalls<'_> {
 impl ProbeCalls for WatchCalls<'_> {
     async fn observe(&self, admin: &Node) -> (String, String) {
         let key = admin.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
-        let seen = rdm_transport::iroh_obs::observe_remote(&self.0.membership.endpoint(), key).await;
+        let seen = rdm_transport::iroh_obs::observe_remote(&self.0.topology_view.endpoint(), key).await;
         (seen.known_addrs, seen.active_addrs)
     }
 }
@@ -975,7 +975,7 @@ mod tests {
     /// fabric-primary's last valid direct backbone receipt from mesh-x"; step 5: "No answer from any
     /// member in either probe means hold"): the fence reads t, not whether the ladder has stepped the
     /// mesh yet. An admin that took the fabric-primary seat a moment ago holds a ladder that has
-    /// stepped nothing, and a peer mesh its book last heard on the backbone 7 s ago is fenced from that
+    /// stepped nothing, and a peer mesh its view last heard on the backbone 7 s ago is fenced from that
     /// moment, unheard 7000 ms, no recovery decided; a mesh heard within the tracking rung is not
     /// fenced; a decided recovery is read from the ladder; a mesh the backbone never carried here is
     /// what the ladder holds of it. Must NOT happen: a node of a mesh unheard past the rung claimed or
@@ -1081,10 +1081,10 @@ mod tests {
         };
         let floor = Duration::from_secs(30);
         for every in [Duration::from_millis(500), Duration::from_secs(2)] {
-            let book = rdm_transport::topology::DigestBook::default();
+            let digest_view = rdm_transport::topology::DigestView::default();
             let (admin, rpc) = (digest("mesh2.admin.1"), digest("mesh2.rpc.1"));
             let t0 = Instant::now();
-            assert!(book.record_forwarded_at(admin.clone(), t0), "the direct backbone receipt");
+            assert!(digest_view.record_forwarded_at(admin.clone(), t0), "the direct backbone receipt");
             let mut l = Ladder::new(Rungs::at(floor, every));
             let mut log: Vec<(Duration, Step)> = Vec::new();
             let mut k = 1u32;
@@ -1093,8 +1093,8 @@ mod tests {
                 // The peer mesh's topology forwarded onto this node's mesh channel, every interval.
                 let mut fwd = rpc.clone();
                 fwd.digest_seq = u64::from(k) + 1;
-                book.record_topology_at(fwd, now);
-                let unheard = book.mesh_unheard("mesh2", now).expect("the mesh was heard on the backbone");
+                digest_view.record_topology_at(fwd, now);
+                let unheard = digest_view.mesh_unheard("mesh2", now).expect("the mesh was heard on the backbone");
                 assert_eq!(unheard, every * k, "forwarded topology neither resets nor extends t");
                 for s in l.step("mesh2", unheard) {
                     if let Step::Probe { n, unheard_ms, ticket } = s {
@@ -1113,8 +1113,8 @@ mod tests {
             assert!(!l.recovery_decided("mesh2"));
             // A direct backbone receipt resets t and cancels the investigation.
             let later = t0 + every * k;
-            assert!(book.record_forwarded_at(admin.clone(), later));
-            let reset = book.mesh_unheard("mesh2", later).unwrap();
+            assert!(digest_view.record_forwarded_at(admin.clone(), later));
+            let reset = digest_view.mesh_unheard("mesh2", later).unwrap();
             assert_eq!(reset, Duration::ZERO, "a direct backbone receipt resets t");
             assert!(matches!(l.step("mesh2", reset).as_slice(), [Step::Cancel { .. }]), "a receipt cancels the investigation");
         }

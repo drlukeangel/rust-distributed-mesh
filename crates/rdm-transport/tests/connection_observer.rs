@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Default)]
-struct Book {
+struct Observed {
     events: Mutex<Vec<(String, String, String)>>,
 }
-impl ConnectionObserver for Book {
+impl ConnectionObserver for Observed {
     fn direct_connected(&self, node: &ResolvedNode) {
         self.events.lock().unwrap().push(("connected".into(), node.name.to_string(), String::new()));
     }
@@ -43,8 +43,8 @@ async fn a_source_observes_its_own_direct_connections_opening_and_failing_once_e
     };
     resolver.insert(nobody.clone());
     let (_, oe) = bind().await;
-    let book = Arc::new(Book::default());
-    let origin = NodeRpcClient::new(oe, resolver).with_connection_observer(book.clone());
+    let observed = Arc::new(Observed::default());
+    let origin = NodeRpcClient::new(oe, resolver).with_connection_observer(observed.clone());
     let opts = CallOptions { budget: Budget::Overall(Duration::from_millis(1500)), ..Default::default() };
     let (out, ev) = origin.call::<Probe>(&NodeTarget::ExactNode(b.resolved.node_id.clone()), &probe(b"one"), &opts).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
@@ -54,7 +54,7 @@ async fn a_source_observes_its_own_direct_connections_opening_and_failing_once_e
     assert!(ev.unwrap().reused, "the second call rode the pooled connection");
     let (out, _) = origin.call::<Probe>(&NodeTarget::ExactNode(nobody.node_id.clone()), &probe(b"none"), &opts).await;
     assert!(matches!(out, RpcOutcome::NotSent(_)), "{out:?}");
-    let events = book.events.lock().unwrap().clone();
+    let events = observed.events.lock().unwrap().clone();
     assert_eq!(events.iter().filter(|e| e.0 == "connected").map(|e| e.1.as_str()).collect::<Vec<_>>(), vec!["mesh1.rpc.1"], "one open, reported once: {events:?}");
     let failed: Vec<&(String, String, String)> = events.iter().filter(|e| e.0 == "failed").collect();
     assert_eq!(failed.len(), 1, "{events:?}");

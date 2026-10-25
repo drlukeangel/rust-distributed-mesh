@@ -14,7 +14,7 @@
 //! step before it has closed: a node-admin's first start (launched by another admin), the same
 //! node-admin's start after its stop, an rpc node's first start and the same rpc node's start after
 //! its stop. The steps are the join (`via-join-admitted`), the mesh channel, node.joined
-//! (`via-membership-joined`), the `before_ready` attempt (`via-before-ready-attempt`), the
+//! (`via-topology-joined`), the `before_ready` attempt (`via-before-ready-attempt`), the
 //! topology (`via-topology-taken`), the Build floor (`via-build-floor`, run on every start: an rpc
 //! node holds no Build log and owes none), the rafka-time refresh (`via-rafka-time-refreshed`) and
 //! the report (`via-ready`). What must NOT happen: a topology read before the hook returned, a
@@ -49,7 +49,7 @@ const WRONG: Duration = Duration::from_secs(60);
 /// The start steps, in the order every start path runs them (node-start.md steps 2-5).
 const STEPS: [&str; 7] = [
     "rdm.mesh.node.update.via-join-admitted",
-    "rdm.mesh.node.update.via-membership-joined",
+    "rdm.mesh.node.update.via-topology-joined",
     "rdm.mesh.node.update.via-before-ready-attempt",
     "rdm.mesh.node.update.via-topology-taken",
     "rdm.mesh.node.update.via-build-floor",

@@ -1,6 +1,6 @@
-//! i143.e4.s9 process E2E: hierarchical membership (`gossip.md` §3, §5, §6).
+//! i143.e4.s9 process E2E: hierarchical topology (`gossip.md` §3, §5, §6).
 //!
-//! Each mesh has its own membership channel; only node-admins join the
+//! Each mesh has its own topology channel; only node-admins join the
 //! backbone; only a mesh's admin primary publishes its mesh's members there,
 //! and only a receiving peer mesh's primary forwards them onto its own mesh
 //! channel; the fabric primary alone publishes the fabric's status. Ordinary
@@ -42,7 +42,7 @@ use std::time::Duration;
 fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
-        feature: "mesh-membership".into(),
+        feature: "mesh-topology".into(),
         subfeature: "backbone".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
@@ -117,7 +117,7 @@ fn role_nodes(events: &[(u64, String, String, String)], scope: &str, dead: &BTre
 /// The latest learned/silent verdict each ordinary node holds about `mesh`.
 fn verdicts(spans: &[Value], node: &str, mesh: &str) -> Option<String> {
     let mut v: Vec<(u64, &str)> = Vec::new();
-    for (name, verdict) in [("rdm.mesh.membership.update.via-mesh-learned", "learned"), ("rdm.mesh.membership.update.via-mesh-silent", "silent")] {
+    for (name, verdict) in [("rdm.mesh.topology.update.via-mesh-learned", "learned"), ("rdm.mesh.topology.update.via-mesh-silent", "silent")] {
         v.extend(named(spans, name).into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "mesh") == mesh).map(|sp| (start(sp), verdict)));
     }
     v.sort();
@@ -129,9 +129,9 @@ fn primary(nodes: &[Value], mesh: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn membership_rides_mesh_channels_and_the_admin_backbone() {
+async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     let _one = SERIAL.lock().await;
-    let mut estate = Estate::bootstrap(owner("membership_rides_mesh_channels_and_the_admin_backbone"), "fabric1", "mesh1").await;
+    let mut estate = Estate::bootstrap(owner("topology_rides_mesh_channels_and_the_admin_backbone"), "fabric1", "mesh1").await;
     let nodes = mm(&estate, "fabric1").await;
     let rpcs: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node").map(|n| s(&n["name"])).collect();
     let admins: Vec<String> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"])).collect();
@@ -146,7 +146,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     // ...through its own mesh channel only; every admin is on the backbone.
     let spans = estate.spans();
     let subs: Vec<(String, String)> =
-        named(&spans, "rdm.mesh.membership.update.via-subscribe").into_iter().map(|sp| (attr(sp, "node"), attr(sp, "channel"))).collect();
+        named(&spans, "rdm.mesh.topology.update.via-subscribe").into_iter().map(|sp| (attr(sp, "node"), attr(sp, "channel"))).collect();
     for n in &rpcs {
         let mesh = n.split('.').next().unwrap();
         let mine: BTreeSet<&str> = subs.iter().filter(|(x, _)| x == n).map(|(_, c)| c.as_str()).collect();
@@ -335,7 +335,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
         .unwrap_or_else(|| panic!("the restarted mesh2.rpc.1 reports ready"))
         .clone();
     assert_eq!(attr(&ready, "meshes"), "2", "ready holding both meshes: {ready}");
-    let pulled = named(&spans, "rdm.mesh.entry.update.via-membership-pulled")
+    let pulled = named(&spans, "rdm.mesh.entry.update.via-topology-pulled")
         .into_iter()
         .filter(|sp| attr(sp, "node") == "mesh2.rpc.1")
         .map(start)
@@ -355,7 +355,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     tokio::time::sleep(Duration::from_secs(6)).await;
     drop(cut);
     let spans = estate.spans();
-    let lost: Vec<String> = named(&spans, "rdm.mesh.membership.update.via-mesh-silent")
+    let lost: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-mesh-silent")
         .into_iter()
         .filter(|sp| start(sp) > cut_at && attr(sp, "mesh") == "mesh1" && rpcs2.contains(&attr(sp, "node")))
         .map(|sp| attr(sp, "node"))
@@ -392,7 +392,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
         let spans = estate.spans();
         let lone_name = lone_name.clone();
         async move {
-            named(&spans, "rdm.mesh.membership.update.via-member-stale").iter().any(|sp| attr(sp, "node") == lone_name).then_some(())
+            named(&spans, "rdm.mesh.topology.update.via-member-stale").iter().any(|sp| attr(sp, "node") == lone_name).then_some(())
         }
     })
     .await;
@@ -474,7 +474,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     let mut want: BTreeSet<String> = pre_cut.clone();
     want.insert("mesh1.rpc.3".into());
     let after = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await);
-    // Relearned with membership after the heal: every birth's current
+    // Relearned with the topology view after the heal: every birth's current
     // runtime metadata (i143.e4.s16), no Build history replayed.
     for n in &after {
         assert!(n["data_dir"].as_str().is_some_and(|d| !d.is_empty()), "{} carries its data dir after the heal: {n}", n["name"]);

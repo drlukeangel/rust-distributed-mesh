@@ -1,4 +1,4 @@
-//! Fixed bytes for the node command and completion frames on the membership channels (R-W1:
+//! Fixed bytes for the node command and completion frames on the topology channels (R-W1:
 //! postcard, positional, append-only). The literals lock the type names and data field order
 //! independently of codec round trips; they are derived from the postcard rules by hand. Never
 //! regenerate an expectation from the Rust serializer to make a schema change pass.
@@ -36,7 +36,7 @@ fn op(operation: &str) -> LifecycleOp {
     }
 }
 
-/// CONTRACT: `NodeConnectionsDeleting` is variant 10, `NodeLeaving` 11 and `NodeLeft` 12 and `NodeConnectionsDeleted` 13 of the membership
+/// CONTRACT: `NodeConnectionsDeleting` is variant 10, `NodeLeaving` 11 and `NodeLeft` 12 and `NodeConnectionsDeleted` 13 of the topology
 /// frame, appended after `Concern` (9); each is the lifecycle op (build, attempt, operation,
 /// node id, incarnation, path.name, event instant) then the forwarding primary. What must NOT
 /// happen: a field moved, a variant inserted before the end, or a self-describing encoding.

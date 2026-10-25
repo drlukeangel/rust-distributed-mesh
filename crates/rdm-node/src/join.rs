@@ -85,13 +85,13 @@ where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, S
         span.in_scope(|| tracing::info!("one join attempt"));
         match result {
             Ok(a) => {
-                tracing::info_span!("rdm.mesh.entry.update.via-membership-pulled", node = %node, served_by = %a.served_by, statuses = a.statuses.len(), attempt)
+                tracing::info_span!("rdm.mesh.entry.update.via-topology-pulled", node = %node, served_by = %a.served_by, statuses = a.statuses.len(), attempt)
                     .in_scope(|| tracing::info!("joined"));
                 let (target, _) = to.expect("an answered attempt had a target");
                 return Ok((a, target));
             }
             Err(JoinFailure::Refused(why)) => {
-                tracing::info_span!("rdm.mesh.entry.reject.via-membership-pull-failed", node = %node, reason = %why, attempts = attempt).in_scope(|| tracing::warn!("the join was refused"));
+                tracing::info_span!("rdm.mesh.entry.reject.via-topology-pull-failed", node = %node, reason = %why, attempts = attempt).in_scope(|| tracing::warn!("the join was refused"));
                 return Err(JoinFailure::Refused(why));
             }
             Err(JoinFailure::Unreached(why)) => {
@@ -100,7 +100,7 @@ where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, S
             }
         }
     }
-    tracing::info_span!("rdm.mesh.entry.reject.via-membership-pull-failed", node = %node, reason = %last, attempts).in_scope(|| tracing::warn!("the join found no admin to take it"));
+    tracing::info_span!("rdm.mesh.entry.reject.via-topology-pull-failed", node = %node, reason = %last, attempts).in_scope(|| tracing::warn!("the join found no admin to take it"));
     Err(JoinFailure::Unreached(last))
 }
 

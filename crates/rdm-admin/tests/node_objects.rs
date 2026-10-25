@@ -140,8 +140,8 @@ impl DeploymentProvider for Up {
     }
 }
 
-/// The membership the admin holds of the birth: it hears the birth only once `joined` is set.
-struct Membership {
+/// The topology view the admin holds of the birth: it hears the birth only once `joined` is set.
+struct TopologyView {
     /// While set, the node is not ready and this is what its Ready check names.
     not_ready: Mutex<Option<String>>,
     /// While set, the node reports Pending with no blocker: its Ready check fails with this and names nothing.
@@ -149,7 +149,7 @@ struct Membership {
 }
 
 #[async_trait::async_trait]
-impl NodeObserver for Membership {
+impl NodeObserver for TopologyView {
     /// No digest of any birth reaches this fixture: the pipeline's waits complete from the report
     /// `report_bind` makes, and no cell here runs the lost-executor rule.
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
@@ -247,7 +247,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The Build door of `mesh1.admin.2`, a node-admin of the fabric that does not hold the fabric-primary
@@ -283,7 +283,7 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The fabric-primary's Build door over a Build log of its own: the executor writes its step
@@ -325,7 +325,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         verdicts: Arc::new(rdm_admin::build_op::LocalVerdicts { local: fp }),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The one executor of the fixture is the fabric-primary itself.
@@ -398,7 +398,7 @@ struct Rig {
     local: Arc<MemoryBuildStateAdapter>,
     runs: Arc<AttemptRuns>,
     joins: Arc<Joins>,
-    membership: Arc<Membership>,
+    topology_view: Arc<TopologyView>,
     sink: Arc<Published>,
     template: LaunchTemplate,
     data_root: std::path::PathBuf,
@@ -423,7 +423,7 @@ impl Rig {
         };
         let runs = Arc::new(AttemptRuns::default());
         let local = Arc::new(MemoryBuildStateAdapter::new());
-        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), membership: Arc::new(Membership { not_ready: Mutex::new(None), pending: Mutex::new(None) }), sink: Arc::default(), template, data_root }
+        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), topology_view: Arc::new(TopologyView { not_ready: Mutex::new(None), pending: Mutex::new(None) }), sink: Arc::default(), template, data_root }
     }
 
     /// Run the create pipeline for `name` in `attempt` of `build`, as the executing admin does once
@@ -433,7 +433,7 @@ impl Rig {
         let pipeline = DeploymentPipeline {
             provider: &Up,
             joins: &self.joins,
-            observer: &*self.membership,
+            observer: &*self.topology_view,
             sink: &*self.sink,
             lifecycle: &NoLifecycleEvents,
             builds: &*self.builds,
@@ -598,7 +598,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
     let (blocked, after) = cap.run(async {
         let rig = Arc::new(Rig::new());
         let why = "mesh1.rpc.3: before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready";
-        *rig.membership.not_ready.lock().unwrap() = Some(why.to_string());
+        *rig.topology_view.not_ready.lock().unwrap() = Some(why.to_string());
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
@@ -617,7 +617,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         }
         // The Ready check polls again with the same reason: no second frame. Then the node is ready.
         tokio::time::sleep(Duration::from_millis(350)).await;
-        *rig.membership.not_ready.lock().unwrap() = None;
+        *rig.topology_view.not_ready.lock().unwrap() = None;
         let (after, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
         (blocked.unwrap(), after)
@@ -641,7 +641,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
     let cap = capture();
     let (frames, end) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        *rig.membership.pending.lock().unwrap() = Some("mesh1.rpc.3 reports Pending".to_string());
+        *rig.topology_view.pending.lock().unwrap() = Some("mesh1.rpc.3 reports Pending".to_string());
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
@@ -651,7 +651,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
         tokio::time::sleep(Duration::from_millis(450)).await;
-        *rig.membership.pending.lock().unwrap() = None;
+        *rig.topology_view.pending.lock().unwrap() = None;
         collect_frames(&mut stream, Duration::from_secs(10)).await
     });
     assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");

@@ -1,4 +1,4 @@
-//! RDM core: ids and identity, the Fabric → Mesh → Node model, membership and `RuntimeFact` types,
+//! RDM core: ids and identity, the Fabric → Mesh → Node model, the topology view and `RuntimeFact` types,
 //! the Node RPC protocol contract (framing, outcomes, reserved codes, body schemas, views, DTOs),
 //! and canonical operation/span names. Depends on no transport and no runtime.
 #![deny(missing_docs)]

@@ -18,7 +18,7 @@ removal is separate work.
 | Runtime action | `TerminateRuntime` on the exact accepted runtime, whatever the provider reads of it (a running one is stopped; an exited one has what it left removed; one already removed is done), then its inspection (Q145) |
 | Terminal event | Executor emits node.deleted only from the provider's `Exited` of the exact runtime, after releasing node.id and name |
 | Storage | Retain data dir and endpoint key; a later spec can inherit them |
-| Peer block | node.deleted blocks old `(node.id, incarnation)` in the peer-location book |
+| Peer block | node.deleted blocks old `(node.id, incarnation)` in the peer-location view |
 | Never evidence | Gossip, silence, Ping failure and timeout never say the runtime exited |
 
 ## Numbered end-to-end sequence
@@ -34,7 +34,7 @@ removal is separate work.
 4. The surviving executor emits node.deleted on the caller stream from the provider's
    `Exited` and records the complete delete receipt. The exited node cannot publish
    its own end or serve that stream.
-5. Block the old `(node.id, incarnation)` in the peer-location book. Peers refuse a late
+5. Block the old `(node.id, incarnation)` in the peer-location view. Peers refuse a late
    digest of the deleted birth under the [frame catalog's receiver rules](../gossip.md#31-frame-catalog),
    even when a successor uses the same endpoint key.
 

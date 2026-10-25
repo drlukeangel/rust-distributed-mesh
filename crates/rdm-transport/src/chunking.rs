@@ -1,5 +1,5 @@
 //! Packing in order into gossip messages that each fit iroh-gossip's frame limit: the one method
-//! the Build facts (`rafka-node-admin-core` `fabric_builds`) and the membership snapshots share.
+//! the Build facts (`rafka-node-admin-core` `fabric_builds`) and the topology snapshots share.
 
 use bytes::Bytes;
 

@@ -20,18 +20,18 @@ struct Hook {
 #[async_trait::async_trait]
 impl BeforeReady for Hook {
     async fn before_ready(&self, ctx: &BeforeReadyCtx) -> HookOutcome {
-        let types = ctx.membership.app_types();
+        let types = ctx.topology_view.app_types();
         assert_eq!(types.len(), 1);
         assert!(
-            types.is_subset(&ctx.membership.held_types()),
+            types.is_subset(&ctx.topology_view.held_types()),
             "the role joined its declaration before its before_ready hook"
         );
         let channel = ctx
-            .membership
+            .topology_view
             .join_channel(types.first().unwrap())
             .await
             .expect("the own declared channel is already joined");
-        *self.observed.lock().unwrap() = Some(ctx.membership.held_types());
+        *self.observed.lock().unwrap() = Some(ctx.topology_view.held_types());
         *self.channel.lock().unwrap() = Some(channel);
         HookOutcome::Ok
     }
@@ -46,10 +46,10 @@ fn config(dir: &std::path::Path) -> AdminConfig {
     .unwrap()
 }
 async fn until_held(r: &Running, expected: &BTreeSet<String>) {
-    let mut changes = r.membership.book.digest_changes();
+    let mut changes = r.topology_view.digest_view.digest_changes();
     tokio::time::timeout(BOUND, async {
         loop {
-            if expected.is_subset(&r.membership.held_types()) {
+            if expected.is_subset(&r.topology_view.held_types()) {
                 return;
             }
             changes.changed().await.unwrap();
@@ -59,7 +59,7 @@ async fn until_held(r: &Running, expected: &BTreeSet<String>) {
     .expect("the declared held set is learned within the read bound");
 }
 async fn own_view(r: &Running) -> rdm_core::views::NodeView {
-    let mut changes = r.membership.book.digest_changes();
+    let mut changes = r.topology_view.digest_view.digest_changes();
     tokio::time::timeout(BOUND, async {
         loop {
             let answer = r
@@ -204,7 +204,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
         .unwrap();
         joiner.stop_reconciling();
         assert!(
-            root.membership.held_types().contains(LATE),
+            root.topology_view.held_types().contains(LATE),
             "the launching admin joined the new type before returning JoinNode"
         );
         let expected = BTreeSet::from([BASE.into(), LATE.into()]);
@@ -241,7 +241,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
             .lock()
             .unwrap()
             .values()
-            .any(|(name, _, _)| name == "rdm.mesh.membership.reject.via-inconsistent"),
+            .any(|(name, _, _)| name == "rdm.mesh.topology.reject.via-inconsistent"),
         "GetTopology and Frame::Members carry the same held_hash at the same (publisher, topology_version)"
     );
 }
@@ -252,7 +252,7 @@ const MEMBERS: &str = "app.members";
 // @feature: gossip
 /// CONTRACT (gossip.md app channels: node-admin joins every type a member declares, with the entity
 /// framework as a Channel subscriber; i141 e11's receive wiring): a node-admin's app watches its held
-/// set (`Membership::held_type_changes`). A member it deployed declares a type the admin does not
+/// set (`TopologyView::held_type_changes`). A member it deployed declares a type the admin does not
 /// declare; its join grows the admin's held set, and the watch reports the whole new set. An event the
 /// member publishes on that type once the channel's neighbours are up, before the app joins the
 /// channel, is buffered by the admin's subscription and received by the app's `join_channel`.
@@ -269,7 +269,7 @@ fn a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receive
         let member_dir = dir.join("member");
         let root = start_with(config(&dir), Wiring { types: vec![BASE.into()], fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.unwrap();
         root.stop_reconciling();
-        let mut held = root.membership.held_type_changes();
+        let mut held = root.topology_view.held_type_changes();
         assert_eq!(*held.borrow_and_update(), BTreeSet::from([BASE.to_string()]), "the watch starts at the set held now");
 
         let d = root.digest.lock().unwrap().clone();
@@ -324,10 +324,10 @@ fn a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receive
         .await
         .expect("the admin's held watch reports the member's new type");
         assert_eq!(grown, BTreeSet::from([BASE.to_string(), MEMBERS.to_string()]), "the whole held set is sent");
-        assert_eq!(grown, root.membership.held_types(), "the snapshot read agrees with the watch");
+        assert_eq!(grown, root.topology_view.held_types(), "the snapshot read agrees with the watch");
 
         // The member's channel and the admin's subscription see each other (a protocol event).
-        let (to_admin, _from_admin) = member.membership.join_channel(MEMBERS).await.expect("the member joins its declared channel").split();
+        let (to_admin, _from_admin) = member.topology_view.join_channel(MEMBERS).await.expect("the member joins its declared channel").split();
         tokio::time::timeout(BOUND, async {
             while spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.channel.update.via-neighbour" && f.get("event_type").map(String::as_str) == Some(MEMBERS)).count() < 2 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -338,7 +338,7 @@ fn a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receive
         let published = rdm_transport::gossip::Event { subject: "members/1".into(), sequence: Some(1), dataschema: Some("members.v1".into()), data: bytes::Bytes::from_static(b"before the join") };
         to_admin.publish(published).await.expect("the member publishes");
 
-        let mut channel = root.membership.join_channel(MEMBERS).await.expect("the admin's app joins the type its held watch reported");
+        let mut channel = root.topology_view.join_channel(MEMBERS).await.expect("the admin's app joins the type its held watch reported");
         let got = tokio::time::timeout(Duration::from_secs(10), channel.recv()).await.expect("the event published before the join is received").expect("the channel is open");
         assert_eq!((got.data.as_ref(), got.sequence), (&b"before the join"[..], Some(1)));
         drop(channel);

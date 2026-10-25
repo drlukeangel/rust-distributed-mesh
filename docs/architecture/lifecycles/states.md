@@ -105,7 +105,7 @@ Application eligibility does not prevent lifecycle/control calls to a retained
 endpoint: a stopped process remains reachable for start, update and delete. Only whoever
 selects application targets reads lifecycle; the [resolver](../node-rpc.md#42-live-resolver-contract)
 reads none, so a connections-deleting, connections-deleted, stopping or stopped birth still resolves Found and the lifecycle op reaches it.
-Deletion separately blocks the deleted identity in the peer-location book, where
+Deletion separately blocks the deleted identity in the peer-location view, where
 the resolver answers Gone. Silence and lack of an application route are not that proof.
 
 What every node observes while a node.delete removes `mesh2.rpc.2`: the accepted topology

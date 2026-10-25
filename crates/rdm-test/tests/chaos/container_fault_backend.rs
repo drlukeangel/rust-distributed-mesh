@@ -470,7 +470,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         assert!(i.networks.contains(&network) && i.running, "{n}: the silence keeps the container running and attached to {network}: {i:?}");
     }
 
-    // The membership consequence, seen from the other mesh.
+    // The topology consequence, seen from the other mesh.
     // A peer mesh that goes unheard is read in the other mesh's view. A lone silent member is heard
     // missing by its own mesh (the other mesh's view of a peer mesh's members is the topology its
     // mesh primary forwards, which never carries liveness), so its mesh-mate admin is the observer.

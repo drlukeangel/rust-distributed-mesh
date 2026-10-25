@@ -76,7 +76,7 @@ old attempt or incomplete application phase is not this completion.
 
 The fabric-primary publishes the entered status, state-sync, as FabricStatus under the
 [frame catalog](../gossip.md#31-frame-catalog). No Rafka day-0/seed content is
-put into a membership frame or treated as node/mesh state.
+put into a topology frame or treated as node/mesh state.
 
 ### Sequence diagram and evidence
 

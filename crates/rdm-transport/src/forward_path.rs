@@ -114,7 +114,7 @@ impl ForwardPath {
         let Some(epoch) = forwarder.role() else { return now_ms };
         let frames = forwarder.fulls(me, held, now_ms);
         let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-        tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %me, mesh = %node_mesh, reason, sources = held.len(), chunks = frames.len(), bytes)
+        tracing::info_span!("rdm.mesh.topology.update.via-forwarded-full", node = %me, mesh = %node_mesh, reason, sources = held.len(), chunks = frames.len(), bytes)
             .in_scope(|| tracing::info!("the full of every source put into this mesh, loads omitted"));
         self.enqueue(Job::Forwarded { me: me.to_string(), epoch, source: None, out: Forward::Full(frames) });
         now_ms
@@ -207,11 +207,11 @@ fn refused(owes_full: &AtomicBool, me: &str, frame: &Frame, cause: &anyhow::Erro
     match identity(frame) {
         Some((mesh, publisher, version)) => {
             owes_full.store(true, Ordering::Relaxed);
-            tracing::info_span!("rdm.mesh.membership.update.via-forward-send-failed", node = %me, mesh = %mesh, source_publisher = %publisher, topology_version = version, cause = %cause)
+            tracing::info_span!("rdm.mesh.topology.update.via-forward-send-failed", node = %me, mesh = %mesh, source_publisher = %publisher, topology_version = version, cause = %cause)
                 .in_scope(|| tracing::warn!("a forward was not sent: the next publication puts the full of every source into the mesh"));
         }
         None => {
-            tracing::info_span!("rdm.mesh.membership.update.via-forward-send-failed", node = %me, mesh = "", source_publisher = "", topology_version = 0u64, cause = %cause)
+            tracing::info_span!("rdm.mesh.topology.update.via-forward-send-failed", node = %me, mesh = "", source_publisher = "", topology_version = 0u64, cause = %cause)
                 .in_scope(|| tracing::warn!("a carried frame was not sent"));
         }
     }
@@ -256,7 +256,7 @@ fn role_dropped(job: Job, revision: u64, current: Option<u64>) {
     let sources: BTreeSet<String> = frames.iter().filter_map(|f| identity(f).map(|(mesh, publisher, version)| format!("{mesh}:{publisher}@{version}"))).collect();
     let current = current.map(|c| c.to_string()).unwrap_or_else(|| "none".to_string());
     tracing::info_span!(
-        "rdm.mesh.membership.reject.via-forwarder-role-dropped",
+        "rdm.mesh.topology.reject.via-forwarder-role-dropped",
         node = %me,
         kind = %kind,
         decided_in_revision = revision,
@@ -291,7 +291,7 @@ async fn send_forward(sink: &Sink, owes_full: &AtomicBool, me: String, source: O
         Forward::Full(frames) => {
             if let Some((mesh, publisher, version)) = &source {
                 let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-                tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %me, mesh = %mesh, source_publisher = %publisher, topology_version = *version, reason = "first-for-source", chunks = frames.len(), bytes)
+                tracing::info_span!("rdm.mesh.topology.update.via-forwarded-full", node = %me, mesh = %mesh, source_publisher = %publisher, topology_version = *version, reason = "first-for-source", chunks = frames.len(), bytes)
                     .in_scope(|| tracing::info!("the first publication of this source into the mesh is a full, loads omitted"));
             }
             frames
@@ -299,7 +299,7 @@ async fn send_forward(sink: &Sink, owes_full: &AtomicBool, me: String, source: O
         Forward::Delta(frame) => {
             if let (Frame::MembersDelta { base_version, changed, removed, in_flight, departed, .. }, Some((mesh, publisher, version))) = (frame.data(), &source) {
                 tracing::info_span!(
-                    "rdm.mesh.membership.update.via-forwarded-delta",
+                    "rdm.mesh.topology.update.via-forwarded-delta",
                     node = %me,
                     mesh = %mesh,
                     source_publisher = %publisher,
@@ -498,7 +498,7 @@ mod tests {
         assert!(!owes.load(Ordering::Relaxed), "a forward that was sent owes nothing");
         path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
 
-        let failed = spans.named("rdm.mesh.membership.update.via-forward-send-failed").await;
+        let failed = spans.named("rdm.mesh.topology.update.via-forward-send-failed").await;
         assert_eq!(failed.len(), 1, "the refusal is named once");
         let f = &failed[0];
         assert_eq!(f["node"], "mesh2.admin.1");
@@ -524,7 +524,7 @@ mod tests {
         path.forwarder.lock().unwrap().set_role(true);
         let p = publisher();
         path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
-        let failed = spans.named("rdm.mesh.membership.update.via-forward-send-failed").await;
+        let failed = spans.named("rdm.mesh.topology.update.via-forward-send-failed").await;
         assert_eq!(failed.len(), 1);
         assert!(failed[0]["cause"].contains("no sender task"), "{}", failed[0]["cause"]);
         assert!(owes.load(Ordering::Relaxed));
@@ -596,7 +596,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 10), (0, 12)], "nothing queued before the role dropped reaches the channel");
-        let dropped = spans.named("rdm.mesh.membership.reject.via-forwarder-role-dropped").await;
+        let dropped = spans.named("rdm.mesh.topology.reject.via-forwarder-role-dropped").await;
         let named: Vec<(String, String, String, String)> = dropped.iter().map(|f| (f["kind"].clone(), f["decided_in_revision"].clone(), f["current_revision"].clone(), f["sources"].clone())).collect();
         assert_eq!(
             named,

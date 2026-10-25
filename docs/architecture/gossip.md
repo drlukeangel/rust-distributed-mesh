@@ -1,4 +1,4 @@
-# Gossip and hierarchical membership architecture
+# Gossip and hierarchical topology architecture
 
 [Lifecycle index](fabric-mesh-node-lifecycles.md) · [States](lifecycles/states.md#states) · [Op contracts](node-rpc-envelope.md#the-op-ledger)
 
@@ -41,7 +41,7 @@ provider / runtime bootstrap seam
 
 node / runtime birth
     -> publishes ONE normalized RuntimeFact
-       through its own current membership digest/projection
+       through its own current topology digest/projection
 ```
 
 There is no second launcher-owned RuntimeFact stream. For example, a process may self-discover PID + process-start token, while a container provider learns the immutable container ID after `docker run` and makes it available to the child before Ready.
@@ -61,7 +61,7 @@ iroh-gossip
     Plumtree eager/lazy dissemination and repair
     neighbour state and peer queues
 
-RDM membership/topology layer
+RDM topology layer
     channel derivation
     known/held peer directory
     current birth facts, including RuntimeFact + required runtime metadata
@@ -85,16 +85,16 @@ Completed Build receipt history is not required to recover current runtime ident
 
 ---
 
-## 3. Hierarchical membership topology
+## 3. Hierarchical topology
 
-Each Mesh has its own membership channel derived from MeshId.
+Each Mesh has its own topology channel derived from MeshId.
 
 ```text
 ordinary member
-    -> own mesh membership channel only
+    -> own mesh topology channel only
 
 node-admin
-    -> own mesh membership channel
+    -> own mesh topology channel
     -> inter-mesh node-admin backbone
 
 mesh primary
@@ -118,7 +118,7 @@ Rules:
 - the current mesh-primary, as the election names it, publishes its own mesh's aggregate on the backbone; a mesh with no primary goes unheard: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's Members projection; [mesh investigation](lifecycles/mesh-investigation.md) gives it a node-admin, and that new mesh-primary publishes once it is established (R-RX4);
 - only receiving peer mesh primaries forward remote aggregates locally;
 - lifecycle events are published by the executor on its own mesh channel and reach the backbone only inside Members.in_flight and Members.deleted;
-- ordinary nodes converge to all-mesh topology without a flat fabric-wide membership channel;
+- ordinary nodes converge to all-mesh topology without a flat fabric-wide topology channel;
 - publisher responsibility follows imported leadership changes;
 - who is primary is the election's result and the Mesh row's fact, not trusted because a publisher claimed it;
 - the aggregate/current birth projection preserves the current RuntimeFact and required current runtime metadata needed by its primary to manage that birth.
@@ -130,12 +130,12 @@ Use **forward** for this topology action. The transport's relay servers are disa
 Nothing in the receive path checks who sent a frame: a frame is taken or ignored by what it carries, never by its sender.
 
 A mesh-channel delta, a snapshot install and a topology read install move the held source
-version and the book under one hold of the receiver. A reader of that version never finds
-an older book.
+version and the digest view under one hold of the receiver. A reader of that version never finds
+an older digest view.
 
-Two channels carry membership: a Mesh's membership channel (one per MeshId) and the node-admin
+Two channels carry the topology: a Mesh's topology channel (one per MeshId) and the node-admin
 backbone (one per FabricId). The Build channel is a third, separate channel for Build facts
-(`Accepted`, `Opened`, `Claim`, `Step`, `Attempt`, `Forget`); it is not membership and is not in
+(`Accepted`, `Opened`, `Claim`, `Step`, `Attempt`, `Forget`); it is not topology and is not in
 this catalog. No other channel exists.
 
 Four orderings, four jobs, never substituted for one another:
@@ -248,7 +248,7 @@ LifecycleOp {
 }
 ```
 
-`LifecycleOp` is the body every lifecycle event frame below carries. RDM keeps the five reserved variants in the membership `Frame` enum with byte fixtures. `NewFabricPrimary` (position 14) is likewise a reserved position, never published: a primary change rides the successor's `Digest` and the mesh-primary's `Members` projection, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `Members` projection.
+`LifecycleOp` is the body every lifecycle event frame below carries. RDM keeps the five reserved variants in the topology `Frame` enum with byte fixtures. `NewFabricPrimary` (position 14) is likewise a reserved position, never published: a primary change rides the successor's `Digest` and the mesh-primary's `Members` projection, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `Members` projection.
 
 #### Node-stopped lifecycle overlay
 
@@ -326,7 +326,7 @@ check-in/accepted Build evidence; snapshot installation preserves the accepted c
 never infers completion from a count of gossip frames. MeshStatus/FabricStatus frames
 disseminate committed lifecycle/health projections with their original author and timestamp.
 
-RDM implements these frame variants in the membership `Frame` enum with byte fixtures.
+RDM implements these frame variants in the topology `Frame` enum with byte fixtures.
 
 #### Mesh delete
 
@@ -363,7 +363,7 @@ a chunked full installs only when every chunk is held.
 
 #### Examples
 
-Membership frames are postcard `Frame` / `WireDigest` encodings. The JSON below is a readable
+Topology frames are postcard `Frame` / `WireDigest` encodings. The JSON below is a readable
 decoded view, not a gossip wire codec; the fields are the catalog's above.
 
 A lifecycle event frame carries one `LifecycleOp`. `NodeDeleting` from the executor of a claimed
@@ -421,9 +421,9 @@ that node's matching stopped frame:
 
 Publisher and receiver spans: `NodeRestarting` emits
 `rdm.node_admin.node.update.via-node-restarting` at the publishing mesh-primary and
-`rdm.mesh.membership.update.via-node-restarting` at each receiver; `NodeDeleted` emits
+`rdm.mesh.topology.update.via-node-restarting` at each receiver; `NodeDeleted` emits
 `rdm.node_admin.node.delete.via-node-deleted` at the executor and
-`rdm.mesh.membership.remove.via-node-deleted` at each receiver.
+`rdm.mesh.topology.remove.via-node-deleted` at each receiver.
 
 A backbone `Members` aggregate from the source mesh-primary, one chunk, one birth, one open
 restart in `in_flight`:
@@ -521,11 +521,11 @@ A publisher change: a delayed predecessor cannot replace the successor's status:
 the primary's revision is the first component of status sequence, before change time. The other
 source-projection floors remain as specified above. A recovery
 through a topology read installs the held version under the receiver's one hold; stale gossip after
-it is refused by these rules and never rolls it back. Spans: `rdm.mesh.membership.reject.via-stale`
-(frame, subject, held key, frame key), `rdm.mesh.membership.update.via-duplicate` (frame, identity,
-`ignored`), `rdm.mesh.membership.update.via-gap` (frame, subject, installed, frame key,
-`repair-requested`), `rdm.mesh.membership.reject.via-inconsistent` (frame, subject, revision),
-`rdm.mesh.membership.reject.via-reserved` (position).
+it is refused by these rules and never rolls it back. Spans: `rdm.mesh.topology.reject.via-stale`
+(frame, subject, held key, frame key), `rdm.mesh.topology.update.via-duplicate` (frame, identity,
+`ignored`), `rdm.mesh.topology.update.via-gap` (frame, subject, installed, frame key,
+`repair-requested`), `rdm.mesh.topology.reject.via-inconsistent` (frame, subject, revision),
+`rdm.mesh.topology.reject.via-reserved` (position).
 
 ### 3.2 Cadence: timers only for heartbeat and anti-entropy
 
@@ -666,7 +666,7 @@ apply to the `rdm.*` types only. An event whose complete encoded frame, metadata
 and `data { i, n, bytes }`, `n` at most 16; the receiver assembles by `(source, event id)`, takes
 a duplicate chunk as nothing and a reordered one in its place, decodes the whole event once under
 its own `id`, and evicts an assembly still incomplete after `RDM_STALENESS_MS` by name
-(`rdm.mesh.membership.reject.via-chunk-incomplete`). Each channel's receive queue is bounded (1024
+(`rdm.mesh.topology.reject.via-chunk-incomplete`). Each channel's receive queue is bounded (1024
 events): a full queue drops the newest event by name (`rdm.mesh.channel.reject.via-queue-full`, with
 the count) and never holds the carrier, so a slow app stalls nothing but itself. Every event RDM loses
 locally on a channel, a drop or an assembly evicted incomplete, advances that channel's loss
@@ -684,7 +684,7 @@ apart from Rafka's topics. Channel derivation uses logical Fabric/Mesh identity,
 Conceptually:
 
 ```text
-mesh membership channel = f(logical FabricId, MeshId)
+mesh topology channel = f(logical FabricId, MeshId)
 backbone channel        = f(logical FabricId)
 app channel             = f(logical FabricId, declared type)
 ```
@@ -739,7 +739,7 @@ Required behavior:
 - one failed rejoin per peer/window or equivalent bounded backoff;
 - failed dial does not mark Dead;
 - retries continue only while the member remains held/current;
-- relearning the current birth also restores its RuntimeFact + required current runtime metadata through ordinary membership convergence;
+- relearning the current birth also restores its RuntimeFact + required current runtime metadata through ordinary topology convergence;
 - when canonical exact-runtime/lifecycle evidence retires/tombstones the birth, it stops being a refeed target;
 - zero-neighbour refeed may remain an edge fallback;
 - a channel reopened after the birth left it, and the zero-neighbour refeed, dial the held members
@@ -772,7 +772,7 @@ its mesh's topology and rafka-time, and a stopped member's start reads them from
 
 ### 6.1 Deletions: an event for promptness, `Members` for retention
 
-A known exact deletion is membership state and a lifecycle event, never a second gossip protocol.
+A known exact deletion is topology state and a lifecycle event, never a second gossip protocol.
 
 The mesh executor that holds the node.delete publishes `NodeDeleted` (§3.1) on its own mesh
 channel, and carries it in `Members.deleted` on the backbone, the moment it holds exact provider
@@ -792,7 +792,7 @@ These are **not** deletion proof:
 - an unheard peer mesh;
 - holding the Build claim.
 
-Retention is bounded current membership state, not permanent history: at least the membership
+Retention is bounded current topology state, not permanent history: at least the topology
 repair horizon, expired by local age since the receiver accepted it; `event_at_rafka_ms` is evidence
 and never a remote expiry decision. After retention a formerly `Gone` identity resolves `Unknown`.
 `Gone` means this process currently retains the deletion, not that the Fabric
@@ -803,7 +803,7 @@ birth, and a later incarnation wearing that NodeId, are refused. The record keep
 incarnation for exact proof; the refusal keys on the NodeId. A restart never emits `NodeDeleted`, so a
 restarted node that was not deleted is taken along its lineage.
 
-Every running process feeds current births, overlays and deletions from membership into its
+Every running process feeds current births, overlays and deletions from the topology view into its
 process-scoped LiveNodeResolver. [node-rpc.md](node-rpc.md) owns the resolver contract and
 Found/Gone/Unknown semantics; [node.delete](lifecycles/node-delete.md) owns the executor's workflow,
 and the emission points of `NodeDeleting` and `NodeDeleted` are the §3.1 catalog rows and this section.
@@ -813,7 +813,7 @@ and the emission points of `NodeDeleting` and `NodeDeleted` are the §3.1 catalo
 ## 7. Dissemination reliability boundary
 
 Ordinary lost pushes are repaired by iroh-gossip Plumtree mechanisms. RDM does not add:
-- application ACK/resend protocol for membership facts;
+- application ACK/resend protocol for topology facts;
 - its own eager/lazy tree;
 - a per-peer gossip scheduler competing with iroh-gossip.
 
@@ -836,13 +836,13 @@ A connected node reacts to the event at once. A node that missed it, joined late
 
 The same boundary holds for cross-Mesh topology inside a Mesh (§3.3): a delta that cannot be applied is dropped and the receiver tops up from its own mesh-primary; nothing asks for a replay over gossip.
 
-RuntimeFact is compact bounded current-birth identity state. Do not replace it with replay of every completed `AllocateIdentity`/`DeployRuntime` Build receipt and do not inflate it with arbitrary operational metadata merely because membership carries it. Required current runtime metadata may be projected beside the fact in the current Node/birth view. Build gossip already has a bounded frame budget and completed Build history grows without bound.
+RuntimeFact is compact bounded current-birth identity state. Do not replace it with replay of every completed `AllocateIdentity`/`DeployRuntime` Build receipt and do not inflate it with arbitrary operational metadata merely because the topology view carries it. Required current runtime metadata may be projected beside the fact in the current Node/birth view. Build gossip already has a bounded frame budget and completed Build history grows without bound.
 
 ---
 
 ## 8. Entity projection gossip remains projection, not source of truth
 
-Rafka entity projection gossip may carry durable-row copies into hot in-memory projections. The durable application row remains the source of truth for application entities. Generic RDM membership/topology facts remain the control projection used by Build/leadership.
+Rafka entity projection gossip may carry durable-row copies into hot in-memory projections. The durable application row remains the source of truth for application entities. Generic RDM topology facts remain the control projection used by Build/leadership.
 
 Projection kind enrolment remains explicit. Provisioning/writing an entity kind does not automatically enroll the caller as a projection consumer.
 
@@ -866,7 +866,7 @@ joins every type it does not already hold before it answers the join, and writes
 that sees a new `held_hash` on the backbone reads that admin's `node.get` and holds what it
 learns, so every projected kind reaches every node-admin (§10: gossip says changed, the call is
 the certainty). A
-node joins the channel of every type it declared through `Membership::join_channel`
+node joins the channel of every type it declared through `TopologyView::join_channel`
 (`rdm_transport::gossip`); the channel id is `f(fabric_id, type)` (§4), so two fabrics on one
 network never share a kind; its first neighbour is its own mesh's node-admin, already joined. A write is one
 `Event { subject, sequence, data }` published once on its kind's channel. So a compute node never
@@ -893,7 +893,7 @@ decides nothing on them.
 
 **Entry ends with a pull.** When a gateway or compute node has registered its stores and its gossip loop is
 running, it pulls its kinds' current rows from node-admin with Rafka's projection op, served through node-admin's
-`serve_app` (`node.topology.get` is membership repair and carries no app row); node-admin answers from its
+`serve_app` (`node.topology.get` is topology repair and carries no app row); node-admin answers from its
 stores and its raw projection under the one comparator, and the node installs the answer only once it is complete. Live frames
 and pulled rows share one apply rule, so nothing gossiped during the pull is lost. Only then does the node mark
 itself ready (span `rafka.mesh.entry.update.via-projection-pulled`, with `entity_rows` and `raw_applied`).
@@ -940,7 +940,7 @@ Primary bits learned over gossip are projections/hints. Consumers that need the 
 
 ## 12. An unheard peer mesh
 
-While a peer mesh goes unheard, the elected primary may temporarily differ because current membership views differ. The semantics of that condition are owned by [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md), not redefined here.
+While a peer mesh goes unheard, the elected primary may temporarily differ because current topology views differ. The semantics of that condition are owned by [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md), not redefined here.
 
 Safety comes from:
 - exact birth/runtime fencing;
@@ -977,7 +977,7 @@ canonical runtime and lifecycle evidence, never silence, establishes which birth
 current Build, read from `builds.storage`, establishes what should exist; a node-admin created into
 an existing mesh keeps that mesh's MeshId.
 
-Held live ordinary members remain reconciliation inputs and are preserved through their current membership + RuntimeFacts/runtime metadata.
+Held live ordinary members remain reconciliation inputs and are preserved through their current topology + RuntimeFacts/runtime metadata.
 
 A deletion is published by the executor that holds the operation, after its node.delete step's receipt. Holding a claim does not delete; neither does the node's own `stopped`, a failed RPC, silence or an unheard peer mesh. A lost member is recovered by its mesh-primary ([node recovery](lifecycles/node-recovery.md)): node investigation, then on any verdict but reached one recovery attempt that deletes the unheard node (NodeDeleted from that step) and creates its successor at the same path.name.
 

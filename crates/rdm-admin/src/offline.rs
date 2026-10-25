@@ -25,28 +25,28 @@ pub(crate) struct SilentNode {
     /// The exact birth's incarnation, as the watched record holds it (`None` for a record that holds
     /// none yet).
     pub incarnation: Option<crate::model::IncarnationId>,
-    /// The mark, on this admin's local clock (ms): the instant this admin's digest book holds the
-    /// birth went unheard past the staleness floor ([`silent_set`]). `None` for a birth the book holds
+    /// The mark, on this admin's local clock (ms): the instant this admin's digest view holds the
+    /// birth went unheard past the staleness floor ([`silent_set`]). `None` for a birth the view holds
     /// no receipt of (a birth only a durable runtime row names), whose silence is first seen at the
     /// tick that lists it.
     pub marked_at_ms: Option<u64>,
 }
 
 /// The silent set of one tick: every watched birth, each with its mark read from this admin's digest
-/// book at `now` (`now_ms` on the local clock): the birth's last receipt plus the staleness floor
+/// view at `now` (`now_ms` on the local clock): the birth's last receipt plus the staleness floor
 /// `floor`, the instant its silence passed the floor (node-recovery.md "Detection and proof" step 1:
 /// "Each node's pruner marks a member `PendingReconnect` once it is unheard past the staleness
-/// floor"). A birth the book holds only from its mesh-primary's projection is unheard since the book
+/// floor"). A birth the digest view holds only from its mesh-primary's projection is unheard since the digest view
 /// first held it, and is tickled only once the view holds it off ready-for-traffic (its caller's
-/// filter: the topology, not what this admin has heard, decides who is tickled; Q87). A birth the book holds nothing of, a receipt of another incarnation, or one heard
+/// filter: the topology, not what this admin has heard, decides who is tickled; Q87). A birth the view holds nothing of, a receipt of another incarnation, or one heard
 /// within the floor carries no mark.
-pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, book: &rdm_transport::topology::DigestBook, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
+pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, digest_view: &rdm_transport::topology::DigestView, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
     watched
         .into_iter()
         .map(|n| {
-            let marked_at_ms = book
+            let marked_at_ms = digest_view
                 .get_at(n.node_id.as_str(), now)
-                .or_else(|| book.projected_at(n.node_id.as_str(), now))
+                .or_else(|| digest_view.projected_at(n.node_id.as_str(), now))
                 .filter(|(d, unheard)| Some(&d.node.incarnation) == n.incarnation_id.as_ref() && *unheard >= floor)
                 .map(|(_, unheard)| now_ms.saturating_sub((unheard - floor).as_millis() as u64));
             SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), incarnation: n.incarnation_id.clone(), marked_at_ms }
@@ -85,13 +85,13 @@ pub(crate) fn marks_over(recorded: Option<rdm_core::MemberStatus>) -> bool {
 pub type UnreachableMarks = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<crate::model::NodeId, UnreachableMark>>>;
 
 /// The marks of `mesh`'s births that stand at `now`: a mark ends when the view no longer holds that
-/// exact birth of `mesh`, or when `book` heard the birth after the mark. The ended ones are dropped
+/// exact birth of `mesh`, or when `digest_view` heard the birth after the mark. The ended ones are dropped
 /// from `marks`.
-pub(crate) fn held_marks(marks: &UnreachableMarks, view: &crate::topology::Topology, mesh: &str, book: &rdm_transport::topology::DigestBook, now: std::time::Instant) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
+pub(crate) fn held_marks(marks: &UnreachableMarks, view: &crate::topology::Topology, mesh: &str, digest_view: &rdm_transport::topology::DigestView, now: std::time::Instant) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
     let mut marks = marks.lock().unwrap();
     marks.retain(|id, m| {
         let held = view.births().any(|n| &n.node_id == id && n.incarnation_id.as_ref() == Some(&m.incarnation) && n.mesh == mesh);
-        let heard_after = book.get_at(id.as_str(), now).is_some_and(|(d, unheard)| d.node.incarnation == m.incarnation && now.saturating_duration_since(m.at) > unheard);
+        let heard_after = digest_view.get_at(id.as_str(), now).is_some_and(|(d, unheard)| d.node.incarnation == m.incarnation && now.saturating_duration_since(m.at) > unheard);
         held && !heard_after
     });
     marks.clone()
@@ -106,7 +106,7 @@ pub(crate) fn watch_marked(watched: &mut std::collections::BTreeMap<String, crat
     }
 }
 
-/// A silent birth's mark is the earlier of its book's floor mark and its unreachable mark.
+/// A silent birth's mark is the earlier of its view's floor mark and its unreachable mark.
 pub(crate) fn marked_from(mut s: SilentNode, marks: &std::collections::HashMap<crate::model::NodeId, UnreachableMark>) -> SilentNode {
     if let Some((_, m)) = marks.iter().find(|(id, m)| id.as_str() == s.node_id && s.incarnation.as_ref() == Some(&m.incarnation)) {
         s.marked_at_ms = Some(s.marked_at_ms.map_or(m.at_ms, |at| at.min(m.at_ms)));
@@ -638,7 +638,7 @@ impl OfflineTickle {
             self.hold_down.clear();
             self.settled.clear();
         }
-        // The window runs from the mark the admin's book holds for the birth (node-recovery.md step 2:
+        // The window runs from the mark the admin's view holds for the birth (node-recovery.md step 2:
         // "Half a floor after the mark"); a birth with no mark is first seen at this tick.
         for n in &silent {
             self.first_seen.entry(n.node_id.clone()).or_insert(n.marked_at_ms.unwrap_or(now_ms));
@@ -1601,7 +1601,7 @@ pub(crate) mod tests {
         let r = tick(&mut t, PROBE_DELAY, true, marked("a"), false, no_path()).await;
         assert_eq!(r.tickled, vec!["a".to_string()], "one connect half a floor after the mark, not half a floor after the tick that first listed it");
         assert!(t.is_in_hold_down("a"), "ladder 1 with no path opens the hold-down");
-        // A node-admin that takes the seat later still runs on the mark its own book holds.
+        // A node-admin that takes the seat later still runs on the mark its own view holds.
         let mut successor = OfflineTickle::new();
         assert!(tick(&mut successor, 700, false, marked("a"), false, no_path()).await.tickled.is_empty(), "not the seat: bookkeeping only");
         let r = tick(&mut successor, PROBE_DELAY, true, marked("a"), false, no_path()).await;
@@ -1610,7 +1610,7 @@ pub(crate) mod tests {
 
     /// CONTRACT (node-recovery.md "Detection and proof" step 1: a member is marked once it is unheard
     /// past the staleness floor): the silent set carries, for each watched birth, the mark its digest
-    /// book holds, the last receipt plus the floor, on the caller's local clock; a birth the book holds
+    /// digest view holds, the last receipt plus the floor, on the caller's local clock; a birth the digest view holds
     /// no receipt of, a receipt of another incarnation, or one heard within the floor carries none.
     #[test]
     fn the_silent_set_marks_each_birth_at_its_last_receipt_plus_the_floor() {
@@ -1637,17 +1637,17 @@ pub(crate) mod tests {
             n.incarnation_id = Some(d.node.incarnation.clone());
             n
         };
-        let book = rdm_transport::topology::DigestBook::default();
+        let digest_view = rdm_transport::topology::DigestView::default();
         let t0 = std::time::Instant::now();
         let (silent, fresh, reborn, unheld) = (digest("mesh1.rpc.1"), digest("mesh1.rpc.2"), digest("mesh1.rpc.3"), digest("mesh1.rpc.4"));
-        book.record_at(silent.clone(), t0);
-        book.record_at(fresh.clone(), t0 + floor);
-        book.record_at(reborn.clone(), t0);
+        digest_view.record_at(silent.clone(), t0);
+        digest_view.record_at(fresh.clone(), t0 + floor);
+        digest_view.record_at(reborn.clone(), t0);
         let mut other_birth = node_of(&reborn);
         other_birth.incarnation_id = Some(IncarnationId::mint());
         let watched = [node_of(&silent), node_of(&fresh), other_birth, node_of(&unheld)];
         let now = t0 + floor + std::time::Duration::from_millis(700);
-        let set = silent_set(watched.iter(), &book, now, 10_000, floor);
+        let set = silent_set(watched.iter(), &digest_view, now, 10_000, floor);
         let marks: Vec<(String, Option<u64>)> = set.iter().map(|s| (s.path.clone(), s.marked_at_ms)).collect();
         assert_eq!(
             marks,

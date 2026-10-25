@@ -12,7 +12,7 @@
 use crate::model::{IncarnationId, Node};
 use crate::status_rpc::AuthoritySlot;
 use rdm_core::status::{Status, StatusRequest};
-use rdm_transport::topology::DigestBook;
+use rdm_transport::topology::DigestView;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -28,7 +28,7 @@ fn commanded() -> &'static Mutex<HashMap<(String, String), Instant>> {
 }
 
 /// What an admin needs to command a birth back: this admin's client, status authority, Build state,
-/// runner (once built) and digest book: one function, run by the offline ladder and the seat watch.
+/// runner (once built) and digest view: one function, run by the offline ladder and the seat watch.
 pub struct HeardAgain {
     /// This admin's Node RPC client: the command goes out on it.
     pub client: Arc<NodeRpcClient>,
@@ -38,8 +38,8 @@ pub struct HeardAgain {
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
     /// This admin's runner, once built: it registers the birth's join before the command.
     pub runner: Arc<OnceLock<Arc<crate::admin::runner::AdminRunner>>>,
-    /// This admin's digest book: whether the birth has been heard ready-for-traffic since.
-    pub book: DigestBook,
+    /// This admin's digest view: whether the birth has been heard ready-for-traffic since.
+    pub digest_view: DigestView,
 }
 
 /// The handle, once this admin's runner is built.
@@ -50,7 +50,7 @@ impl HeardAgain {
     pub async fn command(&self, node: &Node, incarnation: &IncarnationId) -> String {
         let outcome = match self.runner.get() {
             None => "no-runner".to_string(),
-            Some(runner) => command_mesh_join(&self.client, &self.authority, &self.builds, runner, &self.book, node, incarnation).await,
+            Some(runner) => command_mesh_join(&self.client, &self.authority, &self.builds, runner, &self.digest_view, node, incarnation).await,
         };
         // A command not sent is spanned too, with why: the flame of a birth left off its mesh reads it.
         if !outcome.starts_with("mesh-joined") && !outcome.starts_with("commanded") {
@@ -69,7 +69,7 @@ async fn command_mesh_join(
     authority: &AuthoritySlot,
     builds: &Arc<dyn crate::build_state::BuildStateAdapter>,
     runner: &crate::admin::runner::AdminRunner,
-    book: &DigestBook,
+    digest_view: &DigestView,
     node: &Node,
     incarnation: &IncarnationId,
 ) -> String {
@@ -86,7 +86,7 @@ async fn command_mesh_join(
     }
     // A birth with a lifecycle command of its authority in flight (a stop, a start, a restart) is that
     // command's: the start it runs is the command's own (node-start.md), never this one.
-    if let Some(op) = book.in_flight().into_iter().find(|op| op.node_id == node.node_id && op.incarnation == *incarnation) {
+    if let Some(op) = digest_view.in_flight().into_iter().find(|op| op.node_id == node.node_id && op.incarnation == *incarnation) {
         return format!("in-flight: {}", op.operation);
     }
     // A birth whose node.create this admin runs is that create's (node-create.md step 3: the create
@@ -101,15 +101,15 @@ async fn command_mesh_join(
     // while its view still holds it silent).
     let key = (node.node_id.to_string(), incarnation.as_str().to_string());
     if let Some(at) = commanded().lock().unwrap().get(&key).copied() {
-        if at.elapsed() < book.staleness_floor() {
+        if at.elapsed() < digest_view.staleness_floor() {
             return "commanded-already".to_string();
         }
-        let heard_ready_since = book
+        let heard_ready_since = digest_view
             .get(node.node_id.as_str())
             .is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && d.status == rdm_core::MemberStatus::ReadyForTraffic && Instant::now().checked_sub(unheard).is_some_and(|heard_at| heard_at > at));
         // Heard ready-for-traffic since, or unheard again (a commanded start that stopped at a step left the
         // birth off its mesh): a new silence, commanded again; else the one command stands.
-        let unheard_again = !book.get(node.node_id.as_str()).is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && unheard < book.staleness_floor());
+        let unheard_again = !digest_view.get(node.node_id.as_str()).is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && unheard < digest_view.staleness_floor());
         if !heard_ready_since && !unheard_again {
             return "commanded-already".to_string();
         }

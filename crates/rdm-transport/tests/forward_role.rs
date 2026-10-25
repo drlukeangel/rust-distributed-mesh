@@ -9,7 +9,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{learn_addresses, Backbone, Membership};
+use rdm_transport::topology::{learn_addresses, Backbone, TopologyView};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -80,9 +80,9 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         let fab = fabric();
         let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
         let clock = rdm_transport::clock::os_clock;
-        let src_m = Membership::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.admin.1", clock(), vec![], &[]).await.unwrap();
-        let admin_m = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.admin.2", clock(), vec![], &[]).await.unwrap();
-        let rpc_m = Membership::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.rpc.1", clock(), vec![admin_addr.clone()], &[]).await.unwrap();
+        let src_m = TopologyView::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.admin.1", clock(), vec![], &[]).await.unwrap();
+        let admin_m = TopologyView::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.admin.2", clock(), vec![], &[]).await.unwrap();
+        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.rpc.1", clock(), vec![admin_addr.clone()], &[]).await.unwrap();
         let src_bb = Backbone::join(&src.gossip, &src.ep, &src_m, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let admin_bb = Backbone::join(&admin.gossip, &admin.ep, &admin_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
         src_bb.set_mesh_primary(true);
@@ -145,7 +145,7 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         let started = role[0]["start_unix_nano"].as_u64().unwrap();
         let forwards: Vec<(u64, String)> = all
             .iter()
-            .filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.membership.update.via-forwarded-")) && attr(s, "node") == "mesh1.admin.2")
+            .filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.topology.update.via-forwarded-")) && attr(s, "node") == "mesh1.admin.2")
             .map(|s| (s["start_unix_nano"].as_u64().unwrap(), s["name"].as_str().unwrap().to_string()))
             .collect();
         assert!(!forwards.is_empty(), "the seat holder forwarded");

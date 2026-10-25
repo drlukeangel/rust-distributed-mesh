@@ -5,7 +5,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{learn_addresses, Backbone, Membership, StatusEvent};
+use rdm_transport::topology::{learn_addresses, Backbone, TopologyView, StatusEvent};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -70,7 +70,7 @@ fn addr_of(ep: &iroh::Endpoint) -> iroh::EndpointAddr {
 /// CONTRACT: the source mesh primary runs its publication as the node-admin does (publish,
 /// then wait for the publication's wake with a 30 s anti-entropy deadline). After a publication has published,
 /// its mesh channel takes a member's `NodeStopped`: the overlay parks the member in the primary's
-/// book, the normalized projection moves, and the woken publication publishes it on the backbone at once.
+/// view, the normalized projection moves, and the woken publication publishes it on the backbone at once.
 /// A peer mesh's admin holds the member parked (its stop overlay open, `via-member-state
 /// parked=true`) within 5 s, long before the next anti-entropy publication.
 #[test]
@@ -82,8 +82,8 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         let src_addr = addr_of(&src_node.ep);
         learn_addresses(&peer_node.ep, &[src_addr.clone()]).unwrap();
         let fab = fabric();
-        let src_m = Membership::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &MeshId::mint(), "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let peer_m = Membership::join(&peer_node.gossip, &peer_node.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &MeshId::mint(), "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let peer_m = TopologyView::join(&peer_node.gossip, &peer_node.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let peer_bb = Backbone::join(&peer_node.gossip, &peer_node.ep, &peer_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr]).await.unwrap();
         src_bb.set_mesh_primary(true);
@@ -93,7 +93,7 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         let births: Vec<(NodeId, IncarnationId)> = (0..2).map(|_| (NodeId::mint(), IncarnationId::mint())).collect();
         let digests: Vec<MeshDigest> = births.iter().enumerate().map(|(k, (id, b))| member("mesh2", k as u32 + 1, id, b)).collect();
         for d in &digests {
-            assert!(src_m.book.record(d.clone()));
+            assert!(src_m.digest_view.record(d.clone()));
         }
 
         // The peer holds the source's first projection: publications published by hand until the backbone
@@ -136,7 +136,7 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         src_bb.publish_status_event(StatusEvent::Stopped, &op).await;
 
         let held = loop {
-            let parked = peer_m.book.in_flight().iter().any(|o| o.key() == op.key());
+            let parked = peer_m.digest_view.in_flight().iter().any(|o| o.key() == op.key());
             if parked {
                 break peer_bb.held_source("mesh2").map(|(_, v)| v);
             }
@@ -161,7 +161,7 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         let names = |n: &str| spans.iter().filter(|s| s["name"] == n).count();
         let parked_at_peer = spans
             .iter()
-            .filter(|s| s["name"] == "rdm.mesh.membership.update.via-member-state" && s["attributes"]["member"].as_str() == Some(op.name.to_string().as_str()) && (s["attributes"]["parked"] == Value::Bool(true) || s["attributes"]["parked"] == "true"))
+            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-member-state" && s["attributes"]["member"].as_str() == Some(op.name.to_string().as_str()) && (s["attributes"]["parked"] == Value::Bool(true) || s["attributes"]["parked"] == "true"))
             .count();
         println!("{CELL}: overlay held at the peer {took:?} after NodeStopped; via-topology-version spans {}; via-member-state parked {}", names("rdm.mesh.backbone.update.via-topology-version"), parked_at_peer);
         std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();

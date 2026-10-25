@@ -105,14 +105,14 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         let (peer_node, peer_seams) = start(peer.clone()).await;
 
         // Both births are held ready by the admin, and each by the other.
-        let book = &admin.observer.membership.book;
-        let mut heard = book.heard_changes();
-        while [&renamed, &peer].iter().any(|l| book.get(l.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic)) {
+        let digest_view = &admin.observer.topology_view.digest_view;
+        let mut heard = digest_view.heard_changes();
+        while [&renamed, &peer].iter().any(|l| digest_view.get(l.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic)) {
             heard.changed().await.unwrap();
         }
-        let peer_book = &peer_node.membership.book;
-        let mut peer_digests = peer_book.digest_changes();
-        while peer_book.get(renamed.node_id.as_str()).is_none() {
+        let peer_view = &peer_node.topology_view.digest_view;
+        let mut peer_digests = peer_view.digest_changes();
+        while peer_view.get(renamed.node_id.as_str()).is_none() {
             peer_digests.changed().await.unwrap();
         }
 
@@ -130,14 +130,14 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
 
         // The rename (R-CR1a; node-replace.md steps 1-2): every connection deleted, off its mesh, the name
         // taken live, then stopped, then started under the name it holds.
-        let (d, _) = book.get(renamed.node_id.as_str()).unwrap();
+        let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());
         let call = |req: StatusRequest| {
-            let (client, target, opts, book) = (&admin.observer.client, &target, &opts, &admin.observer.membership.book);
+            let (client, target, opts, digest_view) = (&admin.observer.client, &target, &opts, &admin.observer.topology_view.digest_view);
             async move {
-                if let Some(reply) = crate::common::lifecycle_reply(client, target, &req, opts, Some(book)).await { return reply; }
+                if let Some(reply) = crate::common::lifecycle_reply(client, target, &req, opts, Some(digest_view)).await { return reply; }
                 match client.call::<Status>(target, &req, opts).await.0 {
                     RpcOutcome::Reply(r) => r.into_value(),
                     other => panic!("{} did not end in a reply: {other:?}", req.op()),
@@ -168,10 +168,10 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         assert_eq!(call(start).await, StatusReply::Started, "the node starts under the name it holds");
 
         // The peer hears the renamed digest, and the feed of its own process takes it into its
-        // resolver: each answer change ticks the resolver. Its book holds the digest before the
+        // resolver: each answer change ticks the resolver. Its view holds the digest before the
         // wait, so what is left is the in-process feed; a resolver that never takes the name never
         // ticks, and the bound names that.
-        while peer_book.get(renamed.node_id.as_str()).is_none_or(|(d, _)| d.node.name != taken) {
+        while peer_view.get(renamed.node_id.as_str()).is_none_or(|(d, _)| d.node.name != taken) {
             peer_digests.changed().await.unwrap();
         }
         let resolver = &peer_node.node_rpc.resolver;
@@ -182,7 +182,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             }
         };
         if tokio::time::timeout(Duration::from_secs(10), took).await.is_err() {
-            panic!("the peer's book holds {taken} for the birth, and its resolver still names it {:?}", resolver.resolve(&NodeTarget::ExactNode(renamed.node_id.clone())).map(|n| n.name));
+            panic!("the peer's view holds {taken} for the birth, and its resolver still names it {:?}", resolver.resolve(&NodeTarget::ExactNode(renamed.node_id.clone())).map(|n| n.name));
         }
 
         // The renamed node names the peer too, before it dials it: a node takes a peer's birth into its
@@ -325,9 +325,9 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
         .await
         .unwrap_or_else(|e| panic!("{} comes up: {e}", launch.name));
         let seams = seams.get().cloned().expect("the node handed its seams");
-        let book = &admin.observer.membership.book;
-        let mut heard = book.heard_changes();
-        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        let digest_view = &admin.observer.topology_view.digest_view;
+        let mut heard = digest_view.heard_changes();
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
             heard.changed().await.unwrap();
         }
 
@@ -343,14 +343,14 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
         ping_admin(b"before the stop").await;
 
         // Every connection deleted, off its mesh, the name taken live, then stopped.
-        let (d, _) = book.get(launch.node_id.as_str()).unwrap();
+        let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let call = |req: StatusRequest| {
-            let (client, target, opts, book) = (&admin.observer.client, &target, &opts, &admin.observer.membership.book);
+            let (client, target, opts, digest_view) = (&admin.observer.client, &target, &opts, &admin.observer.topology_view.digest_view);
             async move {
-                if let Some(reply) = crate::common::lifecycle_reply(client, target, &req, opts, Some(book)).await { return reply; }
+                if let Some(reply) = crate::common::lifecycle_reply(client, target, &req, opts, Some(digest_view)).await { return reply; }
                 match client.call::<Status>(target, &req, opts).await.0 {
                     RpcOutcome::Reply(r) => r.into_value(),
                     other => panic!("{} did not end in a reply: {other:?}", req.op()),

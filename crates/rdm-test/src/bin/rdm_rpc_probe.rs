@@ -539,7 +539,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
 
 /// `topology --target <node> [--mesh <name>] [--since <node>|<node_id>|<incarnation>|<version>]`: one
 /// `GetTopology` (op `0x1E`) read, every frame of the stream reported in order. The probe installs
-/// nothing: it has no membership.
+/// nothing: it has no topology view.
 /// `fabric-delete`: fabric.delete at the entry admin, its stream read to the terminal (`Complete`,
 /// `Failed` or `FabricPrimaryMoved`). `node-delete --target path:<p>`: node.delete of `p`, its stream
 /// read to its last reply: the terminal, or the end of the stream after it, which is how the

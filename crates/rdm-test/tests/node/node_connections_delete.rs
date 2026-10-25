@@ -126,7 +126,7 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
         .filter(|sp| {
             let n = sp["name"].as_str().unwrap_or_default();
             (n == "rdm.node_admin.node.update.via-connections-deleting" && s(&sp["attributes"]["node"]) == NODE)
-                || ((n == "rdm.mesh.membership.update.from-command-admitted" || n == "rdm.mesh.membership.update.from-status-report") && s(&sp["attributes"]["node_id"]) == node_id && s(&sp["attributes"]["status"]) == "ConnectionsDeleting")
+                || ((n == "rdm.mesh.topology.update.from-command-admitted" || n == "rdm.mesh.topology.update.from-status-report") && s(&sp["attributes"]["node_id"]) == node_id && s(&sp["attributes"]["status"]) == "ConnectionsDeleting")
         })
         .collect();
     // The mesh-primary's call carrying the command to the node.

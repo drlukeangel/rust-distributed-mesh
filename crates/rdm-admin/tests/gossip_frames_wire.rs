@@ -3,7 +3,7 @@
 //! no estate, no spans.
 //!
 //! CONTRACT: every internal mesh gossip frame is postcard. Every `Frame` variant of the
-//! membership channels and every shape the Build topic's `BuildMessage` carries (each Build fact,
+//! topology channels and every shape the Build topic's `BuildMessage` carries (each Build fact,
 //! each typed step output, the Fabric record, the shutdown) encodes, decodes to the value it was
 //! made from, and re-encodes to the same bytes; a chunk the packers produce encodes under
 //! `MAX_MESSAGE_BYTES`; a frame this build does not read is refused with a named reason, a

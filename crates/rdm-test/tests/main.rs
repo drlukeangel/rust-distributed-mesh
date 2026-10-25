@@ -289,9 +289,9 @@ fn gossip_author(fabric: &rdm_core::FabricId) -> rdm_transport::envelope::Birth 
     rdm_transport::envelope::Birth { fabric: fabric.clone(), node: node.clone(), incarnation: incarnation.clone() }
 }
 
-fn declare_gossip_probe(membership: &rdm_transport::topology::Membership) {
-    let birth = gossip_author(membership.fabric_id());
-    membership.set_author(&rdm_core::PublisherId { node: "mesh1.rpc.9".into(), node_id: birth.node, incarnation: birth.incarnation });
+fn declare_gossip_probe(topology_view: &rdm_transport::topology::TopologyView) {
+    let birth = gossip_author(topology_view.fabric_id());
+    topology_view.set_author(&rdm_core::PublisherId { node: "mesh1.rpc.9".into(), node_id: birth.node, incarnation: birth.incarnation });
 }
 
 #[path = "gossip/envelope_receive.rs"]
@@ -300,13 +300,13 @@ mod envelope_receive;
 mod trace_context;
 
 /// Encoding arguments for a synthetic sender: its supplied owned birth and declared fixture revision.
-async fn forward_gossip_probe(membership: &rdm_transport::topology::Membership, frame: &rdm_transport::topology::Frame) -> anyhow::Result<()> {
-    if frame.context().is_some() { return membership.forward(frame).await; }
+async fn forward_gossip_probe(topology_view: &rdm_transport::topology::TopologyView, frame: &rdm_transport::topology::Frame) -> anyhow::Result<()> {
+    if frame.context().is_some() { return topology_view.forward(frame).await; }
     let author = match frame.data() {
         rdm_transport::topology::Frame::Digest { digest } => rdm_transport::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() },
-        _ => membership.author_birth().expect("the synthetic publisher supplied its owned birth"),
+        _ => topology_view.author_birth().expect("the synthetic publisher supplied its owned birth"),
     };
-    membership.forward(&frame.clone().authored(&author, 1, 1)).await
+    topology_view.forward(&frame.clone().authored(&author, 1, 1)).await
 }
 
 mod app_channels;

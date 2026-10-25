@@ -36,7 +36,7 @@ workflow node-admin drives, its events and its gossip),
    fabric, not the latest state. It locates live nodes; current topology comes from those nodes.
    A stored member may not answer, and the stored map is not current birth or liveness proof.
 6. **A node-admin acts on its own view.** Silence is receipt age on the node's own clock, so a node held
-   or suspended wakes to a book in which every member is silent at once; what it then does is what every
+   or suspended wakes to a view in which every member is silent at once; what it then does is what every
    node-admin does with an unheard member, [node investigation](lifecycles/node-investigation.md), whose
    verdict decides. A node-admin that was re-created while it was held is refused at admission and
    terminated when it comes back (Q110).
@@ -48,7 +48,7 @@ in the launch contract (`rafka_mesh_entity::launch`):
 
 | parameter | launch field | meaning |
 |---|---|---|
-| mesh | `RDM_MESH_ID` | the MeshId the node-admin belongs to; its membership gossip channel is derived from it. **Absent with no durable topology: Day 0** (§3); durable topology selects recovery. |
+| mesh | `RDM_MESH_ID` | the MeshId the node-admin belongs to; its topology gossip channel is derived from it. **Absent with no durable topology: Day 0** (§3); durable topology selects recovery. |
 | seed | `RDM_SEEDS` | one or more live nodes, `(EndpointId, address)`, the node-admin dials at once. It never waits to be heard first. |
 | mesh primary | `RDM_MESH_PRIMARY` | this node-admin starts as its mesh's primary node-admin (the first node-admin created into a live mesh whose node-admins are all lost). |
 | fabric primary | `RDM_FABRIC_PRIMARY` | this node-admin starts as the fabric primary (total-loss recovery). |

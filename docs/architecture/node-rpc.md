@@ -47,7 +47,7 @@ The arrows mean "is consumed by."
 
 ### 3.1 rdm-transport
 
-Owns Iroh/gossip transport mechanics and current membership dissemination. It does not import Node RPC to become its resolver adapter.
+Owns Iroh/gossip transport mechanics and current topology dissemination. It does not import Node RPC to become its resolver adapter.
 
 One live Iroh Endpoint belongs to one process. Router/ALPN multiplexes gossip and Node RPC over that process endpoint. Multiple bound addresses/endpoint slots may exist under the process EndpointId; EndpointId is the process transport identity, not a slot id.
 
@@ -72,10 +72,10 @@ StaticResolver remains test-only. Production callers do not construct a one-node
 
 ### 3.4 Process composition owns the feed
 
-The running process state sees both membership and Node RPC and wires them together without making the sibling crates depend on each other.
+The running process state sees both the topology view and Node RPC and wires them together without making the sibling crates depend on each other.
 
 ~~~text
-membership Members/current births + retained deleted identities
+topology Members/current births + retained deleted identities
     -> process composition adapter
     -> LiveNodeResolver
 
@@ -87,7 +87,7 @@ process running state
 
 Node-admin readiness Ping, control calls, proof-store calls, Forward inner calls and ordinary RPC-node callers reuse that process client and resolver.
 
-The process-scoped LiveNodeResolver is the only membership model Node RPC reads.
+The process-scoped LiveNodeResolver is the only topology model Node RPC reads.
 
 ### 3.5 Connections and domains
 

@@ -121,13 +121,13 @@ fn an_incomplete_projection_answers_a_direct_dial_it_cannot_vouch_for() {
     assert!(select_carrier(&held, &own, &path(NodeKind::RpcNode, 3), RPC).unwrap_err().contains("not complete"));
 }
 
-/// Membership names `own`, `carrier` and `dest` as `estate()` recorded them.
+/// The topology view names `own`, `carrier` and `dest` as `estate()` recorded them.
 fn members(held: &mut ConnectionsHeld, ends: &[&ConnectionEnd]) -> Arc<StaticIncarnations> {
     let m = Arc::new(StaticIncarnations::default());
     for e in ends {
         m.set(e.node_id.clone(), e.name.clone(), e.incarnation.clone().unwrap());
     }
-    held.set_membership(m.clone());
+    held.set_topology_view(m.clone());
     m
 }
 
@@ -137,8 +137,8 @@ fn a_stale_destination_incarnation_is_superseded() {
     let m = members(&mut held, &[&carrier, &dest]);
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
-    assert_eq!(proxy_invalid(&held, &p), None, "membership holds the birth the Proxy recorded");
-    // The destination restarts: membership now holds process d2 at its path.
+    assert_eq!(proxy_invalid(&held, &p), None, "the topology view holds the birth the Proxy recorded");
+    // The destination restarts: the topology view now holds process d2 at its path.
     m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
     let r = resolve(&held, &own.name, &dest.name, RPC);
@@ -175,7 +175,7 @@ fn a_proxy_is_valid_without_the_carriers_edge_in_the_sources_held_graph() {
     assert_eq!(proxy_invalid(&held, &p), None);
 }
 
-/// CONTRACT: a Direct fact naming a destination process membership no longer holds is not the
+/// CONTRACT: a Direct fact naming a destination process the topology view no longer holds is not the
 /// current edge: routing dials instead of trusting it, it retires no Proxy, and it names no
 /// carrier.
 #[test]
@@ -186,7 +186,7 @@ fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: true });
     assert_eq!(held.active_directs_to(&dest.name).unwrap().len(), 2);
     m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
-    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "the fact names d1, membership holds d2");
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "the fact names d1, the topology view holds d2");
     assert!(held.active_directs_to(&dest.name).unwrap().is_empty(), "no carrier edge names the current destination");
     assert_eq!(select_carrier(&held, &own.name, &dest.name, RPC), Ok(None));
 }

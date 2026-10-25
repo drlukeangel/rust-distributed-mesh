@@ -85,7 +85,7 @@ pub trait Gate: Send + Sync {
     async fn primaries_updated(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId, _attempt: u32) -> Result<(), String> {
         Ok(())
     }
-    /// Refresh the fabric-primary's book and view from any completed stop-node receipt of `build_id`
+    /// Refresh the fabric-primary's digest view and view from any completed stop-node receipt of `build_id`
     /// before `BuildReply::Complete` goes out on the caller's stream.
     async fn attempt_completed(&self, _build_id: &BuildId, _attempt: u32) {}
     /// What the node rows record of each member of `topology`'s executable, for a replacement's plan
@@ -166,7 +166,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
     }
 }
 
-/// A gate that is always open: a fixture with no membership and no seat fence.
+/// A gate that is always open: a fixture with no topology view and no seat fence.
 pub struct OpenGate;
 
 #[async_trait::async_trait]
@@ -941,7 +941,7 @@ impl DriveEnv {
             Ok(holder) => holder,
             Err(e) => {
                 let why = e.to_string();
-                // The record names the holder (its path.name from the digest book); none only when no
+                // The record names the holder (its path.name from the digest view); none only when no
                 // digest of that birth is held, and the reason says so.
                 let to = match e {
                     BuildStateError::SeatYielded { to, .. } => to,

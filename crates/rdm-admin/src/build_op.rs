@@ -22,7 +22,7 @@ use crate::control_plane::{ActionKind, ControlPlane, Refusal};
 use crate::model::PathName;
 use crate::topology::Topology;
 use rdm_core::IncarnationId;
-use rdm_transport::topology::SeatBook;
+use rdm_transport::topology::PrimaryView;
 use rdm_transport::stream::{NotStarted, ReplySink, StreamItem};
 use rdm_transport::{Budget, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
@@ -49,8 +49,8 @@ pub struct BuildDoor {
     pub run: Arc<RunDoor>,
     /// The primary records this admin holds: node.primary.update's successor installs into it before
     /// the executor's next step runs, so it names this birth the fabric-primary before the view does.
-    pub seats: SeatBook,
-    /// This admin's exact birth (with `env.door.node_id`): what the seat book is read against.
+    pub seats: PrimaryView,
+    /// This admin's exact birth (with `env.door.node_id`): what the primary view is read against.
     pub incarnation: IncarnationId,
 }
 
@@ -194,7 +194,7 @@ impl BuildDoor {
         }
     }
 
-    /// Whether the seat book names this exact birth the fabric-primary.
+    /// Whether the primary view names this exact birth the fabric-primary.
     fn is_fabric_primary(&self) -> bool {
         self.seats.fabric().is_some_and(|h| h.is_birth(&self.env.door.node_id, &self.incarnation))
     }

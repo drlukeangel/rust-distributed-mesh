@@ -190,7 +190,7 @@ two primaries, neither owning the other's members.
 #### The projection is filled from two gossip channels
 
 The topology projection is filled from two gossip channels, the mesh-local channel and the
-backbone ([gossip.md §3](gossip.md#3-hierarchical-membership-topology)), where every other
+backbone ([gossip.md §3](gossip.md#3-hierarchical-topology)), where every other
 projection has one source. **Neither channel writes**: gossip updates the projection and never authors the record
 ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)), and
 a mesh's own nodes arrive only through node.create calls for that mesh.
@@ -391,7 +391,7 @@ node in one mesh is a fabric of one mesh.
 ## 3. The three gossip planes (and a non-wire adjunct)
 
 Lifecycle information moves on separate iroh-gossip planes that never share a topic. The planes,
-their subscription, the JoinNode (op `0x1D`), membership and every gossiped kind are
+their subscription, the JoinNode (op `0x1D`), topology and every gossiped kind are
 [`gossip.md`](gossip.md).
 
 <a id="31-primary-mesh-gossip--gossipenvelope"></a>
@@ -403,7 +403,7 @@ One topic per mesh; its frames, their authors, dedup and retention are
 ### 3.2 The backbone — cross-mesh, node-admin-only
 
 Who joins the backbone and who publishes on it are
-[gossip.md §3](gossip.md#3-hierarchical-membership-topology); a cross-mesh deletion is
+[gossip.md §3](gossip.md#3-hierarchical-topology); a cross-mesh deletion is
 [gossip.md §6.1](gossip.md#61-deletions-an-event-for-promptness-members-for-retention).
 
 ### 3.3 Non-wire adjuncts
@@ -463,12 +463,12 @@ absence, or set from its mesh-primary's lifecycle overlays (`NodeStopped`, `Node
 
 | state | produced by | read by |
 |---|---|---|
-| `Joining` | self-published until published-once ∧ self-ready | the traffic/membership filters — routed no traffic |
-| `Alive` | self-published, default | the rebind path; every traffic and membership filter |
+| `Joining` | self-published until published-once ∧ self-ready | the traffic/topology filters — routed no traffic |
+| `Alive` | self-published, default | the rebind path; every traffic and topology filter |
 | `Overloaded` | self-published, over CPU or RAM budget | `node.get`; the span reason |
 | `Degraded` | self-published while the node reaches a peer only through a forward (§8) | routing's peer choice, which prefers a source that is not `Degraded`; the span reason naming each such broker |
 | `Leaving` | set by the mesh-primary on `node.stopped` (overlay `NodeStopped`) | the routing rule: routed no traffic |
-| `Dead` | never sent; receiver-side vocabulary | the traffic/membership filters |
+| `Dead` | never sent; receiver-side vocabulary | the traffic/topology filters |
 | `PendingReconnect` | the staleness sweep; the mesh-primary, at once, for a member a command was never sent to for a reachability reason ([node recovery](lifecycles/node-recovery.md) step 1) | the mesh-primary's recovery tick ([node recovery](lifecycles/node-recovery.md)) |
 | `Restarting` | the mesh-primary's `NodeRestarting` overlay for an open node.restart | the routing rule; peers keep the birth, expecting it back |
 
@@ -545,9 +545,9 @@ Departure removes a node from the ROUTING view. It does not release anything the
 node keeps its identity, its replica-set membership and its data across every class below. Only
 node.delete releases its identity and name; its storage stays with the spec (§7.3).
 
-All removal from the view is the membership book's (`rdm-transport/src/topology.rs`): a member
-unheard past the staleness floor is held, not current (`rdm.mesh.membership.update.via-member-stale`);
-a stopped birth leaves the book at `NodeStopped` (`rdm.mesh.membership.remove.via-node-stopped`); a
+All removal from the view is the topology view's (`rdm-transport/src/topology.rs`): a member
+unheard past the staleness floor is held, not current (`rdm.mesh.topology.update.via-member-stale`);
+a stopped birth leaves the view at `NodeStopped` (`rdm.mesh.topology.remove.via-node-stopped`); a
 deleted birth leaves at `NodeDeleted` and its id is held deleted for the retention
 ([gossip.md §6.1](gossip.md#61-deletions-an-event-for-promptness-members-for-retention)). A member
 whose silence a lifecycle event the view applied explains is expected silence, neither stale nor
@@ -661,7 +661,7 @@ record it holds and written whole and revalidated by a successor's own
 inspection. An application's own record of an outage and the work it owes on a return (Rafka's
 `NodeOfflineRecord` and its refill job) is the application's. A deleted node's identity never takes
 its name back: a digest from a deleted incarnation is refused by name as deleted and by the
-peer-location book ([gossip.md §3.1](gossip.md#31-frame-catalog)); its data dir stays.
+peer-location view ([gossip.md §3.1](gossip.md#31-frame-catalog)); its data dir stays.
 
 **A replace across a STORAGE-FORMAT move is not a replace.** Preserved data under
 new-format binaries refuses at the record header's checksum on the first read — the correct
@@ -692,7 +692,7 @@ Design rule: **every lifecycle transition is observable as a span**. Span names,
 whitelist and the `via-`/`from-` reasons are the [runtime spans](node-rpc-envelope.md#runtime-spans);
 the generated reference of every span name and its source line is `docs/reference/rdm/spans.md`.
 
-**The node runtime** — `rdm.mesh.*` and `rdm.node.*`: membership, the topology projection,
+**The node runtime** — `rdm.mesh.*` and `rdm.node.*`: the topology view, the topology projection,
 connections and the node's own lifecycle steps, each named on its lifecycle page.
 
 **node-admin** — component `node_admin`, entity `node`: every primitive and workflow step emits
@@ -724,4 +724,4 @@ Rafka's pages that build on this one: the delete contract's consumer
 ([`topics.md`](/home/admin/rafka-v2/docs/architecture/topics.md) §6.3), its data plane
 ([`data-plane-transport.md`](/home/admin/rafka-v2/docs/architecture/data-plane-transport.md)).
 
-- **Gossip — delivery, topics, membership, the JoinNode (op `0x1D`), every gossiped kind:** [`gossip.md`](gossip.md)
+- **Gossip — delivery, topics, topology, the JoinNode (op `0x1D`), every gossiped kind:** [`gossip.md`](gossip.md)

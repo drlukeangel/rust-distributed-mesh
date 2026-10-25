@@ -18,7 +18,7 @@ fn event(sequence: u64, data: &'static [u8]) -> Event {
 // @feature: gossip
 /// CONTRACT (gossip.md app channels; the testkit rig for app-channel cells): two members of a mesh,
 /// the second joined through the first, both declaring one app type, open its channel with
-/// `membership.join_channel` and `split` it. Once the channel's neighbours are up (a protocol event,
+/// `topology_view.join_channel` and `split` it. Once the channel's neighbours are up (a protocol event,
 /// never elapsed time), each publishes one event and receives the other's: its data, sequence and
 /// schema as published, sourced from the publishing member's author.
 #[test]
@@ -28,8 +28,8 @@ fn two_members_publish_and_receive_one_event() {
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let a = Member::join(&fabric, &mesh, "mesh1.rpc.1", &[], &[TYPE]).await;
         let b = Member::join(&fabric, &mesh, "mesh1.rpc.2", &[a.addr()], &[TYPE]).await;
-        let (to_b, mut from_b) = a.membership.join_channel(TYPE).await.expect("a joins its declared channel").split();
-        let (to_a, mut from_a) = b.membership.join_channel(TYPE).await.expect("b joins its declared channel").split();
+        let (to_b, mut from_b) = a.topology_view.join_channel(TYPE).await.expect("a joins its declared channel").split();
+        let (to_a, mut from_a) = b.topology_view.join_channel(TYPE).await.expect("b joins its declared channel").split();
         for (on, other) in [(&a, &b), (&b, &a)] {
             let mut raw = on.gossip().subscribe(channel_id(&fabric, TYPE), vec![other.endpoint_id()]).await.unwrap();
             tokio::time::timeout(BOUND, raw.joined()).await.expect("the channel's neighbour is up").unwrap();

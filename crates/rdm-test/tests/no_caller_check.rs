@@ -69,12 +69,12 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         admin.deployed(&launch, &key);
         let _running = node::start(&launch, |b, _| b).await.expect("the node comes up");
 
-        let book = &admin.observer.membership.book;
-        let mut heard = book.heard_changes();
-        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        let digest_view = &admin.observer.topology_view.digest_view;
+        let mut heard = digest_view.heard_changes();
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
             heard.changed().await.unwrap();
         }
-        let (born, _) = book.get(launch.node_id.as_str()).unwrap();
+        let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         let resolved = ResolvedNode {
             node_id: born.node.node_id.clone(),
             name: born.node.name.clone(),
@@ -95,7 +95,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         // An admin the stopped node never heard of: a fresh endpoint key, in no digest the node holds.
         let stranger_key = iroh::SecretKey::generate();
         let stranger_endpoint = stranger_key.public().to_string();
-        assert!(book.all().iter().all(|d| d.node.endpoint_id.0 != stranger_key.public().to_string()), "the stranger is in no digest");
+        assert!(digest_view.all().iter().all(|d| d.node.endpoint_id.0 != stranger_key.public().to_string()), "the stranger is in no digest");
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(resolved);
         let stranger = NodeRpcClient::new(rdm_transport::endpoint::bind(stranger_key, "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");

@@ -256,7 +256,7 @@ pub fn chunks_measured<T>(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<Lifec
         if bytes.len() > MAX_FRAME { Err(bytes.len()) } else { Ok(bytes.into()) }
     });
     for len in refused {
-        tracing::info_span!("rdm.mesh.membership.reject.via-item-too-large", frame_bytes = len, limit = MAX_FRAME)
+        tracing::info_span!("rdm.mesh.topology.reject.via-item-too-large", frame_bytes = len, limit = MAX_FRAME)
             .in_scope(|| tracing::warn!("a snapshot item fits no complete message"));
     }
     let sized: Vec<_> = sized.into_iter().map(|(run, _)| run).collect();
@@ -519,7 +519,7 @@ pub(crate) type InstalledProjection<'a> = (&'a PublisherId, u64, &'a Full, Optio
 /// an ahead-base delta is a gap that desynchronizes that source alone. Classification against the
 /// installed floor and content happens under this receiver's installation lock. A repeated gossip
 /// publication installs nothing and never completes repair; a directed read can resume the source
-/// at its held version. No delta is saved for later; the membership caller requests the repair.
+/// at its held version. No delta is saved for later; the topology caller requests the repair.
 #[derive(Debug, Default)]
 pub struct SnapshotReceiver {
     pending: HashMap<SourceKey, Pending>,

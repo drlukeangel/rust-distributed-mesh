@@ -23,7 +23,7 @@
 //! lane, a drift repair's in the fabric lane).
 
 use rdm_core::{MeshDigest, MeshNode, MemberStatus, RuntimeFact, RuntimeLocator, RuntimeProvider};
-use rdm_transport::topology::DigestBook;
+use rdm_transport::topology::DigestView;
 use rdm_admin::accepted::{AcceptedStore, FabricTopology, MeshTopology};
 use rdm_admin::build::{BuildId, BuildOperation};
 use rdm_admin::build_state::{BuildState, BuildStateAdapter as _, MemoryBuildStateAdapter};
@@ -165,13 +165,13 @@ fn fact(pid: u32) -> RuntimeFact {
     RuntimeFact { deployment_id: rdm_core::fixture_crockford60(&format!("dep-{pid}")), provider: RuntimeProvider::Process, control_domain: DOMAIN.into(), locator: RuntimeLocator::Process { pid, start: 1 } }
 }
 
-/// The estate: the world, the accepted Build, the admins' shared view and membership.
+/// The estate: the world, the accepted Build, the admins' shared view and the topology view.
 struct Estate {
     world: Arc<World>,
     builds: Arc<MemoryBuildStateAdapter>,
     accepted: Arc<AcceptedStore>,
     view: Arc<RwLock<Topology>>,
-    book: DigestBook,
+    digest_view: DigestView,
     provider: Provider,
     runner: Arc<Runner>,
     dispatch: Arc<crate::loopback::Loopback>,
@@ -190,16 +190,16 @@ async fn secondary_rpc(e: &Estate, mesh: &str) -> String {
     t.nodes.iter().filter(|n| n.mesh == mesh && n.name.to_string().contains(".rpc.") && !n.is_primary).map(|n| n.name.to_string()).min().expect("an rpc node holding no seat")
 }
 
-/// Every path of the accepted shape born, live, held in the view and membership; seats elected.
+/// Every path of the accepted shape born, live, held in the view and the topology view; seats elected.
 async fn estate() -> Estate {
     let world = Arc::new(World::default());
     let fabric_id = FabricId::mint();
     let topology = FabricTopology { fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() };
     let mut nodes = Vec::new();
-    let book = DigestBook::default();
+    let digest_view = DigestView::default();
     for m in topology.meshes.values() {
         for p in &m.nodes {
-            nodes.push(birth(&world, &book, &fabric_id, &p.to_string(), None));
+            nodes.push(birth(&world, &digest_view, &fabric_id, &p.to_string(), None));
         }
     }
     rdm_admin::election::resolve(&mut nodes);
@@ -211,20 +211,20 @@ async fn estate() -> Estate {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let fp = view.read().await.fabric_primary().unwrap().name.to_string();
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), topology, &fp).await.unwrap();
-    let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), book: book.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), builds: builds.clone(), hear_after_birth: std::sync::atomic::AtomicBool::new(false), recovering: Mutex::new(Vec::new()), fail_recovery_create: std::sync::atomic::AtomicBool::new(false) });
+    let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), digest_view: digest_view.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), builds: builds.clone(), hear_after_birth: std::sync::atomic::AtomicBool::new(false), recovering: Mutex::new(Vec::new()), fail_recovery_create: std::sync::atomic::AtomicBool::new(false) });
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), view.clone(), runner.clone());
-    Estate { provider: Provider(world.clone()), world, builds, accepted, view, book, runner, dispatch, records: Arc::new(exit_records()), claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()) }
+    Estate { provider: Provider(world.clone()), world, builds, accepted, view, digest_view, runner, dispatch, records: Arc::new(exit_records()), claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()) }
 }
 
-/// A new birth at `path`: a runtime in the world, a digest in membership, a live node.
-fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, supersedes: Option<IncarnationId>) -> Node {
+/// A new birth at `path`: a runtime in the world, a digest in the topology view, a live node.
+fn birth(world: &World, digest_view: &DigestView, fabric_id: &FabricId, path: &str, supersedes: Option<IncarnationId>) -> Node {
     let mut n = Node::allocated(path.parse().unwrap());
     n.node_id = NodeId::mint();
     n.incarnation_id = Some(IncarnationId::mint());
     n.endpoint_id = Some(EndpointId(iroh::SecretKey::generate().public().to_string()));
     n.status = NodeStatus::ReadyForTraffic;
     let pid = world.add(path, n.node_id.as_str());
-    book.record(MeshDigest { held_hash: Default::default(),
+    digest_view.record(MeshDigest { held_hash: Default::default(),
         fabric_id: fabric_id.clone(),
         node: MeshNode {
             node_id: n.node_id.clone(),
@@ -255,14 +255,14 @@ fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, sup
 struct Runner {
     world: Arc<World>,
     view: Arc<RwLock<Topology>>,
-    book: DigestBook,
+    digest_view: DigestView,
     fabric_id: FabricId,
     ran: Mutex<Vec<(String, BuildOperation, FenceOutcome)>>,
     born: Mutex<Vec<String>>,
     /// The Build log the recovery's receipts are written to, as the admin's delete, create and update
     /// workflows write them.
     builds: Arc<MemoryBuildStateAdapter>,
-    /// Membership repair runs right after every birth, before the attempt's next operation: what a
+    /// Topology repair runs right after every birth, before the attempt's next operation: what a
     /// recovered forwarder does to the executor's view mid-attempt.
     hear_after_birth: std::sync::atomic::AtomicBool,
     /// The operations of every recovery run, by key, in the order the executor ran them.
@@ -319,7 +319,7 @@ impl OperationRunner for Runner {
                 if self.fail_recovery_create.swap(false, std::sync::atomic::Ordering::SeqCst) {
                     return Err(format!("{path}: the recovered node's launch never came up").into());
                 }
-                let n = birth(&self.world, &self.book, &self.fabric_id, &path.to_string(), None);
+                let n = birth(&self.world, &self.digest_view, &self.fabric_id, &path.to_string(), None);
                 let mut v = self.view.write().await;
                 v.nodes.retain(|x| x.name != *path);
                 v.nodes.push(n);
@@ -338,7 +338,7 @@ impl OperationRunner for Runner {
         let out = investigate_path(path, prev.clone(), &Probe(self.world.clone())).await;
         self.ran.lock().unwrap().push((path.to_string(), op.clone(), out.clone()));
         if matches!(out, FenceOutcome::Clear { .. }) {
-            let n = birth(&self.world, &self.book, &self.fabric_id, &path.to_string(), prev.and_then(|p| p.incarnation_id));
+            let n = birth(&self.world, &self.digest_view, &self.fabric_id, &path.to_string(), prev.and_then(|p| p.incarnation_id));
             let mut v = self.view.write().await;
             v.nodes.retain(|x| x.name != *path);
             v.nodes.push(n);
@@ -353,7 +353,7 @@ impl OperationRunner for Runner {
     }
 }
 
-/// Membership repair: every `Dead` node whose runtime runs and answers, in a mesh with a live admin
+/// Topology repair: every `Dead` node whose runtime runs and answers, in a mesh with a live admin
 /// to forward it, is heard again.
 async fn hear(world: &World, view: &RwLock<Topology>) {
     let mut v = view.write().await;
@@ -397,12 +397,12 @@ impl Estate {
         let me: PathName = self.fabric_primary().await.parse().ok()?;
         let t = self.view.read().await.clone();
         let mut started = HashSet::new();
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &self.book, &self.provider, &*self.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &self.digest_view, &self.provider, &*self.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await
     }
 
     /// The fabric-primary drives the accepted Build until no Build is active: the claim on its own
     /// log, `build.attempt.run` to each executor `executor_for` names, hand-offs and receipts are
-    /// the product's. Between passes membership does what gossip does in the product: a runtime
+    /// the product's. Between passes the topology view does what gossip does in the product: a runtime
     /// that runs and answers, in a mesh that has a live admin to forward its digests, is heard
     /// again and leaves `Dead` in the view.
     async fn converge(&self) {
@@ -962,13 +962,13 @@ async fn a_successor_recovers_a_sibling_admin_known_only_by_its_durable_runtime_
     e.unheard(&[hung.as_str()]).await;
     let old = e.node_id(lost).await;
     let row = {
-        let (d, _) = e.book.get(&old).unwrap();
+        let (d, _) = e.digest_view.get(&old).unwrap();
         rdm_admin::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }
     };
     e.world.kill(&old);
-    // The successor's membership and view: everything but the lost admin.
-    let heard = DigestBook::default();
-    for d in e.book.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
+    // The successor's topology view and view: everything but the lost admin.
+    let heard = DigestView::default();
+    for d in e.digest_view.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
         heard.record(d);
     }
     let mut t = e.view.read().await.clone();
@@ -1006,13 +1006,13 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     let lost = e.view.read().await.nodes_of_type(peer, NodeKind::NodeAdmin).map(|n| n.name.to_string()).find(|n| *n != mp.to_string()).unwrap();
     let old = e.node_id(&lost).await;
     let row = {
-        let (d, _) = e.book.get(&old).unwrap();
+        let (d, _) = e.digest_view.get(&old).unwrap();
         rdm_admin::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }
     };
     e.world.kill(&old);
-    // Nobody heard the lost admin: it is in no view and no membership book, only in the row.
-    let heard = DigestBook::default();
-    for d in e.book.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
+    // Nobody heard the lost admin: it is in no view and no topology view, only in the row.
+    let heard = DigestView::default();
+    for d in e.digest_view.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
         heard.record(d);
     }
     {
@@ -1234,7 +1234,7 @@ mod one_attempt_number {
         let me: PathName = e.fabric_primary().await.parse().unwrap();
         let t = e.view.read().await.clone();
         let mut started = HashSet::new();
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), admission, &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), admission, &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await
     }
 
     /// CONTRACT: the proven-drift pass has read the settled Build and computed attempt k+1 for a lost
@@ -1401,7 +1401,7 @@ mod one_attempt_number {
         let t = e.view.read().await.clone();
         let me_id = own_id(&t, &me);
         let refused = {
-            let mut pass = Box::pin(rdm_admin::admin::reconcile_drift(&time, &me, &me_id, &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false));
+            let mut pass = Box::pin(rdm_admin::admin::reconcile_drift(&time, &me, &me_id, &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false));
             // One poll while the restart holds the admission inside its write.
             let early = tokio::select! {
                 biased;
@@ -1419,7 +1419,7 @@ mod one_attempt_number {
         let settled = e.builds.current().await.unwrap().unwrap();
         assert_eq!((settled.build_id.clone(), settled.attempt), (before.build_id.clone(), before.attempt + 1), "the restart's attempt completed on the same Build");
         let t = e.view.read().await.clone();
-        let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false).await;
+        let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
         let action = e.builds.current().await.unwrap().unwrap().action;
         assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a one-step recipe: {action:?}");
@@ -1447,9 +1447,9 @@ async fn a_decided_peer_mesh_held_ready_from_topology_opens_the_one_step_create_
     assert!(t.nodes_of_type(lost, NodeKind::NodeAdmin).all(|a| a.status.is_live()), "the view still holds the dead admins ready");
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let undecided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await;
+    let undecided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await;
     assert_eq!(undecided, None, "nothing names the mesh's admins before the ladder decides");
-    let decided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &|_| false).await;
+    let decided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &|_| false).await;
     assert_eq!(decided, Some((before.build_id.clone(), before.attempt + 1)), "the verdict opens the next attempt of the same Build");
     let opened = e.builds.current().await.unwrap().unwrap();
     assert_eq!(one_step_create_of(&opened.action).as_deref(), Some(format!("{lost}.admin.1").as_str()), "node.create of the mesh's first node-admin, a one-step recipe on the existing carrier: {:?}", opened.action);
@@ -1465,12 +1465,12 @@ async fn a_durable_runtime_row_of_a_deleted_birth_opens_no_attempt() {
     let lost = e.view.read().await.nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && !n.is_primary && !n.is_fabric_primary).expect("a non-primary admin").name.to_string();
     let old = e.node_id(&lost).await;
     let (row, digest) = {
-        let (d, _) = e.book.get(&old).unwrap();
+        let (d, _) = e.digest_view.get(&old).unwrap();
         (rdm_admin::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }, d)
     };
     e.world.kill(&old);
-    let heard = DigestBook::default();
-    for d in e.book.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
+    let heard = DigestView::default();
+    for d in e.digest_view.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
         heard.record(d);
     }
     heard.depart(rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: format!("node.delete:{lost}"), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1 });
@@ -1581,7 +1581,7 @@ mod fully_crashed_mesh {
 
     /// CONTRACT (R-DG1; mesh-investigation.md steps 5-7): the fabric-primary gives a fully crashed
     /// mesh a new node-admin when it claims the create the provider's proof of every node admitted,
-    /// and at that same moment authors the fabric `degraded` (the `peer_recovery` book the
+    /// and at that same moment authors the fabric `degraded` (the `peer_recovery` view the
     /// carrier-edge-lost verdict opens a recovery in and the status projection reads): not before (an exit
     /// proof held for the ladder's decision opens nothing, and the attempt's opening alone gives the mesh
     /// nothing), naming the mesh and every node-admin the proof found. It is cleared only on the report of
@@ -1792,7 +1792,7 @@ mod unheard_mesh_hold {
         let t = e.view.read().await.clone();
         // The provider's probe of what is recorded at a path, as the running admin's runner is (set once).
         records.set_path_probe(Arc::new(Probe(e.world.clone())));
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.recovery_decided), &|m| peer(m).is_some_and(|p| p.recovery_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided)).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.recovery_decided), &|m| peer(m).is_some_and(|p| p.recovery_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided)).await
     }
 
     const UNHEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(4_000), recovery_decided: false, unreachable_decided: false });
@@ -1899,7 +1899,7 @@ mod unheard_mesh_hold {
         e.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: before.build_id.clone(), attempt: restore, outcome: AttemptOutcome::Converged }).await.unwrap();
         {
             let fabric_id = e.view.read().await.fabric.id.clone();
-            let recovered = birth(&e.world, &e.book, &fabric_id, &admins[0], None);
+            let recovered = birth(&e.world, &e.digest_view, &fabric_id, &admins[0], None);
             let mut v = e.view.write().await;
             v.nodes.retain(|n| n.name.to_string() != admins[0]);
             v.nodes.push(recovered);
@@ -1924,7 +1924,7 @@ async fn a_birth_whose_delete_the_build_receipted_is_not_surplus() {
     for receipted in [false, true] {
         let e = estate().await;
         let current = e.builds.current().await.unwrap().unwrap();
-        let extra = birth(&e.world, &e.book, &e.view.read().await.fabric.id.clone(), "mesh1.rpc.9", None);
+        let extra = birth(&e.world, &e.digest_view, &e.view.read().await.fabric.id.clone(), "mesh1.rpc.9", None);
         e.view.write().await.nodes.push(extra.clone());
         if receipted {
             let op = rdm_core::LifecycleOp {

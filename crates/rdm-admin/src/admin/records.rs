@@ -291,7 +291,7 @@ pub struct StateSyncFailure {
 }
 
 /// What this admin's pipelines published and removed, and the meshes its
-/// Builds created: merged into the membership projection.
+/// Builds created: merged into the topology projection.
 #[derive(Default)]
 pub struct Records {
     pub(crate) nodes: Mutex<BTreeMap<PathName, Node>>,
@@ -337,8 +337,8 @@ pub struct Records {
     /// This admin does not hold the fabric-primary role and the last fabric status published is
     /// `degraded`: it serves that status, not a ready its own (absent) authority records imply.
     pub(crate) published_degraded: std::sync::atomic::AtomicBool,
-    /// The membership book whose deleted births leave these records. Set once at start.
-    pub(crate) book: std::sync::OnceLock<DigestBook>,
+    /// The topology view whose deleted births leave these records. Set once at start.
+    pub(crate) digest_view: std::sync::OnceLock<DigestView>,
     /// This admin is entering an existing mesh and has not yet been told who holds the seats: it
     /// computes none until its entry read has (ruling R-A2).
     pub(crate) entering: std::sync::atomic::AtomicBool,
@@ -751,22 +751,22 @@ impl Records {
         self.adopted_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on
     }
 
-    /// The membership book whose deleted births leave these records (set once, at start).
-    pub fn set_book(&self, book: DigestBook) {
-        let _ = self.book.set(book);
+    /// The topology view whose deleted births leave these records (set once, at start).
+    pub fn set_digest_view(&self, digest_view: DigestView) {
+        let _ = self.digest_view.set(digest_view);
     }
 
-    /// Every birth `book` holds deleted leaves these records, one part of the view's read phase
+    /// Every birth `digest_view` holds deleted leaves these records, one part of the view's read phase
     /// ([`ViewReads::read`], [`Self::install_projected`]) as of the resolver's feed
     /// (`rdm_node::node_rpc::feed_once`): gossip.md §3.1 `NodeDeleted`, "the birth is removed". A launch
     /// record or an entry sweep's record of a deleted birth never stands in for it again, after the
-    /// book forgets the departure too.
-    pub fn remove_deleted(&self, book: &DigestBook) {
-        let deleted = book.deleted();
+    /// view forgets the departure too.
+    pub fn remove_deleted(&self, digest_view: &DigestView) {
+        let deleted = digest_view.deleted();
         if deleted.is_empty() {
             return;
         }
-        let holder = book.holder_name().unwrap_or_default();
+        let holder = digest_view.observer_name().unwrap_or_default();
         let mut nodes = self.nodes.lock().unwrap();
         for op in deleted {
             let before = nodes.len();
@@ -816,11 +816,11 @@ impl Records {
     /// again. The declarer wakes when the view changed; a write of the same view wakes nothing.
     ///
     /// The view's read phase runs first, before its write lock is taken: no disk read holds a
-    /// reader of the view. Each birth the book holds deleted leaves these records
+    /// reader of the view. Each birth the digest view holds deleted leaves these records
     /// ([`Self::remove_deleted`]).
     pub async fn install_projected(&self, topology: &RwLock<Topology>, project: impl FnOnce() -> Topology) -> Topology {
-        if let Some(book) = self.book.get() {
-            self.remove_deleted(book);
+        if let Some(digest_view) = self.digest_view.get() {
+            self.remove_deleted(digest_view);
         }
         let held = topology.write().await;
         let t = project();
@@ -828,13 +828,13 @@ impl Records {
     }
 
     /// [`Self::install_projected`] of the admin `me`'s projection from what the stores hold: the
-    /// view's one read phase, [`ViewReads::read`], runs first over `book`'s births of `fabric_id`, and
+    /// view's one read phase, [`ViewReads::read`], runs first over `digest_view`'s births of `fabric_id`, and
     /// only then is the view's write lock taken and `project` handed the reads: no disk read holds a
     /// reader of the view. A read older than the view it replaces is replaced at the next rebuild. A
     /// birth the view lists at a moved row's name for the first time is one span.
-    pub async fn install_read(&self, me: &PathName, topology: &RwLock<Topology>, book: &DigestBook, fabric_id: &FabricId, project: impl FnOnce(&ViewReads) -> Topology) -> Topology {
-        let me = book.held_path_name().unwrap_or_else(|| me.clone());
-        let reads = ViewReads::read(&me, book, self, fabric_id).await;
+    pub async fn install_read(&self, me: &PathName, topology: &RwLock<Topology>, digest_view: &DigestView, fabric_id: &FabricId, project: impl FnOnce(&ViewReads) -> Topology) -> Topology {
+        let me = digest_view.held_path_name().unwrap_or_else(|| me.clone());
+        let reads = ViewReads::read(&me, digest_view, self, fabric_id).await;
         let held = topology.write().await;
         let t = project(&reads);
         for (node_id, incarnation, published, name) in reads.rows.moved() {
@@ -857,7 +857,7 @@ impl Records {
             // The seat of this admin's mesh taken with this view: its status rows are folded in
             // before the view is installed, so no decision reads the view against an empty record.
             if let Some(fold) = self.status.get() {
-                fold.on_install(&t, &self.declared, self.book.get()).await;
+                fold.on_install(&t, &self.declared, self.digest_view.get()).await;
             }
             // A renamed predecessor this view now names `<path>.old` (its row's name; its digest still
             // says `<path>`): one span as it enters.
@@ -900,7 +900,7 @@ impl TopologySink for Records {
     fn remove_birth(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
         // Only the exact birth leaves the records; another birth held at the path (the new node a
         // recovery created there) stays. The exited birth is held removed whether or not the
-        // records held it, so the view does not take it back from the book.
+        // records held it, so the view does not take it back from the digest view.
         let mut nodes = self.nodes.lock().unwrap();
         if nodes.get(name).is_some_and(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(incarnation)) {
             nodes.remove(name);

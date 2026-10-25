@@ -117,7 +117,7 @@ async fn open(builds: &MemoryBuildStateAdapter, id: &BuildId, attempt: u32) {
 }
 
 /// A fabric-primary P whose log holds the Build at `settled` converged attempts, listing the
-/// re-born executor's birth in its view the way the product's digest book does.
+/// re-born executor's birth in its view the way the product's digest view does.
 async fn primary(id: &BuildId, settled_attempts: u32, contexts: Arc<AttemptContexts>, executor: &Birth) -> (Birth, Seat, Arc<MemoryBuildStateAdapter>) {
     let p = birth("mesh1.admin.1", true);
     let builds = Arc::new(MemoryBuildStateAdapter::new());

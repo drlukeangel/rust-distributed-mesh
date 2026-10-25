@@ -320,7 +320,7 @@ latest Direct(S,D)
 latest Proxy(S,D)
 ```
 
-The destination and carrier incarnations are checked against current membership; the carrier's own Direct
+The destination and carrier incarnations are checked against the current topology view; the carrier's own Direct
 edge to the destination is learned from the carrier when it is asked to forward (§8).
 
 ### 5.1 Precedence
@@ -425,7 +425,7 @@ carrier incarnation     == recorded gw2 incarnation
 gw2 -> brk2             == Direct Active
 ```
 
-The two incarnations reach the source through membership. The carrier's Direct edge to the destination is
+The two incarnations reach the source through the topology view. The carrier's Direct edge to the destination is
 the carrier's own fact and travels nowhere: when the carrier is asked to forward and its own latest Direct to
 the destination is not Active, it refuses the carried call by name (`carrier-edge-lost`, the Forward reply
 `CarrierEdgeLost`), and that refusal is how the source learns the edge is gone.

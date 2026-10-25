@@ -4,7 +4,7 @@
 //! (`RDM_EVIDENCE_DIR`). [`Evidence::refresh`] reads only the bytes appended since the last read
 //! of each file, keeps the meaningful events (status changes, node-rpc calls and serves with their
 //! outcomes, seat moves, Build steps, connection observations, fabric status sends) and counts
-//! the high-volume ones (membership snapshots and the like) behind a toggle.
+//! the high-volume ones (topology snapshots and the like) behind a toggle.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -177,12 +177,12 @@ mod tests {
     }
 
     #[test]
-    fn meaningful_spans_show_by_default_and_membership_snapshots_hide_behind_the_toggle() {
+    fn meaningful_spans_show_by_default_and_topology_snapshots_hide_behind_the_toggle() {
         let dir = std::env::temp_dir().join(format!("tl-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let lines = [
             span("rdm.node_rpc.request.update.via-call", 3_000_000_000, json!({"node": "mesh1.rpc.1", "op": "27", "outcome": "Reply"})),
-            span("rdm.mesh.membership.update.via-snapshot-installed", 4_000_000_000, json!({"node": "mesh1.rpc.1"})),
+            span("rdm.mesh.topology.update.via-snapshot-installed", 4_000_000_000, json!({"node": "mesh1.rpc.1"})),
             span("rdm.node_admin.status.update.via-declare", 1_000_000_000, json!({"node": "mesh1.admin.1", "outcome": "applied"})),
         ];
         std::fs::write(dir.join("rdm-rpc-node.1-1.spans.jsonl"), lines.join("\n") + "\n").unwrap();
@@ -194,7 +194,7 @@ mod tests {
         assert!(shown[0].summary.contains("outcome=Reply") && shown[0].summary.contains("op=27"), "{}", shown[0].summary);
         let (all, _) = e.newest(&[], true, 10);
         assert_eq!(all.len(), 3);
-        assert_eq!(all[0].name, "rdm.mesh.membership.update.via-snapshot-installed", "newest first across the toggle");
+        assert_eq!(all[0].name, "rdm.mesh.topology.update.via-snapshot-installed", "newest first across the toggle");
         // A second refresh reads only what was appended, and never a half-written line.
         let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("rdm-rpc-node.1-1.spans.jsonl")).unwrap();
         use std::io::Write;

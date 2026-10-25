@@ -9,7 +9,7 @@ pub(crate) struct RecoverySubmitter {
     /// This mesh primary's `path.name`: the submitter.
     pub me: PathName,
     pub topology: Arc<RwLock<Topology>>,
-    pub book: DigestBook,
+    pub digest_view: DigestView,
     pub provider: Arc<dyn DeploymentProvider>,
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
     /// The node records this admin writes, as it holds them: the data-dir facts are written on them.
@@ -47,19 +47,19 @@ pub(crate) fn verdict_name(outcome: &Inspected) -> &'static str {
 
 impl RecoverySubmitter {
 
-    /// The name this admin currently holds in its membership digest book, or its boot name before its
-    /// birth is in the book.
+    /// The name this admin currently holds in its topology digest view, or its boot name before its
+    /// birth is in the view.
     pub(crate) fn held_name(&self) -> PathName {
-        self.book.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
     }
 
     /// Resolve `node`'s inherited `data_dir` when known (`R-FM2`): from `node.data_dir`, its digest in
-    /// `self.book`, its durable runtime row in `self.nodes_storage`, or `<data_root>/<name>-<node_id>`.
+    /// `self.digest_view`, its durable runtime row in `self.nodes_storage`, or `<data_root>/<name>-<node_id>`.
     pub(crate) async fn birth_data_dir(&self, node: &Node) -> Option<PathBuf> {
         if let Some(d) = node.data_dir.as_deref() {
             return Some(PathBuf::from(d));
         }
-        if let Some(d) = self.book.get(node.node_id.as_str()).and_then(|(dg, _)| dg.data_dir.map(PathBuf::from)) {
+        if let Some(d) = self.digest_view.get(node.node_id.as_str()).and_then(|(dg, _)| dg.data_dir.map(PathBuf::from)) {
             return Some(d);
         }
         if let Some(inc) = node.incarnation_id.as_ref() {
@@ -74,12 +74,12 @@ impl RecoverySubmitter {
     }
 
     /// The provider's exact-exit proof of `node`'s birth: node.runtime.inspect over the one runtime
-    /// resolution (`node_investigation::birth_runtime`: the book's digest of that exact birth, heard,
+    /// resolution (`node_investigation::birth_runtime`: the view's digest of that exact birth, heard,
     /// projected by its mesh-primary or stopped, else the birth's own durable runtime row). Beside it,
     /// the exact runtime handle the provider was asked about (node-runtime-inspect.md Target), for the
     /// inspection's span.
     pub(crate) async fn inspect(&self, node: &Node) -> (Inspected, Option<DeploymentHandle>) {
-        crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.book, Some(&*self.nodes_storage), node).await
+        crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.digest_view, Some(&*self.nodes_storage), node).await
     }
 
     /// The durable runtime rows the tick watches births from, read once per tick. A refused read
@@ -100,7 +100,7 @@ impl RecoverySubmitter {
     /// its verdict, whatever it is, opens the recovery at once (Q110, Q111): nothing holds, nothing is
     /// inspected again, nothing waits for a proof of termination. The recovery's node.delete runs
     /// `TerminateRuntime` first when the runtime runs ([`crate::deployment::pipeline`]). A birth whose
-    /// removal this admin's book holds announced is that workflow's, read after the inspection (the
+    /// removal this admin's view holds announced is that workflow's, read after the inspection (the
     /// tick's view predates it); an `exited` birth whose inherited data dir is absent waits out
     /// `RDM_DATA_DIR_GONE_FLOORS` before its loss is recorded (`R-FM2` arm A).
     pub(crate) async fn recover(&self, n: &Node) -> Inspected {
@@ -179,28 +179,28 @@ impl RecoverySubmitter {
         outcome
     }
 
-    /// The workflow whose announced removal `n`'s exact birth is under, as this admin's book holds it
+    /// The workflow whose announced removal `n`'s exact birth is under, as this admin's view holds it
     /// now (node-recovery.md: recovery is drift reconciliation for a member that exits outside any
     /// workflow; "Failure and receipts": an exit during a workflow belongs to that workflow): its
     /// node's departure (`node-deleted`), else an open `NodeDeleting` overlay naming the exact birth
     /// (`node-deleting`), else the mesh.delete of its mesh (mesh-delete.md: from mesh.deleting, the
     /// mesh's status deleting, to mesh.deleted, every member's removal is the mesh.delete's;
-    /// `mesh-deleting`, `mesh-deleted`), the status the book holds for the mesh. A recovery's own
+    /// `mesh-deleting`, `mesh-deleted`), the status the view holds for the mesh. A recovery's own
     /// node.delete of the exited birth (`node.delete:<path>`) is such a workflow too: its overlay
-    /// closes when its attempt's verdict is terminal (`DigestBook::deletions_from_facts`), and a
+    /// closes when its attempt's verdict is terminal (`DigestView::deletions_from_facts`), and a
     /// recovery whose Build ended Failed is submitted again by the next tick: from the view while it
     /// holds the birth, else from the Failed attempt the accepted Build holds once its delete departed
     /// the birth ([`Self::owed_submits`]).
     pub(crate) async fn removal_announced(&self, n: &Node) -> Option<Announced> {
         let incarnation = n.incarnation_id.as_ref()?;
         let of = |announced: &'static str, op: rdm_core::LifecycleOp| Announced { announced, operation: op.operation, build_id: op.build_id, attempt: op.attempt };
-        if let Some(op) = self.book.deleted().into_iter().find(|op| op.node_id == n.node_id) {
+        if let Some(op) = self.digest_view.deleted().into_iter().find(|op| op.node_id == n.node_id) {
             return Some(of("node-deleted", op));
         }
-        if let Some(op) = self.book.in_flight().into_iter().find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_restart() && !op.is_stop()) {
+        if let Some(op) = self.digest_view.in_flight().into_iter().find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_restart() && !op.is_stop()) {
             return Some(of("node-deleting", op));
         }
-        let announced = match self.book.statuses.mesh(&n.mesh)?.status.as_str() {
+        let announced = match self.digest_view.statuses.mesh(&n.mesh)?.status.as_str() {
             "leaving" => "mesh-deleting",
             "dead" => "mesh-deleted",
             _ => return None,
@@ -467,7 +467,7 @@ pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[No
 
 /// What the mesh primary's tick hears a member again against (`offline-returned`): the node ids of
 /// `view`'s members and of every birth the tick watches (`watched_births`), the births only durable rows
-/// name included, none whose departure the book holds. A birth this admin knew only from durable rows
+/// name included, none whose departure the view holds. A birth this admin knew only from durable rows
 /// (one born while it was silent) enters the view once its digest is installed, after the tick's
 /// snapshot: heard again, it is returned, never gone. A node id in neither is gone.
 pub fn heard_against(view: &Topology, watched: &BTreeMap<String, Node>) -> HashSet<String> {

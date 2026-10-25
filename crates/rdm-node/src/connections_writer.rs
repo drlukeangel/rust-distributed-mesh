@@ -25,7 +25,7 @@
 //! coalesces into it and wakes the reconciler, which dials this node's own data-plane connection
 //! once the series' reconnect backoff from its latest Failed row has ended (§9.3), never earlier.
 //! Only that dial's Direct Connected owes the Proxy's retirement; a failed dial is the series'
-//! next Failed row and the attempt waits for its backoff; an attempt toward a birth membership no
+//! next Failed row and the attempt waits for its backoff; an attempt toward a birth the topology view no
 //! longer holds is dropped undialled (§9.5 step 1).
 
 use crate::storage::ConnectionsStorage;
@@ -180,7 +180,7 @@ impl ConnectionsWriter {
     }
 
     /// Read this node's name from `held`, the one place the process holds the name it publishes
-    /// (its membership's, R12): from then on every row this writer writes names it as the source
+    /// (its topology view's, R12): from then on every row this writer writes names it as the source
     /// (node-identity-and-state.md §8: `source` is the end's path.name), so a name the node takes
     /// (`ApplyNodeName`, or the name its join answer hands it) is the source of its next row.
     /// Until then the source is the birth's name, which is the name the node holds while nothing

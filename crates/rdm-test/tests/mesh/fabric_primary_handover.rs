@@ -350,7 +350,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
 
     let recorded = named(&spans, "rdm.node_admin.mesh.update.via-exit-manifest-recorded");
     assert!(recorded.iter().any(|sp| attr_u(sp, "receipts") == 3 && attr_u(sp, "roster") == 4), "the mesh primary recorded the exit manifest of its three other members: {recorded:?}");
-    let heard = |m: &str, name: &str| -> Vec<&Value> { named(&spans, &format!("rdm.mesh.membership.update.{name}")).into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}."))).collect() };
+    let heard = |m: &str, name: &str| -> Vec<&Value> { named(&spans, &format!("rdm.mesh.topology.update.{name}")).into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}."))).collect() };
     for m in survivors {
         // R4: no mesh-level hold at a peer. A node learns mesh1's members are leaving from each
         // member's own ConnectionsDeleting and Leaving in what it installs, and routes none of them meanwhile.
@@ -361,7 +361,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.rpc.")) && sp["attributes"]["channel"] == "mesh-channel"), "a {m} ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
     }
     let routable = |sp: &Value| s(&sp["attributes"]["routable"]) == "true" || sp["attributes"]["routable"] == json!(true);
-    let installed = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed");
+    let installed = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed");
 
     // 1. While it lives: after mesh.deleted the last admin keeps publishing
     // mesh1's aggregate with itself the only member and MeshStatus Dead. Every peer held mesh1 dead
@@ -420,7 +420,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         "the last admin {final_name} published mesh1's final aggregate carrying itself Leaving after its All and before its stop's cut: {leaving_aggregate:?}"
     );
     let final_stopped_at = order.iter().find(|(n, _, _)| n == "StopNode").map(|(_, _, e)| *e).expect("the final primary's stop was answered");
-    let final_after_stop: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == final_name && start_ns(sp) > final_stopped_at).collect();
+    let final_after_stop: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == final_name && start_ns(sp) > final_stopped_at).collect();
     assert!(final_after_stop.iter().all(|sp| !routable(sp)), "no node holds the final primary {final_name} routable after its stop: {final_after_stop:?}");
     let _ = installed;
 
@@ -436,7 +436,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     for m in &members {
         let at = stopped_at(m);
         assert!(mesh1_publications.iter().any(|p| *p >= at), "mesh1's primary published a new version after {m}'s NodeStopped at {at}: publications {mesh1_publications:?}");
-        let after: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == *m && start_ns(sp) > at).collect();
+        let after: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == *m && start_ns(sp) > at).collect();
         assert!(after.iter().all(|sp| !routable(sp)), "no node holds {m} routable after its NodeStopped: {after:?}");
     }
     // The Leaving row is the delete-mesh admission's commit, before the first member stops.

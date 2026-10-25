@@ -56,7 +56,7 @@ fn attr(sp: &Value, k: &str) -> String {
 
 /// Who marked which mesh silent after `since`.
 fn silent_since(spans: &[Value], since: u64) -> Vec<(String, String)> {
-    named(spans, "rdm.mesh.membership.update.via-mesh-silent").into_iter().filter(|sp| at(sp) >= since).map(|sp| (attr(sp, "node"), attr(sp, "mesh"))).collect()
+    named(spans, "rdm.mesh.topology.update.via-mesh-silent").into_iter().filter(|sp| at(sp) >= since).map(|sp| (attr(sp, "node"), attr(sp, "mesh"))).collect()
 }
 
 /// CONTRACT: see the module docs. No rpc node marks any mesh silent in 60 s of nothing changing
@@ -105,7 +105,7 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
     let healed_at = now_ns();
     wait_for("every node-admin learns the peer mesh again", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        let learned: BTreeSet<String> = named(&spans, "rdm.mesh.membership.update.via-mesh-learned").into_iter().filter(|sp| at(sp) >= healed_at).map(|sp| attr(sp, "node")).collect();
+        let learned: BTreeSet<String> = named(&spans, "rdm.mesh.topology.update.via-mesh-learned").into_iter().filter(|sp| at(sp) >= healed_at).map(|sp| attr(sp, "node")).collect();
         admins.iter().all(|a| learned.contains(a)).then_some(())
     })
     .await;

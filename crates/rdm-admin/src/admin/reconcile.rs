@@ -5,7 +5,7 @@ use super::*;
 /// The gates of the fabric-primary's drive: the Build log's fence, read from the fabric-primary
 /// record this admin holds.
 pub(crate) struct SeatGate {
-    pub(crate) membership: Membership,
+    pub(crate) topology_view: TopologyView,
     pub(crate) builds: Arc<FabricBuildStateAdapter>,
     /// The control plane whose peer-mesh reader the investigation installs once its ladder runs
     /// (after the drive is built): read when asked, as the Build door reads it.
@@ -13,11 +13,11 @@ pub(crate) struct SeatGate {
     /// The 0x21 door node.primary.update is commanded and run through, which holds what each update
     /// was answered and said (`HandoverDoor::memo`).
     pub(crate) handover: Arc<crate::fabric_handover::HandoverDoor>,
-    /// Projects the book into the view now, so a completed stop-node lists the stopped birth parked
+    /// Projects the digest view into the view now, so a completed stop-node lists the stopped birth parked
     /// before `BuildReply::Complete` goes out on the caller's stream.
     pub(crate) project: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
     /// The deployment provider and the durable runtime rows: a completed stop's exact birth is
-    /// inspected through them before its stop is taken into the book.
+    /// inspected through them before its stop is taken into the view.
     pub(crate) provider: Arc<dyn DeploymentProvider>,
     pub(crate) nodes: Arc<dyn crate::storage::NodesStorage>,
     /// The Mesh records (mesh.storage on the fabric's shared root): which meshes are Dead, for the plan.
@@ -28,19 +28,19 @@ pub(crate) struct SeatGate {
 /// "stopped with a live process", and a later attempt "validates those receipts against the accepted
 /// operation and exact births before it reuses them" (node-rpc-envelope.md, Workflow). A birth whose
 /// runtime the provider reads exited is not stopped: it is node recovery's (node-recovery.md step 3),
-/// and its stop is not taken into the book. Any other reading keeps the receipt.
-pub(crate) async fn stop_receipt_holds(provider: &dyn DeploymentProvider, book: &DigestBook, nodes: &dyn crate::storage::NodesStorage, op: &rdm_core::LifecycleOp) -> bool {
-    // A deleted birth's stop is refused by the book itself (`DigestBook::stopped`): nothing to inspect.
-    if book.is_deleted(op.node_id.as_str()) {
+/// and its stop is not taken into the view. Any other reading keeps the receipt.
+pub(crate) async fn stop_receipt_holds(provider: &dyn DeploymentProvider, digest_view: &DigestView, nodes: &dyn crate::storage::NodesStorage, op: &rdm_core::LifecycleOp) -> bool {
+    // A deleted birth's stop is refused by the view itself (`DigestView::stopped`): nothing to inspect.
+    if digest_view.is_deleted(op.node_id.as_str()) {
         return true;
     }
     let mut birth = Node::allocated(op.name.clone());
     birth.node_id = op.node_id.clone();
     birth.incarnation_id = Some(op.incarnation.clone());
-    let (inspected, _) = crate::node_investigation::inspect_birth_with_handle(provider, book, Some(nodes), &birth).await;
+    let (inspected, _) = crate::node_investigation::inspect_birth_with_handle(provider, digest_view, Some(nodes), &birth).await;
     if let crate::deployment::provider::Inspected::Exited(code) = inspected {
         tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, outcome = "runtime-exited", exit_code = code.map(|c| c.to_string()).unwrap_or_default())
-            .in_scope(|| tracing::info!("the stopped birth's runtime exited: its stop receipt is not taken into the book, and the birth is node recovery's"));
+            .in_scope(|| tracing::info!("the stopped birth's runtime exited: its stop receipt is not taken into the view, and the birth is node recovery's"));
         return false;
     }
     true
@@ -147,8 +147,8 @@ impl crate::build_drive::Gate for SeatGate {
                 if s.operation.starts_with("node.stop:") && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete {
                     stopped = true;
                     if let Some(op) = s.output.as_ref().and_then(|v| serde_json::from_value::<rdm_core::LifecycleOp>(v.clone()).ok()) {
-                        if stop_receipt_holds(&*self.provider, &self.membership.book, &*self.nodes, &op).await {
-                            let _ = self.membership.book.stopped(op);
+                        if stop_receipt_holds(&*self.provider, &self.topology_view.digest_view, &*self.nodes, &op).await {
+                            let _ = self.topology_view.digest_view.stopped(op);
                         }
                     }
                 }
@@ -161,7 +161,7 @@ impl crate::build_drive::Gate for SeatGate {
 }
 
 /// Proof that an executor's birth departed (build.md: "after exact departure proof"): the provider
-/// inspects the exact runtime the digest book or the durable runtime rows name for it, and only an
+/// inspects the exact runtime the digest view or the durable runtime rows name for it, and only an
 /// exited runtime counts.
 pub(crate) struct ProviderDeparture {
     /// The admin proving the departure: the reader its refusals name.
@@ -170,7 +170,7 @@ pub(crate) struct ProviderDeparture {
     /// Projects this admin's view now and installs it, so the next attempt is planned from the view
     /// as it is now.
     pub(crate) refresh: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
-    pub(crate) book: DigestBook,
+    pub(crate) digest_view: DigestView,
     pub(crate) provider: Arc<dyn DeploymentProvider>,
     pub(crate) nodes: Arc<dyn crate::storage::NodesStorage>,
     pub(crate) records: Arc<Records>,
@@ -178,7 +178,7 @@ pub(crate) struct ProviderDeparture {
 
 impl ProviderDeparture {
     pub(crate) fn held_name(&self) -> PathName {
-        self.book.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
     }
 }
 
@@ -192,13 +192,13 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
         let Some(incarnation) = n.incarnation_id.clone() else {
             return Err(format!("{executor} holds no incarnation id to inspect"));
         };
-        let held_row = self.book.get(n.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
+        let held_row = self.digest_view.get(n.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
         // The birth's digest names its runtime; else its own durable runtime row does (a point read).
         let row = if held_row.as_ref().is_some_and(|(dg, _)| dg.node.runtime.is_some()) {
             None
         } else {
             Some(birth_runtime_row(&*self.nodes, &me, &n.name, &n.node_id, &incarnation).await?.ok_or_else(|| {
-                format!("the book holds no runtime for {executor} ({}) at {} and no durable runtime row of that birth was ever written at {me}", n.node_id, incarnation.as_str())
+                format!("the view holds no runtime for {executor} ({}) at {} and no durable runtime row of that birth was ever written at {me}", n.node_id, incarnation.as_str())
             })?)
         };
         match crate::admin::inspection_of(&*self.provider, &held_row, row.as_ref()).await {
@@ -220,15 +220,15 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
 }
 
 /// The path.name the lost birth lived at, where fabric recovery re-creates the node-admin
-/// (fabric-recovery.md step 3): its digest's, else its departure's. `None` while the book holds neither.
-pub(crate) fn lost_birth_name(book: &DigestBook, lost: &rdm_core::handover::HandoverBirth) -> Option<PathName> {
+/// (fabric-recovery.md step 3): its digest's, else its departure's. `None` while the view holds neither.
+pub(crate) fn lost_birth_name(digest_view: &DigestView, lost: &rdm_core::handover::HandoverBirth) -> Option<PathName> {
     let exact = |d: &rdm_core::digest::MeshDigest| d.node.node_id == lost.node_id && d.node.incarnation == lost.incarnation;
-    book.get(lost.node_id.as_str())
+    digest_view.get(lost.node_id.as_str())
         .map(|(d, _)| d)
         .filter(exact)
-        .or_else(|| book.stopped_digests().into_iter().find(exact))
+        .or_else(|| digest_view.stopped_digests().into_iter().find(exact))
         .map(|d| d.node.name)
-        .or_else(|| book.deleted().into_iter().find(|op| op.node_id == lost.node_id && op.incarnation == lost.incarnation).map(|op| op.name))
+        .or_else(|| digest_view.deleted().into_iter().find(|op| op.node_id == lost.node_id && op.incarnation == lost.incarnation).map(|op| op.name))
 }
 
 /// The fabric primary `me` claimed the create of the fully crashed `mesh`'s first node-admin on the
@@ -309,7 +309,7 @@ pub async fn reconcile_drift(
     _me: &PathName,
     me_id: &NodeId,
     t: &Topology,
-    book: &DigestBook,
+    digest_view: &DigestView,
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     builds: &dyn BuildStateAdapter,
     contexts: &crate::build_claim::AttemptContexts,
@@ -362,7 +362,7 @@ pub async fn reconcile_drift(
     // at a path its view holds nothing at (a sibling this admin never heard). Such a birth is
     // unheard: it is inspected like any unheard birth.
     let mut map = t.clone();
-    map.nodes.extend(durable_births(t, durable, &|p| current.topology.contains(p), &|id| book.is_deleted(id)));
+    map.nodes.extend(durable_births(t, durable, &|p| current.topology.contains(p), &|id| digest_view.is_deleted(id)));
     let t = &map;
     // The carrier-edge-lost verdict (mesh-investigation.md step 6): a peer mesh whose investigation
     // decided its recovery is owed node.create of a node-admin. A mesh this authority never heard on the
@@ -409,7 +409,7 @@ pub async fn reconcile_drift(
         if n.mesh != me.mesh && defers(&n.mesh) && t.nodes_of_type(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) && (n.kind == NodeKind::NodeAdmin || hold(&n.mesh).is_none()) {
             // The hold is named once per mesh and Build: an unnamed deferral is a recovery nobody is
             // waiting on.
-            let unheard = book.mesh_unheard(&n.mesh, std::time::Instant::now());
+            let unheard = digest_view.mesh_unheard(&n.mesh, std::time::Instant::now());
             let key = (current.build_id.clone(), 0u32, vec!["deferred".to_string(), n.mesh.clone()]);
             if started.insert(key) {
                 tracing::info_span!("rdm.node_admin.build.reject.via-drift-deferred", node = %me, mesh = %n.mesh, birth = %n.name, unheard_ms = unheard.map(|d| d.as_millis().to_string()).unwrap_or_else(|| "none".into()))
@@ -439,7 +439,7 @@ pub async fn reconcile_drift(
         if n.kind == NodeKind::NodeAdmin && unheard_ms.is_none() && (decided(&n.mesh) || crate::executor::node_admin_recoverer(&n.name, t).is_some()) {
             continue;
         }
-        let held_row = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
+        let held_row = digest_view.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
         let row = durable.iter().find(|r| r.node_id == n.node_id && Some(&r.incarnation_id) == n.incarnation_id.as_ref());
         let Some(incarnation) = n.incarnation_id.clone() else { continue };
         let found = crate::admin::inspection_of(provider, &held_row, row).await;

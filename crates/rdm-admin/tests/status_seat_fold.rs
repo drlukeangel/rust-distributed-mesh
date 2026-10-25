@@ -175,21 +175,21 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
 /// statuses and publishes a complete projection under its own epoch before any delta"; fabric-authority.md
 /// §7: a successor mesh primary hydrates the lifecycle state that already exists, adopts that exact
 /// state and republishes the adopted projection, manufacturing no transition; mesh-investigation.md "A
-/// node-admin joins the live mesh" step 4): B, an admin of mesh1 whose book holds `mesh1.rpc.1`'s
+/// node-admin joins the live mesh" step 4): B, an admin of mesh1 whose view holds `mesh1.rpc.1`'s
 /// heartbeat and no status for it (an admin entering a live mesh: its topology read installs nothing,
 /// reenter.rs), takes mesh1's seat. A, the primary before it, left a declared-state row for that exact
 /// birth saying ReadyForTraffic, and one for `mesh1.rpc.2`, whose heartbeat B hears only after it took
-/// the seat. The fold of A's rows reaches B's book: both births are ReadyForTraffic there and in B's
+/// the seat. The fold of A's rows reaches B's view: both births are ReadyForTraffic there and in B's
 /// member projection. `mesh1.rpc.1` declaring ReadyForTraffic to its new primary (R-S2: a declaration is
-/// owed again when the authority moved) is AlreadyApplied, and the book still says ReadyForTraffic. One
+/// owed again when the authority moved) is AlreadyApplied, and the view still says ReadyForTraffic. One
 /// `rdm.node_admin.status.update.via-seat-fold` per adopted birth names it, its prior and its status.
 /// Must NOT happen (i143_acceptance_2803, fabric recovery): the successor's projection says a surviving
 /// member Pending while its record says ReadyForTraffic, so the member's declaration is AlreadyApplied
 /// and the member stays Pending under the new primary for good.
 #[test]
-fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_book_and_projection() {
+fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projection() {
     use rdm_core::MemberStatus;
-    use rdm_transport::topology::{Backbone, Membership};
+    use rdm_transport::topology::{Backbone, TopologyView};
     use rdm_core::status::{StatusReply, StatusRequest};
     let cap = crate::mesh_delete_resume::capture();
     let (trace_id, after_take, rpc2_heard, projected, declared, after_declare) = cap.run(async {
@@ -209,17 +209,17 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_book_and_projec
                 for n in [&rpc1, &rpc2] {
                     { let (node_id, incarnation_id, name) = (n.node_id.clone(), n.incarnation_id.clone().unwrap(), n.name.clone()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::ReadyForTraffic); }).await.unwrap(); }
                 }
-                // B: its membership's book, its seat fold over the same root.
+                // B: its topology view's view, its seat fold over the same root.
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
                 let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
                 let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-                let membership = Membership::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
+                let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
                 let records = Records::default();
-                records.set_book(membership.book.clone());
+                records.set_digest_view(topology_view.digest_view.clone());
                 let b_stores = stores(&root, &IncarnationId::mint()).await;
                 records.set_status(b_stores.nodes, b_stores.meshes, b_stores.fabric, "mesh1".into(), b.name.clone(), b.node_id.clone());
-                assert!(membership.book.record(heartbeat(&fabric_id, &rpc1)), "rpc.1's heartbeat is held");
-                let status = |n: &Node| membership.book.get(n.node_id.as_str()).map(|(d, _)| d.status);
+                assert!(topology_view.digest_view.record(heartbeat(&fabric_id, &rpc1)), "rpc.1's heartbeat is held");
+                let status = |n: &Node| topology_view.digest_view.get(n.node_id.as_str()).map(|(d, _)| d.status);
                 let topology = Arc::new(RwLock::new(Topology { nodes: Vec::new(), ..before_view.clone() }));
                 records.install_projected(&topology, || before_view.clone()).await;
                 assert_eq!(status(&rpc1), Some(MemberStatus::Pending), "a member whose status B was never told is Pending while A holds the seat");
@@ -233,12 +233,12 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_book_and_projec
                     }
                 }
                 records.install_projected(&topology, || after_view.clone()).await;
-                membership.set_mesh_primary(true);
+                topology_view.set_mesh_primary(true);
                 let after_take = status(&rpc1);
-                assert!(membership.book.record(heartbeat(&fabric_id, &rpc2)), "rpc.2's heartbeat is held after the seat take");
+                assert!(topology_view.digest_view.record(heartbeat(&fabric_id, &rpc2)), "rpc.2's heartbeat is held after the seat take");
                 let rpc2_heard = status(&rpc2);
-                let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone() }, vec![]).await.unwrap();
-                let mut projected: Vec<(String, MemberStatus)> = backbone.own_members(&membership).into_iter().filter(|d| d.node.name.kind == rdm_core::NodeKind::RpcNode).map(|d| (d.node.name.to_string(), d.status)).collect();
+                let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone() }, vec![]).await.unwrap();
+                let mut projected: Vec<(String, MemberStatus)> = backbone.own_members(&topology_view).into_iter().filter(|d| d.node.name.kind == rdm_core::NodeKind::RpcNode).map(|d| (d.node.name.to_string(), d.status)).collect();
                 projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.
                 let authority = rdm_admin::status_rpc::StatusAuthority {
@@ -259,7 +259,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_book_and_projec
                     fabric_storage: stores(&root, &IncarnationId::mint()).await.fabric,
                     mesh_ids: Arc::new(std::collections::BTreeMap::new),
                     durable: Default::default(),
-                    commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),
+                    commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
                     own: Arc::new(std::sync::OnceLock::new()),
                     mesh_deleter: Arc::new(std::sync::OnceLock::new()),
                     hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -271,7 +271,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_book_and_projec
                     rename: Default::default(),
                     row_moved: Default::default(),
                     loads: None,
-                    book: Some(membership.book.clone()),
+                    digest_view: Some(topology_view.digest_view.clone()),
                     builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
                     first_ready: Default::default(),
                 };
@@ -285,11 +285,11 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_book_and_projec
         .await
     });
     println!("status_seat_fold adopt trace_id={trace_id}");
-    assert_eq!(after_take, Some(MemberStatus::ReadyForTraffic), "the seat taker's book adopts the folded ReadyForTraffic of the birth it held Pending");
+    assert_eq!(after_take, Some(MemberStatus::ReadyForTraffic), "the seat taker's view adopts the folded ReadyForTraffic of the birth it held Pending");
     assert_eq!(rpc2_heard, Some(MemberStatus::ReadyForTraffic), "a birth whose row was folded before its heartbeat arrived is held at the adopted status");
     assert_eq!(projected, vec![("mesh1.rpc.1".to_string(), MemberStatus::ReadyForTraffic), ("mesh1.rpc.2".to_string(), MemberStatus::ReadyForTraffic)], "the successor's member projection carries the adopted statuses");
     assert_eq!(declared, StatusReply::AlreadyApplied, "the member's re-declaration to its new primary is already held");
-    assert_eq!(after_declare, Some(MemberStatus::ReadyForTraffic), "and the book agrees with the record");
+    assert_eq!(after_declare, Some(MemberStatus::ReadyForTraffic), "and the view agrees with the record");
     let adopted: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-seat-fold").collect();
     let mut members: Vec<String> = adopted.iter().map(|s| s["attributes"]["member"].as_str().unwrap_or_default().to_string()).collect();
     members.sort();
@@ -347,7 +347,7 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
 fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() {
     use rdm_core::status::{StatusReply, StatusRequest};
     use rdm_core::MemberStatus;
-    use rdm_transport::topology::{Backbone, Membership};
+    use rdm_transport::topology::{Backbone, TopologyView};
     let cap = crate::mesh_delete_resume::capture();
     let observed = cap.run(async {
         let mut observed = Vec::new();
@@ -374,11 +374,11 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                     nodes_storage: storage.nodes.clone(), meshes_storage: storage.meshes.clone(), fabric_storage: storage.fabric.clone(),
                     caches: Default::default(),
                     mesh_ids: Arc::new(std::collections::BTreeMap::new), durable: Default::default(),
-                    commands: Arc::new(rdm_admin::node_commands::CommandBook::default()), own: Default::default(),
+                    commands: Arc::new(rdm_admin::node_commands::CommandView::default()), own: Default::default(),
                     mesh_deleter: Default::default(), hold_next_reply: Default::default(), wake: Default::default(),
                     fabric_states: Default::default(), fabric_recovery: Default::default(), configs: Default::default(), republish: Default::default(), configure: Default::default(),
                     before_ready: Default::default(), rename: Default::default(), row_moved: Default::default(),
-                    loads: None, book: None, builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
+                    loads: None, digest_view: None, builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
                     first_ready: Default::default(),
                 };
                 let reply = authority.apply(Some(rpc.clone()), &StatusRequest::DeclareNodeState {
@@ -409,20 +409,20 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
                 let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
                 let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-                let membership = Membership::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
+                let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
                 let records = Records::default();
-                records.set_book(membership.book.clone());
+                records.set_digest_view(topology_view.digest_view.clone());
                 records.set_status(successor.nodes, successor.meshes, successor.fabric, "mesh1".into(), b.name.clone(), b.node_id.clone());
-                assert!(membership.book.record(heartbeat(&fabric_id, &rpc)));
+                assert!(topology_view.digest_view.record(heartbeat(&fabric_id, &rpc)));
                 before.nodes.retain(|n| n.node_id != a.node_id);
                 for n in &mut before.nodes { if n.node_id == b.node_id { n.is_primary = true; n.is_fabric_primary = true; } }
                 let topology = RwLock::new(Topology { nodes: Vec::new(), ..before.clone() });
                 records.install_projected(&topology, || before.clone()).await;
-                membership.set_mesh_primary(true);
-                let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId {
+                topology_view.set_mesh_primary(true);
+                let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId {
                     node: b.name.to_string(), incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone(),
                 }, vec![]).await.unwrap();
-                let first = backbone.own_members(&membership).into_iter().find(|d| d.node.node_id == rpc.node_id && Some(&d.node.incarnation) == rpc.incarnation_id.as_ref()).unwrap();
+                let first = backbone.own_members(&topology_view).into_iter().find(|d| d.node.node_id == rpc.node_id && Some(&d.node.incarnation) == rpc.incarnation_id.as_ref()).unwrap();
                 let _ = std::fs::remove_dir_all(&dir);
                 (rows, first.status)
             }, parent).await;

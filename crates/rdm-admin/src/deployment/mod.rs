@@ -18,7 +18,7 @@ use std::sync::Arc;
 pub struct Prepared {
     /// The provider that realises runtimes.
     pub provider: Arc<dyn provider::DeploymentProvider>,
-    /// The address node-admin advertises to its runtimes (membership seed):
+    /// The address node-admin advertises to its runtimes (topology seed):
     /// loopback for processes, the fabric network's gateway for containers.
     pub admin_ip: IpAddr,
     /// Set for a container fabric, so its network can be removed with it.

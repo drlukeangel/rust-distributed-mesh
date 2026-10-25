@@ -30,7 +30,7 @@ pub struct ControlPlane {
     pub me: PathName,
     /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
-    /// Why the view lacks a name right now: what the digest book, the removed set and the
+    /// Why the view lacks a name right now: what the digest view, the removed set and the
     /// records hold for it (set once by the admin that owns them). An unknown-node refusal from
     /// the live view carries it, so the refusal names the exclusion instead of hiding it.
     pub absence: std::sync::OnceLock<Arc<dyn Fn(&PathName) -> String + Send + Sync>>,
@@ -42,9 +42,9 @@ pub struct ControlPlane {
     /// Fabric recovery in a view (Q122): its executor opens the re-create of the node-admin at the
     /// fabric-primary's path.name, in the fabric lane.
     pub fabric_recovery: std::sync::OnceLock<crate::fabric_recovery::Reader>,
-    /// This admin's seat book: a node-admin it holds as its mesh's primary replaced by the election is
+    /// This admin's primary view: a node-admin it holds as its mesh's primary replaced by the election is
     /// an unheard mesh-primary, the fabric-primary's to recover (node-recovery.md step 2).
-    pub seats: std::sync::OnceLock<rdm_transport::topology::SeatBook>,
+    pub seats: std::sync::OnceLock<rdm_transport::topology::PrimaryView>,
     /// What the fabric-primary's investigation holds of a peer mesh it has heard on the backbone
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
     /// stopped or deleted from here (R-D1). Set once by the admin that owns the ladder.
@@ -53,7 +53,7 @@ pub struct ControlPlane {
     /// writer): the active Directs of the fleet, and this admin's own latest Directs and Proxies.
     pub connections: std::sync::OnceLock<Arc<std::sync::Mutex<rdm_core::connections::ConnectionsHeld>>>,
     /// The CPU and RAM each member's latest digest carries, by node id (set once by the admin that
-    /// owns the digest book). Load is served beside the view, never inside it: it changes every
+    /// owns the digest view). Load is served beside the view, never inside it: it changes every
     /// digest and never moves the topology.
     pub loads: std::sync::OnceLock<Arc<dyn Fn() -> std::collections::BTreeMap<String, (Option<rdm_core::NodeLoad>, Option<rdm_core::GossipStats>)> + Send + Sync>>,
     /// Woken on every accepted Build so the executor re-plans.

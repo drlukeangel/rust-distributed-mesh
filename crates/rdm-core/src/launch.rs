@@ -195,7 +195,7 @@ pub struct Launch {
     pub data_dir: PathBuf,
     /// The fabric's shared store root (R14).
     pub store_dir: PathBuf,
-    /// The id of the node's mesh: it names the mesh's membership channel.
+    /// The id of the node's mesh: it names the mesh's topology channel.
     pub mesh_id: Option<MeshId>,
     /// The issuing material of its mesh a node-admin is launched with. `None` for every other birth
     /// and for a launcher configured with no certs.

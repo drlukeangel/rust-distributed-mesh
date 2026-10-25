@@ -3,7 +3,7 @@
 //!
 //! A node binds its transport on port 0 and the operating system assigns the port. Its first
 //! call is `JoinNode` to the node-admin that deployed it: the request carries the node's full
-//! membership digest (the same struct its gossip `Frame::Digest` carries) with the transport
+//! topology digest (the same struct its gossip `Frame::Digest` carries) with the transport
 //! address read from the bound endpoint, and the listeners it bound with the ports the operating
 //! system selected. The admin verifies the digest against what it
 //! deployed, installs that address for the node's key and answers what it holds.
@@ -21,7 +21,7 @@
 //! The request carries the digest typed, as `WireDigest` (`crate::wire`, the same
 //! positional shape a gossip frame carries). The answer is the postcard of the admin's entry
 //! answer (`rafka-node-admin-core` `wire::WireEntryAnswer`): its topology projection, its
-//! membership frames and its source snapshots are types of crates this contract does not depend
+//! topology frames and its source snapshots are types of crates this contract does not depend
 //! on, so they travel as one postcard frame of their own, never JSON. The family is not
 //! forwardable: the deploying admin decides its own joins.
 

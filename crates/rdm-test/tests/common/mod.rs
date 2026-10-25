@@ -512,7 +512,7 @@ pub async fn node_command_completion(client: &rdm_transport::NodeRpcClient, targ
 
 /// Old cell request builders retain their assertion vocabulary; their command hop is 0x22.
 /// The fixture primary records progress before acknowledging recovery, as the product owner does.
-pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::status::StatusRequest, opts: &rdm_transport::CallOptions, book: Option<&rdm_transport::topology::DigestBook>) -> Option<rdm_core::status::StatusReply> {
+pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::status::StatusRequest, opts: &rdm_transport::CallOptions, digest_view: Option<&rdm_transport::topology::DigestView>) -> Option<rdm_core::status::StatusReply> {
     use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest as Q};
     use rdm_core::status::{StatusReply as R, StatusRequest as S};
     use rdm_transport::stream::StreamItem;
@@ -541,15 +541,15 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
             N::StopConnectionsDeleted { receipt: r } => { receipt = Some(r); None }
             N::NodeJoined => {
                 joined = true;
-                if let Some(book) = book { book.reported(node_id, incarnation, rdm_core::MemberStatus::Pending); }
+                if let Some(digest_view) = digest_view { digest_view.reported(node_id, incarnation, rdm_core::MemberStatus::Pending); }
                 None
             }
             N::NodeStarted => {
-                if let Some((book, (held, _))) = book.and_then(|b| b.get(node_id.as_str()).map(|h| (b, h))) { book.started(node_id, incarnation, &held.node.name); }
+                if let Some((digest_view, (held, _))) = digest_view.and_then(|b| b.get(node_id.as_str()).map(|h| (b, h))) { digest_view.started(node_id, incarnation, &held.node.name); }
                 Some(if joined { R::Started } else { R::AlreadyApplied })
             }
             N::NodeStopped => {
-                if let Some(book) = book { book.reported(node_id, incarnation, rdm_core::MemberStatus::Leaving); }
+                if let Some(digest_view) = digest_view { digest_view.reported(node_id, incarnation, rdm_core::MemberStatus::Leaving); }
                 Some(R::Stopped { receipt: receipt.take().expect("stop reports its closure before NodeStopped") })
             }
             N::Failed { step, reason, .. } => Some(R::StartFailed { step, reason }),

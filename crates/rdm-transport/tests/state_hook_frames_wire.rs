@@ -1,4 +1,4 @@
-//! Fixed bytes for the fabric state hook frames on the membership channels (R-W1: postcard,
+//! Fixed bytes for the fabric state hook frames on the topology channels (R-W1: postcard,
 //! positional, append-only; gossip.md, "Fabric state gossip hooks"). The literals lock the
 //! type names and data field order independently of codec round trips; they are derived from the
 //! postcard rules by hand. Never regenerate an expectation from the Rust serializer to make a
@@ -39,7 +39,7 @@ const NONE: &str = "00";
 const SOME: &str = "01 0d 6d657368322e61646d696e2e31";
 
 /// CONTRACT: `StateCommitting` is variant 15, `StateCommitted` 16, `TrafficOpening` 17 and `TrafficOpened`
-/// 18 of the membership frame, appended after `NewFabricPrimary` (14); each is the fabric id, the subject node id,
+/// 18 of the topology frame, appended after `NewFabricPrimary` (14); each is the fabric id, the subject node id,
 /// its incarnation, the build, the attempt, the operation, the publisher, the Rafka-time instant, then the
 /// forwarding primary. What must NOT happen: a field moved, a variant inserted before the end, or a
 /// self-describing encoding.

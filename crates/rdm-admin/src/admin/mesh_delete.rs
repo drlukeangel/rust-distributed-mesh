@@ -53,15 +53,15 @@ impl AdminRunner {
         Ok(held)
     }
 
-    /// The runtime fact the book holds for `node` (its digest).
+    /// The runtime fact the view holds for `node` (its digest).
     fn held_runtime(&self, node: &Node) -> Option<rdm_core::RuntimeFact> {
-        self.book.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref()).and_then(|d| d.node.runtime)
+        self.digest_view.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref()).and_then(|d| d.node.runtime)
     }
 
-    /// The record this admin's membership holds of the exact roster birth `b`: its digest, live or
+    /// The record this admin's topology view holds of the exact roster birth `b`: its digest, live or
     /// parked, as the view projects a digest (the leave's records, [`crate::mesh_delete::roster_records`]).
     fn held_record(&self, b: &RosterBirth) -> Option<Node> {
-        let d = self.book.get(&b.node_id).map(|(d, _)| d).or_else(|| self.book.stopped_digests().into_iter().find(|d| d.node.node_id.as_str() == b.node_id)).filter(|d| d.node.incarnation.as_str() == b.incarnation_id)?;
+        let d = self.digest_view.get(&b.node_id).map(|(d, _)| d).or_else(|| self.digest_view.stopped_digests().into_iter().find(|d| d.node.node_id.as_str() == b.node_id)).filter(|d| d.node.incarnation.as_str() == b.incarnation_id)?;
         let mut n = Node::allocated(d.node.name.clone());
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
@@ -333,10 +333,10 @@ impl AdminRunner {
         self.delete_birth(build_id, attempt, record, handle).await
     }
 
-    /// After a mesh is deleted in process: its births depart this book, its deletion is held, and its
+    /// After a mesh is deleted in process: its births depart this view, its deletion is held, and its
     /// MeshId is forgotten here.
     async fn left_in_process(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &MeshDeleteKey) {
-        self.book.depart_mesh_births(mesh, build_id.as_str(), attempt, self.lifecycle_events.now_rafka_ms());
+        self.digest_view.depart_mesh_births(mesh, build_id.as_str(), attempt, self.lifecycle_events.now_rafka_ms());
         self.records.hold_mesh_deleted(&key.mesh_id);
         self.forget_mesh_id(mesh);
         self.refresh_view().await;
@@ -465,7 +465,7 @@ impl AdminRunner {
             let exited = crate::mesh_delete::exit_receipts(&steps, outer, std::slice::from_ref(&lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone()));
             if !exited {
                 let record = lost.record()?;
-                match crate::node_investigation::birth_runtime(&self.book, Some(&**store), &record).await {
+                match crate::node_investigation::birth_runtime(&self.digest_view, Some(&**store), &record).await {
                     Ok(b) => row = Some(crate::storage::RuntimeRow { node_id: record.node_id.clone(), name: record.name.clone(), incarnation_id: b.incarnation, runtime: b.fact, data_dir: b.data_dir }),
                     Err(why) => {
                         let step = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
@@ -714,7 +714,7 @@ impl AdminRunner {
             .map_err(|e| format!("{outer}: the MeshLeft receipt could not be recorded: {e}"))?;
         tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left-receipt", mesh_id = %mesh_id, build_id = %build_id.log(), attempt, operation = %outer, receipts = all.receipts.len(), roster = all.roster.len(), manifest = %reference)
             .in_scope(|| tracing::info!("every exact exit is proven: the MeshLeft receipt is recorded"));
-        self.book.depart_mesh_births(mesh, build_id.as_str(), attempt, self.lifecycle_events.now_rafka_ms());
+        self.digest_view.depart_mesh_births(mesh, build_id.as_str(), attempt, self.lifecycle_events.now_rafka_ms());
         self.forget_mesh_id(mesh);
         self.refresh_view().await;
         Ok(())

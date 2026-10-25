@@ -1,7 +1,7 @@
 # rust-distributed-mesh (RDM)
 
 The generic Mesh product: a fabric of meshes of nodes on one iroh network. Node-admins run the
-control plane (membership on iroh-gossip, Node RPC, Builds, deployment providers); rafka-v2 pins
+control plane (topology on iroh-gossip, Node RPC, Builds, deployment providers); rafka-v2 pins
 this repository and puts its gateways, brokers and compute nodes on it.
 
 - **Spec:** [`docs/architecture/`](docs/architecture/) with the lifecycle pages under

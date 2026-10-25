@@ -9,7 +9,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{Backbone, Frame, Membership};
+use rdm_transport::topology::{Backbone, Frame, TopologyView};
 use rdm_transport::snapshot::{chunks_of, Chunk, PublisherId, SourceSnapshot, Taken};
 use serde_json::Value;
 
@@ -89,18 +89,18 @@ fn read_chunks(s: &SourceSnapshot, snapshot_id: u64) -> Vec<Chunk> {
 
 /// Every chunk of one read, taken by `reader` as the joiner takes a read from its own mesh: the last
 /// answer.
-fn take_read(reader: &Membership, s: &SourceSnapshot, snapshot_id: u64) -> Taken {
+fn take_read(reader: &TopologyView, s: &SourceSnapshot, snapshot_id: u64) -> Taken {
     read_chunks(s, snapshot_id).into_iter().map(|c| reader.take_read_chunk(c, "mesh1")).last().expect("a snapshot has at least one chunk")
 }
 
 /// CONTRACT (gossip.md §3.1 `Members` and its receiver rule; node-rpc-envelope.md Topology `0x1E`):
-/// the mesh-primary's publication publishes its own mesh at version N. A birth then joins its book: a
+/// the mesh-primary's publication publishes its own mesh at version N. A birth then joins its view: a
 /// material change of the projection that no publication has published yet. A topology read in that
 /// window serves the own mesh as published, the version-N publication itself at version N, and a
 /// joiner that read version N before takes it again as the same content. The publication that follows
 /// bumps the version and the read serves the new member there. Must NOT happen: the read serving
-/// the book's live members under version N, which a joiner holding version N refuses as
-/// `rdm.mesh.membership.reject.via-inconsistent`.
+/// the view's live members under version N, which a joiner holding version N refuses as
+/// `rdm.mesh.topology.reject.via-inconsistent`.
 #[test]
 fn a_read_between_a_material_change_and_its_publication_serves_the_published_members_at_their_version() {
     let dir = crate::evidence_dir();
@@ -109,8 +109,8 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let (p_node, r_node) = (node().await, node().await);
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
-        let reader = Membership::join(&r_node.gossip, &r_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.3", clock(), vec![], &[]).await.unwrap();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
+        let reader = TopologyView::join(&r_node.gossip, &r_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.3", clock(), vec![], &[]).await.unwrap();
         let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
         let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
@@ -120,9 +120,9 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, MemberStatus::ReadyForTraffic, 0, 41_101);
         p.publish(&p_digest).await.unwrap();
         let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(p.book.record(digest("mesh1.rpc.1", &one, &one_birth, MemberStatus::ReadyForTraffic, 1, 41_111)));
-        assert!(p.book.started(&one, &one_birth, &"mesh1.rpc.1".parse().unwrap()));
-        let own = || p.book.get(p_node_id.as_str()).expect("the primary holds itself").0;
+        assert!(p.digest_view.record(digest("mesh1.rpc.1", &one, &one_birth, MemberStatus::ReadyForTraffic, 1, 41_111)));
+        assert!(p.digest_view.started(&one, &one_birth, &"mesh1.rpc.1".parse().unwrap()));
+        let own = || p.digest_view.get(p_node_id.as_str()).expect("the primary holds itself").0;
 
         // Version N: the publication puts the projection into the mesh; a joiner reads it and installs it.
         publication().await;
@@ -132,10 +132,10 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         assert!(n >= 1, "the publication published a version: {n}");
         assert!(matches!(take_read(&reader, &published, 1), Taken::Installed(_)), "the joiner installs version {n}");
 
-        // A birth joins the book: a material change no publication has published yet.
+        // A birth joins the view: a material change no publication has published yet.
         let (two, two_birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(p.book.record(digest("mesh1.rpc.2", &two, &two_birth, MemberStatus::Pending, 1, 41_112)));
-        assert!(p.book.get(two.as_str()).is_some(), "the primary's book holds the new birth");
+        assert!(p.digest_view.record(digest("mesh1.rpc.2", &two, &two_birth, MemberStatus::Pending, 1, 41_112)));
+        assert!(p.digest_view.get(two.as_str()).is_some(), "the primary's view holds the new birth");
 
         let served = of(p.held_topology(&own()), "mesh1");
         let names = |s: &SourceSnapshot| s.digests.iter().map(|d| d.node.name.to_string()).collect::<Vec<_>>();
@@ -153,7 +153,7 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         assert!(matches!(take_read(&reader, &next, 3), Taken::Installed(_)), "the joiner installs version {}", next.topology_version);
 
         let spans: Vec<Value> = capture.spans().expect("the cell's spans reached its evidence file");
-        let refused: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.reject.via-inconsistent").collect();
+        let refused: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.reject.via-inconsistent").collect();
         assert!(refused.is_empty(), "no read of the own mesh is refused as inconsistent: {refused:#?}");
         for n in [&p_node, &r_node] {
             n.ep.close().await;

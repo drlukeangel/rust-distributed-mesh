@@ -1,9 +1,9 @@
-//! RDM transport substrate: gossip on iroh (membership digest book, frames, topology snapshots),
+//! RDM transport substrate: gossip on iroh (topology digest view, frames, topology snapshots),
 //! the Node RPC runtime (client, server, pool, admission), stream wire framing, and the OTLP span
 //! and log exporter over HTTP.
 #![deny(missing_docs)]
 
-// gossip & membership modules
+// gossip & topology modules
 pub mod chunking;
 pub mod envelope;
 pub mod gossip;

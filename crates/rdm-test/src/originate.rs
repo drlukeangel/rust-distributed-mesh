@@ -72,7 +72,7 @@ pub enum OriginateRequest {
     /// Seed this node's own durable facts toward `destination` as a proven carried path leaves
     /// them (connections.md section 7): `failed_attempts` Direct Failed observations through the
     /// writer's own observer path, then `Proxy Connected` through `carrier`, both naming the
-    /// births this node's membership holds now. Testkit only: the product writes a Proxy after
+    /// births this node's topology view holds now. Testkit only: the product writes a Proxy after
     /// cold discovery, which nothing in this repository runs.
     RecordProxy {
         /// The `path.name` the facts concern.

@@ -5,7 +5,7 @@
 //! states.md "stopped nodes"). The commander reached the stopped node, so its key is the call's own,
 //! proved by the transport (node-rpc.md §14), and the path the call came in on is a path back: the
 //! join is a call to that endpoint at that path, whose target names no node (R-UC1a: no receiver
-//! refuses a call for the node id it names). No projection, heartbeat book or resolver record of
+//! refuses a call for the node id it names). No projection, heartbeat view or resolver record of
 //! the commander is read.
 //!
 //! The stop and start spans name the commander by the node id the node's
@@ -28,7 +28,7 @@ pub(crate) const NEVER: Duration = Duration::from_secs(20);
 
 pub(crate) async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
     let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
-    if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.membership.book)).await { return reply; }
+    if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.topology_view.digest_view)).await { return reply; }
     match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),
         other => panic!("{} did not end in a reply: {other:?}", req.op()),
@@ -37,7 +37,7 @@ pub(crate) async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, 
 
 /// The cell's mesh: `primary` launched the rpc node `running` (`mesh1.rpc.1`, ReadyForTraffic at its
 /// primary); `commander` (`mesh1.admin.2`) never says anything on the mesh channel, so the node's
-/// heartbeat book holds no digest of it, while the primary carries it in the member projection the
+/// heartbeat view holds no digest of it, while the primary carries it in the member projection the
 /// node installed (`_carried`). The commander reaches the node by its exact birth (`target`).
 pub(crate) struct Rig {
     pub(crate) primary: crate::common::AdminSide,
@@ -98,10 +98,10 @@ pub(crate) async fn rig_before_ready(tag: &str, carry: bool, before_ready: Optio
         None => node::start(&launch, |b, _| b).await,
     }
     .expect("the node comes up");
-    let book = &primary.observer.membership.book;
-    let mut heard = book.heard_changes();
+    let digest_view = &primary.observer.topology_view.digest_view;
+    let mut heard = digest_view.heard_changes();
     tokio::time::timeout(NEVER, async {
-        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
             heard.changed().await.unwrap();
         }
     })
@@ -111,10 +111,10 @@ pub(crate) async fn rig_before_ready(tag: &str, carry: bool, before_ready: Optio
     // Only the carry's delta is in flight once the carry starts: the node first holds its primary's
     // projection naming it ReadyForTraffic, so no later delta reaches it ahead of an earlier one. A delta
     // ahead of its predecessor is a gap, and the top-up's topology read installs the primary's whole
-    // projection into the node's book, the commander included (gossip.md §3.3).
-    let own_key = book.get(launch.node_id.as_str()).map(|(d, _)| d.node.endpoint_id.0.clone()).expect("the primary holds the node");
+    // projection into the node's view, the commander included (gossip.md §3.3).
+    let own_key = digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.node.endpoint_id.0.clone()).expect("the primary holds the node");
     tokio::time::timeout(NEVER, async {
-        while running.membership.projected_member_at(&own_key).is_none_or(|d| d.status != MemberStatus::ReadyForTraffic) {
+        while running.topology_view.projected_member_at(&own_key).is_none_or(|d| d.status != MemberStatus::ReadyForTraffic) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -128,19 +128,19 @@ pub(crate) async fn rig_before_ready(tag: &str, carry: bool, before_ready: Optio
     let carried = carry.then(|| primary.carry_in_projection(&commander));
     if carry {
         tokio::time::timeout(NEVER, async {
-            while running.membership.projected_member_at(&commander_key).is_none() {
+            while running.topology_view.projected_member_at(&commander_key).is_none() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .expect("the node never installed a projection of its primary carrying the commander");
     } else {
-        assert!(running.membership.projected_member_at(&commander_key).is_none(), "a projection the node holds names the commander: the cell proves nothing");
+        assert!(running.topology_view.projected_member_at(&commander_key).is_none(), "a projection the node holds names the commander: the cell proves nothing");
     }
-    assert!(running.membership.book.get(commander_id.as_str()).is_none(), "the node's heartbeat book holds the commander: the cell proves nothing");
+    assert!(running.topology_view.digest_view.get(commander_id.as_str()).is_none(), "the node's heartbeat view holds the commander: the cell proves nothing");
 
-    // The commander reaches the node by its birth, as the primary's book holds it.
-    let (born, _) = book.get(launch.node_id.as_str()).unwrap();
+    // The commander reaches the node by its birth, as the primary's view holds it.
+    let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();
     commander.observer.resolver.insert(ResolvedNode {
         node_id: born.node.node_id.clone(),
         name: born.node.name.clone(),
@@ -159,8 +159,8 @@ pub(crate) fn spans_of(spans: &crate::common::Spans, name: &str, node: &str) -> 
 }
 
 #[test]
-fn a_stopped_node_whose_heartbeat_book_lacks_its_commander_starts_and_joins_it_through_the_call() {
-    let cell = "a_stopped_node_whose_heartbeat_book_lacks_its_commander_starts_and_joins_it_through_the_call";
+fn a_stopped_node_whose_heartbeat_view_lacks_its_commander_starts_and_joins_it_through_the_call() {
+    let cell = "a_stopped_node_whose_heartbeat_view_lacks_its_commander_starts_and_joins_it_through_the_call";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -174,7 +174,7 @@ fn a_stopped_node_whose_heartbeat_book_lacks_its_commander_starts_and_joins_it_t
 
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "the commander's stop is answered Stopped: {left:?}");
-        assert!(running.membership.book.get(commander_id.as_str()).is_none(), "the node's heartbeat book came to hold the commander before its start: the cell proves nothing");
+        assert!(running.topology_view.digest_view.get(commander_id.as_str()).is_none(), "the node's heartbeat view came to hold the commander before its start: the cell proves nothing");
 
         // The commander deployed this birth and awaits its join, as the admin that commands its start.
         commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
@@ -207,7 +207,7 @@ fn a_stopped_node_whose_heartbeat_book_lacks_its_commander_starts_and_joins_it_t
 /// needs one. The `commander-unrecorded` refusal is an identity check inside a workflow, so it goes.
 /// Who answered is learned from the join answer. No new field on `StartNode`."): the rpc node is
 /// stopped and started by an admin of its mesh that no record the node holds names (neither its
-/// heartbeat book nor any projection it installed: an admin born after its stop). The stop is
+/// heartbeat view nor any projection it installed: an admin born after its stop). The stop is
 /// answered `Stopped` and the start `Started`: the start joined the admin through the call's endpoint
 /// and path, and the node is the same birth, ReadyForTraffic again. Must NOT happen: the start
 /// refused `commander-unrecorded`.
@@ -225,7 +225,7 @@ fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_join
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
-        assert!(running.membership.book.get(commander_id.as_str()).is_none(), "the node's heartbeat book holds the commander: the cell proves nothing");
+        assert!(running.topology_view.digest_view.get(commander_id.as_str()).is_none(), "the node's heartbeat view holds the commander: the cell proves nothing");
         commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
         let started = call(&commander, &target, &start).await;
         assert_eq!(started, StatusReply::Started, "the node starts after its stop, joining the admin that commanded it through the call, with no record of it");
@@ -267,13 +267,13 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
         let _lost_carried = primary.carry_in_projection(&lost);
         let lost_key = lost.seed.0.clone();
         tokio::time::timeout(NEVER, async {
-            while running.membership.projected_member_at(&lost_key).is_none() {
+            while running.topology_view.projected_member_at(&lost_key).is_none() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .expect("the node never installed a projection of its primary carrying the lost commander");
-        let (born, _) = primary.observer.membership.book.get(node_id.as_str()).unwrap();
+        let (born, _) = primary.observer.topology_view.digest_view.get(node_id.as_str()).unwrap();
         lost.observer.resolver.insert(ResolvedNode {
             node_id: born.node.node_id.clone(),
             name: born.node.name.clone(),
@@ -358,7 +358,7 @@ fn a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call() {
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "848haseghsta".into(), attempt: 2, operation: "node.start:mesh1.rpc.1".into() };
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
-        let held = running.membership.projected_member_at(&commander.seed.0).expect("the projection carries the commander");
+        let held = running.topology_view.projected_member_at(&commander.seed.0).expect("the projection carries the commander");
         running.node_rpc.resolver.depart(&commander_id, &held.node.incarnation, &held.node.name);
         commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
         let started = call(&commander, &target, &start).await;
@@ -447,7 +447,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
         // primary's projection.
         let lost = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.3").await;
         let _lost_carried = primary.carry_in_projection(&lost);
-        let (born, _) = primary.observer.membership.book.get(node_id.as_str()).unwrap();
+        let (born, _) = primary.observer.topology_view.digest_view.get(node_id.as_str()).unwrap();
         lost.observer.resolver.insert(ResolvedNode {
             node_id: born.node.node_id.clone(),
             name: born.node.name.clone(),

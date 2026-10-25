@@ -190,8 +190,8 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         let mut subject = rdm_admin::model::Node::allocated(joiner_digest.node.name.clone());
         subject.node_id = joiner_digest.node.node_id.clone();
         subject.incarnation_id = Some(joiner_digest.node.incarnation.clone());
-        let observer = rdm_admin::admin::MembershipObserver {
-            book: root.membership.book.clone(),
+        let observer = rdm_admin::admin::TopologyObserver {
+            digest_view: root.topology_view.digest_view.clone(),
             client: Some(root.node_rpc.client.clone()),
             commands: Arc::default(),
             authority: Arc::default(),

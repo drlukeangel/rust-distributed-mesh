@@ -467,7 +467,7 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
 /// process alive) and then creates `mesh1.rpc.3`; every runtime of the fabric is lost inside that
 /// Build, the create's first receipt held by the faulted fabric-primary's door. The fabric-primary,
 /// restarted on its own data dir as both primaries, resumes the Build and completes it. The stopped
-/// node's runtime exited with the fault: the completed stop's receipt is not taken into any book after
+/// node's runtime exited with the fault: the completed stop's receipt is not taken into any view after
 /// the restart (no NodeStopped of it), and it is recovered (node-recovery.md step 3): node.delete of the
 /// exited birth, then node.create at its path.name under a new node id, and the view settles.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -512,8 +512,8 @@ async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_record
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     let t0 = named(&spans, "rdm.node_admin.node.update.via-recovery-start").into_iter().filter(|sp| attr(sp, "node") == fp).map(|sp| at(sp)).min().expect("the restarted fabric-primary recorded its recovery start");
-    let taken: Vec<&Value> = named(&spans, "rdm.mesh.membership.remove.via-node-stopped").into_iter().filter(|sp| at(sp) >= t0 && attr(sp, "node_id") == stopped_id).collect();
-    assert!(taken.is_empty(), "no book takes a NodeStopped of the exited birth after the restart: {taken:#?}; the cut held {held}");
+    let taken: Vec<&Value> = named(&spans, "rdm.mesh.topology.remove.via-node-stopped").into_iter().filter(|sp| at(sp) >= t0 && attr(sp, "node_id") == stopped_id).collect();
+    assert!(taken.is_empty(), "no view takes a NodeStopped of the exited birth after the restart: {taken:#?}; the cut held {held}");
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| at(sp) >= t0 && attr(sp, "node_id") == stopped_id).collect();
     assert_eq!(deleted.len(), 1, "the exited birth is recovered: node.delete of it once, then node.create at its path.name: {deleted:#?}");
 }

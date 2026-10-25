@@ -27,8 +27,8 @@ pub struct AdminRunner {
     pub provider: Arc<dyn DeploymentProvider>,
     /// The births this admin deployed and awaits a `JoinNode` from.
     pub joins: Arc<crate::join::Joins>,
-    /// The observer of births' membership.
-    pub observer: Arc<MembershipObserver>,
+    /// The observer of births' topology view.
+    pub observer: Arc<TopologyObserver>,
     /// The records this admin holds.
     pub records: Arc<Records>,
     /// The Build state.
@@ -52,8 +52,8 @@ pub struct AdminRunner {
     pub fabric_id: FabricId,
     /// The provider that runs the fabric's nodes.
     pub fabric_provider: ProviderKind,
-    /// The digest book.
-    pub book: DigestBook,
+    /// The digest view.
+    pub digest_view: DigestView,
     /// This admin's own path.
     pub me: PathName,
     /// This admin's node id (the adopter on every runtime it adopts).
@@ -64,10 +64,10 @@ pub struct AdminRunner {
     pub node_rpc: crate::node_rpc::ProcessNodeRpc,
     /// Its connections store: the by-destination index names node investigation's leads.
     pub connections: Option<Arc<dyn crate::storage::ConnectionsStorage>>,
-    /// Where the retire pipeline's lifecycle events go: this admin's membership and backbone.
+    /// Where the retire pipeline's lifecycle events go: this admin's topology view and backbone.
     pub lifecycle_events: Arc<dyn crate::deployment::pipeline::LifecycleEvents>,
     /// The mesh leaves this admin, as the fabric-primary, has admitted and awaits a handoff for.
-    pub leaves: Arc<crate::mesh_delete::MeshDeleteBook>,
+    pub leaves: Arc<crate::mesh_delete::MeshDeleteView>,
     /// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished.
     pub mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns,
     /// This admin's own mesh.delete door: the fabric-primary that is its own mesh's primary (the last
@@ -98,7 +98,7 @@ pub struct AdminRunner {
 /// which its mesh primary publishes; a peer mesh's primary forwards them onto its own channel.
 pub struct GossipLifecycle {
     /// This admin's mesh channel.
-    pub membership: Membership,
+    pub topology_view: TopologyView,
     /// This admin's place on the backbone: the fabric state hooks publish there as well.
     pub backbone: Backbone,
     /// This admin's own path: the publisher of the mesh frames it authors.
@@ -107,7 +107,7 @@ pub struct GossipLifecycle {
     /// deleted is handed to it (mesh-left follows the final primary's exit proof, R-MD1 item 2).
     pub mesh_deleter: crate::mesh_delete::MeshDeleterSlot,
     /// This admin's view projected and installed at once ([`view_projector`]): a stop this executor
-    /// applied to its own book is in its view before the next step decides from it, as a moved row is.
+    /// applied to its own digest view is in its view before the next step decides from it, as a moved row is.
     pub project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
     /// This admin's status authority: a stop's `stopped` is recorded in the birth's declared-state
     /// row there, which publishes NodeStopped once, from the reply or the birth's declaration,
@@ -125,7 +125,7 @@ pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&A
         if let Some(project) = project {
             project().await;
         }
-        tracing::info!("the node is stopped: every mesh drops it from its book; no heartbeat of it ends the stop, only this mesh-primary's node.joined");
+        tracing::info!("the node is stopped: every mesh drops it from its view; no heartbeat of it ends the stop, only this mesh-primary's node.joined");
     }
     .instrument(span)
     .await
@@ -134,14 +134,14 @@ pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&A
 /// The publisher of NodeStopped a status authority calls once it applies a birth's Leaving that names
 /// the operation which stopped it (i146 Q29, Q36): NodeStopped, the operation stamped with this
 /// admin's Rafka-time.
-pub(crate) fn stopped_publisher(membership: Membership, backbone: Backbone, project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>) -> crate::status_rpc::StoppedPublisher {
+pub(crate) fn stopped_publisher(topology_view: TopologyView, backbone: Backbone, project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>) -> crate::status_rpc::StoppedPublisher {
     Arc::new(move |row: crate::status_rpc::Declaration, operation: rdm_core::status::DeclaredOperation| {
-        let (membership, backbone, project) = (membership.clone(), backbone.clone(), project.clone());
+        let (topology_view, backbone, project) = (topology_view.clone(), backbone.clone(), project.clone());
         Box::pin(async move {
             // Inside node.restart the stop's stopped is held by NodeRestarting, never published as
             // NodeStopped (gossip.md, "Node-stopped lifecycle overlay"; Q135): NodeRestarting ends at
             // node.started of the same birth, where a NodeStopped would wait for a node.joined.
-            if let Some(restart) = membership.book.restart_of(row.node_id.as_str(), &row.incarnation_id) {
+            if let Some(restart) = topology_view.digest_view.restart_of(row.node_id.as_str(), &row.incarnation_id) {
                 tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %row.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), build_id = %operation.build_id, attempt = operation.attempt, operation = %operation.operation, outcome = "held-by-restart", restart = %restart.operation)
                     .in_scope(|| tracing::info!("the stop belongs to an open restart of this birth: NodeRestarting holds it and no NodeStopped is published"));
                 return;
@@ -153,7 +153,7 @@ pub(crate) fn stopped_publisher(membership: Membership, backbone: Backbone, proj
                 node_id: row.node_id,
                 incarnation: row.incarnation_id,
                 name: row.name,
-                event_at_rafka_ms: membership.clock().now_rafka_ms(),
+                event_at_rafka_ms: topology_view.clock().now_rafka_ms(),
             };
             publish_node_stopped(&backbone, project.as_ref(), &op).await;
         })
@@ -163,14 +163,14 @@ pub(crate) fn stopped_publisher(membership: Membership, backbone: Backbone, proj
 impl GossipLifecycle {
     #[allow(dead_code)]
     pub(crate) fn held_name(&self) -> PathName {
-        self.membership.book.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.topology_view.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
     }
 }
 
 #[async_trait::async_trait]
 impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     fn now_rafka_ms(&self) -> u64 {
-        self.membership.clock().now_rafka_ms()
+        self.topology_view.clock().now_rafka_ms()
     }
     async fn deleting(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node = %op.name, node_id = %op.node_id, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
@@ -199,12 +199,12 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         }
     }
     async fn joined(&self, op: &rdm_core::LifecycleOp) {
-        let _ = crate::status_rpc::set_member_status(&self.membership.book, crate::status_rpc::MemberStatusReceipt::NodeJoined { op, already: None });
+        let _ = crate::status_rpc::set_member_status(&self.topology_view.digest_view, crate::status_rpc::MemberStatusReceipt::NodeJoined { op, already: None });
     }
     async fn leaving(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         span.in_scope(|| {
-            let _ = crate::status_rpc::set_member_status(&self.membership.book, crate::status_rpc::MemberStatusReceipt::StopAdmitted(op));
+            let _ = crate::status_rpc::set_member_status(&self.topology_view.digest_view, crate::status_rpc::MemberStatusReceipt::StopAdmitted(op));
             tracing::info!("the birth admitted stop-node: this mesh-primary sets it stopping and its projection carries that; no frame is published");
         });
     }
@@ -212,7 +212,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = rdm_transport::topology::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            if let Err(e) = self.membership.publish_lifecycle(&f).await {
+            if let Err(e) = self.topology_view.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
             }
             tracing::info!("the exact birth is proven terminal: it has left");
@@ -226,17 +226,17 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
 }
 
 impl AdminRunner {
-    /// The name this admin currently holds in its membership digest book, or its boot name before its
-    /// birth is in the book.
+    /// The name this admin currently holds in its topology digest view, or its boot name before its
+    /// birth is in the view.
     pub(crate) fn held_name(&self) -> PathName {
-        self.book.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
     }
 
     /// Publish the view as it is now, so a Build that completes after this
     /// operation is never read back against an older view.
     pub(crate) async fn refresh_view(&self) {
         let me = self.held_name();
-        self.records.install_read(&me, &self.topology, &self.book, &self.fabric_id, |reads| project_with(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records, reads)).await;
+        self.records.install_read(&me, &self.topology, &self.digest_view, &self.fabric_id, |reads| project_with(&self.fabric, &self.fabric_id, self.fabric_provider, &self.digest_view, &self.records, reads)).await;
     }
 
     /// The template of an operation on a node of `kind` in `mesh` that launches nothing (a delete, a
@@ -370,7 +370,7 @@ impl AdminRunner {
     }
 
     /// The runtime of `node`'s birth: this admin's own handle, or the exact
-    /// runtime the birth publishes with its membership (`MeshNode::runtime`),
+    /// runtime the birth publishes with its topology view (`MeshNode::runtime`),
     /// adopted when its provider and control domain are this admin's. No
     /// Build history is read: whoever launched it, and however long ago, the
     /// birth itself says where its runtime is. A fact from another provider
@@ -381,11 +381,11 @@ impl AdminRunner {
     async fn published_runtime(&self, node: &Node, incarnation: &IncarnationId) -> Result<(Option<rdm_core::runtime::RuntimeFact>, Option<String>, bool), String> {
         let me = self.held_name();
         let held = self
-            .book
+            .digest_view
             .get(node.node_id.as_str())
-            .or_else(|| self.book.projected_at(node.node_id.as_str(), std::time::Instant::now()))
+            .or_else(|| self.digest_view.projected_at(node.node_id.as_str(), std::time::Instant::now()))
             .map(|(d, _)| d)
-            .or_else(|| self.book.stopped_digests().into_iter().find(|d| d.node.node_id == node.node_id))
+            .or_else(|| self.digest_view.stopped_digests().into_iter().find(|d| d.node.node_id == node.node_id))
             .filter(|d| d.node.incarnation == *incarnation);
         let row = match (&held, self.records.contacts.get()) {
             (None, Some(store)) => birth_runtime_row(&**store, &me, &node.name, &node.node_id, incarnation).await?,
@@ -394,7 +394,7 @@ impl AdminRunner {
         match (&held, &row) {
             (Some(d), _) => Ok((d.node.runtime.clone(), d.data_dir.clone(), true)),
             (None, Some(r)) => Ok((Some(r.runtime.clone()), r.data_dir.clone(), false)),
-            (None, None) => Err(format!("{} (birth {}) is not held in this admin's membership or its durable runtime rows; its runtime is unknown", node.name, incarnation.as_str())),
+            (None, None) => Err(format!("{} (birth {}) is not held in this admin's topology view or its durable runtime rows; its runtime is unknown", node.name, incarnation.as_str())),
         }
     }
 
@@ -489,7 +489,7 @@ impl AdminRunner {
             provider_control_domain_fingerprint = %fact.domain_fingerprint(),
             runtime_locator_kind = fact.locator.kind(),
             runtime_locator_fingerprint = %fact.locator_fingerprint(),
-            source = if held { "self-published-membership" } else { "durable-runtime-row" },
+            source = if held { "self-published-topology" } else { "durable-runtime-row" },
             adopter = %me,
             adopter_node_id = %self.node_id,
             execution_node_id = %self.node_id,
@@ -531,7 +531,7 @@ impl AdminRunner {
                 rows.insert(r.key(), r);
             }
         }
-        for d in self.book.all() {
+        for d in self.digest_view.all() {
             if let Some(runtime) = d.node.runtime.clone() {
                 let r = crate::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
                 rows.insert(r.key(), r);
@@ -593,7 +593,7 @@ impl AdminRunner {
     /// holds no state for (a new mesh, e4.s11). A held word that is no Mesh lifecycle state is no
     /// state held.
     fn held_mesh_state(&self, mesh: &str) -> rdm_core::status::MeshState {
-        self.book.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok()).unwrap_or(rdm_core::status::MeshState::Pending)
+        self.digest_view.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok()).unwrap_or(rdm_core::status::MeshState::Pending)
     }
 
     /// The fabric-primary -> mesh state hand-off at a mesh's first admin, as the create pipeline's
@@ -606,11 +606,11 @@ impl AdminRunner {
     /// `Build(shape)` never starts under an assumed state.
     pub(crate) fn mesh_state_hook(&self, admin: &PathName, state: rdm_core::status::MeshState) -> Result<crate::deployment::pipeline::BeforeReady, String> {
         let node_rpc = &self.node_rpc;
-        let (client, resolver, me, book, me_id, topology, mesh, records, mesh_rows) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.book.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone(), self.mesh_storage.clone());
+        let (client, resolver, me, digest_view, me_id, topology, mesh, records, mesh_rows) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.digest_view.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone(), self.mesh_storage.clone());
         Ok(Arc::new(move |target: Node| {
-            let (client, resolver, me, book, me_id, topology, mesh, records, mesh_rows) = (client.clone(), resolver.clone(), me.clone(), book.clone(), me_id.clone(), topology.clone(), mesh.clone(), records.clone(), mesh_rows.clone());
+            let (client, resolver, me, digest_view, me_id, topology, mesh, records, mesh_rows) = (client.clone(), resolver.clone(), me.clone(), digest_view.clone(), me_id.clone(), topology.clone(), mesh.clone(), records.clone(), mesh_rows.clone());
             Box::pin(async move {
-                let me = book.held_path_name().unwrap_or_else(|| me.clone());
+                let me = digest_view.held_path_name().unwrap_or_else(|| me.clone());
                 // The mesh's exact identity, as the launch took it ([`mesh_id_of`]; a recovery never mints one).
                 let mesh_id = match mesh_id_of(&records, &topology, &*mesh_rows, &mesh).await {
                     Ok(Some(id)) => id,
@@ -624,8 +624,8 @@ impl AdminRunner {
 
     /// The exact exited birth `from` at `node` a node recovery acts for (node-recovery.md), and its
     /// exact runtime: the view's record while it holds that birth, else a record of the exact birth
-    /// resolved from the membership book or the durable runtime row this admin wrote when it first
-    /// held the birth (a departed birth has left the book). `op` names the operation in a refusal.
+    /// resolved from the topology view or the durable runtime row this admin wrote when it first
+    /// held the birth (a departed birth has left the view). `op` names the operation in a refusal.
     pub(crate) async fn exited_birth(&self, op: &str, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(Node, DeploymentHandle), String> {
         let seen = self.topology.read().await.node(node).cloned().filter(|n| n.node_id == from.node_id && n.incarnation_id.as_ref() == Some(&from.incarnation));
         let exact = seen.unwrap_or_else(|| {
@@ -955,7 +955,7 @@ impl AdminRunner {
         // open for the typed drain.
         if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
             // Not awaited: the endpoint's actor for this key answers when it is free, and the
-            // retire does not wait for a dead peer's actor (the same call membership spawns).
+            // retire does not wait for a dead peer's actor (the same call the topology view spawns).
             let ep = ep.clone();
             tokio::spawn(async move { ep.replace_direct_addrs(key, []).await });
             tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-retired", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "removal", reason = "proven-exit")
@@ -1026,7 +1026,7 @@ impl AdminRunner {
 
     /// The exact parked birth `from` that a delete of `node` (`<path>.old`) is fenced to, for an admin
     /// whose view does not name `node` and which did not run the replace (the mesh's primary changed
-    /// since): the birth as its membership holds it parked, or else its durable runtime row (every
+    /// since): the birth as its topology view holds it parked, or else its durable runtime row (every
     /// admin keeps one per birth it heard, `runtime_rows_task`). The record is named `node`; its
     /// runtime is then adopted from the same sources by [`Self::handle_for`].
     pub(crate) async fn stopped_birth_by_incarnation(&self, node: &PathName, from: &IncarnationId) -> Result<Node, String> {
@@ -1034,7 +1034,7 @@ impl AdminRunner {
         birth.incarnation_id = Some(from.clone());
         birth.parked = true;
         birth.status = NodeStatus::Leaving;
-        if let Some(d) = self.book.stopped_digests().into_iter().find(|d| &d.node.incarnation == from) {
+        if let Some(d) = self.digest_view.stopped_digests().into_iter().find(|d| &d.node.incarnation == from) {
             birth.node_id = d.node.node_id.clone();
             birth.endpoint_id = Some(d.node.endpoint_id.clone());
             birth.transport_addr = Some(d.node.transport_addr);
@@ -1042,10 +1042,10 @@ impl AdminRunner {
             return Ok(birth);
         }
         let Some(store) = self.records.contacts.get() else {
-            return Err(format!("node.delete:{node}: birth {} is not in this admin's view or membership, and this admin has no nodes store to read its runtime row from", from.as_str()));
+            return Err(format!("node.delete:{node}: birth {} is not in this admin's view or the topology view, and this admin has no nodes store to read its runtime row from", from.as_str()));
         };
-        let rows = store.runtimes().await.map_err(|e| format!("node.delete:{node}: birth {} is not in this admin's view or membership, and its runtime rows could not be read: {e}", from.as_str()))?;
-        let row = rows.into_iter().find(|r| &r.incarnation_id == from).ok_or_else(|| format!("node.delete:{node}: birth {} is not in this admin's view or membership, and this admin holds no runtime row of it", from.as_str()))?;
+        let rows = store.runtimes().await.map_err(|e| format!("node.delete:{node}: birth {} is not in this admin's view or the topology view, and its runtime rows could not be read: {e}", from.as_str()))?;
+        let row = rows.into_iter().find(|r| &r.incarnation_id == from).ok_or_else(|| format!("node.delete:{node}: birth {} is not in this admin's view or the topology view, and this admin holds no runtime row of it", from.as_str()))?;
         birth.node_id = row.node_id;
         birth.data_dir = row.data_dir;
         Ok(birth)
@@ -1067,7 +1067,7 @@ impl AdminRunner {
     /// verified against, as the birth was admitted.
     pub(crate) fn deployed_for(&self, record: &Node, handle: &DeploymentHandle) -> Result<crate::join::Deployed, String> {
         let incarnation = record.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", record.name))?;
-        let admitted = self.book.stopped_digests().into_iter().find(|d| d.node.node_id == record.node_id && d.node.incarnation == incarnation);
+        let admitted = self.digest_view.stopped_digests().into_iter().find(|d| d.node.node_id == record.node_id && d.node.incarnation == incarnation);
         Ok(crate::join::Deployed {
             name: record.name.clone(),
             node_id: record.node_id.clone(),
@@ -1125,10 +1125,10 @@ impl AdminRunner {
         Ok((record, handle, deployed))
     }
 
-    /// [`Self::deployed_for`] for a birth still in the book: its admitted digest is the book's.
+    /// [`Self::deployed_for`] for a birth still in the digest view: its admitted digest is the view's.
     pub(crate) fn deployed_for_live(&self, record: &Node, handle: &DeploymentHandle) -> Result<crate::join::Deployed, String> {
         let incarnation = record.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", record.name))?;
-        let admitted = self.book.get(record.node_id.as_str()).map(|(d, _)| d).filter(|d| d.node.incarnation == incarnation);
+        let admitted = self.digest_view.get(record.node_id.as_str()).map(|(d, _)| d).filter(|d| d.node.incarnation == incarnation);
         Ok(crate::join::Deployed {
             name: record.name.clone(),
             node_id: record.node_id.clone(),
@@ -1260,7 +1260,7 @@ impl crate::seat_revision::PathProbe for AdminRunner {
     async fn investigate(&self, node: &Node) -> crate::node_investigation::Finding {
         let view = self.topology.read().await.clone();
         let calls = crate::offline::TickleClient { client: self.node_rpc.client.clone(), me_id: self.node_id.clone(), me: self.held_name().to_string(), connections: self.connections.clone() };
-        let inspect = async { crate::node_investigation::Finding::from(crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.book, self.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), node).await.0) };
+        let inspect = async { crate::node_investigation::Finding::from(crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.digest_view, self.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), node).await.0) };
         crate::node_investigation::investigate(node, &view, &calls, inspect).await
     }
 }

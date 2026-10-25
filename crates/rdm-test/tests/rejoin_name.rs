@@ -21,7 +21,7 @@ use std::time::Duration;
 
 async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
     let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
-    if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.membership.book)).await { return reply; }
+    if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.topology_view.digest_view)).await { return reply; }
     match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),
         other => panic!("{} did not end in a reply: {other:?}", req.op()),
@@ -76,12 +76,12 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         admin.deployed(&launch, &key);
         let running = node::start(&launch, |b, _| b).await.expect("the node comes up");
 
-        let book = &admin.observer.membership.book;
-        let mut digests = book.digest_changes();
-        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        let digest_view = &admin.observer.topology_view.digest_view;
+        let mut digests = digest_view.digest_changes();
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
             digests.changed().await.unwrap();
         }
-        let (d, _) = book.get(launch.node_id.as_str()).unwrap();
+        let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
@@ -90,10 +90,10 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &delete).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
         let leave = StatusRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), attempt: 1, operation: "node.mesh.leave:mesh1.rpc.1".into() };
         assert!(matches!(call(&admin, &target, &leave).await, StatusReply::MeshLeft { .. }), "the node leaves its mesh");
-        // What the node published is read from the node itself: its own book records every digest it
-        // publishes. Its admin hears a digest eventually, so its admin's book read at the leave can lack
+        // What the node published is read from the node itself: its own view records every digest it
+        // publishes. Its admin hears a digest eventually, so its admin's view read at the leave can lack
         // a heartbeat the node published just before it.
-        let published = || running.membership.book.get(launch.node_id.as_str()).expect("the node's own book records what it published").0.digest_seq;
+        let published = || running.topology_view.digest_view.get(launch.node_id.as_str()).expect("the node's own view records what it published").0.digest_seq;
         let seq_at_leave = published();
         // Step 2: the name, live and off its mesh; then the stop.
         let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.to_string() };
@@ -109,14 +109,14 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
 
         assert_eq!(call(&admin, &target, &start).await, StatusReply::Started, "the start presents the name the node holds");
         digests.borrow_and_update();
-        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_leave || d.status != MemberStatus::ReadyForTraffic) {
-            let (d, _) = book.get(launch.node_id.as_str()).unwrap();
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_leave || d.status != MemberStatus::ReadyForTraffic) {
+            let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
             if d.digest_seq > seq_at_leave {
                 assert_eq!(d.node.name, taken, "every digest after the start's join names the name the node holds");
             }
             digests.changed().await.unwrap();
         }
-        assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, taken, "the started node publishes the name it holds");
+        assert_eq!(digest_view.get(launch.node_id.as_str()).unwrap().0.node.name, taken, "the started node publishes the name it holds");
         // Its apply published nothing; its stop and start name the name it holds (R12).
         let applies: Vec<(String, String)> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.update.via-apply-node-name").map(|(_, _, f)| (f["to"].clone(), f["digest"].clone())).collect();
         assert_eq!(applies, vec![(taken.to_string(), "off-mesh".to_string())], "the apply off its mesh publishes nothing");

@@ -1286,7 +1286,7 @@ async fn deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_pr
 /// the delete (node-delete.md: "Stop and inspect the exact runtime through provider control"). mesh2's
 /// primary is stopped, its seats moving to mesh2's other admin; that admin did not rename the birth.
 /// It resolves the exact stopped birth the action is fenced to from what it holds of that birth (its
-/// membership's parked digest, else its durable runtime row of it), ends it with the provider's
+/// topology view's parked digest, else its durable runtime row of it), ends it with the provider's
 /// Exited proof and publishes NodeDeleted for it, and, as mesh2's primary, writes the Deleted row at
 /// `<path>.old`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1415,7 +1415,7 @@ async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, parked: &
 /// CONTRACT (lifecycles/node-replace.md, the same recipe for a node-admin): the replace recipe of a
 /// node-admin that holds no seat runs as one Build of node primitives: the predecessor has its
 /// connections deleted, leaves its mesh and the backbone, is renamed `<path>.old` live and then stopped
-/// (its NodeStopped drops it from every book), the successor is a re-birth at the path, and the
+/// (its NodeStopped drops it from every view), the successor is a re-birth at the path, and the
 /// predecessor is deleted. The successor admin's own view holds itself at the path, ready, under its
 /// new NodeId, and no admin's view holds two live births at the path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1641,7 +1641,7 @@ async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_f
 
 /// CONTRACT (node-recovery.md sequence step 1: "A repeat submit answers AlreadyApplied or
 /// BuildInProgress, never a second recovery"; step 3: "the old (node.id, incarnation) fenced in the
-/// peer-location book"): a member of the mesh that does not hold the fabric-primary is killed and
+/// peer-location view"): a member of the mesh that does not hold the fabric-primary is killed and
 /// recovered through its mesh-primary's report (node-recovery.md "Execution", Q118). Once the
 /// fabric-primary holds the recovery's receipts in that mesh's lane, the same recovery submitted
 /// again to it on op 0x20 (`build.create` Recover keyed on the exited birth) answers Started

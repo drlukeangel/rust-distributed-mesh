@@ -227,25 +227,25 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // positions (gossip.md frame catalog): nobody publishes or hears either, and nothing publishes
     // node-draining or node-drained.
     for kind in ["node-left", "node-leaving"] {
-        assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM).count(), 0, "no {kind} frame of the victim is heard by anyone");
+        assert_eq!(named(&spans, "rdm.mesh.topology.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM).count(), 0, "no {kind} frame of the victim is heard by anyone");
     }
-    assert!(named(&spans, "rdm.mesh.membership.reject.via-node-leaving").is_empty(), "no node-leaving frame reached any receiver");
+    assert!(named(&spans, "rdm.mesh.topology.reject.via-node-leaving").is_empty(), "no node-leaving frame reached any receiver");
     for kind in ["node-draining", "node-drained"] {
-        let reserved = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM).count();
+        let reserved = named(&spans, "rdm.mesh.topology.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM).count();
         assert_eq!(reserved, 0, "no {kind} frame of the victim is published or heard");
     }
     let stop_calls: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && ["node-left", "node-drained"].iter().any(|c| sp["attributes"]["completion"] == *c)).collect();
     assert!(stop_calls.is_empty(), "the victim makes no completion call for its stop, its reply is the completion: {stop_calls:#?}");
-    let heard_deleting = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
-    let heard_deleted = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
+    let heard_deleting = named(&spans, "rdm.mesh.topology.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
+    let heard_deleted = named(&spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     // The victim's own mesh hears the pre-notice on its channel. A peer mesh gets it only inside a backbone
     // aggregate while the operation is open (`in_flight`: "while the operation is claimed and has no
     // completed receipt", gossip.md Members): a retirement that completes within one aggregate interval
     // reaches it as the retained departure alone, which `heard_deleted` below covers for every node.
     assert!(heard_deleting >= 2, "the victim's own mesh heard the pre-notice: {heard_deleting}");
     // Each receiver's overlay install shows the victim found, live and not routable as the overlay
-    // opens in its book (so before that receiver's own removal of it).
-    let overlays: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
+    // opens in its view (so before that receiver's own removal of it).
+    let overlays: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
     let held: Vec<&&Value> = overlays.iter().filter(|sp| sp["attributes"]["held"] == "true").collect();
     assert!(held.len() >= 2, "receivers that held the victim when the overlay opened: {}: {overlays:#?}", held.len());
     for sp in &held {

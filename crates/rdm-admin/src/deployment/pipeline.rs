@@ -93,14 +93,14 @@ pub enum CreateStep {
     /// Wait for the birth to report the addresses it bound.
     WaitForBind,
     /// The birth's projection: its node record and data dir, and the fact it
-    /// publishes with its own membership digest.
+    /// publishes with its own topology digest.
     PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata,
     /// A mesh's first admin only: the fabric primary applies `MeshStatus::Pending` at this exact
     /// birth, through its Status door, as soon as the birth is bound and published and before it
     /// is heard or asked to be Ready (e4.s11): a peer mesh's admin is heard on the backbone only
     /// once it is its mesh's primary, which needs Ready, which needs this.
     ApplyMeshPending,
-    /// Wait for the birth's own digest to reach the admin's membership.
+    /// Wait for the birth's own digest to reach the admin's topology view.
     WaitForMeshJoin,
     /// Wait for the birth to declare itself ready.
     WaitForNodeReady,
@@ -396,7 +396,7 @@ impl CurrentRuntimeAdoption {
     }
 
     /// `PublishRuntimeFactAndCurrentRuntimeMetadata`: `publish` puts the fact
-    /// and this data dir into the projection membership publishes.
+    /// and this data dir into the projection the topology view publishes.
     /// Its receipt is written on the blocking pool (`blocking::blocking_io`).
     pub async fn publish(self, publish: impl FnOnce(&RuntimeFact, String) + Send + 'static) -> Result<RuntimeFact, PipelineError> {
         crate::blocking::blocking_io(move || self.publish_on_disk(publish)).await
@@ -468,10 +468,10 @@ pub(crate) async fn adoption_missing(data_dir: &std::path::Path) -> Result<Vec<&
         .collect())
 }
 
-/// What the pipeline asks of the live mesh (gossip membership and Node RPC).
+/// What the pipeline asks of the live mesh (gossip topology and Node RPC).
 #[async_trait::async_trait]
 pub trait NodeObserver: Send + Sync {
-    /// What this exact birth (`node_id`, `incarnation`) publishes with its own membership digest;
+    /// What this exact birth (`node_id`, `incarnation`) publishes with its own topology digest;
     /// `None` until it has joined fabric membership. Read by the lost-executor rule alone
     /// (`claimed_allocation`: a birth a lost executor launched that has joined stands); the create's
     /// own waits, `WaitForBind` and `WaitForMeshJoin`, complete from the birth's validated report
@@ -817,11 +817,11 @@ pub trait LifecycleEvents: Send + Sync {
     /// is published: `NodeLeaving` is a reserved position (gossip.md frame catalog).
     async fn leaving(&self, op: &LifecycleOp);
     /// The Rafka-time the events are stamped with (`event_at_rafka_ms`): the clock the process
-    /// composed for its membership, never a clock of the pipeline's own.
+    /// composed for its topology view, never a clock of the pipeline's own.
     fn now_rafka_ms(&self) -> u64;
 }
 
-/// No events: a pipeline under test with no membership, and so no rafka-time.
+/// No events: a pipeline under test with no topology view, and so no rafka-time.
 pub struct NoLifecycleEvents;
 
 #[async_trait::async_trait]
@@ -832,7 +832,7 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn stopped(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
-    /// A pipeline with no membership holds no rafka-time: its events carry zero, and no OS clock
+    /// A pipeline with no topology view holds no rafka-time: its events carry zero, and no OS clock
     /// stands in for one.
     fn now_rafka_ms(&self) -> u64 {
         0
@@ -1124,7 +1124,7 @@ pub struct DeploymentPipeline<'a> {
     pub provider: &'a dyn DeploymentProvider,
     /// The births this admin deployed and awaits a `JoinNode` from.
     pub joins: &'a Joins,
-    /// The observer of births' membership.
+    /// The observer of births' topology view.
     pub observer: &'a dyn NodeObserver,
     /// Where created nodes are published.
     pub sink: &'a dyn TopologySink,
@@ -3168,7 +3168,7 @@ mod tests {
 
     /// A provider whose exact runtime is this test process and whose birth reports, as the node's own
     /// `JoinNode` does, to the accepting authority that holds its deployment: the digest the authority
-    /// validates against the deployment and admits. No digest of the birth reaches any book: gossip is
+    /// validates against the deployment and admits. No digest of the birth reaches any view: gossip is
     /// silent.
     struct ReportsToTheAuthority {
         joins: std::sync::Arc<Joins>,
@@ -3248,9 +3248,9 @@ mod tests {
     /// WaitForMeshJoin from the validated report, never from gossip"; "Join completion and failure
     /// evidence": "Only an accepted full report completes the deployment's bind/join waits ... a
     /// digest ... is insufficient"): a birth whose JoinNode the accepting authority admitted
-    /// completes WaitForMeshJoin while no digest of it reached any book, and the create goes on to
+    /// completes WaitForMeshJoin while no digest of it reached any view, and the create goes on to
     /// WaitForNodeReady, where nothing answers Ready. Must NOT happen: WaitForMeshJoin waiting past
-    /// its deadline for a membership digest of a birth whose report was accepted.
+    /// its deadline for a topology digest of a birth whose report was accepted.
     // @feature: node-lifecycle
     #[tokio::test]
     async fn wait_for_mesh_join_completes_from_the_accepted_report_while_gossip_is_silent() {
@@ -3265,7 +3265,7 @@ mod tests {
         let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
         let err = pipeline.create(&req).await.map(|_| ()).expect_err("nothing answers Ready: the create ends at WaitForNodeReady");
         let steps: Vec<(String, StepOutcome)> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| (r.step, r.outcome)).collect();
-        assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any book: {err}; receipts {steps:?}");
+        assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any view: {err}; receipts {steps:?}");
         assert!(steps.iter().any(|(s, o)| s == CreateStep::WaitForMeshJoin.name() && *o == StepOutcome::Complete), "WaitForMeshJoin's receipt is Complete: {steps:?}");
         let _ = std::fs::remove_dir_all(&template.data_root);
     }

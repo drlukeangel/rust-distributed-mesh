@@ -11,7 +11,7 @@
 use rdm_core::{FabricId, IncarnationId, MeshId};
 use rdm_transport::snapshot::PublisherId;
 use rdm_transport::topology::{
-    forward_of, Backbone, Frame, Membership, StatusBook, StatusPublisher, StatusScope, STATUS_EVERY, STATUS_SENDS,
+    forward_of, Backbone, Frame, TopologyView, StatusView, StatusPublisher, StatusScope, STATUS_EVERY, STATUS_SENDS,
 };
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -148,24 +148,24 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
 
         // A holder keeps a status until the next change, refuses an older one, and replays the
         // original authorship: a replayed status is never restated as the replayer's own.
-        let book = StatusBook::default();
-        assert!(book.take(&fwd, &fabric));
-        assert!(!book.take(&fwd, &fabric), "the same frame again is not taken twice");
+        let status_view = StatusView::default();
+        assert!(status_view.take(&fwd, &fabric));
+        assert!(!status_view.take(&fwd, &fabric), "the same frame again is not taken twice");
         let older = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 500 };
-        assert!(!book.take(&older, &fabric), "an older status is refused");
-        assert_eq!(book.mesh("mesh1").unwrap().status, "pending");
-        let replay = book.held_frames(&fabric, peer);
+        assert!(!status_view.take(&older, &fabric), "an older status is refused");
+        assert_eq!(status_view.mesh("mesh1").unwrap().status, "pending");
+        let replay = status_view.held_frames(&fabric, peer);
         assert_eq!(replay.len(), 1);
         assert!(matches!(&replay[0], Frame::MeshStatus { publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, .. } if publisher == me && by == peer));
-        let own = book.held_frames(&fabric, me);
+        let own = status_view.held_frames(&fabric, me);
         assert!(matches!(&own[0], Frame::MeshStatus { forwarded_by: None, .. }), "the author's own replay names no forwarder");
         // A republish keeps the old instant: under a NEW publisher it is a different frame from the one
-        // held and is taken (the book holds the later publisher's authorship); the very same publisher
+        // held and is taken (the view holds the later publisher's authorship); the very same publisher
         // with the same instant is a repeat and is not.
         let republish = |publisher: &str| Frame::MeshStatus { mesh: "mesh1".into(), status: "pending".into(), publisher: publisher.into(), forwarded_by: None, changed_at_rafka_ms: 1_000 };
-        assert!(book.take(&republish(peer), &fabric), "a new publisher with the old changed_at is taken");
-        assert_eq!(book.mesh("mesh1").unwrap().publisher, peer);
-        assert!(!book.take(&republish(peer), &fabric), "the same publisher with the same changed_at is a repeat");
+        assert!(status_view.take(&republish(peer), &fabric), "a new publisher with the old changed_at is taken");
+        assert_eq!(status_view.mesh("mesh1").unwrap().publisher, peer);
+        assert!(!status_view.take(&republish(peer), &fabric), "the same publisher with the same changed_at is a repeat");
 
         // Nothing rides inside Members: its fields are digests and overlays only.
         let members = Frame::Members {
@@ -195,24 +195,24 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
             let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             (ep, g)
         };
-        let membership = Membership::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let author = rdm_core::PublisherId { node: me.to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
-        let backbone = Backbone::join(&gossip, &endpoint, &membership, "mesh1", author.clone(), vec![]).await.unwrap();
+        let backbone = Backbone::join(&gossip, &endpoint, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.announce_statuses("pending", "pending", true, true).await;
-        assert!(membership.mesh_status("mesh1").is_none() && membership.fabric_status().is_none(), "a node holding no role publishes no status");
+        assert!(topology_view.mesh_status("mesh1").is_none() && topology_view.fabric_status().is_none(), "a node holding no role publishes no status");
         let holder = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
-        membership.primaries().take(rdm_core::Seat::MeshPrimary, &holder);
-        membership.primaries().take(rdm_core::Seat::FabricPrimary, &holder);
+        topology_view.primaries().take(rdm_core::Seat::MeshPrimary, &holder);
+        topology_view.primaries().take(rdm_core::Seat::FabricPrimary, &holder);
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
         backbone.announce_statuses("ready-for-traffic", "ready-for-traffic", true, true).await;
-        let (m, f) = (membership.mesh_status("mesh1").expect("the mesh status is held"), membership.fabric_status().expect("the fabric status is held"));
+        let (m, f) = (topology_view.mesh_status("mesh1").expect("the mesh status is held"), topology_view.fabric_status().expect("the fabric status is held"));
         assert_eq!((m.publisher.as_str(), m.status.as_str()), (me, "ready-for-traffic"));
         assert_eq!((f.publisher.as_str(), f.status.as_str()), (me, "ready-for-traffic"));
         // The real status sender runs on the real clock: its five sends are the spans below.
         tokio::time::sleep(Duration::from_millis(5_500)).await;
         backbone.announce_statuses("ready-for-traffic", "ready-for-traffic", true, true).await;
-        assert_eq!(membership.mesh_status("mesh1").unwrap().changed_at_rafka_ms, m.changed_at_rafka_ms, "an unchanged status is not published again");
+        assert_eq!(topology_view.mesh_status("mesh1").unwrap().changed_at_rafka_ms, m.changed_at_rafka_ms, "an unchanged status is not published again");
         tokio::time::sleep(Duration::from_millis(1_500)).await;
         backbone.set_mesh_primary(false);
         backbone.set_fabric_primary(false);

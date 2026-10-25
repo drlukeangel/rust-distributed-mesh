@@ -250,7 +250,7 @@ pub(super) async fn admit(registry: &ConnectionsRegistry, alpn: &Alpn, connectio
 
 /// Refuse `connection` with `reason` (node-connections-admit.md step 4): the verdict written back on
 /// the control stream when there is one, the `Refused` fact recorded with the birth this node's
-/// membership names for the dialer's key as its source (a key it cannot name gets the span and no
+/// the topology view names for the dialer's key as its source (a key it cannot name gets the span and no
 /// row), then the connection closed with 412 carrying the reason. A dialer that presented waits for
 /// its verdict, so the close waits up to a floor for the dialer to read it and leave first.
 async fn refuse(

@@ -14,7 +14,7 @@
 //! 2. the canonical i143 crates never use the legacy transport plane: no
 //!    `IrohMeshTransport`, no `MdnsAddressLookup`, no `rafka_node_base`
 //!    (its `PeerRegistry`, seed-dial, mdns-dial and accept heartbeat are
-//!    extraction input, not i143 membership or reachability);
+//!    extraction input, not i143 topology or reachability);
 //! 3. the only ALPNs of non-test code are `rafka-node-rpc/1` and `iroh-gossip`: any other ALPN
 //!    constant or `Router::accept` registration is refused. `ENTRY_ALPN` is allowed by name,
 //!    for the reason "R-J1 retires it", while no op `0x1D` exists in the Node RPC contract; once
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 pub const N0_TOKENS: &[&str] = &["presets::N0", "DnsAddressLookup", "PkarrPublisher", "PkarrResolver"];
 
 /// The canonical i143 sources: Node RPC, node-admin, the rpc node, the client,
-/// and the membership/entry modules of the transport crate.
+/// and the topology/entry modules of the transport crate.
 pub const CANONICAL: &[&str] = &[
     "crates/rdm-transport/src",
     "crates/rafka-node-rpc/src",

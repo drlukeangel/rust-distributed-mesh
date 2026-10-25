@@ -2097,10 +2097,10 @@ One birth's view of its own mesh channel, sampled when it publishes its digest.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `heard` | `u32` |  | Members whose digest this birth holds as heard (its book's current digests). |
+| 0 | `heard` | `u32` |  | Members whose digest this birth holds as heard (its view's current digests). |
 | 1 | `neighbours` | `u32` |  | The active gossip neighbours on its mesh channel (NeighborUp minus NeighborDown), never |
-| 2 | `frames_sent` | `u64` |  | Membership frames this birth broadcast on its mesh channel since it started. |
-| 3 | `frames_received` | `u64` |  | Membership frames this birth decoded from its mesh channel since it started. |
+| 2 | `frames_sent` | `u64` |  | Topology frames this birth broadcast on its mesh channel since it started. |
+| 3 | `frames_received` | `u64` |  | Topology frames this birth decoded from its mesh channel since it started. |
 
 <a id="t-rdm_test-fault_door-Hit"></a>
 
@@ -2150,7 +2150,7 @@ The call a cut held first, as the decorator offered it.
 | 9.1 | `reads_from` | `String` |  | The admin the read goes to: the one that answered the join. |
 | 10 | **`Announcement`** |  |  | A final aggregate or leadership announcement about to be sent on a channel. |
 | 10.0 | `node` | `String` |  | The announcing node. |
-| 10.1 | `announcement` | `String` |  | The announcement (`rdm_transport::membership::Withhold`). |
+| 10.1 | `announcement` | `String` |  | The announcement (`rdm_transport::topology::Withhold`). |
 | 10.2 | `channel` | `String` |  | The channel it is sent on. |
 | 11 | **`ProviderTerminate`** |  |  | A provider `terminate` refused while the cut is armed. |
 | 11.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |

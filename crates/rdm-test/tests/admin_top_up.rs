@@ -17,7 +17,7 @@ use iroh::protocol::Router;
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId};
-use rdm_transport::topology::{gossip_addr, learn_addresses, Frame, Membership};
+use rdm_transport::topology::{gossip_addr, learn_addresses, Frame, TopologyView};
 use rdm_transport::snapshot::PublisherId;
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::before_ready::{HookOutcome, BeforeReadyHook};
@@ -173,7 +173,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
         let admin = start_with(admin_cfg, Wiring { before_ready: BeforeReadyHook::new(TestBeforeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
         until_ready("mesh1.admin.2", || admin.digest.lock().unwrap().clone()).await;
-        until("mesh1.admin.2 to hold mesh1's projection under the primary's epoch", WRONG, || admin.membership.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
+        until("mesh1.admin.2 to hold mesh1's projection under the primary's epoch", WRONG, || admin.topology_view.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         assert!(!admin.publishes_its_mesh(), "mesh1.admin.2 is not its mesh's primary");
         // The top-up pulls from the birth the node's seat record names, through that birth's own
         // Digest (gossip.md §3.1, §3.3): a gap signalled before the node holds it is one refused
@@ -181,7 +181,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         // primary answered before its first publication carries no snapshot of mesh1 (a mesh with
         // no published snapshot is absent, node-rpc-envelope.md op 0x1E), so the cell waits for it.
         until("mesh1.admin.2 to hold its own Mesh's primary, the birth its seat record names", WRONG, || {
-            admin.membership.mesh_primary().is_ok_and(|p| p.node.node_id == root_digest.node.node_id && p.node.incarnation == root_digest.node.incarnation)
+            admin.topology_view.mesh_primary().is_ok_and(|p| p.node.node_id == root_digest.node.node_id && p.node.incarnation == root_digest.node.incarnation)
         })
         .await;
 
@@ -193,7 +193,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let admin_addr = gossip_addr(&admin_digest).expect("mesh1.admin.2's digest names its endpoint");
         learn_addresses(&probe.ep, &[admin_addr.clone()]).unwrap();
         let mesh_id = root_digest.mesh_id.clone().expect("the root holds its mesh id");
-        let channel = Membership::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, "mesh1.rpc.9", rdm_transport::clock::os_clock(), vec![admin_addr], &[]).await.expect("the cell joins mesh1's channel");
+        let channel = TopologyView::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, "mesh1.rpc.9", rdm_transport::clock::os_clock(), vec![admin_addr], &[]).await.expect("the cell joins mesh1's channel");
         crate::declare_gossip_probe(&channel);
         until("the cell's endpoint to hold the primary's replayed full", WRONG, || channel.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         // mesh1.admin.2's own ReadyForTraffic moves the primary's projection, which the primary then
@@ -206,12 +206,12 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         .await;
         let (_, ready_at) = channel.held_source_version("mesh1").expect("the cell's endpoint holds mesh1");
         until("mesh1.admin.2 to hold the primary's publication of its ReadyForTraffic", WRONG, || {
-            admin.membership.held_source_version("mesh1").is_some_and(|(p, v)| p == root_publisher && v >= ready_at)
+            admin.topology_view.held_source_version("mesh1").is_some_and(|(p, v)| p == root_publisher && v >= ready_at)
         })
         .await;
 
         // A delta of mesh1 under the primary's epoch whose base is not what mesh1.admin.2 holds.
-        let (_, held) = admin.membership.held_source_version("mesh1").expect("mesh1.admin.2 holds mesh1");
+        let (_, held) = admin.topology_view.held_source_version("mesh1").expect("mesh1.admin.2 holds mesh1");
         let (gap_base, gap_version) = (held + 5, held + 6);
         let delta = Frame::MembersDelta {
             mesh: "mesh1".into(),
@@ -227,7 +227,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         channel.forward(&delta).await.expect("the cell puts the delta on mesh1's channel");
         let base_s = gap_base.to_string();
         let gap = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("mesh").map(String::as_str) == Some("mesh1") && f.get("base_version") == Some(&base_s) && f.get("repair_requested").map(String::as_str) == Some("true");
-        tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.membership.update.via-gap", gap)).await.expect("mesh1.admin.2 took the delta as a version gap");
+        tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.topology.update.via-gap", gap)).await.expect("mesh1.admin.2 took the delta as a version gap");
 
         // The top-up: mesh1.admin.2 reads mesh1 from its own Mesh's primary and resumes the source.
         let topped = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("meshes").is_some_and(|m| m.split(',').any(|m| m == "mesh1"));
@@ -235,15 +235,15 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
             let rejected = spans_named(&spans, "rdm.mesh.entry.reject.via-top-up", |f| f.get("node").map(String::as_str) == Some("mesh1.admin.2"));
             panic!(
                 "mesh1.admin.2 never topped up its desynchronized source mesh1 from its own Mesh's primary within {TOP_UP:?}; desynchronized now: {:?}; refused top-ups: {rejected:?}",
-                admin.membership.desynced_sources()
+                admin.topology_view.desynced_sources()
             );
         }
         let top_up = spans_named(&spans, "rdm.mesh.entry.update.via-top-up", topped).remove(0);
         assert_eq!((top_up["mesh_primary"].as_str(), top_up["served_by"].as_str(), top_up["still_desynced"].as_str()), (root_name.as_str(), root_name.as_str(), ""), "served by its own Mesh's primary, nothing left desynchronized: {top_up:?}");
         assert!(top_up["reasons"].contains("mesh1:"), "the span names the gap it repaired: {top_up:?}");
-        assert!(admin.membership.desynced_sources().is_empty(), "no source stays desynchronized: {:?}", admin.membership.desynced_sources());
+        assert!(admin.topology_view.desynced_sources().is_empty(), "no source stays desynchronized: {:?}", admin.topology_view.desynced_sources());
         let own = admin.digest.lock().unwrap().clone();
-        let served = admin.membership.held_topology(&own);
+        let served = admin.topology_view.held_topology(&own);
         assert!(served.iter().any(|s| s.mesh == "mesh1" && s.publisher == root_publisher), "mesh1.admin.2 serves mesh1 again under the primary's epoch: {:?}", served.iter().map(|s| (&s.mesh, &s.publisher, s.topology_version)).collect::<Vec<_>>());
 
         // The primary heard the same delta with no baseline of its own mesh on its channel: it is the

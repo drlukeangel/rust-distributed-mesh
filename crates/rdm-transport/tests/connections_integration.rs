@@ -140,7 +140,7 @@ async fn a_complete_projection_with_no_fact_dials_the_destination_directly() {
     assert_eq!((r.b.handled.load(Ordering::SeqCst), r.c.handled.load(Ordering::SeqCst), r.p.handled.load(Ordering::SeqCst)), (1, 0, 0));
 }
 
-/// CONTRACT: a Direct fact naming a birth membership no longer holds at the destination's path is
+/// CONTRACT: a Direct fact naming a birth the topology view no longer holds at the destination's path is
 /// not the current edge: the call dials the current birth and is answered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fact_naming_a_superseded_birth_still_dials_the_current_one() {
@@ -150,7 +150,7 @@ async fn a_fact_naming_a_superseded_birth_still_dials_the_current_one() {
     held.apply(edge(own_end(&own), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
     let members = std::sync::Arc::new(rdm_core::connections::StaticIncarnations::default());
     members.set(r.b.resolved.node_id.clone(), r.b.resolved.name.clone(), rdm_core::IncarnationId::mint());
-    held.set_membership(members);
+    held.set_topology_view(members);
     let call = connected(&r, &held, &own, &r.b, b"reborn").await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });
     assert_eq!(served_by(&call.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", call.outcome);

@@ -34,7 +34,7 @@
 //! or the key is withdrawn.
 //!
 //! Nothing here gates gossip or readiness: the admin's own `ReadyForTraffic` is published by
-//! membership as before; the declaration is certainty on top of it.
+//! the topology view as before; the declaration is certainty on top of it.
 
 use crate::model::{IncarnationId, NodeId, NodeKind, PathName};
 use crate::topology::Topology;

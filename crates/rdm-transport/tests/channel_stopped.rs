@@ -1,6 +1,6 @@
 //! A node that parks leaves its mesh topic and a node that unparks joins it again.
 //!
-//! CONTRACT: parking a membership drops its gossip sender and receiver, so no one counts it as a
+//! CONTRACT: parking a topology view drops its gossip sender and receiver, so no one counts it as a
 //! neighbour and a publish on it is refused by name; nothing it would have said reaches the others.
 //! Unparking joins the topic again through the peers it knows, its neighbours return, and its digest
 //! sequence continues from where it stopped. What must NOT happen: a parked node still counted as a
@@ -8,7 +8,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::Membership;
+use rdm_transport::topology::TopologyView;
 use std::time::{Duration, Instant};
 
 fn digest(name: &str, ep: &iroh::Endpoint) -> MeshDigest {
@@ -65,22 +65,22 @@ async fn until(what: &str, mut ok: impl FnMut() -> bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stopped_membership_is_no_neighbour_and_sends_nothing_until_it_starts() {
-    if crate::own_process::delegated_with_env(module_path!(), "a_stopped_membership_is_no_neighbour_and_sends_nothing_until_it_starts", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("60000")))]) {
+async fn a_stopped_topology_view_is_no_neighbour_and_sends_nothing_until_it_starts() {
+    if crate::own_process::delegated_with_env(module_path!(), "a_stopped_topology_view_is_no_neighbour_and_sends_nothing_until_it_starts", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("60000")))]) {
         return;
     }
     let (a, b) = (node().await, node().await);
     let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
     let clock = rdm_transport::clock::os_clock;
-    let ma = Membership::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![], &[]).await.unwrap();
-    let mb = Membership::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![addr_of(&a)], &[]).await.unwrap();
+    let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![], &[]).await.unwrap();
+    let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![addr_of(&a)], &[]).await.unwrap();
     let db = digest("mesh1.rpc.2", &b.ep);
 
     // Joined: each holds the other as a neighbour and A hears B's digest.
     until("A and B are neighbours", || ma.neighbours() == 1 && mb.neighbours() == 1).await;
     mb.publish(&db).await.unwrap();
-    until("A hears B", || ma.book.get(db.node.node_id.as_str()).is_some()).await;
-    let seq_before = ma.book.get(db.node.node_id.as_str()).unwrap().0.digest_seq;
+    until("A hears B", || ma.digest_view.get(db.node.node_id.as_str()).is_some()).await;
+    let seq_before = ma.digest_view.get(db.node.node_id.as_str()).unwrap().0.digest_seq;
 
     // B parks: A no longer counts it a neighbour, and B refuses to send, by name.
     mb.stop().await;
@@ -89,11 +89,11 @@ async fn a_stopped_membership_is_no_neighbour_and_sends_nothing_until_it_starts(
     let refused = mb.publish(&db).await.expect_err("a publish on a parked channel is refused");
     assert!(refused.to_string().contains("parked"), "the refusal names why: {refused}");
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(ma.book.get(db.node.node_id.as_str()).unwrap().0.digest_seq, seq_before, "nothing B would have said reached A while it was parked");
+    assert_eq!(ma.digest_view.get(db.node.node_id.as_str()).unwrap().0.digest_seq, seq_before, "nothing B would have said reached A while it was parked");
 
     // B unparks: the topic is joined again, the neighbours return and B's digest sequence continued.
     mb.start().await;
     until("A and B are neighbours again", || ma.neighbours() == 1 && mb.neighbours() == 1).await;
     mb.publish(&db).await.unwrap();
-    until("A hears B again", || ma.book.get(db.node.node_id.as_str()).is_some_and(|(d, _)| d.digest_seq > seq_before)).await;
+    until("A hears B again", || ma.digest_view.get(db.node.node_id.as_str()).is_some_and(|(d, _)| d.digest_seq > seq_before)).await;
 }

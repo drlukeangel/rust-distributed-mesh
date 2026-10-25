@@ -110,14 +110,14 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
             held: true,
             listeners: Vec::new(),
         });
-        let book = root.membership.book.clone();
-        let mut digests = book.digest_changes();
+        let digest_view = root.topology_view.digest_view.clone();
+        let mut digests = digest_view.digest_changes();
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
         let admin = start_with(admin_cfg, Wiring { before_ready: BeforeReadyHook::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
         // The authority admitted the birth under the row's name: the admin publishes it.
         tokio::time::timeout(WRONG, async {
-            while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.node.name != row) {
+            while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.node.name != row) {
                 digests.changed().await.unwrap();
             }
         })

@@ -15,7 +15,7 @@ use rdm_core::framing::Birth;
 use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, FABRIC};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::{NodeKind, Seat};
-use rdm_transport::topology::{Membership, SeatBook, SeatTaken};
+use rdm_transport::topology::{TopologyView, PrimaryView, SeatTaken};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use tracing::Instrument as _;
 
@@ -49,10 +49,10 @@ pub fn records_of(entries: &[Entry], mesh_of: impl Fn(&Birth) -> String) -> Vec<
         .collect()
 }
 
-/// Install the records `entries` name in `book`, all or none: how the book took them (`held`, `same`,
+/// Install the records `entries` name in `digest_view`, all or none: how the digest view took them (`held`, `same`,
 /// or `refused-not-newer` when one is older than the record held).
-pub fn install(book: &SeatBook, entries: &[Entry], mesh_of: impl Fn(&Birth) -> String) -> &'static str {
-    let taken = book.take_together(&records_of(entries, mesh_of));
+pub fn install(primary_view: &PrimaryView, entries: &[Entry], mesh_of: impl Fn(&Birth) -> String) -> &'static str {
+    let taken = primary_view.take_together(&records_of(entries, mesh_of));
     if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
         "refused-not-newer"
     } else if taken.iter().all(|t| matches!(t, SeatTaken::Same)) {
@@ -133,7 +133,7 @@ pub struct MemberDoor {
     me: PathName,
     node_id: NodeId,
     incarnation: IncarnationId,
-    membership: Membership,
+    topology_view: TopologyView,
     client: Arc<NodeRpcClient>,
     /// What this node answered as the successor, by operation.
     answered: Answered,
@@ -144,14 +144,14 @@ pub struct MemberDoor {
 }
 
 impl MemberDoor {
-    /// The door of the birth `node_id`/`incarnation` at `me`, on its mesh channel `membership`, calling
+    /// The door of the birth `node_id`/`incarnation` at `me`, on its mesh channel `topology_view`, calling
     /// through `client`.
-    pub fn new(me: PathName, node_id: NodeId, incarnation: IncarnationId, membership: Membership, client: Arc<NodeRpcClient>) -> Self {
-        Self { me, node_id, incarnation, membership, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
+    pub fn new(me: PathName, node_id: NodeId, incarnation: IncarnationId, topology_view: TopologyView, client: Arc<NodeRpcClient>) -> Self {
+        Self { me, node_id, incarnation, topology_view, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
     }
 
     fn held_name(&self) -> PathName {
-        self.membership.book.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.topology_view.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
     }
 
     fn me_birth(&self) -> Birth {
@@ -159,8 +159,8 @@ impl MemberDoor {
     }
 
     /// This node's mesh channel, which holds the primaries' records.
-    pub fn membership(&self) -> &Membership {
-        &self.membership
+    pub fn topology_view(&self) -> &TopologyView {
+        &self.topology_view
     }
 
     /// The mesh of the birth `b`: every entry this node installs or calls is of its own mesh.
@@ -186,7 +186,7 @@ impl MemberDoor {
         }
         // The span covers the install: its start is the moment the successor begins to install.
         let span = tracing::info_span!("rdm.node_admin.seat.update.via-primary-updated", node = %self.held_name(), operation = %operation, build_id = %build_id, run, primaries = %entries_named(&primaries), outcome = tracing::field::Empty);
-        let outcome = span.in_scope(|| install(self.membership.primaries(), &primaries, self.mesh_of()));
+        let outcome = span.in_scope(|| install(self.topology_view.primaries(), &primaries, self.mesh_of()));
         span.record("outcome", outcome);
         span.in_scope(|| tracing::info!("the successor installed the election's result the call carries and answers node.primary.updated"));
         let reply = Reply::PrimaryUpdated { revisions: primaries };
@@ -226,11 +226,11 @@ impl MemberDoor {
         // Commanded by its mesh-primary, it runs the update (a receiver never refuses a call for the birth it
         // names, R-RX5). The revision the successor's entry takes is the next after the record of its type
         // this node holds; holding none, it reads its mesh-primary's topology first, as a starting node does.
-        let book = self.membership.primaries();
-        if book.cohort(&mesh, kind).is_none() {
+        let primary_view = self.topology_view.primaries();
+        if primary_view.cohort(&mesh, kind).is_none() {
             self.read_own_mesh(me, &mesh).await;
         }
-        let revision = book.cohort(&mesh, kind).map_or(0, |r| r.revision) + 1;
+        let revision = primary_view.cohort(&mesh, kind).map_or(0, |r| r.revision) + 1;
         // Step 4 on the successor the mesh-primary's pre-check named (step 2): no election here (Q129).
         let Some(successor) = successor else {
             return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me} is a {node_type} primary: its mesh-primary's command names no successor"), rdm_core::outcome::Code::FailedPrecondition);
@@ -240,7 +240,7 @@ impl MemberDoor {
         // Step 4: the call on the successor's exact birth.
         match call_successor(&self.client, &successor.node_id, &entries, build_id, run, operation).await {
             Ok(revisions) => {
-                install(book, &revisions, self.mesh_of());
+                install(primary_view, &revisions, self.mesh_of());
                 Reply::PrimaryUpdated { revisions }
             }
             Err(how) => rdm_core::reply::handover::bounded_failed(STEP, &format!("the successor is unheard after the update: {successor} {how}"), rdm_core::outcome::Code::Unavailable),
@@ -252,8 +252,8 @@ impl MemberDoor {
     /// One `GetTopology` of `mesh` from the mesh-primary this node holds, installed into its view: the
     /// primary records the projection carries come with it.
     async fn read_own_mesh(&self, me: &PathName, mesh: &str) {
-        let Some(mp) = self.membership.primaries().mesh(mesh) else { return };
-        let read = crate::topology_read::get_topology(&self.client, &NodeTarget::ExactNode(mp.node_id.clone()), mesh, &self.membership, Some(mesh), None).await;
+        let Some(mp) = self.topology_view.primaries().mesh(mesh) else { return };
+        let read = crate::topology_read::get_topology(&self.client, &NodeTarget::ExactNode(mp.node_id.clone()), mesh, &self.topology_view, Some(mesh), None).await;
         tracing::info_span!("rdm.node_admin.primary.resolve.via-topology-read", node = %me, mesh, mesh_primary = %mp, outcome = %read.as_ref().map(|_| "installed".to_string()).unwrap_or_else(|e| e.to_string()))
             .in_scope(|| tracing::info!("the commanded primary read its mesh-primary's topology: its own record was not held yet"));
     }

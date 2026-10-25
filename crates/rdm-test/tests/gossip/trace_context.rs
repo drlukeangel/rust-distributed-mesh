@@ -1,9 +1,9 @@
 //! CloudEvents tracing is authored context, never a receive decision.
 use rdm_core::{FabricId, MeshId};
-use rdm_transport::topology::{Frame, Membership, mesh_channel, learn_addresses};
+use rdm_transport::topology::{Frame, TopologyView, mesh_channel, learn_addresses};
 use std::time::Duration;
 
-async fn held(receiver: &Membership, mesh: &str, stamp: u64) {
+async fn held(receiver: &TopologyView, mesh: &str, stamp: u64) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while receiver.mesh_status(mesh).is_none_or(|s| s.changed_at_rafka_ms < stamp) {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -22,7 +22,7 @@ fn run(malformed: bool) {
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let mut topic = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = Membership::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
+        let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
         let (sender, _rx) = topic.split();
         let author = crate::gossip_author(&fabric);
@@ -81,13 +81,13 @@ fn run(malformed: bool) {
         author_trace
     });
     let spans = capture.spans().unwrap();
-    let applied: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-mesh-status" && s["attributes"]["mesh"] == "traced" && s["attributes"]["taken"] == "true").collect();
+    let applied: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-mesh-status" && s["attributes"]["mesh"] == "traced" && s["attributes"]["taken"] == "true").collect();
     assert_eq!(applied.len(), 1, "exactly one ordinary apply span");
     if malformed {
-        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-context-dropped" && s["attributes"]["context_dropped"] == "traceparent"), "malformed traceparent dropped by name");
+        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-context-dropped" && s["attributes"]["context_dropped"] == "traceparent"), "malformed traceparent dropped by name");
         assert_ne!(applied[0]["trace_id"].as_str().unwrap().trim_start_matches('0'), author_trace);
     } else {
-        for name in ["rdm.mesh.membership.update.via-frame", "rdm.mesh.membership.update.via-mesh-status", "rdm.mesh.membership.update.via-duplicate", "rdm.mesh.membership.reject.via-stale", "rdm.mesh.membership.reject.via-inconsistent", "rdm.mesh.membership.update.via-gap", "rdm.mesh.membership.reject.via-reserved", "rdm.mesh.membership.reject.via-unknown-type"] {
+        for name in ["rdm.mesh.topology.update.via-frame", "rdm.mesh.topology.update.via-mesh-status", "rdm.mesh.topology.update.via-duplicate", "rdm.mesh.topology.reject.via-stale", "rdm.mesh.topology.reject.via-inconsistent", "rdm.mesh.topology.update.via-gap", "rdm.mesh.topology.reject.via-reserved", "rdm.mesh.topology.reject.via-unknown-type"] {
             assert!(spans.iter().any(|s| s["name"] == name && s["trace_id"].as_str().unwrap_or("").trim_start_matches('0') == author_trace), "{name} shares the author's trace");
         }
     }

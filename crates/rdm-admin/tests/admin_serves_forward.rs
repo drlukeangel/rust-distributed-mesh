@@ -83,7 +83,7 @@ async fn rig() -> Rig {
         Arc::new(MemoryConnectionsStorage::default()),
         Arc::new(Mutex::new(ConnectionsHeld::new())),
     ));
-    connections.held().lock().unwrap().set_membership(live.clone());
+    connections.held().lock().unwrap().set_topology_view(live.clone());
     connections.hydrate().await.unwrap();
     let node_rpc = rdm_admin::node_rpc::ProcessNodeRpc::new(live.clone(), admin_ep.clone());
     let admin_server = rdm_admin::admin::rpc_server(connections.clone(), node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))

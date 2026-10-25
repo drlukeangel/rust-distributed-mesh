@@ -1,6 +1,6 @@
 //! The name this birth holds now (R12, R-JN1; lifecycles/node-start.md step 2: at any join the row
 //! wins). A node's name moves by `node.name.update`: a stopped node takes its row's name from its join
-//! answer, a live one from `ApplyNodeName`; either way its membership holds it. Every testkit door that
+//! answer, a live one from `ApplyNodeName`; either way its topology view holds it. Every testkit door that
 //! names this node in a reply (the proof store's provenance, the resolve probe's and the originate
 //! door's `by`) and the originate door's own route source read it per call, as the connections writer
 //! names its rows' source ([`rdm_admin::connections_writer::ConnectionsWriter::follow_held_name`]).
@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock};
 
 type Held = Arc<dyn Fn() -> PathName + Send + Sync>;
 
-/// The name this birth holds now: its membership's once bound, its launch's before.
+/// The name this birth holds now: its topology view's once bound, its launch's before.
 #[derive(Clone)]
 pub struct HeldName {
     birth: PathName,
@@ -25,10 +25,10 @@ impl HeldName {
         Self { birth, held: Arc::new(OnceLock::new()) }
     }
 
-    /// Read the name from `held` (the membership's held name) from now on. Bound once, when the node
+    /// Read the name from `held` (the topology view's held name) from now on. Bound once, when the node
     /// joins; a second binding is refused by name.
     pub fn follow(&self, held: impl Fn() -> PathName + Send + Sync + 'static) -> Result<(), String> {
-        self.held.set(Arc::new(held)).map_err(|_| format!("{}: this birth already reads its name from its membership", self.birth))
+        self.held.set(Arc::new(held)).map_err(|_| format!("{}: this birth already reads its name from its topology view", self.birth))
     }
 
     /// The name this birth holds now.
@@ -48,7 +48,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_birth_holds_its_launch_name_until_its_membership_is_followed_then_the_membership_s() {
+    fn a_birth_holds_its_launch_name_until_its_topology_view_is_followed_then_the_topology_view_s() {
         let name = HeldName::of_birth("mesh1.rpc.7".parse().unwrap());
         assert_eq!(name.now().to_string(), "mesh1.rpc.7");
         let held = Arc::new(std::sync::Mutex::new("mesh1.rpc.1".parse::<PathName>().unwrap()));

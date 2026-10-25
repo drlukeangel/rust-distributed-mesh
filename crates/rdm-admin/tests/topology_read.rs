@@ -5,7 +5,7 @@ use rdm_core::topology::PrimaryKind;
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
-use rdm_transport::topology::Membership;
+use rdm_transport::topology::TopologyView;
 use rdm_transport::snapshot::{Chunk, SourceSnapshot, Taken};
 use rdm_admin::topology_read::{get_topology, snapshot_replies, top_up_fetch, TopologyDoor, TopologyFailure, TopologySlot};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -41,10 +41,10 @@ fn member_of(fabric: &FabricId, mesh: &str, kind: &str, ordinal: u32) -> MeshDig
     }
 }
 
-/// One node: an endpoint serving Node RPC and gossip, its membership, and a topology slot.
+/// One node: an endpoint serving Node RPC and gossip, its topology view, and a topology slot.
 struct Node {
     ep: iroh::Endpoint,
-    membership: Membership,
+    topology_view: TopologyView,
     client: NodeRpcClient,
     resolver: Arc<StaticResolver>,
     slot: TopologySlot,
@@ -60,7 +60,7 @@ async fn node(fabric: &FabricId, mesh: &str, name: &str, extra: impl FnOnce(Serv
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
-    let membership = Membership::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), name, Arc::new(time.clone()), vec![], &[]).await.unwrap();
+    let topology_view = TopologyView::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), name, Arc::new(time.clone()), vec![], &[]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = NodeRpcClient::new(ep.clone(), resolver.clone());
     let slot: TopologySlot = Arc::new(OnceLock::new());
@@ -71,7 +71,7 @@ async fn node(fabric: &FabricId, mesh: &str, name: &str, extra: impl FnOnce(Serv
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation };
-    Node { ep, membership, client, resolver, slot, gossip, resolved, time, _router: router }
+    Node { ep, topology_view, client, resolver, slot, gossip, resolved, time, _router: router }
 }
 
 fn own_digest(n: &Node, fabric: &FabricId) -> MeshDigest {
@@ -84,7 +84,7 @@ fn own_digest(n: &Node, fabric: &FabricId) -> MeshDigest {
 
 fn open(n: &Node, fabric: &FabricId) {
     let d = own_digest(n, fabric);
-    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.membership.clone(), Arc::new(move || d.clone()), n.time.clone())));
+    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.topology_view.clone(), Arc::new(move || d.clone()), n.time.clone())));
 }
 
 fn publisher(node: &str) -> PublisherId {
@@ -92,7 +92,7 @@ fn publisher(node: &str) -> PublisherId {
 }
 
 /// `s` held by `m` as a complete snapshot its primary put into the mesh.
-fn hold(m: &Membership, s: &SourceSnapshot) {
+fn hold(m: &TopologyView, s: &SourceSnapshot) {
     for r in snapshot_replies(s, 1) {
         let TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed } = r else { unreachable!() };
         let t = m.take_read_chunk(Chunk {
@@ -128,9 +128,9 @@ async fn a_node_mid_birth_answers_not_ready_and_the_caller_installs_nothing() {
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     let t = target_of(&caller, &server);
-    let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap_err();
-    assert!(matches!(&err, TopologyFailure::NotReady(r) if r.contains("no membership")), "{err}");
-    assert!(caller.membership.held_source_version("mesh1").is_none());
+    let err = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap_err();
+    assert!(matches!(&err, TopologyFailure::NotReady(r) if r.contains("no topology view")), "{err}");
+    assert!(caller.topology_view.held_source_version("mesh1").is_none());
     server.ep.close().await;
     caller.ep.close().await;
 }
@@ -146,17 +146,17 @@ async fn a_mesh_with_no_published_snapshot_is_absent_from_the_answer() {
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
     let t = target_of(&caller, &server);
-    let empty = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    let empty = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     assert!(empty.installed.is_empty() && empty.meshes == 0, "nothing held: an empty, complete answer");
 
     let mesh2: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect();
-    hold(&server.membership, &snap("mesh2", &publisher("mesh2.admin.1"), 7, mesh2));
-    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    hold(&server.topology_view, &snap("mesh2", &publisher("mesh2.admin.1"), 7, mesh2));
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     assert_eq!((read.meshes, read.installed.len()), (1, 1));
     assert_eq!(read.installed[0].mesh, "mesh2");
-    assert!(caller.membership.held_source_version("mesh1").is_none(), "no version of the own mesh is invented");
+    assert!(caller.topology_view.held_source_version("mesh1").is_none(), "no version of the own mesh is invented");
 
-    let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh1"), None).await.unwrap_err();
+    let err = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh1"), None).await.unwrap_err();
     assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh1".into()));
     server.ep.close().await;
     caller.ep.close().await;
@@ -164,21 +164,21 @@ async fn a_mesh_with_no_published_snapshot_is_absent_from_the_answer() {
 
 // @feature: node-lifecycle
 /// CONTRACT: a mesh primary that has published nothing yet still holds its mesh's members in its
-/// book, and a read answers with them as its own mesh at version 0 under its own publisher: the
+/// view, and a read answers with them as its own mesh at version 0 under its own publisher: the
 /// caller installs them. A read is never an empty answer for a primary that holds members.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_book_holds() {
+async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_view_holds() {
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
-    let backbone = rdm_transport::topology::Backbone::join(&server.gossip, &server.ep, &server.membership, "mesh1", rdm_core::PublisherId { node: "mesh1.rpc.1".to_string(), incarnation: server.resolved.incarnation.clone(), node_id: server.resolved.node_id.clone() }, vec![]).await.unwrap();
+    let backbone = rdm_transport::topology::Backbone::join(&server.gossip, &server.ep, &server.topology_view, "mesh1", rdm_core::PublisherId { node: "mesh1.rpc.1".to_string(), incarnation: server.resolved.incarnation.clone(), node_id: server.resolved.node_id.clone() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
-    server.membership.book.record(member_of(&fabric, "mesh1", "rpc", 2));
+    server.topology_view.digest_view.record(member_of(&fabric, "mesh1", "rpc", 2));
     let t = target_of(&caller, &server);
-    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     assert_eq!((read.meshes, read.installed.len()), (1, 1), "the primary's own mesh is served");
     assert_eq!((read.installed[0].mesh.as_str(), read.installed[0].topology_version), ("mesh1", 0));
-    assert_eq!(read.installed[0].members.len(), 2, "its own digest and the member its book holds");
+    assert_eq!(read.installed[0].members.len(), 2, "its own digest and the member its view holds");
     assert_eq!(read.installed[0].publisher.node, "mesh1.rpc.1");
     server.ep.close().await;
     caller.ep.close().await;
@@ -195,12 +195,12 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
     let (own_pub, remote_pub) = (publisher("mesh1.admin.1"), publisher("mesh2.admin.1"));
-    hold(&server.membership, &snap("mesh1", &own_pub, 4, vec![own_digest(&server, &fabric)]));
+    hold(&server.topology_view, &snap("mesh1", &own_pub, 4, vec![own_digest(&server, &fabric)]));
     let mesh2: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect();
-    hold(&server.membership, &snap("mesh2", &remote_pub, 7, mesh2.clone()));
+    hold(&server.topology_view, &snap("mesh2", &remote_pub, 7, mesh2.clone()));
     let t = target_of(&caller, &server);
 
-    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     assert_eq!(read.meshes, 2);
     let names = |mesh: &str| -> Vec<String> {
         let mut v: Vec<String> = read.installed.iter().find(|m| m.mesh == mesh).unwrap().members.iter().map(|d| d.node.name.to_string()).collect();
@@ -209,20 +209,20 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
     };
     assert_eq!(names("mesh2"), vec!["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3"]);
     assert_eq!(names("mesh1"), vec!["mesh1.rpc.1"], "its own mesh: version 4 as its primary published it");
-    assert_eq!(caller.membership.held_source_version("mesh2"), Some((remote_pub.clone(), 7)), "installed at the source's publisher and version");
-    assert_eq!(caller.membership.held_source_version("mesh1"), Some((own_pub.clone(), 4)));
+    assert_eq!(caller.topology_view.held_source_version("mesh2"), Some((remote_pub.clone(), 7)), "installed at the source's publisher and version");
+    assert_eq!(caller.topology_view.held_source_version("mesh1"), Some((own_pub.clone(), 4)));
 
     let held = SourceVersion { publisher: remote_pub.clone(), topology_version: 7 };
-    let again = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(held)).await.unwrap();
+    let again = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh2"), Some(held)).await.unwrap();
     assert!(again.installed.is_empty());
     assert_eq!(again.unchanged, vec![("mesh2".to_string(), 7)]);
     assert_eq!(again.meshes, 1, "End counts the meshes answered, Unchanged included");
 
     let behind = SourceVersion { publisher: remote_pub.clone(), topology_version: 6 };
-    let newer = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(behind)).await.unwrap();
+    let newer = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh2"), Some(behind)).await.unwrap();
     assert!(newer.unchanged.is_empty() && newer.installed.len() == 1, "a caller behind the node's version is sent the snapshot");
 
-    let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh9"), None).await.unwrap_err();
+    let err = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh9"), None).await.unwrap_err();
     assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh9".into()));
     server.ep.close().await;
     caller.ep.close().await;
@@ -237,7 +237,7 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
-    hold(&server.membership, &snap("mesh1", &publisher("mesh1.admin.1"), 1, vec![]));
+    hold(&server.topology_view, &snap("mesh1", &publisher("mesh1.admin.1"), 1, vec![]));
     let big: Vec<MeshDigest> = (1..=300).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect();
     let source = snap("mesh2", &publisher("mesh2.admin.1"), 3, big);
     let chunks = snapshot_replies(&source, 1);
@@ -247,9 +247,9 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
         assert!(len <= Topology::MAX_REPLY_FRAME_BYTES, "a chunk of {len} bytes is over the ceiling");
         assert!(len <= rdm_transport::topology::MAX_FRAME, "a chunk of {len} bytes is over the gossip message bound");
     }
-    hold(&server.membership, &source);
+    hold(&server.topology_view, &source);
     let t = target_of(&caller, &server);
-    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), None).await.unwrap();
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh2"), None).await.unwrap();
     let m = &read.installed[0];
     let mut ids: Vec<String> = m.members.iter().map(|d| d.node.node_id.to_string()).collect();
     ids.sort();
@@ -298,10 +298,10 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
     let _router = Router::builder(lossy_ep.clone()).accept(rdm_transport::ALPN, lossy).spawn();
     let lossy_node = ResolvedNode { node_id: lid.clone(), name: "mesh1.rpc.9".parse().unwrap(), endpoint_id: lossy_ep.id(), transport_addr: lossy_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(), incarnation: linc };
     server.resolver.insert(lossy_node);
-    let read = get_topology(&server.client, &NodeTarget::ExactNode(lid), "mesh1", &server.membership, None, None).await.unwrap();
+    let read = get_topology(&server.client, &NodeTarget::ExactNode(lid), "mesh1", &server.topology_view, None, None).await.unwrap();
     assert_eq!(*sent.lock().unwrap(), 1);
     assert!(read.installed.is_empty(), "one chunk of two installs nothing");
-    assert!(server.membership.held_source_version("mesh2").is_none());
+    assert!(server.topology_view.held_source_version("mesh2").is_none());
     server.ep.close().await;
     lossy_ep.close().await;
 }
@@ -357,11 +357,11 @@ fn a_request_naming_a_mesh_the_node_never_heard_is_unknown_mesh_and_streams_noth
         let fabric = FabricId::mint();
         let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
         open(&server, &fabric);
-        hold(&server.membership, &snap("mesh2", &publisher("mesh2.admin.1"), 3, vec![member_of(&fabric, "mesh2", "rpc", 1)]));
+        hold(&server.topology_view, &snap("mesh2", &publisher("mesh2.admin.1"), 3, vec![member_of(&fabric, "mesh2", "rpc", 1)]));
         let t = target_of(&caller, &server);
-        let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh77"), None).await.unwrap_err();
+        let err = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh77"), None).await.unwrap_err();
         assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh77".into()));
-        assert!(caller.membership.held_source_version("mesh2").is_none() && caller.membership.held_source_version("mesh77").is_none());
+        assert!(caller.topology_view.held_source_version("mesh2").is_none() && caller.topology_view.held_source_version("mesh77").is_none());
         server.ep.close().await;
         caller.ep.close().await;
     });
@@ -385,18 +385,18 @@ fn a_since_from_another_publisher_revision_is_answered_with_the_snapshot_not_unc
         let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
         open(&server, &fabric);
         let epoch1 = publisher("mesh2.admin.1");
-        hold(&server.membership, &snap("mesh2", &epoch1, 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
+        hold(&server.topology_view, &snap("mesh2", &epoch1, 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
         let t = target_of(&caller, &server);
         let epoch2 = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth-2")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
         let other_epoch = SourceVersion { publisher: epoch2, topology_version: 7 };
-        let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(other_epoch.clone())).await.unwrap();
+        let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh2"), Some(other_epoch.clone())).await.unwrap();
         assert!(read.unchanged.is_empty() && read.installed.len() == 1, "{read:?}");
-        assert_eq!(caller.membership.held_source_version("mesh2"), Some((epoch1.clone(), 7)), "installed at the publisher it was held from");
+        assert_eq!(caller.topology_view.held_source_version("mesh2"), Some((epoch1.clone(), 7)), "installed at the publisher it was held from");
         // The same version from the held publisher is Unchanged; a `since` with no mesh named is ignored.
         let held = SourceVersion { publisher: epoch1, topology_version: 7 };
-        let unchanged = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(held.clone())).await.unwrap();
+        let unchanged = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh2"), Some(held.clone())).await.unwrap();
         assert_eq!(unchanged.unchanged, vec![("mesh2".to_string(), 7)]);
-        let all = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, Some(held)).await.unwrap();
+        let all = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, Some(held)).await.unwrap();
         assert!(all.unchanged.is_empty() && all.installed.len() == 1, "since is honoured only with a mesh named: {all:?}");
         server.ep.close().await;
         caller.ep.close().await;
@@ -409,7 +409,7 @@ fn a_since_from_another_publisher_revision_is_answered_with_the_snapshot_not_unc
 // @feature: node-lifecycle
 /// CONTRACT (R-G2): a read from a node of another mesh whose source of the reader's own mesh is
 /// stale installs topology and no liveness. The members of the reader's own mesh are returned to
-/// the reader (to map and sweep) but are held nowhere in its book, so a dead one is never heard
+/// the reader (to map and sweep) but are held nowhere in its view, so a dead one is never heard
 /// as alive; a third mesh's members are held as topology. The reader's install spans name the
 /// answering node and the mesh.
 #[test]
@@ -421,17 +421,17 @@ fn a_read_from_a_peer_mesh_returns_the_readers_own_mesh_but_holds_none_of_it_as_
         open(&server, &fabric);
         let own: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh1", "rpc", k)).collect();
         let third: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
-        hold(&server.membership, &snap("mesh1", &publisher("mesh1.admin.1"), 9, own.clone()));
-        hold(&server.membership, &snap("mesh3", &publisher("mesh3.admin.1"), 2, third.clone()));
+        hold(&server.topology_view, &snap("mesh1", &publisher("mesh1.admin.1"), 9, own.clone()));
+        hold(&server.topology_view, &snap("mesh3", &publisher("mesh3.admin.1"), 2, third.clone()));
         let t = target_of(&caller, &server);
-        let read = get_topology(&caller.client, &t, "mesh2", &caller.membership, None, None).await.unwrap();
+        let read = get_topology(&caller.client, &t, "mesh2", &caller.topology_view, None, None).await.unwrap();
         let members_of = |mesh: &str| read.installed.iter().find(|m| m.mesh == mesh).map(|m| m.members.len());
         assert_eq!((members_of("mesh1"), members_of("mesh3")), (Some(3), Some(2)), "the reader is given every mesh the node holds");
         for d in &own {
-            assert!(caller.membership.book.get(d.node.node_id.as_str()).is_none(), "{} of the reader's own mesh is not held as heard from a peer mesh's stale source", d.node.name);
+            assert!(caller.topology_view.digest_view.get(d.node.node_id.as_str()).is_none(), "{} of the reader's own mesh is not held as heard from a peer mesh's stale source", d.node.name);
         }
         for d in &third {
-            assert!(caller.membership.book.get(d.node.node_id.as_str()).is_some(), "{} of a third mesh is held as topology", d.node.name);
+            assert!(caller.topology_view.digest_view.get(d.node.node_id.as_str()).is_some(), "{} of a third mesh is held as topology", d.node.name);
         }
         server.ep.close().await;
         caller.ep.close().await;
@@ -466,11 +466,11 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
         };
         let mut s = snap("mesh3", &publisher("mesh3.admin.1"), 4, members.clone());
         s.in_flight = vec![op.clone()];
-        hold(&server.membership, &s);
+        hold(&server.topology_view, &s);
         let t = target_of(&caller, &server);
-        let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh3"), None).await.unwrap();
+        let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh3"), None).await.unwrap();
         assert_eq!(read.installed[0].members.len(), 3, "the retiring member is still listed");
-        let (in_flight, _) = caller.membership.book.overlays_of("mesh3");
+        let (in_flight, _) = caller.topology_view.digest_view.overlays_of("mesh3");
         assert_eq!(in_flight, vec![op], "the reader holds the retirement as an overlay");
         server.ep.close().await;
         caller.ep.close().await;
@@ -506,12 +506,12 @@ fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
         let kept: Vec<MeshDigest> = members.iter().filter(|d| d.node.node_id != stopped.node.node_id).cloned().collect();
         let mut s = snap("mesh3", &publisher("mesh3.admin.1"), 4, kept);
         s.in_flight = vec![op.clone()];
-        hold(&server.membership, &s);
+        hold(&server.topology_view, &s);
         let t = target_of(&caller, &server);
-        get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh3"), None).await.unwrap();
-        assert!(caller.membership.book.get(stopped.node.node_id.as_str()).is_none(), "the reader never held the stopped node's digest");
-        assert_eq!(caller.membership.book.stopped_unheard(), vec![op]);
-        let view = rdm_admin::admin::project("fabric1", &fabric, rdm_admin::model::ProviderKind::Process, &caller.membership.book, &rdm_admin::admin::Records::default());
+        get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh3"), None).await.unwrap();
+        assert!(caller.topology_view.digest_view.get(stopped.node.node_id.as_str()).is_none(), "the reader never held the stopped node's digest");
+        assert_eq!(caller.topology_view.digest_view.stopped_unheard(), vec![op]);
+        let view = rdm_admin::admin::project("fabric1", &fabric, rdm_admin::model::ProviderKind::Process, &caller.topology_view.digest_view, &rdm_admin::admin::Records::default());
         let n = view.node(&stopped.node.name).expect("the parked node is listed");
         assert_eq!((n.status, n.parked, n.routable), (rdm_admin::model::NodeStatus::Leaving, true, false));
         server.ep.close().await;
@@ -530,14 +530,14 @@ fn open_with_stored(n: &Node, fabric: &FabricId, rows: Vec<rdm_core::topology::S
         let rows = rows.clone();
         Box::pin(async move { Ok(rdm_admin::topology_read::StoredMap { nodes: rows, mesh_ids: [("mesh1".to_string(), MeshId::parse("04raj09p3zp7").unwrap())].into_iter().collect() }) })
     });
-    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.membership.clone(), Arc::new(move || d.clone()), n.time.clone()).with_stored(source)));
+    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.topology_view.clone(), Arc::new(move || d.clone()), n.time.clone()).with_stored(source)));
 }
 
 // @feature: node-lifecycle
 /// CONTRACT: a node that holds no gossiped snapshot of a mesh but stores births of it answers that
 /// mesh with its stored map, marked as having no version: the reader gets the births to reach and
 /// installs nothing. The stored mesh holds no source version at the reader, none of its nodes is in
-/// the reader's book, and a mesh the node does hold a snapshot of is answered by the snapshot, not
+/// the reader's view, and a mesh the node does hold a snapshot of is answered by the snapshot, not
 /// the stored map. The node never answers its own mesh from the stored map. The serve span counts
 /// the stored mesh and streams no snapshot of it.
 #[test]
@@ -552,22 +552,22 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
         // The node stores births of the lost mesh, of a mesh it holds a snapshot of, and of its own.
         let rows: Vec<_> = lost.iter().chain(held.iter()).chain(own.iter()).map(stored_of).collect();
         open_with_stored(&server, &fabric, rows);
-        hold(&server.membership, &snap("mesh3", &publisher("mesh3.admin.1"), 5, held.clone()));
+        hold(&server.topology_view, &snap("mesh3", &publisher("mesh3.admin.1"), 5, held.clone()));
         let t = target_of(&caller, &server);
-        let read = get_topology(&caller.client, &t, "mesh2", &caller.membership, None, None).await.unwrap();
+        let read = get_topology(&caller.client, &t, "mesh2", &caller.topology_view, None, None).await.unwrap();
         assert_eq!(read.installed.iter().map(|m| m.mesh.as_str()).collect::<Vec<_>>(), vec!["mesh3"], "the held snapshot is answered as a snapshot");
         assert_eq!(read.stored.len(), 1, "only the lost mesh is answered from the stored map: {:?}", read.stored);
         assert_eq!((read.stored[0].mesh.as_str(), read.stored[0].nodes.len()), ("mesh1", 3));
         assert_eq!(read.stored[0].mesh_id, Some(MeshId::parse("04raj09p3zp7").unwrap()), "the stored mesh carries the id the node stored for it");
         assert_eq!(read.meshes, 2, "End counts the snapshot mesh and the stored mesh");
-        assert!(caller.membership.held_source_version("mesh1").is_none(), "a stored map carries no version, so no source is held for it");
+        assert!(caller.topology_view.held_source_version("mesh1").is_none(), "a stored map carries no version, so no source is held for it");
         for d in &lost {
-            assert!(caller.membership.book.get(d.node.node_id.as_str()).is_none(), "{} of a stored map is not held by the reader", d.node.name);
+            assert!(caller.topology_view.digest_view.get(d.node.node_id.as_str()).is_none(), "{} of a stored map is not held by the reader", d.node.name);
         }
         // Asking for the stored mesh by name is answered the same way; a mesh stored nowhere is unknown.
-        let one = get_topology(&caller.client, &t, "mesh2", &caller.membership, Some("mesh1"), None).await.unwrap();
+        let one = get_topology(&caller.client, &t, "mesh2", &caller.topology_view, Some("mesh1"), None).await.unwrap();
         assert!(one.installed.is_empty() && one.stored.len() == 1 && one.meshes == 1, "{one:?}");
-        let err = get_topology(&caller.client, &t, "mesh2", &caller.membership, Some("mesh8"), None).await.unwrap_err();
+        let err = get_topology(&caller.client, &t, "mesh2", &caller.topology_view, Some("mesh8"), None).await.unwrap_err();
         assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh8".into()));
         server.ep.close().await;
         caller.ep.close().await;
@@ -594,30 +594,30 @@ async fn a_read_is_served_with_the_adopted_rafka_time_and_the_nodes_primaries() 
     let t = target_of(&caller, &server);
     let held = |seat| (seat, Primary { mesh: "mesh1".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
 
-    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     let served = read.rafka_time.expect("every accepted read carries rafka-time");
     assert!((5_000_000..5_060_000).contains(&served.ms), "the node's adopted time, not an OS clock: {}", served.ms);
     assert_eq!(served.kind, None, "a node that is no primary answers none");
 
     let (seat, holder) = held(Seat::MeshPrimary);
-    server.membership.primaries().take(seat, &holder);
+    server.topology_view.primaries().take(seat, &holder);
     let rpc_holder = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
     let broker_holder = Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 3 };
-    server.membership.primaries().take(Seat::Cohort(NodeKind::RpcNode), &rpc_holder);
-    server.membership.primaries().take(Seat::Cohort(NodeKind::Broker), &broker_holder);
-    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    server.topology_view.primaries().take(Seat::Cohort(NodeKind::RpcNode), &rpc_holder);
+    server.topology_view.primaries().take(Seat::Cohort(NodeKind::Broker), &broker_holder);
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().kind, Some(PrimaryKind::MeshPrimary));
-    assert_eq!(caller.membership.primaries().mesh("mesh1"), Some(holder.clone()));
+    assert_eq!(caller.topology_view.primaries().mesh("mesh1"), Some(holder.clone()));
     // The read carries the mesh-primaries and the fabric-primary (node-rpc-envelope.md `Primaries`); every
     // other type's primary rides its digest and its mesh-primary's projection (`is_primary`).
-    assert_eq!(caller.membership.primaries().cohort("mesh1", NodeKind::RpcNode), None, "another type's primary is not carried by the read: {rpc_holder:?}");
-    assert_eq!(caller.membership.primaries().cohort("mesh2", NodeKind::Broker), None, "nor a peer mesh's: {broker_holder:?}");
+    assert_eq!(caller.topology_view.primaries().cohort("mesh1", NodeKind::RpcNode), None, "another type's primary is not carried by the read: {rpc_holder:?}");
+    assert_eq!(caller.topology_view.primaries().cohort("mesh2", NodeKind::Broker), None, "nor a peer mesh's: {broker_holder:?}");
 
     let (seat, holder) = held(Seat::FabricPrimary);
-    server.membership.primaries().take(seat, &holder);
-    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    server.topology_view.primaries().take(seat, &holder);
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().kind, Some(PrimaryKind::FabricPrimary), "the fabric-primary outranks the mesh-primary it also is");
-    assert_eq!(caller.membership.primaries().fabric(), Some(holder));
+    assert_eq!(caller.topology_view.primaries().fabric(), Some(holder));
     server.ep.close().await;
     caller.ep.close().await;
 }
@@ -630,9 +630,9 @@ async fn a_node_holding_no_rafka_time_answers_not_ready_by_name() {
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     let d = own_digest(&server, &fabric);
-    let _ = server.slot.set(Arc::new(TopologyDoor::new(server.membership.clone(), Arc::new(move || d.clone()), rdm_transport::clock::RafkaTime::unadopted())));
+    let _ = server.slot.set(Arc::new(TopologyDoor::new(server.topology_view.clone(), Arc::new(move || d.clone()), rdm_transport::clock::RafkaTime::unadopted())));
     let t = target_of(&caller, &server);
-    let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap_err();
+    let err = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap_err();
     assert!(matches!(&err, TopologyFailure::NotReady(r) if r.contains("holds no rafka-time")), "{err}");
     server.ep.close().await;
     caller.ep.close().await;
@@ -657,18 +657,18 @@ fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_
         let t = target_of(&caller, &server);
         let caller_id = NodeId::mint();
         // The caller holds its mesh's primary seat in its own records.
-        caller.membership.primaries().take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: caller_id.clone(), incarnation: IncarnationId::mint(), revision: 1 });
+        caller.topology_view.primaries().take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: caller_id.clone(), incarnation: IncarnationId::mint(), revision: 1 });
         let pull = || async {
-            let read = get_topology(&caller.client, &t, "mesh2", &caller.membership, None, None).await.unwrap();
-            read.adopt_rafka_time(&caller.time, &caller.membership, "mesh1.admin.2", "mesh1", &caller_id, "mesh2.rpc.1")
+            let read = get_topology(&caller.client, &t, "mesh2", &caller.topology_view, None, None).await.unwrap();
+            read.adopt_rafka_time(&caller.time, &caller.topology_view, "mesh1.admin.2", "mesh1", &caller_id, "mesh2.rpc.1")
         };
         assert_eq!(pull().await.unwrap_err(), TimeNotAdopted::Refused(Refusal::ServedByAReplica));
         assert!(caller.time.now_ms() >= 9_000_000 && caller.time.now_ms() < 9_060_000, "the replica's 5 000 000 was not taken");
 
-        server.membership.primaries().take(Seat::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
+        server.topology_view.primaries().take(Seat::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
         assert_eq!(pull().await.unwrap_err(), TimeNotAdopted::Refused(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary));
 
-        server.membership.primaries().take(Seat::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
+        server.topology_view.primaries().take(Seat::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
         let adopted = pull().await.unwrap();
         assert_eq!(adopted.previous_ms.map(|p| p >= 9_000_000), Some(true));
         assert!(adopted.stalls_ms > 3_000_000, "the fabric-primary's earlier time is behind: the reader stalls, it never steps back: {adopted:?}");
@@ -703,14 +703,14 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
         let fabric = FabricId::mint();
         let (server, caller) = (node(&fabric, "mesh1", "mesh1.admin.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await);
         open(&server, &fabric);
-        hold(&server.membership, &snap("mesh2", &publisher("mesh2.admin.1"), 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
+        hold(&server.topology_view, &snap("mesh2", &publisher("mesh2.admin.1"), 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
         // The member stands far ahead of the primary's 5 000 000 ms: an adoption would stall it.
         caller.time.adopt(9_000_000);
         let _ = target_of(&caller, &server);
         let mut primary = own_digest(&server, &fabric);
         primary.node.name = server.resolved.name.clone();
         let fetch = top_up_fetch(Arc::new(NodeRpcClient::new(caller.ep.clone(), caller.resolver.clone())));
-        let done = fetch(caller.membership.clone(), primary, vec!["mesh2".into()]).await.unwrap();
+        let done = fetch(caller.topology_view.clone(), primary, vec!["mesh2".into()]).await.unwrap();
         assert_eq!(done.installed, vec![("mesh2".to_string(), 7)], "the top-up installed the complete snapshot");
         let before = caller.time.now_ms();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

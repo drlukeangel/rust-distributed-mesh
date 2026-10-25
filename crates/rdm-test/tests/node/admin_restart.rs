@@ -124,7 +124,7 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     // flight. Bounded by the staleness floor.
     let frame_version: u64 = wait_for(&format!("{away_primary}'s NodeRestarting frame of {operation} is in its evidence"), Duration::from_secs(10), || {
         let spans = spans_of(&estate, pids[&away_primary]);
-        let version = named(&spans, "rdm.mesh.membership.update.via-status-event")
+        let version = named(&spans, "rdm.mesh.topology.update.via-status-event")
             .into_iter()
             .find(|x| x["attributes"]["frame"] == "node-restarting" && x["attributes"]["operation"] == operation.as_str())
             .and_then(|x| x["attributes"]["topology_version"].as_str().and_then(|v| v.parse().ok()));
@@ -169,16 +169,16 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     assert!(!withheld.is_empty(), "{away_primary} withheld its mesh's aggregate carrying the restart in flight from the backbone");
     // Own mesh channel: the target mesh's rpc nodes hear it.
     for n in names.iter().filter(|n| n.starts_with(away) && n.contains(".rpc.")) {
-        let heard = of_op(&spans_of(&estate, pids[n]), "rdm.mesh.membership.update.via-node-restarting");
+        let heard = of_op(&spans_of(&estate, pids[n]), "rdm.mesh.topology.update.via-node-restarting");
         assert_eq!(heard.len(), 1, "{n} (mesh {away}) hears NodeRestarting once on its own mesh channel: {heard:?}");
     }
     // The backbone carries it as the target mesh's aggregate. The order is the doc's (gossip.md NodeRestarting: `topology_version`
     // is "the version of the subject's mesh at which the subject changed"): the restart step's receipt puts the hold into the
-    // primary's book, the aggregate takes the version at which the subject changed and forwards, and the frame is published
+    // primary's view, the aggregate takes the version at which the subject changed and forwards, and the frame is published
     // carrying that version. The version bump therefore precedes the publisher's span, so every later check anchors on the
     // frame's version, never on wall-clock order against the publisher's span.
     let away_spans = spans_of(&estate, pids[&away_primary]);
-    let frames: Vec<&Value> = named(&away_spans, "rdm.mesh.membership.update.via-status-event").into_iter().filter(|x| x["attributes"]["frame"] == "node-restarting" && x["attributes"]["operation"] == operation.as_str()).collect();
+    let frames: Vec<&Value> = named(&away_spans, "rdm.mesh.topology.update.via-status-event").into_iter().filter(|x| x["attributes"]["frame"] == "node-restarting" && x["attributes"]["operation"] == operation.as_str()).collect();
     assert_eq!(frames.len(), 1, "{away_primary} publishes the NodeRestarting frame of {operation} once: {frames:?}");
     let version = s(&frames[0]["attributes"]["topology_version"]);
     assert!(!version.is_empty(), "the NodeRestarting frame carries the version of {away}'s aggregate at which {target} changed: {}", frames[0]);
@@ -191,12 +191,12 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     let after = |x: &Value| x["attributes"]["topology_version"].as_str().and_then(|v| v.parse::<u64>().ok()).zip(version.parse::<u64>().ok()).is_some_and(|(v, at)| v > at);
     let carries = |x: &Value| x["attributes"]["in_flight"].as_str().is_some_and(|n| n != "0");
     let home_spans = spans_of(&estate, pids[&home_primary]);
-    let installed: Vec<&Value> = named(&home_spans, "rdm.mesh.membership.update.via-snapshot-installed").into_iter().filter(|x| x["attributes"]["mesh"] == away && x["attributes"]["channel"] == "backbone").collect();
+    let installed: Vec<&Value> = named(&home_spans, "rdm.mesh.topology.update.via-snapshot-installed").into_iter().filter(|x| x["attributes"]["mesh"] == away && x["attributes"]["channel"] == "backbone").collect();
     let converged: Vec<&Value> = installed.iter().copied().filter(|x| after(x) && !carries(x)).collect();
     assert!(!converged.is_empty(), "{home_primary} installs {away}'s aggregate from the backbone at a version after {version}, the restart no longer in flight: {installed:?}");
     let in_flight: Vec<&Value> = installed.iter().copied().filter(|x| carries(x) && start(x) >= start(publish)).collect();
     assert!(in_flight.is_empty(), "no aggregate carrying the restart in flight reached {home_primary} from the backbone: {in_flight:?}");
-    let forwarded: Vec<&Value> = named(&home_spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|x| x["attributes"]["mesh"] == away && after(x)).collect();
+    let forwarded: Vec<&Value> = named(&home_spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|x| x["attributes"]["mesh"] == away && after(x)).collect();
     assert!(!forwarded.is_empty(), "{home_primary} forwards {away}'s delta at a version after {version} onto {home}'s channel");
     eprintln!("RESTART-CONVERGED installed v{} trace {} forwarded v{} trace {} withheld {}", s(&converged[0]["attributes"]["topology_version"]), s(&converged[0]["trace_id"]), s(&forwarded[0]["attributes"]["topology_version"]), s(&forwarded[0]["trace_id"]), withheld.len());
 }

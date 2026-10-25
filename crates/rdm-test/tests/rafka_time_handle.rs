@@ -14,7 +14,7 @@ const AUTHORITY_REFERENCE_MS: u64 = 7_000_000_000;
 /// CONTRACT: the handle `RunningNode::rafka_time` is the one reader the node's gossip stamps read.
 /// A node admitted by an authority whose rafka-time is 7 000 000 000 ms reads that lineage through
 /// the handle, never the OS clock; the `emitted_at_rafka_ms` of a heartbeat the authority hears lies
-/// between two readings of the handle taken before and after it; and the membership's clock is the
+/// between two readings of the handle taken before and after it; and the topology view's clock is the
 /// same instance, so a clone of the handle and the stamps never disagree.
 #[test]
 fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
@@ -55,7 +55,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
         let node_id = launch.node_id.to_string();
         let heard = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                if let Some((d, _)) = admin.observer.membership.book.get(node_id.as_str()) {
+                if let Some((d, _)) = admin.observer.topology_view.digest_view.get(node_id.as_str()) {
                     if d.emitted_at_rafka_ms >= before {
                         return d.emitted_at_rafka_ms;
                     }
@@ -68,9 +68,9 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
         let after = handle.now_ms();
         assert!((before..=after).contains(&heard), "the gossip stamp {heard} lies between two readings of the handle: {before}..{after}");
 
-        // The membership composes the handle's instance: its clock and the handle never disagree.
-        let (a, via_membership, b) = (handle.now_ms(), running.membership.clock().now_rafka_ms(), handle.now_ms());
-        assert!((a..=b).contains(&via_membership), "{a} <= {via_membership} <= {b}");
+        // The topology view composes the handle's instance: its clock and the handle never disagree.
+        let (a, via_topology_view, b) = (handle.now_ms(), running.topology_view.clock().now_rafka_ms(), handle.now_ms());
+        assert!((a..=b).contains(&via_topology_view), "{a} <= {via_topology_view} <= {b}");
 
         running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);

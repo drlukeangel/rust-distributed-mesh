@@ -9,12 +9,12 @@
 //!
 //! The defect this cell pins (traces bec3d0cbaa59317b18f954c1d27fdb73, d2427d34ca338d823e76781c4c052624;
 //! fresh pending 647061808568a00bf7a6d8f8ef75a55c): the new mesh2.admin.1 held its predecessor's
-//! node.delete departure before its entry answer, was not in its own book before its first heartbeat,
+//! node.delete departure before its entry answer, was not in its own view before its first heartbeat,
 //! refused its mesh's status by name, and published a fresh `pending`.
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{learn_addresses, Frame, Membership, MeshStatus};
+use rdm_transport::topology::{learn_addresses, Frame, TopologyView, MeshStatus};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -108,9 +108,9 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         learn_addresses(&y_node.ep, &[p_addr.clone()]).unwrap();
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![], &[]).await.unwrap();
-        let m = Membership::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr.clone()], &[]).await.unwrap();
-        let y = Membership::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.1", clock(), vec![p_addr], &[]).await.unwrap();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![], &[]).await.unwrap();
+        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr.clone()], &[]).await.unwrap();
+        let y = TopologyView::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.1", clock(), vec![p_addr], &[]).await.unwrap();
         p.set_author(&rdm_core::PublisherId { node: "mesh2.admin.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() });
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         m.wait_for_neighbour().await;
@@ -125,8 +125,8 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
         let departure = LifecycleOp { build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "node.delete:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
         p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
-        until("Y and the member to hold X departed", || y.book.is_deleted(x.as_str()) && m.book.is_deleted(x.as_str())).await;
-        assert!(y.book.all().iter().all(|d| d.node.name.to_string() != "mesh2.admin.1"), "Y has not published: no live birth holds the name in Y's book");
+        until("Y and the member to hold X departed", || y.digest_view.is_deleted(x.as_str()) && m.digest_view.is_deleted(x.as_str())).await;
+        assert!(y.digest_view.all().iter().all(|d| d.node.name.to_string() != "mesh2.admin.1"), "Y has not published: no live birth holds the name in Y's view");
 
         // The entry answer: mesh2.admin.2's held statuses, the original publisher kept.
         let answer = p.status_frames("mesh2.admin.2");
@@ -139,7 +139,7 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         // Y's first heartbeat reaches the member: the name resolves to Y's live birth.
         let (y_id, y_inc) = (NodeId::mint(), IncarnationId::mint());
         y.publish(&digest("mesh2.admin.1", &y_id, &y_inc, 41_021)).await.unwrap();
-        until("the member to hold Y's birth", || m.book.get(y_id.as_str()).is_some()).await;
+        until("the member to hold Y's birth", || m.digest_view.get(y_id.as_str()).is_some()).await;
         m.learn_statuses(&answer);
         assert_eq!(m.mesh_status("mesh2"), held, "the repeat leaves the held status as it is");
 
@@ -147,20 +147,20 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
             n.ep.close().await;
         }
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
-        let deleted: Vec<&Value> = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|s| attr(s, "node_id") == x.as_str()).collect();
-        let deleted_at_y = deleted.iter().find(|s| attr(s, "holder") == "mesh2.admin.1").unwrap_or_else(|| panic!("Y applied X's departure: {deleted:#?}"));
-        let taken: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-mesh-status").into_iter().filter(|s| attr(s, "mesh") == "mesh2" && attr(s, "via") == "entry-answer").collect();
+        let deleted: Vec<&Value> = named(&spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|s| attr(s, "node_id") == x.as_str()).collect();
+        let deleted_at_y = deleted.iter().find(|s| attr(s, "observer") == "mesh2.admin.1").unwrap_or_else(|| panic!("Y applied X's departure: {deleted:#?}"));
+        let taken: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-mesh-status").into_iter().filter(|s| attr(s, "mesh") == "mesh2" && attr(s, "via") == "entry-answer").collect();
         let taken_at_y = taken.iter().find(|s| attr(s, "node") == "mesh2.admin.1").unwrap_or_else(|| panic!("Y opened its status span: {taken:#?}"));
         assert_eq!((attr(taken_at_y, "publisher"), attr(taken_at_y, "forwarded_by"), attr(taken_at_y, "changed_at_rafka_ms"), attr(taken_at_y, "taken")), ("mesh2.admin.1".to_string(), "mesh2.admin.2".to_string(), "5".to_string(), "true".to_string()));
         assert!(deleted_at_y["start_unix_nano"].as_u64() < taken_at_y["start_unix_nano"].as_u64(), "the departure was held at Y before the status");
-        let refused: Vec<&Value> = named(&spans, "rdm.mesh.membership.reject.via-departed-birth").into_iter().filter(|s| attr(s, "frame") == "mesh-status").collect();
+        let refused: Vec<&Value> = named(&spans, "rdm.mesh.topology.reject.via-departed-birth").into_iter().filter(|s| attr(s, "frame") == "mesh-status").collect();
         assert!(refused.is_empty(), "no status is refused for its publisher's name: {refused:#?}");
         let heard_at_m: Vec<(String, String)> = taken.iter().filter(|s| attr(s, "node") == "mesh2.rpc.1").map(|s| (attr(s, "publisher"), attr(s, "taken"))).collect();
         assert_eq!(heard_at_m, vec![("mesh2.admin.1".to_string(), "true".to_string()), ("mesh2.admin.1".to_string(), "false".to_string())], "the member takes it at the first answer, and the repeat is not taken again");
         let taken_at_m = taken.iter().find(|s| attr(s, "node") == "mesh2.rpc.1").expect("the member's first status span");
         let mut lines = String::new();
         for (what, s) in [("deleted-at-y", *deleted_at_y), ("taken-at-y", *taken_at_y), ("taken-at-member", *taken_at_m)] {
-            lines.push_str(&format!("{what} {} {} holder={} node={} via={} publisher={} taken={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "holder"), attr(s, "node"), attr(s, "via"), attr(s, "publisher"), attr(s, "taken")));
+            lines.push_str(&format!("{what} {} {} observer={} node={} via={} publisher={} taken={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "observer"), attr(s, "node"), attr(s, "via"), attr(s, "publisher"), attr(s, "taken")));
         }
         std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();
     });

@@ -25,7 +25,7 @@
 use rdm_core::topology::PrimaryKind;
 use rdm_core::NodeId;
 use rdm_transport::clock::{Adopted, RafkaTime};
-use rdm_transport::topology::SeatBook;
+use rdm_transport::topology::PrimaryView;
 
 /// Who is pulling, by the primary it is in its own view when it pulls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +38,7 @@ pub enum Puller {
 
 impl Puller {
     /// The puller `node_id` of `mesh` is, from the primaries its view holds.
-    pub fn of(seats: &SeatBook, mesh: &str, node_id: &NodeId) -> Self {
+    pub fn of(seats: &PrimaryView, mesh: &str, node_id: &NodeId) -> Self {
         if primary_held(seats, mesh, node_id).is_some() {
             Self::MeshPrimary
         } else {
@@ -49,7 +49,7 @@ impl Puller {
 
 /// Which primary `node_id` of `mesh` is in the primaries `seats` holds: the fabric-primary when it is,
 /// else its mesh's mesh-primary, else none.
-pub fn primary_held(seats: &SeatBook, mesh: &str, node_id: &NodeId) -> Option<PrimaryKind> {
+pub fn primary_held(seats: &PrimaryView, mesh: &str, node_id: &NodeId) -> Option<PrimaryKind> {
     if seats.fabric().is_some_and(|h| &h.node_id == node_id) {
         return Some(PrimaryKind::FabricPrimary);
     }

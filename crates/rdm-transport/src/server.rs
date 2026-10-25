@@ -240,23 +240,23 @@ struct UnsettledReplies {
 /// One dispatched call's place in [`UnsettledReplies`]: held from the dispatch until the reply is
 /// settled, and released on every way out of the call.
 struct Unsettled {
-    book: Arc<UnsettledReplies>,
+    replies: Arc<UnsettledReplies>,
     seq: u64,
 }
 
 impl Unsettled {
-    fn enter(book: &Arc<UnsettledReplies>) -> Self {
-        let mut open = book.open.lock().unwrap();
-        let seq = book.next.fetch_add(1, Ordering::SeqCst);
+    fn enter(replies: &Arc<UnsettledReplies>) -> Self {
+        let mut open = replies.open.lock().unwrap();
+        let seq = replies.next.fetch_add(1, Ordering::SeqCst);
         open.insert(seq);
-        Self { book: book.clone(), seq }
+        Self { replies: replies.clone(), seq }
     }
 }
 
 impl Drop for Unsettled {
     fn drop(&mut self) {
-        self.book.open.lock().unwrap().remove(&self.seq);
-        self.book.changed.send_modify(|v| *v += 1);
+        self.replies.open.lock().unwrap().remove(&self.seq);
+        self.replies.changed.send_modify(|v| *v += 1);
     }
 }
 
@@ -539,11 +539,11 @@ impl NodeRpcServer {
     /// close its endpoint waits here first, so no admitted answer is taken down with the
     /// connection. Calls dispatched after this one do not extend the wait.
     pub async fn settled(&self) {
-        let book = &self.inner.replies;
-        let upto = book.next.load(Ordering::SeqCst);
-        let mut changed = book.changed.subscribe();
+        let replies = &self.inner.replies;
+        let upto = replies.next.load(Ordering::SeqCst);
+        let mut changed = replies.changed.subscribe();
         loop {
-            if book.open.lock().unwrap().first().is_none_or(|first| *first >= upto) {
+            if replies.open.lock().unwrap().first().is_none_or(|first| *first >= upto) {
                 return;
             }
             if changed.changed().await.is_err() {

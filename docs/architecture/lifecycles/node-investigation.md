@@ -24,7 +24,7 @@ node.delete or mesh.delete.
 Data dir: if the provider step finds the runtime exited, the re-created node takes the inherited data
 dir; on any other verdict, a newly allocated one (R-FM2).
 
-A node that comes back after it was re-created is a deleted birth, and the book is its door: every
+A node that comes back after it was re-created is a deleted birth, and the view is its door: every
 node refuses its Digest by name ([gossip.md §3.1 receiver rules](../gossip.md#31-frame-catalog)), its
 mesh-primary reports it to the fabric-primary (`rdm.node_admin.node.update.via-returned-reported`), and
 the fabric-primary terminates its runtime under `node.terminate:<path>@<incarnation>`. No admit reason

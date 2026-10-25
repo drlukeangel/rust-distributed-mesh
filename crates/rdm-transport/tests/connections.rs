@@ -546,9 +546,9 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
         let fabric = rdm_core::FabricId::parse("fab000000001").unwrap();
         let mesh_id = rdm_core::MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let on_acceptor = rdm_transport::topology::Membership::join(&acceptor.gossip, &acceptor.ep, &fabric, "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![], &[]).await.unwrap();
+        let on_acceptor = rdm_transport::topology::TopologyView::join(&acceptor.gossip, &acceptor.ep, &fabric, "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![], &[]).await.unwrap();
         let seed = iroh::EndpointAddr::new(acceptor.ep.id()).with_ip_addr(acceptor.peer.resolved.transport_addr);
-        let on_dialer = rdm_transport::topology::Membership::join(&dialer.gossip, &dialer.ep, &fabric, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![seed], &[]).await.unwrap();
+        let on_dialer = rdm_transport::topology::TopologyView::join(&dialer.gossip, &dialer.ep, &fabric, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![seed], &[]).await.unwrap();
         let own = rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric.clone(),
@@ -579,7 +579,7 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         let mut heard = false;
         while tokio::time::Instant::now() < deadline && !heard {
-            heard = on_acceptor.book.current(on_acceptor.book.staleness_floor()).iter().any(|d| d.node.node_id == dialer.peer.birth.node_id);
+            heard = on_acceptor.digest_view.current(on_acceptor.digest_view.staleness_floor()).iter().any(|d| d.node.node_id == dialer.peer.birth.node_id);
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         publishing.abort();
@@ -657,7 +657,7 @@ async fn closed_by_acceptor(conn: &iroh::endpoint::Connection, from: tokio::time
 /// CONTRACT (node-connections-admit.md, Failure and receipts; decided 2026-10-19): a dialer that
 /// presents nothing within one staleness floor of the accept is refused `no-credential`, the 412
 /// close carrying the reason, and an empty or undecodable presentation is `no-credential` at once;
-/// the `Refused` fact names the birth the acceptor's membership names for the dialer's key, and a
+/// the `Refused` fact names the birth the acceptor's topology view names for the dialer's key, and a
 /// key it cannot name gets the span and no row. A read the acceptor cannot complete (the dialer
 /// gone) is neither verdict: nothing is written.
 #[tokio::test]

@@ -14,7 +14,7 @@ use crate::admin::Records;
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use rdm_core::Primary;
-use rdm_transport::topology::Membership;
+use rdm_transport::topology::TopologyView;
 use rdm_transport::NodeRpcClient;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -68,7 +68,7 @@ pub fn seat_yield(record: Option<&Primary>, me: &Birth, held: &mut bool, view: &
 /// it; nothing is written). A record naming this birth, naming none, or naming a birth proven gone
 /// (`lost`, which the election passes over before this birth's own record lands) ends nothing; a
 /// record naming another live birth ends this birth's Build log at its revision, and
-/// names that birth's path.name from `name_of` (the digest book, which holds a birth before the
+/// names that birth's path.name from `name_of` (the digest view, which holds a birth before the
 /// projected view does). An open record naming this birth names its path.name as the holder; one
 /// naming none or a birth proven gone names no holder. Read from the record alone: no history, no
 /// write.
@@ -95,7 +95,7 @@ fn seat_record(which: &str, record: Option<&Primary>, me: &Birth, lost: &HashSet
 }
 
 /// The pass uses only this admin's exact birth, its view, the silent births already inspected and
-/// `was_mesh_primary`: whether this admin's seat book holds a silent node-admin as its mesh's primary
+/// `was_mesh_primary`: whether this admin's primary view holds a silent node-admin as its mesh's primary
 /// replaced by another birth (the election named a new mesh-primary past the floor).
 pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, said: &mut Said, was_mesh_primary: &dyn Fn(&Node) -> bool) -> Plan {
     let silent: HashSet<Birth> = view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect).filter_map(birth).collect();
@@ -136,8 +136,8 @@ pub struct Looker {
     pub me: PathName,
     /// The node id this admin was born with: it is never its own carrier.
     pub me_id: NodeId,
-    /// Its mesh membership.
-    pub membership: Membership,
+    /// Its mesh topology.
+    pub topology_view: TopologyView,
     /// Its Node RPC client.
     pub client: Arc<NodeRpcClient>,
     /// Its deployment provider.
@@ -174,7 +174,7 @@ impl Looker {
 
     /// The provider's inspection of `n`'s exact runtime.
     async fn inspect(&self, n: &Node) -> Finding {
-        inspect_birth(&*self.provider, &self.membership.book, self.nodes.as_deref(), n).await
+        inspect_birth(&*self.provider, &self.topology_view.digest_view, self.nodes.as_deref(), n).await
     }
 }
 
@@ -195,8 +195,8 @@ pub struct Watch {
     pub me_id: NodeId,
     /// This admin's exact birth.
     pub incarnation: IncarnationId,
-    /// Its mesh membership.
-    pub membership: Membership,
+    /// Its mesh topology.
+    pub topology_view: TopologyView,
     /// Its view of the topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// Its records of births and exits.
@@ -217,7 +217,7 @@ pub struct Watch {
 pub async fn run(w: Watch) {
     let mut said = Said::default();
     let me_birth = (w.me_id.clone(), w.incarnation.clone());
-    let mut seats_changed = w.membership.primaries().subscribe();
+    let mut seats_changed = w.topology_view.primaries().subscribe();
     let mut held_the_fabric_seat = false;
     // A turn runs from the gate to the next idle wait: the pass below, then the yield check at the
     // top of the loop, which can hand facts on. It is held in an Option so it ends (`take`) right
@@ -226,7 +226,7 @@ pub async fn run(w: Watch) {
     loop {
         // A fabric seat this birth held, now recorded to another birth: the record already fences
         // its Build log; the committed facts are handed to the neighbours before the new holder acts.
-        let record = w.membership.primaries().fabric();
+        let record = w.topology_view.primaries().fabric();
         let owed = seat_yield(record.as_ref(), &me_birth, &mut held_the_fabric_seat, &*w.topology.read().await);
         if let Some((by, to)) = owed {
             w.builds.hand_over_facts(&by, to).await;
@@ -243,7 +243,7 @@ pub async fn run(w: Watch) {
         let read_at = std::time::Instant::now();
         let view = w.topology.read().await.clone();
         // The mesh the fabric seat's record names: the takeover's hold is kept on its node-admins.
-        let fabric_mesh = w.membership.primaries().fabric().map(|h| h.mesh.clone());
+        let fabric_mesh = w.topology_view.primaries().fabric().map(|h| h.mesh.clone());
         // A node-admin in the view whose digest has returned (`ReadyForTraffic`).
         let commands = view.own(&w.me_id).is_some_and(|me| me.is_fabric_primary);
         for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic) {
@@ -260,14 +260,14 @@ pub async fn run(w: Watch) {
                 }
             }
         }
-        let me = w.membership.book.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
+        let me = w.topology_view.digest_view.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
         // The fabric-primary unheard past the floor (fabric-recovery.md step 2, its own mesh; Q122): its
         // mesh's lowest ReadyForTraffic node-admin starts fabric recovery at the first tick after the mark,
-        // once the record has named the unheard birth for a floor in its own book (a record learned after a
+        // once the record has named the unheard birth for a floor in its own view (a record learned after a
         // heal names a birth whose silence here began before it). It takes no primary role and needs no probe.
-        let held_a_floor = w.membership.primaries().fabric_held_for() >= w.membership.book.staleness_floor();
+        let held_a_floor = w.topology_view.primaries().fabric_held_for() >= w.topology_view.digest_view.staleness_floor();
         w.fabric_recovery.start_if_mine(held_a_floor, false).await;
-        let seats = w.membership.primaries();
+        let seats = w.topology_view.primaries();
         let was_mesh_primary = |n: &Node| n.incarnation_id.as_ref().is_some_and(|i| seats.replaced(rdm_core::Seat::MeshPrimary, &n.mesh, i));
         let plan = plan(&view, &me, &me_birth, &mut said, &was_mesh_primary);
         for node in plan.investigate {
@@ -287,7 +287,7 @@ pub async fn run(w: Watch) {
             // One read of iroh's local view of the suspect, recorded beside the investigation;
             // the finding is the provider's and the Node RPC's, never this.
             let key = node.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
-            let seen = rdm_transport::iroh_obs::observe_remote(&w.membership.endpoint(), key).await;
+            let seen = rdm_transport::iroh_obs::observe_remote(&w.topology_view.endpoint(), key).await;
             span.record("iroh_known_addrs", seen.known_addrs.as_str());
             span.record("iroh_active_addrs", seen.active_addrs.as_str());
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
@@ -309,9 +309,9 @@ pub async fn run(w: Watch) {
             let submitted = match (&finding, w.recovery.clone(), finding.inspected()) {
                 (Finding::Reached { .. }, _, _) => false,
                 (_, Some(recovery), Some(inspected)) if !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) && (node.is_primary || was_mesh_primary(&node)) => {
-                    let (node, topology, me_id, book) = (node.clone(), w.topology.clone(), me_birth.0.clone(), w.membership.book.clone());
+                    let (node, topology, me_id, digest_view) = (node.clone(), w.topology.clone(), me_birth.0.clone(), w.topology_view.digest_view.clone());
                     tokio::spawn(async move {
-                        submit_recovery(&node, || recovery.submit(&node, &inspected), &topology, &book, &me_id, read_at).await;
+                        submit_recovery(&node, || recovery.submit(&node, &inspected), &topology, &digest_view, &me_id, read_at).await;
                     });
                     true
                 }
@@ -332,12 +332,12 @@ pub async fn run(w: Watch) {
 /// after a delay that doubles, once per silence. The silence the verdict was read in lasts while this
 /// admin's view holds the exact birth silent (`PendingReconnect` or `Dead`: the mark never replaces a
 /// lifecycle state the mesh-primary recorded, `stopped` among them), this admin is the fabric-primary,
-/// and the book has not heard the
+/// and the view has not heard the
 /// birth since `since`, the instant the pass that read the verdict read its view (node-recovery.md
 /// step 1: the mark "ends when a digest of the exact birth arrives after it, when the birth answers its
 /// tickle, or when the view no longer holds that birth"). A birth heard again is reached (step 3): it
 /// is commanded back, and its old verdict is never submitted again.
-pub async fn submit_recovery<S, F>(node: &Node, mut submit: S, topology: &tokio::sync::RwLock<Topology>, book: &rdm_transport::topology::DigestBook, me_id: &NodeId, since: std::time::Instant)
+pub async fn submit_recovery<S, F>(node: &Node, mut submit: S, topology: &tokio::sync::RwLock<Topology>, digest_view: &rdm_transport::topology::DigestView, me_id: &NodeId, since: std::time::Instant)
 where
     S: FnMut() -> F,
     F: std::future::Future<Output = Result<(), String>>,
@@ -353,17 +353,17 @@ where
         backoff = (backoff * 2).min(ceiling);
         let t = topology.read().await;
         let silent = t.births().any(|n| n.node_id == node.node_id && n.incarnation_id == node.incarnation_id && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead));
-        if !silent || !t.is_fabric_primary(me_id) || heard_since(book, node, since) {
+        if !silent || !t.is_fabric_primary(me_id) || heard_since(digest_view, node, since) {
             break;
         }
     }
 }
 
-/// Whether the book has heard `node`'s exact birth after `since`: a digest of it arrived after that
+/// Whether the view has heard `node`'s exact birth after `since`: a digest of it arrived after that
 /// instant, as `heard_again` reads a birth heard since its command.
-fn heard_since(book: &rdm_transport::topology::DigestBook, node: &Node, since: std::time::Instant) -> bool {
+fn heard_since(digest_view: &rdm_transport::topology::DigestView, node: &Node, since: std::time::Instant) -> bool {
     let now = std::time::Instant::now();
-    book.get_at(node.node_id.as_str(), now).is_some_and(|(d, unheard)| Some(&d.node.incarnation) == node.incarnation_id.as_ref() && now.checked_sub(unheard).is_some_and(|heard_at| heard_at > since))
+    digest_view.get_at(node.node_id.as_str(), now).is_some_and(|(d, unheard)| Some(&d.node.incarnation) == node.incarnation_id.as_ref() && now.checked_sub(unheard).is_some_and(|heard_at| heard_at > since))
 }
 
 #[cfg(test)]
@@ -462,7 +462,7 @@ mod tests {
 
     /// CONTRACT (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs it,
     /// without the half-floor wait, after the election has named the new mesh-primary"): the
-    /// fabric-primary investigates a silent node-admin of a peer mesh that its seat book holds as that
+    /// fabric-primary investigates a silent node-admin of a peer mesh that its primary view holds as that
     /// mesh's primary replaced by the election, though the view no longer names it primary; a silent
     /// node-admin of a peer mesh that was never its primary is that mesh's primary's to investigate.
     #[test]
@@ -523,22 +523,22 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_refused_recovery_is_not_submitted_again_once_the_birth_is_heard_again() {
         let (fp, peer, t) = unheard_peer_primary();
-        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::topology::DigestBook::default());
+        let (topology, digest_view) = (tokio::sync::RwLock::new(t), rdm_transport::topology::DigestView::default());
         let since = std::time::Instant::now();
         let calls = std::sync::atomic::AtomicUsize::new(0);
-        let (calls_ref, book_ref, heard) = (&calls, &book, digest_of(&peer));
+        let (calls_ref, digest_view_ref, heard) = (&calls, &digest_view, digest_of(&peer));
         let submit = || {
             let heard = heard.clone();
             async move {
                 // Refused: an attempt still holds the mesh. The birth answers its tickle and rejoins
                 // after the refusal: its digest arrives.
                 if calls_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                    assert!(book_ref.record(heard), "the book takes the birth's digest");
+                    assert!(digest_view_ref.record(heard), "the view takes the birth's digest");
                 }
                 Err("build-in-progress: BuildInProgress { mesh: Some(\"mesh2\") }".to_string())
             }
         };
-        let ended = tokio::time::timeout(rdm_transport::topology::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, since)).await;
+        let ended = tokio::time::timeout(rdm_transport::topology::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &digest_view, &fp.node_id, since)).await;
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a birth heard again after its refused submit is never submitted again (no recovery, no TerminateRuntime of the rejoined birth)");
         assert!(ended.is_ok(), "the owed submit ends with the silence");
     }
@@ -550,7 +550,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_refused_recovery_is_not_submitted_again_once_the_view_holds_the_birth_off_its_mark() {
         let (fp, peer, t) = unheard_peer_primary();
-        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::topology::DigestBook::default());
+        let (topology, digest_view) = (tokio::sync::RwLock::new(t), rdm_transport::topology::DigestView::default());
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let (calls_ref, topology_ref, peer_id) = (&calls, &topology, peer.node_id.clone());
         let submit = || {
@@ -562,7 +562,7 @@ mod tests {
                 Err("build-in-progress".to_string())
             }
         };
-        let ended = tokio::time::timeout(rdm_transport::topology::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, std::time::Instant::now())).await;
+        let ended = tokio::time::timeout(rdm_transport::topology::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &digest_view, &fp.node_id, std::time::Instant::now())).await;
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a birth the view holds stopping is never submitted again");
         assert!(ended.is_ok(), "the owed submit ends with the mark");
     }
@@ -572,7 +572,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_refused_recovery_of_a_birth_still_unheard_is_submitted_until_opened() {
         let (fp, peer, t) = unheard_peer_primary();
-        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::topology::DigestBook::default());
+        let (topology, digest_view) = (tokio::sync::RwLock::new(t), rdm_transport::topology::DigestView::default());
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let calls_ref = &calls;
         let submit = || async move {
@@ -581,7 +581,7 @@ mod tests {
                 _ => Ok(()),
             }
         };
-        tokio::time::timeout(rdm_transport::topology::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, std::time::Instant::now())).await.expect("the submit that opens the recovery ends the loop");
+        tokio::time::timeout(rdm_transport::topology::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &digest_view, &fp.node_id, std::time::Instant::now())).await.expect("the submit that opens the recovery ends the loop");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3, "submitted until a submit opens it");
     }
 
@@ -606,7 +606,7 @@ mod tests {
         primary.is_primary = true;
         let t = view(vec![fp_only.clone(), primary.clone(), other.clone()]);
         assert_eq!(plan(&t, &fp_only.name, &me_of(&fp_only), &mut Said::default(), &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)], "an unheard mesh-primary of its own mesh is the fabric-primary's");
-        // The election replaced it: the view names another mesh-primary, the seat book the replaced birth.
+        // The election replaced it: the view names another mesh-primary, the primary view the replaced birth.
         let former = Node { is_primary: false, ..primary.clone() };
         let elected = Node { is_primary: true, ..other };
         let never = admin("mesh1.admin.4", "600000000000", "s4", NodeStatus::PendingReconnect);

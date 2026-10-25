@@ -212,9 +212,9 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         .await
         .unwrap();
         root.stop_reconciling();
-        assert_eq!(root.membership.held_types(), ALL_KINDS.iter().map(|k| k.to_string()).collect());
+        assert_eq!(root.topology_view.held_types(), ALL_KINDS.iter().map(|k| k.to_string()).collect());
         for kind in ALL_KINDS {
-            feed(&cache, root.membership.join_channel(kind).await.unwrap());
+            feed(&cache, root.topology_view.join_channel(kind).await.unwrap());
         }
 
         // The first gateway and compute: born into an empty cache, they publish.
@@ -223,15 +223,15 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         let g1 = member(&root, &dir.join("gateway.1"), &root_dir, "mesh1.gateway.1", &GATEWAY_KINDS, BeforeReadyHook::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g1_held.clone() }))).await;
         let c1 = member(&root, &dir.join("compute.1"), &root_dir, "mesh1.compute.1", &COMPUTE_KINDS, BeforeReadyHook::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c1_held.clone() }))).await;
         assert!(g1_held.lock().unwrap().is_empty() && c1_held.lock().unwrap().is_empty(), "nothing was published yet");
-        assert_eq!(g1.membership.held_types(), GATEWAY_KINDS.iter().map(|k| k.to_string()).collect());
-        assert_eq!(c1.membership.held_types(), COMPUTE_KINDS.iter().map(|k| k.to_string()).collect());
+        assert_eq!(g1.topology_view.held_types(), GATEWAY_KINDS.iter().map(|k| k.to_string()).collect());
+        assert_eq!(c1.topology_view.held_types(), COMPUTE_KINDS.iter().map(|k| k.to_string()).collect());
         let mut g1_channels: BTreeMap<&str, Channel> = BTreeMap::new();
         for kind in GATEWAY_KINDS {
-            g1_channels.insert(kind, g1.membership.join_channel(kind).await.unwrap());
+            g1_channels.insert(kind, g1.topology_view.join_channel(kind).await.unwrap());
         }
         let mut c1_channels: BTreeMap<&str, Channel> = BTreeMap::new();
         for kind in COMPUTE_KINDS {
-            c1_channels.insert(kind, c1.membership.join_channel(kind).await.unwrap());
+            c1_channels.insert(kind, c1.topology_view.join_channel(kind).await.unwrap());
         }
         // Each channel has node-admin as a neighbour before anything is published: the admin's
         // channel count of the kind reaches one.
@@ -300,8 +300,8 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         assert!(!c2_rows.contains_key("demo.principal/alice") && !c2_rows.contains_key("demo.path-config/root"), "a compute holds no gateway-only kind");
 
         // What is published after the pull arrives live on both, and node-admin's cache follows.
-        let mut g2_topic = g2.membership.join_channel(SHARED).await.unwrap();
-        let mut c2_topic = c2.membership.join_channel(SHARED).await.unwrap();
+        let mut g2_topic = g2.topology_view.join_channel(SHARED).await.unwrap();
+        let mut c2_topic = c2.topology_view.join_channel(SHARED).await.unwrap();
         tokio::time::timeout(BOUND, async {
             loop {
                 let spans = capture.spans().unwrap();

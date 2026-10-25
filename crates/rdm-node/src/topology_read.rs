@@ -1,17 +1,17 @@
 //! The topology read (`GetTopology`, op `0x1E`; node-rpc-envelope.md "Topology, op `0x1E`, rdm").
 //!
-//! Every node serves it: it reads what the node holds (its membership book and the snapshot
+//! Every node serves it: it reads what the node holds (its topology view and the snapshot
 //! receiver's held sources, each with the publisher and `topology_version` it holds them at) and
 //! streams one snapshot per mesh, chunked by the one method gossip's `Members` snapshots use
 //! ([`rdm_transport::snapshot::chunks_of`]). It mutates nothing at the target.
 //!
 //! The caller ([`get_topology`]) installs a mesh only once every chunk of one snapshot is held,
 //! through the receiver the Mesh channel's snapshots install into
-//! ([`Membership::take_read_chunk`]): there is no second install path.
+//! ([`TopologyView::take_read_chunk`]): there is no second install path.
 
 use rdm_core::wire::ProjectionEntry;
 use rdm_core::{MeshDigest, PublisherId};
-use rdm_transport::topology::Membership;
+use rdm_transport::topology::TopologyView;
 use rdm_transport::snapshot::{chunks_measured, Chunk, SourceSnapshot, Taken};
 use rdm_transport::stream::StreamItem;
 use rdm_transport::{NodeRpcClient, NodeTarget, ServerBuilder};
@@ -26,8 +26,8 @@ use tracing::Instrument as _;
 
 /// What a node serves a topology read from.
 pub struct TopologyDoor {
-    /// The membership the door reads held topology from.
-    pub membership: Membership,
+    /// The topology view the door reads held topology from.
+    pub topology_view: TopologyView,
     /// This node's own digest, as it publishes it now.
     pub own: Arc<dyn Fn() -> MeshDigest + Send + Sync>,
     /// The map this node stores (an admin's durable map of the births it knows), for a mesh it holds
@@ -60,9 +60,9 @@ pub type StoredSource = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Futur
 const STORED_PER_FRAME: usize = 24;
 
 impl TopologyDoor {
-    /// A door over `membership`, the node's own digest and the rafka-time the node adopted.
-    pub fn new(membership: Membership, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>, time: rdm_transport::clock::RafkaTime) -> Self {
-        Self { membership, own, stored: None, gone: None, time, snapshots: AtomicU64::new(0) }
+    /// A door over `topology_view`, the node's own digest and the rafka-time the node adopted.
+    pub fn new(topology_view: TopologyView, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>, time: rdm_transport::clock::RafkaTime) -> Self {
+        Self { topology_view, own, stored: None, gone: None, time, snapshots: AtomicU64::new(0) }
     }
 
     /// This node also answers, for a mesh it holds no snapshot of, from the map it stores.
@@ -124,7 +124,7 @@ impl TopologyDoor {
                 span.record("outcome", "not-ready");
                 return rdm_core::reply::topology::not_ready(format!("{}: this node holds no rafka-time yet", me.node.name));
             };
-            let mut held = self.membership.held_topology(&me);
+            let mut held = self.topology_view.held_topology(&me);
             if let Some(m) = &mesh {
                 held.retain(|s| &s.mesh == m);
             }
@@ -195,8 +195,8 @@ impl TopologyDoor {
             }
             // The recorded primaries this node holds: the fabric-primary and each mesh's mesh-primary, an
             // election input the reader holds before it computes any (elections §3).
-            let mut records: Vec<(rdm_core::topology::PrimaryKind, rdm_core::Primary)> = self.membership.primaries().meshes().into_values().map(|h| (rdm_core::topology::PrimaryKind::MeshPrimary, h)).collect();
-            records.extend(self.membership.primaries().fabric().map(|h| (rdm_core::topology::PrimaryKind::FabricPrimary, h)));
+            let mut records: Vec<(rdm_core::topology::PrimaryKind, rdm_core::Primary)> = self.topology_view.primaries().meshes().into_values().map(|h| (rdm_core::topology::PrimaryKind::MeshPrimary, h)).collect();
+            records.extend(self.topology_view.primaries().fabric().map(|h| (rdm_core::topology::PrimaryKind::FabricPrimary, h)));
             let primary_records = records.len() as u64;
             for (kind, primary) in records {
                 let gone = self.gone.as_ref().is_some_and(|g| g(&primary));
@@ -210,7 +210,7 @@ impl TopologyDoor {
             // The rafka-time this node adopted and which primary it is, read from the primaries it
             // holds: the puller applies its own rule to the pair (`rafka_time::adopt_pulled`).
             let time_ms = self.time.try_now_ms().unwrap_or(time_ms);
-            let kind = crate::rafka_time::primary_held(self.membership.primaries(), &me.node.name.mesh, &me.node.node_id);
+            let kind = crate::rafka_time::primary_held(self.topology_view.primaries(), &me.node.name.mesh, &me.node.node_id);
             let r = TopologyReply::RafkaTime { ms: time_ms, kind };
             bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
             if let Err(e) = sink.data(r).await {
@@ -240,7 +240,7 @@ pub fn serve(b: ServerBuilder, slot: TopologySlot) -> ServerBuilder {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {
-                return Ok(rdm_core::reply::topology::not_ready("this node holds no membership yet".into()));
+                return Ok(rdm_core::reply::topology::not_ready("this node holds no topology view yet".into()));
             };
             Ok(door.serve(req, sink).await)
         }
@@ -279,9 +279,9 @@ impl TopologyRead {
     /// Adopt the rafka-time this read was served with into `time`, by the rule of the puller
     /// `node_id` of `mesh` as its own seat records stand (the same [`crate::rafka_time::adopt_pulled`]
     /// every pull goes through). `served_by` is the target's `path.name`.
-    pub fn adopt_rafka_time(&self, time: &rdm_transport::clock::RafkaTime, membership: &Membership, node: &str, mesh: &str, node_id: &rdm_core::NodeId, served_by: &str) -> Result<rdm_transport::clock::Adopted, TimeNotAdopted> {
+    pub fn adopt_rafka_time(&self, time: &rdm_transport::clock::RafkaTime, topology_view: &TopologyView, node: &str, mesh: &str, node_id: &rdm_core::NodeId, served_by: &str) -> Result<rdm_transport::clock::Adopted, TimeNotAdopted> {
         let served = self.rafka_time.ok_or_else(|| TimeNotAdopted::Absent(format!("{served_by}: the topology answer carries no rafka-time")))?;
-        let puller = crate::rafka_time::Puller::of(membership.primaries(), mesh, node_id);
+        let puller = crate::rafka_time::Puller::of(topology_view.primaries(), mesh, node_id);
         crate::rafka_time::adopt_pulled(time, puller, node, crate::rafka_time::Served { via: "get-topology", served_by, ms: served.ms, kind: served.kind }).map_err(TimeNotAdopted::Refused)
     }
 }
@@ -352,23 +352,23 @@ impl std::fmt::Display for TopologyFailure {
     }
 }
 
-/// `GetTopology` to `target` (a node of `answerer_mesh`), installing into `membership` each mesh whose snapshot arrives
+/// `GetTopology` to `target` (a node of `answerer_mesh`), installing into `topology_view` each mesh whose snapshot arrives
 /// complete. `mesh = None` reads every mesh the target holds; `since` is the source version held
 /// for the one `mesh` asked for.
-pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_mesh: &str, membership: &Membership, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
-    let node_name = membership.node_name();
-    let read = read_with(client, target, &node_name, mesh, since, |c| membership.take_read_chunk(c, answerer_mesh)).await?;
+pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_mesh: &str, topology_view: &TopologyView, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
+    let node_name = topology_view.node_name();
+    let read = read_with(client, target, &node_name, mesh, since, |c| topology_view.take_read_chunk(c, answerer_mesh)).await?;
     // The seat records the target holds are this node's too, wherever they supersede its own: it
     // computes no seat before it has them.
-    membership.learn_primaries(&read.seats, "entry");
+    topology_view.learn_primaries(&read.seats, "entry");
     Ok(read)
 }
 
-/// The top-up read every receiver of a mesh channel hands [`Membership::top_ups`] (gossip.md §3.3: a
+/// The top-up read every receiver of a mesh channel hands [`TopologyView::top_ups`] (gossip.md §3.3: a
 /// node whose source desynchronized "pulls the current full fabric topology from its own current
 /// mesh-primary with GetTopology, installs it atomically, records the publisher and version baseline,
 /// and resumes"): one [`get_topology`] of each desynchronized mesh to the exact birth of the primary
-/// the membership names, installed through the membership's own receiver. The one workflow a
+/// the topology view names, installed through the topology view's own receiver. The one workflow a
 /// node-admin and every other node run.
 ///
 /// A top-up is a topology read repair (lifecycles/node-topology-get.md) and adopts no rafka-time:
@@ -376,12 +376,12 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// (origin-ordering.md, rafka-time), so a gap's repair neither stalls its reading nor clears its
 /// discipline's window or slew.
 pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_transport::topology::TopUpFetch {
-    Arc::new(move |membership: Membership, primary: MeshDigest, meshes: Vec<String>| {
+    Arc::new(move |topology_view: TopologyView, primary: MeshDigest, meshes: Vec<String>| {
         let client = client.clone();
         Box::pin(async move {
             let mut done = rdm_transport::topology::TopUpDone::default();
             for mesh in meshes {
-                let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &membership, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
+                let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &topology_view, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
                 done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
             }
             Ok(done)

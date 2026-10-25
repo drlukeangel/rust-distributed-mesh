@@ -201,7 +201,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // path (gossip.md receiver rules: `Members` order by `published_at_rafka_ms`, then
     // `topology_version`). So the peer is owed the restart's return, never each state between.
     // The publisher is matched too: the recreated mesh2's primary starts its versions again.
-    let returned_at = named(&spans, "rdm.mesh.membership.update.from-node-started")
+    let returned_at = named(&spans, "rdm.mesh.topology.update.from-node-started")
         .into_iter()
         .filter(|sp| {
             let a = &sp["attributes"];
@@ -216,7 +216,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .min_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0))
         .unwrap_or_else(|| panic!("{} bumped mesh2's topology_version after the second restart's return", returned_at["attributes"]["node"]));
     let (publisher, version) = (s(&bumped["attributes"]["publisher"]), s(&bumped["attributes"]["topology_version"]).parse::<u64>().expect("a topology_version is a number"));
-    let installed: Vec<String> = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed")
+    let installed: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["publisher"]) == publisher)
         .map(|sp| s(&sp["attributes"]["topology_version"]))

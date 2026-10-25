@@ -59,7 +59,7 @@ the process's data-dir inheritance is an independent fact supplied by its spec.
   births have no primary to pull from and complete the hook from local state
   ([gossip.md §9](gossip.md#9-joinnode-op-0x1d--bootstrap-hydration)).
 - the Node RPC client the app uses for its own calls;
-- the membership handle, so the app subscribes its gossip kind topics before it takes a
+- the topology view handle, so the app subscribes its gossip kind topics before it takes a
   snapshot;
 - the member cert issued at JoinNode ([fabric certs](fabric-certs.md));
 - the [rafka-time](#rafka-time) handle;

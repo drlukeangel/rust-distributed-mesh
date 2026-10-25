@@ -99,21 +99,21 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         let (peer_node, _peer_seams) = start(peer.clone()).await;
 
         // Both births are held ready by the admin, and the peer holds the renamed one.
-        let book = &admin.observer.membership.book;
-        let mut heard = book.heard_changes();
-        while [&renamed, &peer].iter().any(|l| book.get(l.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic)) {
+        let digest_view = &admin.observer.topology_view.digest_view;
+        let mut heard = digest_view.heard_changes();
+        while [&renamed, &peer].iter().any(|l| digest_view.get(l.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic)) {
             heard.changed().await.unwrap();
         }
-        let peer_book = &peer_node.membership.book;
-        let mut peer_digests = peer_book.digest_changes();
-        while peer_book.get(renamed.node_id.as_str()).is_none() {
+        let peer_view = &peer_node.topology_view.digest_view;
+        let mut peer_digests = peer_view.digest_changes();
+        while peer_view.get(renamed.node_id.as_str()).is_none() {
             peer_digests.changed().await.unwrap();
         }
         // And the node holds the peer: the admin side holds both ready from their node.started reports,
         // which tell nothing of what either has heard of the other.
-        let node_book = &renamed_node.membership.book;
-        let mut node_digests = node_book.digest_changes();
-        while node_book.get(peer.node_id.as_str()).is_none() {
+        let node_view = &renamed_node.topology_view.digest_view;
+        let mut node_digests = node_view.digest_changes();
+        while node_view.get(peer.node_id.as_str()).is_none() {
             node_digests.changed().await.unwrap();
         }
 
@@ -131,7 +131,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
             assert!(before.iter().any(|e| e.source.name == born && e.destination.name.to_string() == dest), "the node holds a route to {dest}: {before:#?}");
         }
 
-        let (d, _) = book.get(renamed.node_id.as_str()).unwrap();
+        let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());

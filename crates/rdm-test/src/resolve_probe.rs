@@ -3,7 +3,7 @@
 //!
 //! The probe binary resolves from its entry admin's view (`fabric.get`, `node.get`), which
 //! is current-only: it can never say `Gone`. This protocol asks a real node,
-//! whose `LiveNodeResolver` is fed by its own membership, so a scenario proves
+//! whose `LiveNodeResolver` is fed by its own topology view, so a scenario proves
 //! `Found` / `Gone` / `Unknown` where they are decided. Testkit range only
 //! ([`TESTKIT_OPS`]); never a product binary.
 //!

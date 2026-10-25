@@ -107,7 +107,7 @@ pub struct Config {
     /// The provider can make a mesh unheard by the others: the container provider always, the
     /// process provider when the host drops UDP between loopback ports (`netfault`).
     pub network_faults: bool,
-    /// The membership staleness floor and the backbone gossip interval the estate runs at
+    /// The topology staleness floor and the backbone gossip interval the estate runs at
     /// (`rdm_transport::topology`): the windows a silence is observed within.
     pub floor: Duration,
     pub backbone: Duration,
@@ -329,7 +329,7 @@ struct OpMeta {
 }
 
 #[derive(Default)]
-struct OpBook {
+struct OpView {
     ledger: Ledger,
     meta: Vec<OpMeta>,
     excluded: BTreeSet<(String, u64)>,
@@ -351,7 +351,7 @@ struct View {
 }
 
 struct Shared {
-    book: Mutex<OpBook>,
+    op_view: Mutex<OpView>,
     view: Mutex<View>,
     stop: AtomicBool,
 }
@@ -372,7 +372,7 @@ struct Call {
 /// outcome after. No retry: an outcome is recorded, never repeated.
 async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &MeshNode, call: Call) {
     let id: OperationId = {
-        let mut b = shared.book.lock().unwrap();
+        let mut b = shared.op_view.lock().unwrap();
         let mutation = match (call.kind, &call.value) {
             ("put" | "cas", Some(v)) => Some(MutationIntent { key: call.key.to_string(), value: v.clone().into_bytes() }),
             _ => None,
@@ -406,7 +406,7 @@ async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &MeshNode, call: Cal
         p.run(&a, &refs)
     })
     .await;
-    let mut b = shared.book.lock().unwrap();
+    let mut b = shared.op_view.lock().unwrap();
     if let Ok(Ok(out)) = &printed {
         b.meta[id.0 as usize].trace_id = out["traceparent"].as_str().and_then(|tp| tp.split('-').nth(1)).filter(|t| t.len() == 32).map(String::from);
         b.meta[id.0 as usize].route = out["route"].as_str().map(String::from);
@@ -452,7 +452,7 @@ async fn traffic(shared: Arc<Shared>, probe: ProbeHandle, seed: u64) {
         let call = match pick {
             0..=4 => Call { target_path: path, target_id: id, kind: "put", key, value: Some(value), expected: None, via },
             5..=6 => {
-                let expected = shared.book.lock().unwrap().last.get(&(id.clone(), key)).cloned();
+                let expected = shared.op_view.lock().unwrap().last.get(&(id.clone(), key)).cloned();
                 Call { target_path: path, target_id: id, kind: "cas", key, value: Some(value), expected, via }
             }
             _ => Call { target_path: path, target_id: id, kind: "get", key, value: None, expected: None, via },
@@ -1031,7 +1031,7 @@ impl Driver {
         wait_for("every live admin holds the same births", cfg.floor * 2 + cfg.backbone * 2 + Duration::from_secs(60), || converged_everywhere(&estate, &expected)).await;
         let known = admins_of(&estate.node_values().await);
         let progress = Arc::new(Mutex::new(Progress { executed: Vec::new(), initial: Some(initial.clone()) }));
-        let shared = Arc::new(Shared { book: Mutex::new(OpBook::default()), view: Mutex::new(View::default()), stop: AtomicBool::new(false) });
+        let shared = Arc::new(Shared { op_view: Mutex::new(OpView::default()), view: Mutex::new(View::default()), stop: AtomicBool::new(false) });
         let ladder = SpanTail::from_now(estate.evidence.clone(), |sp| matches!(sp["name"].as_str(), Some(LADDER_UNHEARD | LADDER_VERDICT | FABRIC_ROLE)));
         Self {
             estate,
@@ -1081,7 +1081,7 @@ impl Driver {
         let rpcs = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
         let gateways = nodes.iter().filter(|n| n["kind"] == "gateway" && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
         *self.shared.view.lock().unwrap() = View { admin, rpcs, gateways };
-        let mut b = self.shared.book.lock().unwrap();
+        let mut b = self.shared.op_view.lock().unwrap();
         for n in nodes.iter().filter(|n| serves_proof(n)) {
             b.data_dirs.insert(s(&n["node_id"]), n["data_dir"].as_str().map(str::to_string));
         }
@@ -1274,7 +1274,7 @@ impl Driver {
             schedule: self.sched.events_json(),
             rounds_log: self.rounds_log.clone(),
             operations: {
-                let b = self.shared.book.lock().unwrap();
+                let b = self.shared.op_view.lock().unwrap();
                 b.ledger
                     .operations()
                     .iter()
@@ -1298,9 +1298,9 @@ impl Driver {
     }
 
     /// The node paths a ledger violation's text names (a violation is about operations on stores;
-    /// the book maps their target ids to paths).
+    /// the view maps their target ids to paths).
     fn paths_named_in(&self, detail: &str) -> Vec<String> {
-        let b = self.shared.book.lock().unwrap();
+        let b = self.shared.op_view.lock().unwrap();
         let mut out = Vec::new();
         for (i, m) in b.meta.iter().enumerate() {
             if detail.contains(&format!("op#{i} ")) || detail.contains(&format!("op#{i}\n")) || detail.ends_with(&format!("op#{i}")) {
@@ -2008,7 +2008,7 @@ impl Driver {
         let nodes = if relocate_control(&mut self.estate, &self.known).await.is_some() { self.estate.node_values().await } else { Vec::new() };
         let alive: BTreeMap<String, String> = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["node_id"]), s(&n["name"]))).collect();
         let (meta, excluded, probe_failures, mut data_dirs) = {
-            let b = self.shared.book.lock().unwrap();
+            let b = self.shared.op_view.lock().unwrap();
             (b.meta.clone(), b.excluded.clone(), b.probe_failures.clone(), b.data_dirs.clone())
         };
         for n in nodes.iter().filter(|n| serves_proof(n)) {
@@ -2016,13 +2016,13 @@ impl Driver {
         }
         let mut report = LedgerReport { probe_failures, keys_excluded_from_state: excluded.len(), ..Default::default() };
         let (counts, global) = {
-            let b = self.shared.book.lock().unwrap();
+            let b = self.shared.op_view.lock().unwrap();
             (b.ledger.buckets(), b.ledger.reconcile())
         };
         report.issued = meta.len();
         report.buckets = counts.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect();
         {
-            let b = self.shared.book.lock().unwrap();
+            let b = self.shared.op_view.lock().unwrap();
             for o in b.ledger.operations() {
                 if let Some(c) = &o.classification {
                     *report.details.entry(format!("{:?}:{}", c.bucket, c.detail)).or_default() += 1;
@@ -2077,7 +2077,7 @@ impl Driver {
                 continue;
             }
             let sub = {
-                let b = self.shared.book.lock().unwrap();
+                let b = self.shared.op_view.lock().unwrap();
                 b.ledger.select(|o| births.contains(&o.target_node_id) && !o.mutation.as_ref().is_some_and(|m| m.key.parse::<u64>().is_ok_and(|k| excluded_keys.contains(&k))))
             };
             match sub.reconcile_state(&state) {

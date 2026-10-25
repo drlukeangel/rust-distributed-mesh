@@ -213,8 +213,8 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
 
     estate.stop().await;
     let spans = estate.spans();
-    let subscribed: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-subscribe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == NODE).collect();
-    assert!(!subscribed.is_empty(), "the rpc node's real membership subscribed ({} spans read)", spans.len());
+    let subscribed: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-subscribe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == NODE).collect();
+    assert!(!subscribed.is_empty(), "the rpc node's real topology view subscribed ({} spans read)", spans.len());
     let result = json!({
         "cell": CELL,
         "observer_heartbeats_before_forgery": before.iter().map(row).collect::<Vec<_>>(),

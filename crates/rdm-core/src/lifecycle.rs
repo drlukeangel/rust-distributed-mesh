@@ -85,7 +85,7 @@ impl LifecycleOp {
 }
 
 /// How long a process holds a departure after it accepted it (its own local
-/// age, never another machine's clock). It covers the membership repair
+/// age, never another machine's clock). It covers the topology repair
 /// horizon: a process cut off for less than this still learns the departure
 /// once it rejoins.
 pub const DEPARTED_RETENTION: std::time::Duration = std::time::Duration::from_secs(10 * 60);

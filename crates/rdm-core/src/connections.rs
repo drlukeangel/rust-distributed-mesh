@@ -16,35 +16,35 @@
 //! [`resolve`] answers how a new invocation from this node reaches one exact destination under
 //! its protocol's [`CarrierPolicy`]: a valid own Proxy, else an active Direct, else no route.
 //! A Proxy is valid only while the destination process and the carrier process it recorded are the
-//! ones membership holds now (a superseded one is fenced by name) and the carrier's own Direct
-//! edge to the destination is Active. The incarnations reach the source through membership
+//! ones the topology view holds now (a superseded one is fenced by name) and the carrier's own Direct
+//! edge to the destination is Active. The incarnations reach the source through the topology view
 //! ([`CurrentIncarnations`]); the carrier's edge is the carrier's own fact, learned from the
 //! carried call that returns `carrier-edge-lost` (connections.md section 8), never held here.
-//! A Direct fact naming a destination process membership no longer holds is not current either.
+//! A Direct fact naming a destination process the topology view no longer holds is not current either.
 
 use crate::ids::{IncarnationId, NodeId};
 use crate::path::{NodeKind, PathName};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// What membership holds of one node a connection fact names.
+/// What the topology view holds of one node a connection fact names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Birth {
     /// The node's current process birth.
     Current(IncarnationId),
     /// The node left, or another node holds its path now: no birth of it is current.
     Departed,
-    /// Membership does not hold the node: nothing is judged.
+    /// The topology view does not hold the node: nothing is judged.
     Unknown,
 }
 
-/// The births membership holds now, as the holder's membership knows them. Facts, never policy.
+/// The births the topology view holds now, as the holder's topology view knows them. Facts, never policy.
 pub trait CurrentIncarnations: Send + Sync + std::fmt::Debug {
-    /// The process birth membership holds for `node_id` at `path`.
+    /// The process birth the topology view holds for `node_id` at `path`.
     fn birth(&self, node_id: &NodeId, path: &PathName) -> Birth;
 }
 
-/// A fixed table of current births per node: membership for a holder fed by hand.
+/// A fixed table of current births per node: the topology view for a holder fed by hand.
 #[derive(Debug, Default)]
 pub struct StaticIncarnations(std::sync::RwLock<HashMap<NodeId, (PathName, Option<IncarnationId>)>>);
 
@@ -225,8 +225,8 @@ pub struct ConnectionsHeld {
     /// This node's latest Direct entry per `(destination, alpn)`, whatever its state: what its reconnect
     /// series is reconstructed from.
     own_directs: HashMap<(PathName, Vec<u8>), NodeConnection>,
-    /// Membership's current process birth per path; absent until the holder is given one.
-    membership: Option<std::sync::Arc<dyn CurrentIncarnations>>,
+    /// The topology view's current process birth per path; absent until the holder is given one.
+    topology_view: Option<std::sync::Arc<dyn CurrentIncarnations>>,
 }
 
 /// Why an entry was not applied.
@@ -291,16 +291,16 @@ impl ConnectionsHeld {
         self.own_source.as_ref()
     }
 
-    /// Give the holder the membership its incarnation judgements read.
-    pub fn set_membership(&mut self, membership: std::sync::Arc<dyn CurrentIncarnations>) {
-        self.membership = Some(membership);
+    /// Give the holder the topology view its incarnation judgements read.
+    pub fn set_topology_view(&mut self, topology_view: std::sync::Arc<dyn CurrentIncarnations>) {
+        self.topology_view = Some(topology_view);
     }
 
-    /// Whether `end` names a process membership does not hold now: its node departed, another
+    /// Whether `end` names a process the topology view does not hold now: its node departed, another
     /// node holds its path, or the node is here under another birth. An end naming no process is
-    /// judged only on departure; a node membership does not hold is not judged.
+    /// judged only on departure; a node the topology view does not hold is not judged.
     pub fn end_superseded(&self, end: &ConnectionEnd) -> Option<bool> {
-        let m = self.membership.as_ref()?;
+        let m = self.topology_view.as_ref()?;
         match m.birth(&end.node_id, &end.name) {
             Birth::Current(now) => Some(end.incarnation.as_ref().is_some_and(|named| *named != now)),
             Birth::Departed => Some(true),
@@ -308,7 +308,7 @@ impl ConnectionsHeld {
         }
     }
 
-    /// Whether `edge` names a destination process membership no longer holds: such a fact is
+    /// Whether `edge` names a destination process the topology view no longer holds: such a fact is
     /// evidence about a birth that is gone, never about the current one.
     pub(crate) fn names_superseded_destination(&self, edge: &NodeConnection) -> bool {
         self.end_superseded(&edge.destination).unwrap_or(false)
@@ -489,7 +489,7 @@ pub struct RouteResolution {
 }
 
 /// Why `proxy` is not valid now over `held`, or `None` when it is. The destination and carrier
-/// processes it recorded must be the ones membership holds at their paths now. The carrier's own
+/// processes it recorded must be the ones the topology view holds at their paths now. The carrier's own
 /// Direct edge to the destination is not judged here: it is the carrier's fact, and the carried
 /// call answers `carrier-edge-lost` when it is not Active.
 pub fn proxy_invalid(held: &ConnectionsHeld, proxy: &NodeConnection) -> Option<&'static str> {

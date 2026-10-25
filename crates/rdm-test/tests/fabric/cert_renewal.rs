@@ -346,7 +346,7 @@ fn a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admi
 /// holding an open Direct connection is renewed. The connection is the same one after the install
 /// and carries a new stream; what the member holds (`node.connections.get`) is unchanged; no
 /// connection span is begun between the renewal and the install; the member's view on its admin and
-/// its digest in its peer's book keep their status, incarnation, name and config.
+/// its digest in its peer's view keep their status, incarnation, name and config.
 #[test]
 fn a_renewal_terminates_nothing_and_publishes_nothing() {
     let cell = "a_renewal_terminates_nothing_and_publishes_nothing";
@@ -399,7 +399,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         echo(b"before").await;
         let held_before = bounded("node.connections.get of mesh1.rpc.1 before the renewal", call(&root, &a, &StatusRequest::GetConnections { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() })).await;
         let view_before = bounded("node.get of mesh1.rpc.1 before the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.rpc.1 in the view");
-        let (book_before, _) = b.membership.book.get(a.digest.node.node_id.as_str()).expect("mesh1.rpc.2 holds mesh1.rpc.1's digest");
+        let (digest_before, _) = b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).expect("mesh1.rpc.2 holds mesh1.rpc.1's digest");
         let connection_spans = |spans: &crate::common::Spans| spans.0.lock().unwrap().values().filter(|(n, _, _)| n.starts_with("rdm.node.connections.")).count();
         let before = connection_spans(&spans);
 
@@ -420,10 +420,10 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
             (view_before.status, &view_before.incarnation_id, &view_before.name, &view_before.config, view_before.parked),
             "no status set, nothing restarted"
         );
-        let (book_after, _) = b.membership.book.get(a.digest.node.node_id.as_str()).expect("mesh1.rpc.2 still holds mesh1.rpc.1's digest");
+        let (digest_after, _) = b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).expect("mesh1.rpc.2 still holds mesh1.rpc.1's digest");
         assert_eq!(
-            (book_after.status, &book_after.node.incarnation, &book_after.node.name, &book_after.config),
-            (book_before.status, &book_before.node.incarnation, &book_before.node.name, &book_before.config),
+            (digest_after.status, &digest_after.node.incarnation, &digest_after.node.name, &digest_after.config),
+            (digest_before.status, &digest_before.node.incarnation, &digest_before.node.name, &digest_before.config),
             "the renewal is invisible to the peer"
         );
         bounded("the members and the root admin stop", stop_all(vec![a, b], vec![root])).await;

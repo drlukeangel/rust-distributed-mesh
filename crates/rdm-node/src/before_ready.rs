@@ -23,7 +23,7 @@
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rdm_core::{MemberStatus, MeshDigest};
 use std::time::Duration;
-use rdm_transport::topology::{DigestBook, Membership};
+use rdm_transport::topology::{DigestView, TopologyView};
 use rdm_transport::{CancelToken, BeforeReadyGate, NodeRpcClient};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -125,9 +125,9 @@ pub struct BeforeReadyCtx {
     pub authority: Authority,
     /// The process's one Node RPC client.
     pub client: Arc<NodeRpcClient>,
-    /// The membership/gossip handle: the app subscribes its kind topics before it takes its
+    /// The topology/gossip handle: the app subscribes its kind topics before it takes its
     /// snapshot, so what changes during the pull arrives by gossip.
-    pub membership: Membership,
+    pub topology_view: TopologyView,
     /// Cancelled when the birth is retired (stop-node, its process stopping): the hook
     /// and any pull it has in flight end.
     pub cancel: CancelToken,
@@ -270,40 +270,40 @@ pub enum Waited {
     Cancelled,
 }
 
-/// The retry events of one birth, read from its membership book and the down ops it was sent.
+/// The retry events of one birth, read from its topology view and the down ops it was sent.
 #[derive(Clone)]
 pub struct Events {
-    book: DigestBook,
+    digest_view: DigestView,
     addressed: Arc<Addressed>,
 }
 
 impl Events {
-    /// The events of the birth holding `book`, with the down ops recorded in `addressed`.
-    pub fn new(book: DigestBook, addressed: Arc<Addressed>) -> Self {
-        Self { book, addressed }
+    /// The events of the birth holding `digest_view`, with the down ops recorded in `addressed`.
+    pub fn new(digest_view: DigestView, addressed: Arc<Addressed>) -> Self {
+        Self { digest_view, addressed }
     }
 
     /// The counts now, for `authority`.
     pub fn mark(&self, authority: &Authority) -> Mark {
-        let heard = *self.book.heard_changes().borrow();
+        let heard = *self.digest_view.heard_changes().borrow();
         match authority.accepted() {
             Some(a) => Mark { heard, addressed: self.addressed.count(&a.endpoint), authority_incarnation: self.birth_of(a).map(|(d, _)| d.node.incarnation) },
             None => Mark { heard, addressed: 0, authority_incarnation: None },
         }
     }
 
-    /// The birth this node's book holds at the authority's endpoint, and how long it has been silent:
+    /// The birth this node's view holds at the authority's endpoint, and how long it has been silent:
     /// the authority is known by its endpoint, which names one process.
     fn birth_of(&self, authority: &AcceptingAuthority) -> Option<(MeshDigest, Duration)> {
         let key = authority.endpoint.to_string();
-        let held = self.book.all().into_iter().find(|d| d.node.endpoint_id.0 == key)?;
-        self.book.get(held.node.node_id.as_str())
+        let held = self.digest_view.all().into_iter().find(|d| d.node.endpoint_id.0 == key)?;
+        self.digest_view.get(held.node.node_id.as_str())
     }
 
     fn holds(&self, on: &RetryOn, authority: Option<&AcceptingAuthority>, mark: &Mark) -> bool {
-        let moved = *self.book.heard_changes().borrow() > mark.heard;
+        let moved = *self.digest_view.heard_changes().borrow() > mark.heard;
         if let RetryOn::TargetReachable { node_id: id } = on {
-            return moved && self.book.current(self.book.staleness_floor()).iter().any(|d| &d.node.node_id == id);
+            return moved && self.digest_view.current(self.digest_view.staleness_floor()).iter().any(|d| &d.node.node_id == id);
         }
         // An authority event of a birth with no authority never happens; the attempt refuses such a
         // request by name before any wait begins.
@@ -311,20 +311,20 @@ impl Events {
         let birth = self.birth_of(authority);
         match on {
             RetryOn::PrimaryChanged => match &birth {
-                Some((d, _)) => self.book.is_deleted(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.authority_incarnation.as_ref(),
+                Some((d, _)) => self.digest_view.is_deleted(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.authority_incarnation.as_ref(),
                 None => mark.authority_incarnation.is_some(),
             },
-            RetryOn::PrimaryReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.book.staleness_floor()),
+            RetryOn::PrimaryReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.digest_view.staleness_floor()),
             RetryOn::TargetReachable { .. } => unreachable!("answered above"),
             RetryOn::PrimaryAddressed => self.addressed.count(&authority.endpoint) > mark.addressed,
         }
     }
 
-    /// Wait for `on`: arm on the book's and the down ops' change counts, then check the condition
+    /// Wait for `on`: arm on the view's and the down ops' change counts, then check the condition
     /// against `mark`, and only then sleep until a count moves or the birth is cancelled.
     pub async fn wait(&self, on: &RetryOn, authority: Option<&AcceptingAuthority>, mark: &Mark, cancel: &CancelToken) -> Waited {
         loop {
-            let mut heard = self.book.heard_changes();
+            let mut heard = self.digest_view.heard_changes();
             let mut addressed = self.addressed.tick.subscribe();
             heard.borrow_and_update();
             addressed.borrow_and_update();

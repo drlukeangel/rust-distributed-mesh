@@ -101,7 +101,7 @@ impl Birth {
         .expect("the node comes up");
         let birth = Self { target: NodeTarget::ExactNode(launch.node_id.clone()), admin, launch, key, pull, dir, running };
         birth.status_heard(MemberStatus::ReadyForTraffic).await;
-        let (d, _) = birth.admin.observer.membership.book.get(birth.launch.node_id.as_str()).unwrap();
+        let (d, _) = birth.admin.observer.topology_view.digest_view.get(birth.launch.node_id.as_str()).unwrap();
         birth.admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         birth
     }
@@ -118,14 +118,14 @@ impl Birth {
         .unwrap_or_else(|_| panic!("{NODE} never became {status:?}"));
     }
 
-    /// Resolves once the admin side's book holds this birth at `status`: the status it set (its
+    /// Resolves once the admin side's view holds this birth at `status`: the status it set (its
     /// ready-for-traffic, from the birth's node.started).
     async fn status_heard(&self, status: MemberStatus) {
-        let book = &self.admin.observer.membership.book;
-        let mut heard = book.heard_changes();
-        let mut digests = book.digest_changes();
+        let digest_view = &self.admin.observer.topology_view.digest_view;
+        let mut heard = digest_view.heard_changes();
+        let mut digests = digest_view.digest_changes();
         tokio::time::timeout(Duration::from_secs(30), async {
-            while book.get(self.launch.node_id.as_str()).is_none_or(|(d, _)| d.status != status) {
+            while digest_view.get(self.launch.node_id.as_str()).is_none_or(|(d, _)| d.status != status) {
                 tokio::select! {
                     r = heard.changed() => r.unwrap(),
                     r = digests.changed() => r.unwrap(),
@@ -141,7 +141,7 @@ impl Birth {
     }
 
     async fn call(&self, req: &StatusRequest) -> StatusReply {
-        if let Some(reply) = crate::common::lifecycle_reply(&self.admin.observer.client, &self.target, req, &Self::opts(), Some(&self.admin.observer.membership.book)).await { return reply; }
+        if let Some(reply) = crate::common::lifecycle_reply(&self.admin.observer.client, &self.target, req, &Self::opts(), Some(&self.admin.observer.topology_view.digest_view)).await { return reply; }
         match self.admin.observer.client.call::<Status>(&self.target, req, &Self::opts()).await.0 {
             RpcOutcome::Reply(r) => r.into_value(),
             other => panic!("{} did not end in a reply: {other:?}", req.op()),
@@ -270,8 +270,8 @@ impl Birth {
     /// resolves once this birth holds that record.
     async fn record_mesh_primary(&self, admin: &crate::common::AdminSide, revision: u64) {
         let holder = rdm_core::seat::Primary { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), revision };
-        admin.observer.membership.primaries().take(rdm_core::seat::Seat::MeshPrimary, &holder);
-        let seats = self.running.membership.primaries();
+        admin.observer.topology_view.primaries().take(rdm_core::seat::Seat::MeshPrimary, &holder);
+        let seats = self.running.topology_view.primaries();
         let mut changed = seats.subscribe();
         tokio::time::timeout(Duration::from_secs(20), async {
             while seats.mesh("mesh1").as_ref() != Some(&holder) {
@@ -299,13 +299,13 @@ impl Birth {
     async fn other_admin(&self, name: &str) -> crate::common::AdminSide {
         let admin = admin_side_serving_as("127.0.0.1".parse().unwrap(), &self.launch.fabric_id, name, MemberStatus::ReadyForTraffic, |b| b).await;
         let admin1_addr = iroh::EndpointAddr::new(self.admin.seed.0.parse::<iroh::PublicKey>().unwrap()).with_ip_addr(self.admin.seed.1);
-        admin.observer.membership.join_peers(vec![admin1_addr]).await.expect("the admin joins admin1's mesh channel");
-        let (d, _) = self.admin.observer.membership.book.get(self.launch.node_id.as_str()).unwrap();
+        admin.observer.topology_view.join_peers(vec![admin1_addr]).await.expect("the admin joins admin1's mesh channel");
+        let (d, _) = self.admin.observer.topology_view.digest_view.get(self.launch.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let book = &self.running.membership.book;
-        let (mut heard, mut digests) = (book.heard_changes(), book.digest_changes());
+        let digest_view = &self.running.topology_view.digest_view;
+        let (mut heard, mut digests) = (digest_view.heard_changes(), digest_view.digest_changes());
         tokio::time::timeout(Duration::from_secs(20), async {
-            while book.get(admin.launcher.node_id.as_str()).is_none() {
+            while digest_view.get(admin.launcher.node_id.as_str()).is_none() {
                 tokio::select! {
                     r = heard.changed() => r.unwrap(),
                     r = digests.changed() => r.unwrap(),
@@ -363,13 +363,13 @@ fn a_state_command_sent_again_by_the_new_primary_is_the_same_state_key_and_its_a
         // A second node-admin of mesh1 on the same gossip mesh, resolving the birth too.
         let admin2 = admin_side_serving_as("127.0.0.1".parse().unwrap(), &birth.launch.fabric_id, "mesh1.admin.2", MemberStatus::ReadyForTraffic, |b| b).await;
         let admin1_addr = iroh::EndpointAddr::new(birth.admin.seed.0.parse::<iroh::PublicKey>().unwrap()).with_ip_addr(birth.admin.seed.1);
-        admin2.observer.membership.join_peers(vec![admin1_addr]).await.expect("admin2 joins admin1's mesh channel");
-        let (d, _) = birth.admin.observer.membership.book.get(birth.launch.node_id.as_str()).unwrap();
+        admin2.observer.topology_view.join_peers(vec![admin1_addr]).await.expect("admin2 joins admin1's mesh channel");
+        let (d, _) = birth.admin.observer.topology_view.digest_view.get(birth.launch.node_id.as_str()).unwrap();
         admin2.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let book = &birth.running.membership.book;
-        let (mut heard, mut digests) = (book.heard_changes(), book.digest_changes());
+        let digest_view = &birth.running.topology_view.digest_view;
+        let (mut heard, mut digests) = (digest_view.heard_changes(), digest_view.digest_changes());
         tokio::time::timeout(Duration::from_secs(20), async {
-            while book.get(admin2.launcher.node_id.as_str()).is_none() {
+            while digest_view.get(admin2.launcher.node_id.as_str()).is_none() {
                 tokio::select! {
                     r = heard.changed() => r.unwrap(),
                     r = digests.changed() => r.unwrap(),
@@ -412,9 +412,9 @@ fn a_state_command_sent_again_by_the_new_primary_is_the_same_state_key_and_its_a
 /// "The check-in checklist": "A new primary, through election or recovery, re-sends the current state's command.
 /// Members already done check in again, and the checklist rebuilds itself"). The seat moved to
 /// admin2, which commands the birth at once; the birth has not yet heard the seat move, so its seat
-/// book still names admin1. The command is admitted and the birth's check-in goes to admin2, the
+/// view still names admin1. The command is admitted and the birth's check-in goes to admin2, the
 /// commander the call came from. What must NOT happen: the check-in addressed to the holder the
-/// birth's seat book names, which no longer holds the checklist, refuses it `RejectedNotPrimary` and
+/// birth's primary view names, which no longer holds the checklist, refuses it `RejectedNotPrimary` and
 /// never asks again: admin2's command was answered `Applied`, so it never re-sends and its
 /// checklist never completes (gate red, tree b24a4303, mesh_elections__sticky_seat trace
 /// 6bd35dbd: mesh1.rpc.1/2/3 checked in at the old holder 625kzaz0h98j, rejected-not-primary).
@@ -434,15 +434,15 @@ fn a_state_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_check
         // admin1's member projection, so the birth names a call from it by its endpoint.
         let admin2 = admin_side_serving_as("127.0.0.1".parse().unwrap(), &birth.launch.fabric_id, "mesh1.admin.2", MemberStatus::ReadyForTraffic, |b| b).await;
         let admin1_addr = iroh::EndpointAddr::new(birth.admin.seed.0.parse::<iroh::PublicKey>().unwrap()).with_ip_addr(birth.admin.seed.1);
-        admin2.observer.membership.join_peers(vec![admin1_addr]).await.expect("admin2 joins admin1's mesh channel");
-        let (d, _) = birth.admin.observer.membership.book.get(birth.launch.node_id.as_str()).unwrap();
+        admin2.observer.topology_view.join_peers(vec![admin1_addr]).await.expect("admin2 joins admin1's mesh channel");
+        let (d, _) = birth.admin.observer.topology_view.digest_view.get(birth.launch.node_id.as_str()).unwrap();
         admin2.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let _carried = birth.admin.carry_in_projection(&admin2);
         // The new primary has been a member all along: the birth hears its digest (its resolver dials it).
-        let book = &birth.running.membership.book;
-        let (mut heard, mut digests) = (book.heard_changes(), book.digest_changes());
+        let digest_view = &birth.running.topology_view.digest_view;
+        let (mut heard, mut digests) = (digest_view.heard_changes(), digest_view.digest_changes());
         tokio::time::timeout(Duration::from_secs(20), async {
-            while book.get(admin2.launcher.node_id.as_str()).is_none() {
+            while digest_view.get(admin2.launcher.node_id.as_str()).is_none() {
                 tokio::select! {
                     r = heard.changed() => r.unwrap(),
                     r = digests.changed() => r.unwrap(),
@@ -453,19 +453,19 @@ fn a_state_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_check
         .expect("the birth hears admin2's digest");
         let admin2_endpoint = admin2.own_digest().node.endpoint_id.0.clone();
         tokio::time::timeout(Duration::from_secs(20), async {
-            while birth.running.membership.projected_member_at(&admin2_endpoint).is_none() {
+            while birth.running.topology_view.projected_member_at(&admin2_endpoint).is_none() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .expect("the birth's member projection names admin2 at its endpoint");
 
-        // The birth's seat book names admin1; admin2, which took the seat, commands the checklist.
+        // The birth's primary view names admin1; admin2, which took the seat, commands the checklist.
         birth.record_mesh_primary(&birth.admin, 1).await;
         assert_eq!(birth.state_from(&admin2, StateCommand::StateCommit, 1).await, StatusReply::Applied, "the checklist's first command is admitted, whoever sends it");
         checked_in(&admin2, &spans, "state-committed", 1).await;
         let at_admin1 = birth.admin.observer.check_ins.borrow().iter().filter(|r| r.op() == "state-committed").count();
-        assert_eq!(at_admin1, 0, "the check-in went to the commander, never to the holder the birth's seat book names");
+        assert_eq!(at_admin1, 0, "the check-in went to the commander, never to the holder the birth's primary view names");
         // The completion call's span closes once its reply is back at the birth, after admin2 took it.
         let admin2_id = admin2.launcher.node_id.to_string();
         let named_admin2 = || spans_named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().any(|c| c.get("commander") == Some(&admin2_id) && c.get("answer").map(String::as_str) == Some("applied"));

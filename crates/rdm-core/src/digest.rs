@@ -1,4 +1,4 @@
-//! What a node publishes about itself on the fabric's membership topic.
+//! What a node publishes about itself on the fabric's topology topic.
 
 use crate::ids::{EndpointId, FabricId, IncarnationId, NodeId, MeshId};
 use crate::path::PathName;
@@ -71,7 +71,7 @@ impl NodeState {
     }
 }
 
-/// One membership digest: the node's current birth, its liveness and the status held for it.
+/// One topology digest: the node's current birth, its liveness and the status held for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshDigest {
     /// The logical Fabric this member belongs to.
@@ -135,14 +135,14 @@ pub struct MeshDigest {
 /// One birth's view of its own mesh channel, sampled when it publishes its digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct GossipStats {
-    /// Members whose digest this birth holds as heard (its book's current digests).
+    /// Members whose digest this birth holds as heard (its view's current digests).
     pub heard: u32,
     /// The active gossip neighbours on its mesh channel (NeighborUp minus NeighborDown), never
     /// the seeded peer list.
     pub neighbours: u32,
-    /// Membership frames this birth broadcast on its mesh channel since it started.
+    /// Topology frames this birth broadcast on its mesh channel since it started.
     pub frames_sent: u64,
-    /// Membership frames this birth decoded from its mesh channel since it started.
+    /// Topology frames this birth decoded from its mesh channel since it started.
     pub frames_received: u64,
 }
 

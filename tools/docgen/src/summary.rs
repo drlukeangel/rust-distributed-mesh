@@ -1,4 +1,4 @@
-//! SUMMARY.md: the book's chapter list, built from rafka-v2's docs. The lifecycle index first,
+//! SUMMARY.md: the mdBook site's chapter list, built from rafka-v2's docs. The lifecycle index first,
 //! then each of its `##` sections as a part holding the pages it links (each page once, in the
 //! order the index first links it), then every other architecture page sorted by path, then the
 //! generated reference pages.

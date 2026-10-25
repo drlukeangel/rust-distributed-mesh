@@ -137,7 +137,7 @@ fn refeed(
 ) {
     use rdm_transport::topology::backbone_gossip_interval;
     tokio::spawn(async move {
-        // As the membership channels (PRD §6.2): a bounded join attempt one gossip interval after
+        // As the topology channels (PRD §6.2): a bounded join attempt one gossip interval after
         // the topic was left alone, backed off (doubling, at most one floor apart) while it holds.
         let mut alone_since: Option<std::time::Instant> = None;
         let mut backoff = backbone_gossip_interval();
@@ -188,7 +188,7 @@ pub struct FabricBuildStateAdapter {
     /// mesh this admin holds, never the fabric-primary's, so an admin that is fabric-primary no more
     /// still opens and claims its own mesh's drift attempts while it is its mesh's primary.
     mesh_seat_gate: Authority,
-    book: rdm_transport::topology::LocationBook,
+    location_view: rdm_transport::topology::LocationView,
 }
 
 /// What the fabric-primary record this admin holds says of this birth's Build log.
@@ -215,12 +215,12 @@ pub enum SeatRecord {
 pub struct SeatSource {
     /// The record's answer for this birth, read now.
     pub read: Arc<dyn Fn() -> SeatRecord + Send + Sync>,
-    /// Ticks whenever a seat record is held (`SeatBook::subscribe`); none for a log with no seat.
+    /// Ticks whenever a seat record is held (`PrimaryView::subscribe`); none for a log with no seat.
     pub changed: Option<tokio::sync::watch::Receiver<u64>>,
 }
 
 impl SeatSource {
-    /// A Build log no seat record governs (a fixture with no membership).
+    /// A Build log no seat record governs (a fixture with no topology view).
     pub fn unrecorded() -> Self {
         Self { read: Arc::new(|| SeatRecord::Open { holder: None }), changed: None }
     }
@@ -298,7 +298,7 @@ impl FabricBuildStateAdapter {
     /// this admin reads. `node` names this admin in evidence.
     pub async fn join(
         gossip: &Gossip,
-        book: &rdm_transport::topology::LocationBook,
+        location_view: &rdm_transport::topology::LocationView,
         fabric: &rdm_core::FabricId,
         peers: Vec<EndpointAddr>,
         local: Arc<dyn LocalBuildLog>,
@@ -310,7 +310,7 @@ impl FabricBuildStateAdapter {
         let io = |e: String| BuildStateError::Io(format!("fabric Build topic {fabric}: {e}"));
         let node_name = node.clone();
         for p in &peers {
-            book.fill(p);
+            location_view.fill(p);
         }
         // Seeds are bootstrap hints, never a start barrier: a recorded seed can be dead (an admin
         // that restarted binds a new mesh port), and a dead seed must not keep this admin from the
@@ -438,7 +438,7 @@ impl FabricBuildStateAdapter {
                 receiver = r;
             }
         });
-        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name.clone(), seat), mesh_seat_gate: Authority::new(node_name, SeatSource::unrecorded()), book: book.clone() })
+        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name.clone(), seat), mesh_seat_gate: Authority::new(node_name, SeatSource::unrecorded()), location_view: location_view.clone() })
     }
 
     /// Join the Build topic to every live node-admin `admins` names, as the
@@ -652,7 +652,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
     fn held_name(&self) -> Option<crate::model::PathName> {
-        self.book.held_path_name()
+        self.location_view.held_path_name()
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
@@ -766,7 +766,7 @@ mod tests {
     /// holder is no longer primary"; Build dispatch from the old seat is refused `SeatYielded`, and nothing
     /// else is written): the Build log reads its authority from the committed
     /// fabric seat record. Once the record names another live birth, every decision is refused by
-    /// name, naming that birth's path.name from the digest book even when the projected view does not
+    /// name, naming that birth's path.name from the digest view even when the projected view does not
     /// hold it yet, and a wait on the fence resolves; no fence write is made. A record naming a birth
     /// proven gone (a vacancy the election fills before this birth's own record lands) ends nothing.
     /// What must NOT happen: a moved record that still lets the old seat decide, or a refusal naming
@@ -775,14 +775,14 @@ mod tests {
     async fn a_moved_fabric_seat_record_refuses_the_old_seats_decisions_with_no_fence_write() {
         use futures_util::FutureExt as _;
         use rdm_core::{IncarnationId, NodeId, Seat, Primary};
-        let seats = rdm_transport::topology::SeatBook::default();
+        let seats = rdm_transport::topology::PrimaryView::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let next = Primary { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 };
         let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
         let source = {
             let changed = Some(seats.subscribe());
             let (seats, me, lost) = (seats.clone(), me.clone(), lost.clone());
-            // The digest book holds mesh2.admin.1; nothing here consults a projected view.
+            // The digest view holds mesh2.admin.1; nothing here consults a projected view.
             let read = std::sync::Arc::new(move || crate::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &lost.lock().unwrap(), |id| (id.as_str() == "100000000000").then(|| "mesh2.admin.1".to_string())));
             SeatSource { read, changed }
         };
@@ -810,7 +810,7 @@ mod tests {
     #[tokio::test]
     async fn a_seat_commit_waits_for_the_decision_in_flight_and_the_moved_record_refuses_every_later_one() {
         use rdm_core::{IncarnationId, NodeId, Seat, Primary};
-        let seats = rdm_transport::topology::SeatBook::default();
+        let seats = rdm_transport::topology::PrimaryView::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let source = {
             let changed = Some(seats.subscribe());
@@ -821,10 +821,10 @@ mod tests {
         let authority = std::sync::Arc::new(Authority::new("mesh1.admin.1".into(), source));
         let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let gate = authority.enter().await.unwrap();
-        let (decisions, c, book) = (authority.decisions(), committed.clone(), seats.clone());
+        let (decisions, c, primary_view) = (authority.decisions(), committed.clone(), seats.clone());
         let moving = tokio::spawn(async move {
             let _held = decisions.lock_owned().await;
-            book.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 });
+            primary_view.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 });
             c.load(std::sync::atomic::Ordering::SeqCst)
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

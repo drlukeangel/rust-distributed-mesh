@@ -1229,8 +1229,8 @@ pub trait BuildStateAdapter: Send + Sync {
     /// A point read by the Build: every adapter answers it from its index (or delegates to the adapter
     /// it decorates), never by reading or folding the fact log.
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError>;
-    /// The path name this admin's membership view holds (`Some` once the fabric Build topic joined
-    /// with the endpoint's location book).
+    /// The path name this admin's topology view holds (`Some` once the fabric Build topic joined
+    /// with the endpoint's location view).
     fn held_name(&self) -> Option<crate::model::PathName> {
         None
     }
@@ -3247,7 +3247,7 @@ mod tests {
     /// as it stood before the held fact: it never sees that fact before its derivation ran. Once the
     /// derivation ends, the push returns and the reader sees the fact. Must NOT happen: a reader
     /// waiting on a std lock behind a writer's whole-log derivation (a worker thread taken from the
-    /// runtime for as long as the fold and its book locks take).
+    /// runtime for as long as the fold and its view locks take).
     /// The derivation reads the Builds the new facts belong to, the current Build and the Builds its
     /// caller holds derived state of, never another Build of the log: an adapter that keeps no log
     /// in memory serves it with per-Build reads.

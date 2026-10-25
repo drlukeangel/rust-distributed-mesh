@@ -76,12 +76,12 @@ fn start(b: &Birth, before_ready: &Arc<TestBeforeReady>) -> tokio::task::JoinHan
 /// The statuses the authority heard of the node, in order, from the moment it is called.
 fn observe(b: &Birth) -> Arc<std::sync::Mutex<Vec<MemberStatus>>> {
     let seen: Arc<std::sync::Mutex<Vec<MemberStatus>>> = Arc::default();
-    let (book, id, out) = (b.admin.observer.membership.book.clone(), b.launch.node_id.to_string(), seen.clone());
+    let (digest_view, id, out) = (b.admin.observer.topology_view.digest_view.clone(), b.launch.node_id.to_string(), seen.clone());
     tokio::spawn(async move {
-        let mut heard = book.heard_changes();
+        let mut heard = digest_view.heard_changes();
         loop {
             heard.borrow_and_update();
-            if let Some((d, _)) = book.get(&id) {
+            if let Some((d, _)) = digest_view.get(&id) {
                 let mut seen = out.lock().unwrap();
                 if seen.last() != Some(&d.status) {
                     seen.push(d.status);
@@ -95,13 +95,13 @@ fn observe(b: &Birth) -> Arc<std::sync::Mutex<Vec<MemberStatus>>> {
     seen
 }
 
-/// Resolves once `pred` holds of `book`, re-checked on every change the book hears.
-async fn until(book: &rdm_transport::topology::DigestBook, what: &str, pred: impl Fn(&rdm_transport::topology::DigestBook) -> bool) {
+/// Resolves once `pred` holds of `digest_view`, re-checked on every change the digest view hears.
+async fn until(digest_view: &rdm_transport::topology::DigestView, what: &str, pred: impl Fn(&rdm_transport::topology::DigestView) -> bool) {
     let waited = async {
-        let mut heard = book.heard_changes();
+        let mut heard = digest_view.heard_changes();
         loop {
             heard.borrow_and_update();
-            if pred(book) {
+            if pred(digest_view) {
                 return;
             }
             heard.changed().await.unwrap();
@@ -147,9 +147,9 @@ async fn delete_all(b: &Birth) -> rdm_core::node_command::NodeCommandReply {
 
 /// The node's digest as the authority heard it, its birth resolved for a call.
 async fn resolved(b: &Birth) -> (MeshDigest, NodeTarget) {
-    let book = &b.admin.observer.membership.book;
-    until(book, "the authority heard the node's digest", |book| book.get(b.launch.node_id.as_str()).is_some()).await;
-    let (d, _) = book.get(b.launch.node_id.as_str()).unwrap();
+    let digest_view = &b.admin.observer.topology_view.digest_view;
+    until(digest_view, "the authority heard the node's digest", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some()).await;
+    let (d, _) = digest_view.get(b.launch.node_id.as_str()).unwrap();
     b.admin.observer.resolver.insert(ResolvedNode {
         node_id: d.node.node_id.clone(),
         name: d.node.name.clone(),
@@ -187,7 +187,7 @@ fn a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is()
         let running = start(&b, &before_ready).await.unwrap().expect("a node whose hook is blocked still comes up, Pending");
 
         assert_eq!(*running.status.lock().unwrap(), MemberStatus::Pending, "a blocked node is Pending");
-        until(&b.admin.observer.membership.book, "the authority heard the node Pending", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
+        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Pending", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
         assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "ReadyForTraffic was published while the hook was blocked: {:?}", seen.lock().unwrap());
         assert_eq!(b.authority.answered(), 0, "the authority answered no rows before its own hook passed");
         assert_eq!(spans_named(&spans, "rdm.node_rpc.request.reject.via-before-ready-not-passed").len(), 1, "the authority's gate refused the pull typed NotReady once");
@@ -203,7 +203,7 @@ fn a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is()
         b.admin.publish_status(MemberStatus::ReadyForTraffic).await;
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook runs again when the authority is Ready");
         assert_eq!(settled, BeforeReadyState::Passed);
-        until(&b.admin.observer.membership.book, "the authority heard the node Ready", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
+        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
 
         assert_eq!(*seen.lock().unwrap(), vec![MemberStatus::Pending, MemberStatus::ReadyForTraffic]);
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "primary-ready".to_string()), ("ok".to_string(), String::new())]);
@@ -235,12 +235,12 @@ fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
         let before_ready = TestBeforeReady::new(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Blocked { reason: "the authority was not Ready when this attempt asked".into(), retry_on: RetryOn::PrimaryReady } });
         let starting = start(&b, &before_ready);
         tokio::time::timeout(WRONG, started.notified()).await.expect("the first attempt began");
-        let node_book = before_ready.book().expect("the attempt was handed the node's membership");
+        let node_view = before_ready.digest_view().expect("the attempt was handed the node's topology view");
 
         // The event: the authority publishes Ready, and the node hears it, while the attempt runs.
         b.authority.gate.open();
         b.admin.publish_status(MemberStatus::ReadyForTraffic).await;
-        until(&node_book, "the node heard its authority Ready", |book| book.get(b.admin.launcher.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
+        until(&node_view, "the node heard its authority Ready", |digest_view| digest_view.get(b.admin.launcher.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
         before_ready.set_mode(Mode::Local);
         resume.notify_one();
 
@@ -250,7 +250,7 @@ fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "primary-ready".to_string()), ("ok".to_string(), String::new())]);
         // node.started follows the hook's pass by the start's topology, Build-floor and rafka-time steps
         // (node-start.md steps 4-5): the node is Ready once its authority hears it so.
-        until(&b.admin.observer.membership.book, "the authority heard the node Ready", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
+        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
         assert_eq!(*running.status.lock().unwrap(), MemberStatus::ReadyForTraffic);
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
@@ -478,9 +478,9 @@ fn the_launchers_ready_waits_for_the_births_own_ready_for_traffic_not_a_ping() {
         let b = birth(MemberStatus::Pending).await;
         let before_ready = TestBeforeReady::new(Mode::Pull);
         let running = start(&b, &before_ready).await.unwrap().expect("a blocked node still comes up, Pending");
-        let book = &b.admin.observer.membership.book;
-        until(book, "the authority heard the node's Pending digest", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
-        let (d, _) = book.get(b.launch.node_id.as_str()).unwrap();
+        let digest_view = &b.admin.observer.topology_view.digest_view;
+        until(digest_view, "the authority heard the node's Pending digest", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
+        let (d, _) = digest_view.get(b.launch.node_id.as_str()).unwrap();
         let mut node = rdm_admin::model::Node::allocated(d.node.name.clone());
         node.node_id = d.node.node_id.clone();
         node.endpoint_id = Some(d.node.endpoint_id.clone());

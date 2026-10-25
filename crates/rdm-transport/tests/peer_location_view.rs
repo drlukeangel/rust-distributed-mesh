@@ -1,4 +1,4 @@
-//! A key that moved keeps its old socket in no address book of the endpoint, and no dial reaches it.
+//! A key that moved keeps its old socket in no address view of the endpoint, and no dial reaches it.
 //!
 //! CONTRACT (R-I1; node-rpc-envelope.md, JoinNode: "On acceptance it installs the reported address
 //! for that exact key, drops pooled connections and pending work aimed at that key's old address";
@@ -8,7 +8,7 @@
 //! accepts the newer birth. From then on every address lookup the endpoint consults names the key
 //! at Y alone, the endpoint holds no path to X, and a dial of the key by its id (what gossip does)
 //! puts no path to X back. A second node of the same process that accepts the same newer birth
-//! names the key at Y alone too. What must NOT happen: X left in a side book (the backbone's) and
+//! names the key at Y alone too. What must NOT happen: X left in a side view (the backbone's) and
 //! read back when the endpoint dials the key; a second node keeping X because the first node of
 //! the process consumed the newer birth.
 //!
@@ -21,7 +21,7 @@
 use futures_lite::StreamExt;
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{Backbone, Membership};
+use rdm_transport::topology::{Backbone, TopologyView};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
@@ -149,16 +149,16 @@ fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_nev
         return;
     }
     let dir = crate::evidence_dir();
-    let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-peer-location-book").expect("the cell's evidence file can be created");
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-peer-location-view").expect("the cell's evidence file can be created");
     capture.run(4, async {
         let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
         let clock = rdm_transport::clock::os_clock;
         let (held_tx, mut held_at_admin) = tokio::sync::mpsc::unbounded_channel();
         let admin = node_with(iroh::SecretKey::generate(), Some(HandOver(held_tx))).await;
         let member = node_with(iroh::SecretKey::generate(), None).await;
-        let m_admin = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
+        let m_admin = TopologyView::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
         let backbone = Backbone::join(&admin.gossip, &admin.ep, &m_admin, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
-        let m_member = Membership::join(&member.gossip, &member.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![], &[]).await.unwrap();
+        let m_member = TopologyView::join(&member.gossip, &member.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![], &[]).await.unwrap();
 
         // The peer admin's first birth at X: known to the admin's mesh channel and its backbone, known
         // to the member, and connected to the admin.
@@ -200,7 +200,7 @@ fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_nev
         let (at_admin, at_member) = (looked_up(&admin.ep, peer).await, looked_up(&member.ep, peer).await);
         assert!(
             at_admin == BTreeSet::from([y]) && at_member == BTreeSet::from([y]),
-            "after the newer birth is accepted every address book names the key at {y} alone (old {x}): admin {at_admin:?}, member {at_member:?}"
+            "after the newer birth is accepted every address view names the key at {y} alone (old {x}): admin {at_admin:?}, member {at_member:?}"
         );
 
         // The admin retires its path to X, and a dial of the key by its id puts none back.

@@ -27,7 +27,7 @@ use rdm_core::outcome::RpcOutcome;
 use rdm_core::Seat;
 use rdm_core::catalog::OpOwner;
 use rdm_node::member_handover::{call_successor, entries_named, install, Answered, Entry, STEP};
-use rdm_transport::topology::{Backbone, DigestBook, Membership};
+use rdm_transport::topology::{Backbone, DigestView, TopologyView};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
@@ -109,13 +109,13 @@ pub struct HandoverDoor {
     /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
     /// This admin's mesh channel (the primaries' records, its clock).
-    pub membership: Membership,
+    pub topology_view: TopologyView,
     /// This admin's place on the backbone.
     pub backbone: Backbone,
     /// The Node RPC client every call is made through.
     pub client: Arc<NodeRpcClient>,
     /// What this admin holds of the digests (the election's inputs).
-    pub book: DigestBook,
+    pub digest_view: DigestView,
     /// The records the election's inputs come from, and whether the initial fabric first reached
     /// ready-for-traffic.
     pub records: Arc<crate::admin::Records>,
@@ -158,11 +158,11 @@ fn refused(side: &'static str, reason: &'static str, detail: &str, operation: &s
 
 impl HandoverDoor {
     fn held_name(&self) -> PathName {
-        self.book.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
     }
 
     fn incumbency(&self) -> crate::election::Incumbency {
-        crate::admin::incumbency_of(&self.book, &self.records)
+        crate::admin::incumbency_of(&self.digest_view, &self.records)
     }
 
     fn me_birth(&self) -> HandoverBirth {
@@ -181,7 +181,7 @@ impl HandoverDoor {
         let mesh_of = self.mesh_of().await;
         let outcome = {
             let _decisions = self.decisions.clone().lock_owned().await;
-            install(self.membership.primaries(), entries, mesh_of)
+            install(self.topology_view.primaries(), entries, mesh_of)
         };
         (self.project_view)().await;
         outcome
@@ -257,19 +257,19 @@ impl HandoverDoor {
     /// the primary of that type in this admin's mesh, which this admin, its mesh-primary, commands.
     async fn serve_update_primary(self: &Arc<Self>, node_type: String, build_id: String, run: u32, operation: String) -> Reply {
         let me = self.held_name();
-        let book = self.membership.primaries();
-        let mesh_primary = book.mesh(&self.me.mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation));
-        let fabric_primary = book.fabric().is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation));
+        let primary_view = self.topology_view.primaries();
+        let mesh_primary = primary_view.mesh(&self.me.mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation));
+        let fabric_primary = primary_view.fabric().is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation));
         let moving = if node_type == crate::model::NodeKind::NodeAdmin.node_type() {
             if !mesh_primary {
-                let reason = format!("{me} is not the mesh-primary of {}: its view names {}", self.me.mesh, book.mesh(&self.me.mesh).map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
+                let reason = format!("{me} is not the mesh-primary of {}: its view names {}", self.me.mesh, primary_view.mesh(&self.me.mesh).map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
                 refused("primary", "not-primary", &reason, &operation);
                 return rdm_core::reply::handover::bounded_not_primary(&reason);
             }
             if fabric_primary { Moving::BothSeats } else { Moving::MeshSeat }
         } else if node_type == FABRIC {
             if !fabric_primary {
-                let reason = format!("{me} is not the fabric-primary: its view names {}", book.fabric().map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
+                let reason = format!("{me} is not the fabric-primary: its view names {}", primary_view.fabric().map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
                 refused("primary", "not-primary", &reason, &operation);
                 return rdm_core::reply::handover::bounded_not_primary(&reason);
             }
@@ -336,12 +336,12 @@ impl HandoverDoor {
         if let Some(refusal) = self.refused_before_first_ready("primary", operation).await {
             return Err(refusal);
         }
-        let book = self.membership.primaries();
+        let primary_view = self.topology_view.primaries();
         // The hand-back repeated once it applied (fabric-recovery.md step 4): the fabric-primary is the
         // birth this admin's view holds at `named` already.
         if let (true, Some(name)) = (moving.moves_fabric_primary(), named) {
             let to = self.topology.read().await.node(name).and_then(birth_of);
-            if let (Some(to), Some(h)) = (to, book.fabric()) {
+            if let (Some(to), Some(h)) = (to, primary_view.fabric()) {
                 if h.is_birth(&to.node_id, &to.incarnation) {
                     return Err(rdm_core::reply::handover::already_applied(vec![(FABRIC.to_string(), exact(&me), exact(&to), h.revision)]));
                 }
@@ -350,16 +350,16 @@ impl HandoverDoor {
         // The primaries this admin is, each at the revision its record holds.
         let mut held = Vec::new();
         if moving.moves_mesh_primary() {
-            let Some(h) = book.mesh(&self.me.mesh).filter(|h| h.is_birth(&self.node_id, &self.incarnation)) else {
-                let reason = format!("{me_name} is not the mesh-primary of {}: its view names {}", self.me.mesh, book.mesh(&self.me.mesh).map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
+            let Some(h) = primary_view.mesh(&self.me.mesh).filter(|h| h.is_birth(&self.node_id, &self.incarnation)) else {
+                let reason = format!("{me_name} is not the mesh-primary of {}: its view names {}", self.me.mesh, primary_view.mesh(&self.me.mesh).map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
                 refused("primary", "not-primary", &reason, operation);
                 return Err(rdm_core::reply::handover::bounded_not_primary(&reason));
             };
             held.push((crate::model::NodeKind::NodeAdmin.node_type().to_string(), h.revision));
         }
         if moving.moves_fabric_primary() {
-            let Some(h) = book.fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation)) else {
-                let reason = format!("{me_name} is not the fabric-primary: its view names {}", book.fabric().map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
+            let Some(h) = primary_view.fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation)) else {
+                let reason = format!("{me_name} is not the fabric-primary: its view names {}", primary_view.fabric().map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
                 refused("primary", "not-primary", &reason, operation);
                 return Err(rdm_core::reply::handover::bounded_not_primary(&reason));
             };
@@ -493,7 +493,7 @@ impl HandoverDoor {
         let records = vec![(rdm_core::Seat::FabricPrimary, held(&to.mesh, target.revision + 1)), (rdm_core::Seat::of_node_type(crate::model::NodeKind::NodeAdmin), held(&target.mesh, mesh_revision))];
         let taken = {
             let _decisions = self.decisions.clone().lock_owned().await;
-            self.membership.primaries().take_together(&records)
+            self.topology_view.primaries().take_together(&records)
         };
         (self.project_view)().await;
         if let Some(rdm_transport::topology::SeatTaken::Refused { held }) = taken.iter().find(|t| matches!(t, rdm_transport::topology::SeatTaken::Refused { .. })) {
@@ -577,21 +577,21 @@ impl HandoverDoor {
     /// anything is installed ("Discovery is not installation"). `None`: the view names `primary` still,
     /// or `primary` was never that type's primary in this view, so no update moved it.
     async fn discovered(&self, primary: &HandoverBirth, kind: crate::model::NodeKind, build_id: &str, run: u32, operation: &str) -> Result<Option<Vec<Entry>>, String> {
-        let book = self.membership.primaries();
+        let primary_view = self.topology_view.primaries();
         // The record the operation moves: the fabric-primary's for node.fabric-primary.update, its type's
         // otherwise.
         let fabric_update = operation.starts_with("node.fabric-primary.update:");
-        let (seat, record) = if fabric_update { (Seat::FabricPrimary, book.fabric()) } else { (Seat::of_node_type(kind), book.cohort(&primary.mesh, kind)) };
+        let (seat, record) = if fabric_update { (Seat::FabricPrimary, primary_view.fabric()) } else { (Seat::of_node_type(kind), primary_view.cohort(&primary.mesh, kind)) };
         let Some(record) = record.filter(|r| !r.is_birth(&primary.node_id, &primary.incarnation)) else { return Ok(None) };
-        if !book.replaced(seat, &primary.mesh, &primary.incarnation) {
+        if !primary_view.replaced(seat, &primary.mesh, &primary.incarnation) {
             return Ok(None);
         }
         let successor = Birth { node_id: record.node_id.clone(), incarnation: record.incarnation.clone() };
         let node_type = if fabric_update { FABRIC.to_string() } else { kind.node_type().to_string() };
         let mut entries = vec![(node_type, exact(primary), successor.clone(), record.revision)];
         // A same-mesh successor became both: the fabric-primary moved from `primary` with the mesh-primary.
-        if let Some(f) = book.fabric().filter(|f| f.is_birth(&record.node_id, &record.incarnation)) {
-            if !fabric_update && kind == crate::model::NodeKind::NodeAdmin && book.replaced(Seat::FabricPrimary, &primary.mesh, &primary.incarnation) {
+        if let Some(f) = primary_view.fabric().filter(|f| f.is_birth(&record.node_id, &record.incarnation)) {
+            if !fabric_update && kind == crate::model::NodeKind::NodeAdmin && primary_view.replaced(Seat::FabricPrimary, &primary.mesh, &primary.incarnation) {
                 entries.push((FABRIC.to_string(), exact(primary), successor.clone(), f.revision));
             }
         }
@@ -641,7 +641,7 @@ impl HandoverDoor {
     /// dismantled. A view that names one of the departing mesh fabric-primary still refuses, named.
     pub async fn fabric_primary_updated(&self, departing: &str, operation: &str) -> Result<(), String> {
         let me = self.held_name();
-        match self.membership.primaries().fabric() {
+        match self.topology_view.primaries().fabric() {
             Some(h) if h.mesh == departing => Err(format!("{me}: the fabric-primary is {h}, a node-admin of the departing mesh {departing}: node.fabric-primary.update {operation} has not moved it")),
             held => {
                 tracing::info_span!("rdm.node_admin.primary.update.via-fabric-primary-left", node = %me, operation, departing, fabric_primary = %held.map(|h| h.to_string()).unwrap_or_default())
@@ -687,8 +687,8 @@ impl HandoverDoor {
         if let Some(refusal) = self.refused_before_first_ready("commander", operation).await {
             return Err(refusal);
         }
-        let book = self.membership.primaries();
-        if self.me.mesh != mesh || !book.mesh(&mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation)) {
+        let primary_view = self.topology_view.primaries();
+        if self.me.mesh != mesh || !primary_view.mesh(&mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation)) {
             let reason = format!("{me} is not the mesh-primary of {mesh}, the commander of its {} primary", holder.kind.node_type());
             refused("commander", "not-primary", &reason, operation);
             return Err(rdm_core::reply::handover::bounded_not_primary(&reason));

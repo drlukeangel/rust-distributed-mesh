@@ -9,7 +9,7 @@ use crate::model::{NodeId, PathName};
 use crate::node_self::StartFailed;
 use crate::wire::JoinAnswer;
 use rdm_core::{MemberStatus, MeshDigest};
-use rdm_transport::topology::Membership;
+use rdm_transport::topology::TopologyView;
 use rdm_transport::{NodeRpcClient, NodeTarget};
 use tracing::Instrument as _;
 
@@ -34,7 +34,7 @@ pub trait MeshJoin: Send {
     /// Enter the kind's channels holding the name the join handed (`None` with no authority), before
     /// anything is published, emitting `rdm.node.mesh.update.via-joined` per channel. `step` is the
     /// channel step's span: the kind drops it when its channel part ends.
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<Membership, Self::Error>;
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<TopologyView, Self::Error>;
 }
 
 /// One run of the primitive.
@@ -62,12 +62,12 @@ pub struct JoinCall<'a> {
     /// The caller's span for the report (a start's join step): who answered and the name installed are
     /// recorded on it, and it ends before the channel is entered. `Span::none()` for none.
     pub reported: tracing::Span,
-    /// The span the channel step (`rdm.mesh.node.update.via-membership-joined`) is a child of: a
+    /// The span the channel step (`rdm.mesh.node.update.via-topology-joined`) is a child of: a
     /// start's root (`None`: the current one). The step opens once the report has ended.
     pub channel_parent: Option<tracing::Span>,
 }
 
-/// A completed join: the answer, who gave it, the name the birth holds from it, and its membership.
+/// A completed join: the answer, who gave it, the name the birth holds from it, and its topology view.
 pub struct MeshJoined {
     /// The authority's answer.
     pub answer: JoinAnswer,
@@ -75,8 +75,8 @@ pub struct MeshJoined {
     pub through: JoinThrough,
     /// The name the birth holds from the answer on.
     pub name: String,
-    /// The birth's membership, on its channel.
-    pub membership: Membership,
+    /// The birth's topology view, on its channel.
+    pub topology_view: TopologyView,
 }
 
 /// `node.mesh.join` (node-mesh-join.md): `joining` from the report until the channels hold.
@@ -106,12 +106,12 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
     drop(reported);
     // The channel step opens only once the report's step has ended (node.start's steps never overlap).
     let channel = match &channel_parent {
-        Some(parent) => tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-membership-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
-        None => tracing::info_span!("rdm.mesh.node.update.via-membership-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
+        Some(parent) => tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-topology-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
+        None => tracing::info_span!("rdm.mesh.node.update.via-topology-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
     };
-    let membership = node.enter_channel(channel, Some(&answer)).await?;
-    membership.learn_statuses(&answer.statuses);
-    Ok(MeshJoined { answer, through, name, membership })
+    let topology_view = node.enter_channel(channel, Some(&answer)).await?;
+    topology_view.learn_statuses(&answer.statuses);
+    Ok(MeshJoined { answer, through, name, topology_view })
 }
 
 /// `JoinNode` with `digest`, each of its attempts made to whom `to` names then: the launcher, or the

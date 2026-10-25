@@ -281,15 +281,15 @@ async fn a_failed_dial_after_an_accept_keeps_the_proxy_and_reschedules_from_its_
 /// CONTRACT (connections.md §9.1, §9.5 step 1, R-CN1 (1)): only an accept from the exact birth the
 /// Proxy names wakes an attempt, and an attempt is never made against a birth that is gone. An
 /// accept from the destination's next birth (same path.name, new node and incarnation) arms
-/// nothing; a pending attempt whose birth membership no longer holds is dropped undialled. What
+/// nothing; a pending attempt whose birth the topology view no longer holds is dropped undialled. What
 /// must NOT happen: a dial toward the gone birth, or an attempt armed by a birth the Proxy does
 /// not name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_accept_from_another_birth_arms_nothing_and_an_attempt_for_a_gone_birth_is_dropped_undialled() {
     let (dir, _me, dest, _storage, held, writer, _) = proxied("accept-stale-birth", now_ms()).await;
-    let membership = Arc::new(rdm_core::connections::StaticIncarnations::default());
-    membership.set(dest.node_id.clone(), dest.name.clone(), dest.incarnation.clone().unwrap());
-    held.lock().unwrap().set_membership(membership.clone());
+    let topology_view = Arc::new(rdm_core::connections::StaticIncarnations::default());
+    topology_view.set(dest.node_id.clone(), dest.name.clone(), dest.incarnation.clone().unwrap());
+    held.lock().unwrap().set_topology_view(topology_view.clone());
     let dial = CellDial::new(&writer, resolved(&dest), vec![Ok(())]);
     let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(50), Some(dial.dial()));
     let next = end("mesh1.rpc.3");
@@ -298,7 +298,7 @@ async fn an_accept_from_another_birth_arms_nothing_and_an_attempt_for_a_gone_bir
     // The Proxy's own birth coalesces into its pending attempt (due when its backoff ends, seconds away); then it is gone.
     writer.accepted(&resolved(&dest));
     assert_eq!(writer.recovery_pending().len(), 1);
-    membership.depart(dest.node_id.clone(), dest.name.clone());
+    topology_view.depart(dest.node_id.clone(), dest.name.clone());
     until("the attempt for the gone birth is dropped", || writer.recovery_pending().is_empty()).await;
     assert!(dial.calls().is_empty(), "no dial toward a birth that is gone");
     let _ = std::fs::remove_dir_all(&dir);
@@ -574,7 +574,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
-    // The process's held name, as its membership holds it: none told yet, so the birth's.
+    // The process's held name, as its topology view holds it: none told yet, so the birth's.
     let told: Arc<Mutex<Option<PathName>>> = Arc::default();
     let (cell, birth) = (told.clone(), me.name.clone());
     writer.follow_held_name(move || cell.lock().unwrap().clone().unwrap_or_else(|| birth.clone())).unwrap();

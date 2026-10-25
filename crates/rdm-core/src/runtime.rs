@@ -3,7 +3,7 @@
 //! A [`RuntimeFact`] names the one provider runtime realising one process
 //! birth: its deployment, the provider, the provider control domain the
 //! locator is meaningful in, and an exact, non-reusable locator. It rides the
-//! birth itself ([`crate::MeshNode::runtime`]), so it is current membership
+//! birth itself ([`crate::MeshNode::runtime`]), so it is current topology
 //! state, not Build history: any admin that hears the birth knows where and
 //! how its runtime can be inspected or stopped, whoever launched it.
 //!

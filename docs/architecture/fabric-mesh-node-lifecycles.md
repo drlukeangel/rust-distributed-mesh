@@ -31,7 +31,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 ```text
 TOPOLOGY GOSSIP
     says what the Fabric looks like now
-    membership channels, Members aggregates, lifecycle events
+    topology channels, Members aggregates, lifecycle events
 
 BUILD / ATTEMPT / CLAIM / STEP
     assigns durable work and records its outcome
@@ -155,5 +155,5 @@ held topology. It is not gossip, not a join and not a Build operation.
 dissemination facts around an operation ([frame catalog](gossip.md#31-frame-catalog)). They are
 not the Build operation and not `0x1B` NodeState variants.
 
-**Node self-published status.** A membership digest reports the admitted instance's status, for
-example `Pending` or `ReadyForTraffic`. It is a membership fact, not a caller progress event.
+**Node self-published status.** A topology digest reports the admitted instance's status, for
+example `Pending` or `ReadyForTraffic`. It is a topology fact, not a caller progress event.

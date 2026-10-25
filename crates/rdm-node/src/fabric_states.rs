@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rdm_transport::topology::{Backbone, Frame, Membership};
+use rdm_transport::topology::{Backbone, Frame, TopologyView};
 use rdm_core::StateHook;
 use rdm_core::status::StatusRequest;
 use tracing::Instrument;
@@ -88,15 +88,15 @@ pub fn hook_frame(key: &StateKey, up: bool, node_id: NodeId, incarnation: Incarn
 /// call it runs with: a command hook (`up == false`) names the commanded birth, a completion hook
 /// `publisher`'s own birth. The frame goes on `publisher`'s mesh channel and, when it is on the
 /// backbone, the backbone. `Err` names why the frame was not handed to every channel.
-pub async fn publish_hook(publisher: &PathName, key: &StateKey, up: bool, node_id: &NodeId, incarnation: &IncarnationId, membership: &Membership, backbone: Option<&Backbone>) -> Result<(), String> {
-    let frame = hook_frame(key, up, node_id.clone(), incarnation.clone(), &publisher.to_string(), membership.clock().now_rafka_ms());
+pub async fn publish_hook(publisher: &PathName, key: &StateKey, up: bool, node_id: &NodeId, incarnation: &IncarnationId, topology_view: &TopologyView, backbone: Option<&Backbone>) -> Result<(), String> {
+    let frame = hook_frame(key, up, node_id.clone(), incarnation.clone(), &publisher.to_string(), topology_view.clock().now_rafka_ms());
     let hook = if up { key.kind.completion() } else { key.kind.command() };
     let channels = if backbone.is_some() { "mesh,backbone" } else { "mesh" };
     let span = tracing::info_span!("rdm.node_admin.fabric.update.via-state-hook", node = %publisher, command = key.kind.command(), hook, subject_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal");
     async {
         let published = match backbone {
             Some(backbone) => backbone.publish_command_hook(&frame).await,
-            None => membership.publish_lifecycle(&frame).await,
+            None => topology_view.publish_lifecycle(&frame).await,
         };
         match published {
             Ok(()) => {

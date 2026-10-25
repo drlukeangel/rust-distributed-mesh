@@ -6,54 +6,54 @@ use super::*;
 /// birth is gone when its departure was heard (its node.delete), when a later birth announced that it
 /// replaced it (`supersedes`), or when the seats hold it gone. Silence, an unreachable path and the
 /// observer-inferred `Dead` are not.
-pub(crate) fn incumbency_of(book: &DigestBook, _records: &Records) -> crate::election::Incumbency {
-    let mut lost: std::collections::HashSet<IncarnationId> = book.deleted().into_iter().map(|op| op.incarnation).collect();
-    lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
-    lost.extend(book.seats.gone());
-    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: book.seats.node_type_primaries(), lost }
+pub(crate) fn incumbency_of(digest_view: &DigestView, _records: &Records) -> crate::election::Incumbency {
+    let mut lost: std::collections::HashSet<IncarnationId> = digest_view.deleted().into_iter().map(|op| op.incarnation).collect();
+    lost.extend(digest_view.all().into_iter().filter_map(|d| d.node.supersedes));
+    lost.extend(digest_view.seats.gone());
+    crate::election::Incumbency { fabric: digest_view.seats.fabric(), meshes: digest_view.seats.meshes(), cohorts: digest_view.seats.node_type_primaries(), lost }
 }
 
-/// What this birth's Build log reads its fence from: the fabric-primary record `book` holds, the
+/// What this birth's Build log reads its fence from: the fabric-primary record `digest_view` holds, the
 /// election's result this admin installed, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
-/// lost set every election takes, [`incumbency_of`]) and named from the digests `book` holds.
+/// lost set every election takes, [`incumbency_of`]) and named from the digests `digest_view` holds.
 ///
 /// While the fabric-primary is unavailable, the fabric recovery workflow's executor writes that attempt's
 /// Build records (build.md §5.3, Q122): for it, the record naming the lost birth is open, naming no
 /// holder. `view` is this admin's view once it is built.
-pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::SeatSource {
-    let changed = Some(book.seats.subscribe());
-    let (book, records, me_name) = (book.clone(), records.clone(), me_name.to_string());
+pub(crate) fn fabric_seat_source(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::SeatSource {
+    let changed = Some(digest_view.seats.subscribe());
+    let (digest_view, records, me_name) = (digest_view.clone(), records.clone(), me_name.to_string());
     let read = Arc::new(move || {
-        let incumbency = incumbency_of(&book, &records);
-        let held_name = book.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
-        let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &book))).is_some_and(|fr| fr.executor.as_ref().is_some_and(|e| e.to_string() == held_name) && incumbency.fabric.as_ref() == Some(&fr.target));
+        let incumbency = incumbency_of(&digest_view, &records);
+        let held_name = digest_view.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
+        let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &digest_view))).is_some_and(|fr| fr.executor.as_ref().is_some_and(|e| e.to_string() == held_name) && incumbency.fabric.as_ref() == Some(&fr.target));
         if executes {
             return crate::fabric_builds::SeatRecord::Open { holder: None };
         }
-        let name_of = |id: &NodeId| if *id == me.0 { Some(held_name.clone()) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
+        let name_of = |id: &NodeId| if *id == me.0 { Some(held_name.clone()) } else { digest_view.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
         crate::seat_watch::fabric_seat_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, name_of)
     });
     crate::fabric_builds::SeatSource { read, changed }
 }
 
 /// Where this birth's drift-lane opens and claims read their fence (R-BI7): the mesh-primary record
-/// of its own mesh `book` holds, judged as [`fabric_seat_record`] judges the fabric
+/// of its own mesh `digest_view` holds, judged as [`fabric_seat_record`] judges the fabric
 /// seat's.
 ///
 /// While fabric recovery restores the fabric-primary of `mesh`, its executor of that mesh writes the
 /// attempt's Build records in the mesh's lane (build.md §5.3, Q122): for it, the record naming the lost
 /// birth is open, naming no holder. `view` is this admin's view once it is built.
-pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, mesh: &str, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::SeatSource {
-    let changed = Some(book.seats.subscribe());
-    let (book, records, me_name, mesh) = (book.clone(), records.clone(), me_name.to_string(), mesh.to_string());
+pub(crate) fn mesh_seat_source(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, mesh: &str, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::SeatSource {
+    let changed = Some(digest_view.seats.subscribe());
+    let (digest_view, records, me_name, mesh) = (digest_view.clone(), records.clone(), me_name.to_string(), mesh.to_string());
     let read = Arc::new(move || {
-        let incumbency = incumbency_of(&book, &records);
-        let held_name = book.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
-        let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &book))).is_some_and(|fr| fr.target.mesh == mesh && fr.executor.as_ref().is_some_and(|e| e.to_string() == held_name) && incumbency.meshes.get(&mesh).is_some_and(|r| r.node_id == fr.target.node_id));
+        let incumbency = incumbency_of(&digest_view, &records);
+        let held_name = digest_view.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
+        let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &digest_view))).is_some_and(|fr| fr.target.mesh == mesh && fr.executor.as_ref().is_some_and(|e| e.to_string() == held_name) && incumbency.meshes.get(&mesh).is_some_and(|r| r.node_id == fr.target.node_id));
         if executes {
             return crate::fabric_builds::SeatRecord::Open { holder: None };
         }
-        let name_of = |id: &NodeId| if *id == me.0 { Some(book.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone())) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
+        let name_of = |id: &NodeId| if *id == me.0 { Some(digest_view.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone())) } else { digest_view.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
         crate::seat_watch::mesh_seat_record(&mesh, incumbency.meshes.get(&mesh), &me, &incumbency.lost, name_of)
     });
     crate::fabric_builds::SeatSource { read, changed }
@@ -95,17 +95,17 @@ pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &Incarn
     said
 }
 
-/// The observed topology from membership digests and this admin's records,
+/// The observed topology from topology digests and this admin's records,
 /// with the settled primary rule (module docs). No node row is read: each birth is listed at the name
 /// it published ([`project_with`] names the births that do not publish by their rows).
-pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records) -> Topology {
-    project_at(fabric, fabric_id, provider, book, records, std::time::Instant::now())
+pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, digest_view: &DigestView, records: &Records) -> Topology {
+    project_at(fabric, fabric_id, provider, digest_view, records, std::time::Instant::now())
 }
 
 /// [`project`] as of the instant `reads` were taken at, from what they read: each birth that does not
 /// publish its own name listed at the name its row holds.
-pub fn project_with(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, reads: &ViewReads) -> Topology {
-    project_decided_at(fabric, fabric_id, provider, book, records, &incumbency_of(book, records), reads)
+pub fn project_with(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, digest_view: &DigestView, records: &Records, reads: &ViewReads) -> Topology {
+    project_decided_at(fabric, fabric_id, provider, digest_view, records, &incumbency_of(digest_view, records), reads)
 }
 
 /// What a view rebuild reads from the stores, taken in one read phase before the view's write lock
@@ -126,15 +126,15 @@ impl ViewReads {
         Self { at, rows: RowNames::default() }
     }
 
-    /// The read phase of the admin `me`'s rebuild over `book`'s births of `fabric_id`, as of now: first
-    /// each birth `book` holds deleted leaves `records` ([`Records::remove_deleted`]), then the row of
+    /// The read phase of the admin `me`'s rebuild over `digest_view`'s births of `fabric_id`, as of now: first
+    /// each birth `digest_view` holds deleted leaves `records` ([`Records::remove_deleted`]), then the row of
     /// every birth that does not publish its own name, from `records`' nodes store (no store: nothing
     /// is read).
-    pub async fn read(me: &PathName, book: &DigestBook, records: &Records, fabric_id: &FabricId) -> Self {
-        let me = book.held_path_name().unwrap_or_else(|| me.clone());
-        records.remove_deleted(book);
+    pub async fn read(me: &PathName, digest_view: &DigestView, records: &Records, fabric_id: &FabricId) -> Self {
+        let me = digest_view.held_path_name().unwrap_or_else(|| me.clone());
+        records.remove_deleted(digest_view);
         let at = std::time::Instant::now();
-        Self { at, rows: RowNames::read(&me, book, records, fabric_id, at).await }
+        Self { at, rows: RowNames::read(&me, digest_view, records, fabric_id, at).await }
     }
 }
 
@@ -163,20 +163,20 @@ pub(crate) enum RowName {
 }
 
 impl RowNames {
-    /// The row of every birth of `fabric_id` in `book` that does not publish its own name as of `at`,
+    /// The row of every birth of `fabric_id` in `digest_view` that does not publish its own name as of `at`,
     /// read by the admin `me` from `records`' nodes store (no store: nothing is read).
-    pub(crate) async fn read(me: &PathName, book: &DigestBook, records: &Records, fabric_id: &FabricId, at: std::time::Instant) -> Self {
+    pub(crate) async fn read(me: &PathName, digest_view: &DigestView, records: &Records, fabric_id: &FabricId, at: std::time::Instant) -> Self {
         let mut rows = Self::default();
         let Some(store) = records.contacts.get().cloned() else { return rows };
         let mut quiet: Vec<(NodeId, IncarnationId, PathName)> = Vec::new();
-        for d in book.all() {
-            let Some((_, age)) = book.get_at(d.node.node_id.as_str(), at) else { continue };
-            if &d.fabric_id == fabric_id && !publishes(book, records, &d.node.node_id, &d.node.incarnation, age) {
+        for d in digest_view.all() {
+            let Some((_, age)) = digest_view.get_at(d.node.node_id.as_str(), at) else { continue };
+            if &d.fabric_id == fabric_id && !publishes(digest_view, records, &d.node.node_id, &d.node.incarnation, age) {
                 quiet.push((d.node.node_id.clone(), d.node.incarnation.clone(), d.node.name.clone()));
             }
         }
-        quiet.extend(book.stopped_digests().into_iter().filter(|d| &d.fabric_id == fabric_id).map(|d| (d.node.node_id, d.node.incarnation, d.node.name)));
-        quiet.extend(book.stopped_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
+        quiet.extend(digest_view.stopped_digests().into_iter().filter(|d| &d.fabric_id == fabric_id).map(|d| (d.node.node_id, d.node.incarnation, d.node.name)));
+        quiet.extend(digest_view.stopped_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
         for (node_id, incarnation, published) in quiet {
             let name = row_name(me, &*store, &node_id, &incarnation, &published).await;
             rows.names.insert((node_id, incarnation), (published, name));
@@ -207,8 +207,8 @@ impl RowNames {
 
 /// The birth speaks for its own name: it published within the staleness floor and is not held true
 /// offline.
-pub(crate) fn publishes(book: &DigestBook, records: &Records, node_id: &NodeId, incarnation: &IncarnationId, age: Duration) -> bool {
-    age <= book.staleness_floor() && !records.offline.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
+pub(crate) fn publishes(digest_view: &DigestView, records: &Records, node_id: &NodeId, incarnation: &IncarnationId, age: Duration) -> bool {
+    age <= digest_view.staleness_floor() && !records.offline.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
 }
 
 /// Where the row of the birth `(node_id, incarnation)`, which last published `published`, stands, as
@@ -228,38 +228,38 @@ pub(crate) async fn row_name(me: &PathName, store: &dyn crate::storage::NodesSto
     }
 }
 
-/// Projects the book into the view now: what the join door runs once it installed an admitted
+/// Projects the digest view into the view now: what the join door runs once it installed an admitted
 /// birth's address, so the view the status authority resolves senders from holds that birth.
-pub fn view_projector(me: PathName, topology: Arc<RwLock<Topology>>, fabric: String, fabric_id: FabricId, provider: ProviderKind, book: DigestBook, records: Arc<Records>) -> Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync> {
+pub fn view_projector(me: PathName, topology: Arc<RwLock<Topology>>, fabric: String, fabric_id: FabricId, provider: ProviderKind, digest_view: DigestView, records: Arc<Records>) -> Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync> {
     Arc::new(move || {
-        let (me, topology, fabric, fabric_id, book, records) = (me.clone(), topology.clone(), fabric.clone(), fabric_id.clone(), book.clone(), records.clone());
+        let (me, topology, fabric, fabric_id, digest_view, records) = (me.clone(), topology.clone(), fabric.clone(), fabric_id.clone(), digest_view.clone(), records.clone());
         Box::pin(async move {
-            records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
+            records.install_read(&me, &topology, &digest_view, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &digest_view, &records, reads)).await;
         })
     })
 }
 
-/// Why [`project`] lacks `name` right now, from the same inputs: every digest the book holds for
+/// Why [`project`] lacks `name` right now, from the same inputs: every digest the view holds for
 /// the name (incarnation, status, unheard age, predecessor, forwarded, departed, routable), the
 /// removed set's entries for it, and the records' entry. The text of an unknown-node refusal from
 /// the live view, so the exclusion is named where it happens.
-pub fn describe_absence(book: &DigestBook, records: &Records, name: &PathName) -> String {
+pub fn describe_absence(digest_view: &DigestView, records: &Records, name: &PathName) -> String {
     let now = std::time::Instant::now();
-    let digests: Vec<String> = book
+    let digests: Vec<String> = digest_view
         .all()
         .into_iter()
         .filter(|d| &d.node.name == name)
         .map(|d| {
-            let age = book.get_at(d.node.node_id.as_str(), now).map(|(_, a)| a.as_millis() as u64).unwrap_or(0);
+            let age = digest_view.get_at(d.node.node_id.as_str(), now).map(|(_, a)| a.as_millis() as u64).unwrap_or(0);
             format!(
                 "digest{{incarnation {}, status {:?}, unheard {} ms, supersedes {}, departed {}, routable {}, floor {} ms}}",
                 d.node.incarnation.as_str(),
                 d.status,
                 age,
                 d.node.supersedes.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "none".into()),
-                book.is_deleted(d.node.node_id.as_str()),
-                book.routable(d.node.node_id.as_str()),
-                book.staleness_floor().as_millis()
+                digest_view.is_deleted(d.node.node_id.as_str()),
+                digest_view.routable(d.node.node_id.as_str()),
+                digest_view.staleness_floor().as_millis()
             )
         })
         .collect();
@@ -273,7 +273,7 @@ pub fn describe_absence(book: &DigestBook, records: &Records, name: &PathName) -
         .collect();
     let recorded = records.nodes.lock().unwrap().get(name).map(|n| format!("incarnation {}, status {:?}", n.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_else(|| "none".into()), n.status));
     format!(
-        "book: [{}]; removed: [{}]; records: {}",
+        "view: [{}]; removed: [{}]; records: {}",
         if digests.is_empty() { "no digest for the name".to_string() } else { digests.join(", ") },
         removed.join(", "),
         recorded.unwrap_or_else(|| "none".into())
@@ -281,15 +281,15 @@ pub fn describe_absence(book: &DigestBook, records: &Records, name: &PathName) -
 }
 
 /// [`project`] as of `now`.
-pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, now: std::time::Instant) -> Topology {
-    project_decided_at(fabric, fabric_id, provider, book, records, &incumbency_of(book, records), &ViewReads::none_at(now))
+pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, digest_view: &DigestView, records: &Records, now: std::time::Instant) -> Topology {
+    project_decided_at(fabric, fabric_id, provider, digest_view, records, &incumbency_of(digest_view, records), &ViewReads::none_at(now))
 }
 
 /// [`project_with`] with its seats decided against `decided`, the seat records and proven-gone births
 /// read once: a caller that acts on the projection's seats (the hierarchy loop announcing one)
 /// acts against the very records the projection was decided from, never a later read of them.
-pub(crate) fn project_decided(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, decided: &crate::election::Incumbency, reads: &ViewReads) -> Topology {
-    project_decided_at(fabric, fabric_id, provider, book, records, decided, reads)
+pub(crate) fn project_decided(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, digest_view: &DigestView, records: &Records, decided: &crate::election::Incumbency, reads: &ViewReads) -> Topology {
+    project_decided_at(fabric, fabric_id, provider, digest_view, records, decided, reads)
 }
 
 /// The launch record this admin holds of the exact birth `incarnation`, whatever name the view lists
@@ -298,24 +298,24 @@ pub(crate) fn launched(recorded: &BTreeMap<PathName, Node>, incarnation: &Option
     incarnation.as_ref().and_then(|inc| recorded.values().find(|r| r.incarnation_id.as_ref() == Some(inc)).cloned())
 }
 
-pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, decided: &crate::election::Incumbency, reads: &ViewReads) -> Topology {
+pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, digest_view: &DigestView, records: &Records, decided: &crate::election::Incumbency, reads: &ViewReads) -> Topology {
     let (now, rows) = (reads.at, &reads.rows);
     let removed = records.removed.lock().unwrap().clone();
     let recorded = records.nodes.lock().unwrap().clone();
     let mut nodes: BTreeMap<PathName, Node> = BTreeMap::new();
-    // Every birth membership has spoken for, whatever became of it.
+    // Every birth the topology view has spoken for, whatever became of it.
     let mut heard: HashSet<IncarnationId> = HashSet::new();
     // Each birth's election claim, by incarnation.
     let mut mesh_ids: BTreeMap<String, MeshId> = records.meshes.lock().unwrap().clone();
-    for d in book.all() {
+    for d in digest_view.all() {
         if &d.fabric_id != fabric_id {
             continue;
         }
-        let Some((_, age)) = book.get_at(d.node.node_id.as_str(), now) else { continue };
+        let Some((_, age)) = digest_view.get_at(d.node.node_id.as_str(), now) else { continue };
         heard.insert(d.node.incarnation.clone());
         // A birth that publishes names itself (R12); one that does not is listed at the name its row
         // holds (a stopped predecessor a node.update renamed `<path>.old`), one whose row could not be read not at all.
-        let name = if publishes(book, records, &d.node.node_id, &d.node.incarnation, age) {
+        let name = if publishes(digest_view, records, &d.node.node_id, &d.node.incarnation, age) {
             d.node.name.clone()
         } else {
             match rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.name) {
@@ -326,11 +326,11 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // A birth under an open restart is held through everything below until its later birth is
         // heard: the restart's own retire (its Leaving, its removal from these records) is not a
         // departure (node-identity-and-state.md: Restarting is commanded silence).
-        let restarting = book.restart_of(d.node.node_id.as_str(), &d.node.incarnation).is_some();
+        let restarting = digest_view.restart_of(d.node.node_id.as_str(), &d.node.incarnation).is_some();
         if !restarting && removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
         }
-        let silent = age > book.staleness_floor();
+        let silent = age > digest_view.staleness_floor();
         if let Some(id) = d.mesh_id.clone() {
             mesh_ids.entry(name.mesh.clone()).or_insert(id);
         }
@@ -350,9 +350,9 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         } else {
             NodeStatus::PendingReconnect
         };
-        // Application routing (states.md "Routing"): the birth listed ready-for-traffic, and the book
+        // Application routing (states.md "Routing"): the birth listed ready-for-traffic, and the view
         // holds it and its mesh ready-for-traffic. Anything else is a routing stop.
-        n.routable = n.status == NodeStatus::ReadyForTraffic && book.routable(d.node.node_id.as_str());
+        n.routable = n.status == NodeStatus::ReadyForTraffic && digest_view.routable(d.node.node_id.as_str());
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
         n.config = d.config.clone();
@@ -373,10 +373,10 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             }
         }
     }
-    // A parked birth (stopped, its process alive): the book dropped it, and this view keeps it,
+    // A parked birth (stopped, its process alive): the digest view dropped it, and this view keeps it,
     // `Leaving` and `parked`, until it rejoins as itself or departs.
-    for d in book.stopped_digests() {
-        if &d.fabric_id != fabric_id || book.is_deleted(d.node.node_id.as_str()) {
+    for d in digest_view.stopped_digests() {
+        if &d.fabric_id != fabric_id || digest_view.is_deleted(d.node.node_id.as_str()) {
             continue;
         }
         heard.insert(d.node.incarnation.clone());
@@ -413,8 +413,8 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     }
     // A parked birth this admin never held a digest of (it joined after the stop): the stop
     // overlay the mesh topology carried names it, `Leaving` and `parked`, until it rejoins or departs.
-    for op in book.stopped_unheard() {
-        if book.is_deleted(op.node_id.as_str()) {
+    for op in digest_view.stopped_unheard() {
+        if digest_view.is_deleted(op.node_id.as_str()) {
             continue;
         }
         heard.insert(op.incarnation.clone());
@@ -443,7 +443,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     // it is within the staleness floor of this admin first holding it, and past the floor marked
     // `PendingReconnect` by this admin's own pruner (node-recovery.md "Detection and proof" step 1),
     // so the window it keeps runs from that first hold, whichever admin takes the seat.
-    for (d, age) in book.projected_unheard_at(now) {
+    for (d, age) in digest_view.projected_unheard_at(now) {
         if &d.fabric_id != fabric_id {
             continue;
         }
@@ -462,7 +462,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.provider = Some(provider);
         n.status = if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
             NodeStatus::Dead
-        } else if age <= book.staleness_floor() {
+        } else if age <= digest_view.staleness_floor() {
             node_status(d.status)
         } else {
             NodeStatus::PendingReconnect
@@ -482,14 +482,14 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         nodes.entry(name).or_insert(n);
     }
     // Births this admin started that have not reported yet. A launch record
-    // stands in for a birth only until membership speaks for it: once heard,
+    // stands in for a birth only until the topology view speaks for it: once heard,
     // it never revives the birth (another admin may have retired it since). A
     // departed birth was heard and has left: its record never stands in either.
-    for op in book.deleted() {
+    for op in digest_view.deleted() {
         heard.insert(op.incarnation.clone());
     }
     for (name, r) in recorded {
-        if r.incarnation_id.as_ref().is_some_and(|i| heard.contains(i)) || book.is_deleted(r.node_id.as_str()) {
+        if r.incarnation_id.as_ref().is_some_and(|i| heard.contains(i)) || digest_view.is_deleted(r.node_id.as_str()) {
             continue;
         }
         nodes.entry(name).or_insert(r);
@@ -504,7 +504,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     // does not name it and it has no member) is not in the topology. A planned mesh that does not
     // exist yet is not in the view either: the view is what is observed, and the Build's plan is
     // `topology − observed`.
-    let mesh_names: BTreeSet<String> = mesh_ids.keys().filter(|m| book.accepted_has_mesh(m) != Some(false)).cloned().chain(topology.members().map(|n| n.mesh.clone())).collect();
+    let mesh_names: BTreeSet<String> = mesh_ids.keys().filter(|m| digest_view.accepted_has_mesh(m) != Some(false)).cloned().chain(topology.members().map(|n| n.mesh.clone())).collect();
     // Every seat, by the one election function (`election`); through a fabric shutdown, the
     // seats held when it was learned (`Seats`).
     if records.is_entering() {
@@ -560,7 +560,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
 /// (a member silent past the staleness floor).
 pub(crate) const VIEW_POLL: Duration = Duration::from_millis(200);
 
-/// The view's next rebuild is due: at once when a routing fact the book holds moved since the last
+/// The view's next rebuild is due: at once when a routing fact the digest view holds moved since the last
 /// rebuild read it (a birth's status, an overlay, a departure, a mesh status: states.md "Routing",
 /// applied on receipt), else after `poll`; and only while the admin's gate is open. A parked admin's
 /// rebuild is held here, holding nothing, and is due the moment the gate opens. Answers the

@@ -28,8 +28,8 @@ async fn pair() -> (
     let mesh = MeshId::mint();
     let a = node(&fabric, &mesh, "mesh1.rpc.1", vec![]).await;
     let b = node(&fabric, &mesh, "mesh1.rpc.2", vec![a.addr()]).await;
-    let ca = a.membership.join_channel(TYPE).await.unwrap();
-    let cb = b.membership.join_channel(TYPE).await.unwrap();
+    let ca = a.topology_view.join_channel(TYPE).await.unwrap();
+    let cb = b.topology_view.join_channel(TYPE).await.unwrap();
     // Neighbour readiness is a protocol event, not an elapsed-time assumption.
     let mut raw = a
         .gossip()
@@ -70,7 +70,7 @@ async fn receive(channel: &mut Channel) -> rdm_transport::gossip::Received {
 }
 
 fn encoded(n: &Member, kind: &str, id: &str, subject: &str, data: Vec<u8>, reverse: bool) -> Vec<u8> {
-    let birth = n.membership.author_birth().unwrap();
+    let birth = n.topology_view.author_birth().unwrap();
     let mut attributes = vec![
         ("specversion".to_string(), "1.0".to_string()),
         ("id".into(), id.into()),
@@ -100,7 +100,7 @@ async fn an_undeclared_type_is_refused_by_name_on_join() {
     let fabric = FabricId::mint();
     let n = node(&fabric, &MeshId::mint(), "mesh1.rpc.1", vec![]).await;
     assert!(
-        matches!(n.membership.join_channel("rafka.entity.unknown").await, Err(ChannelError::UndeclaredType { r#type }) if r#type == "rafka.entity.unknown")
+        matches!(n.topology_view.join_channel("rafka.entity.unknown").await, Err(ChannelError::UndeclaredType { r#type }) if r#type == "rafka.entity.unknown")
     );
 }
 
@@ -116,7 +116,7 @@ async fn a_lower_sequence_from_the_same_source_is_handed_to_the_app_not_dropped(
     assert_eq!(older.data, Bytes::from_static(&[1]));
     assert_eq!(
         older.source,
-        rdm_transport::envelope::Birth::publisher(a.membership.fabric_id(), &b.author)
+        rdm_transport::envelope::Birth::publisher(a.topology_view.fabric_id(), &b.author)
     );
     assert_eq!(older.dataschema.as_deref(), Some("proof.v1"));
 }
@@ -330,7 +330,7 @@ fn the_receive_span_parents_to_the_publishers_span_and_carries_no_data() {
         let received = spans
             .iter()
             .find(|s| {
-                s["name"] == "rdm.mesh.membership.update.via-frame"
+                s["name"] == "rdm.mesh.topology.update.via-frame"
                     && s["attributes"]["subject"] == "org/proof/row"
             })
             .expect("received event span");
@@ -338,7 +338,7 @@ fn the_receive_span_parents_to_the_publishers_span_and_carries_no_data() {
         assert_eq!(received["parent_span_id"].as_str(), Some(&context[36..52]));
         assert!(spans
             .iter()
-            .any(|s| s["name"] == "rdm.mesh.membership.update.via-context-dropped"));
+            .any(|s| s["name"] == "rdm.mesh.topology.update.via-context-dropped"));
         assert!(!serde_json::to_string(&spans)
             .unwrap()
             .contains("secret-app-body-123"));
@@ -377,8 +377,8 @@ fn an_undeclared_wire_type_is_dropped_by_name_and_the_next_event_applies() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_join_of_a_held_type_is_refused_receiver_held_by_name() {
     let n = node(&FabricId::mint(), &MeshId::mint(), "mesh1.rpc.1", vec![]).await;
-    let _first = n.membership.join_channel(TYPE).await.unwrap();
-    assert!(matches!(n.membership.join_channel(TYPE).await, Err(ChannelError::ReceiverHeld { r#type }) if r#type == TYPE));
+    let _first = n.topology_view.join_channel(TYPE).await.unwrap();
+    assert!(matches!(n.topology_view.join_channel(TYPE).await, Err(ChannelError::ReceiverHeld { r#type }) if r#type == TYPE));
 }
 
 /// CONTRACT (an event's `sequence` is 20 decimal digits, gossip.md's app event attributes): a frame
@@ -480,7 +480,7 @@ async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_i
     let kind = "app.member-owned";
     let member = NodeId::mint();
     let birth = IncarnationId::mint();
-    n.membership
+    n.topology_view
         .learn_app_types(
             member,
             birth,
@@ -489,10 +489,10 @@ async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_i
         )
         .await
         .unwrap();
-    assert!(n.membership.held_types().contains(kind));
-    assert!(!n.membership.app_types().contains(kind));
+    assert!(n.topology_view.held_types().contains(kind));
+    assert!(!n.topology_view.app_types().contains(kind));
     let channel = n
-        .membership
+        .topology_view
         .join_channel(kind)
         .await
         .expect("a learned type has a receiver");
@@ -504,7 +504,7 @@ async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_i
 
 fn member_digest(n: &Member) -> rdm_core::MeshDigest {
     rdm_core::MeshDigest {
-        fabric_id: n.membership.fabric_id().clone(),
+        fabric_id: n.topology_view.fabric_id().clone(),
         node: rdm_core::MeshNode {
             node_id: n.author.node_id.clone(),
             name: n.author.node.parse().unwrap(),
@@ -525,7 +525,7 @@ fn member_digest(n: &Member) -> rdm_core::MeshDigest {
         config: Default::default(),
         load: None,
         gossip: None,
-        held_hash: n.membership.held_hash(),
+        held_hash: n.topology_view.held_hash(),
         is_primary: None,
         is_fabric_primary: None,
     }
@@ -539,20 +539,20 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     let mesh = MeshId::mint();
     let a = node(&fabric, &mesh, "mesh1.admin.1", vec![]).await;
     let b = node(&fabric, &mesh, "mesh1.admin.2", vec![a.addr()]).await;
-    while a.membership.neighbours() < 1 || b.membership.neighbours() < 1 {
+    while a.topology_view.neighbours() < 1 || b.topology_view.neighbours() < 1 {
         tokio::task::yield_now().await;
     }
     let c = Member::join(&fabric, &mesh, "mesh1.rpc.1", &[b.addr()], &[LATER]).await;
-    while b.membership.neighbours() < 2 || c.membership.neighbours() < 1 {
+    while b.topology_view.neighbours() < 2 || c.topology_view.neighbours() < 1 {
         tokio::task::yield_now().await;
     }
-    b.membership.learn(member_digest(&c), "join-types-probe");
-    b.membership
+    b.topology_view.learn(member_digest(&c), "join-types-probe");
+    b.topology_view
         .learn_app_types(
             c.author.node_id.clone(),
             c.author.incarnation.clone(),
-            c.membership.app_types(),
-            c.membership.held_types(),
+            c.topology_view.app_types(),
+            c.topology_view.held_types(),
         )
         .await
         .unwrap();
@@ -584,13 +584,13 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
             .expect("the middle holder stays subscribed")
             .unwrap();
     }
-    a.membership.learn(member_digest(&b), "peer-types-probe");
-    a.membership
+    a.topology_view.learn(member_digest(&b), "peer-types-probe");
+    a.topology_view
         .learn_app_types(
             b.author.node_id.clone(),
             b.author.incarnation.clone(),
-            b.membership.app_types(),
-            b.membership.held_types(),
+            b.topology_view.app_types(),
+            b.topology_view.held_types(),
         )
         .await
         .unwrap();
@@ -619,15 +619,15 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
             .expect("the publisher stays subscribed")
             .unwrap();
     }
-    let mut receiver = a.membership.join_channel(LATER).await.unwrap();
-    let publisher = c.membership.join_channel(LATER).await.unwrap();
+    let mut receiver = a.topology_view.join_channel(LATER).await.unwrap();
+    let publisher = c.topology_view.join_channel(LATER).await.unwrap();
     publisher.publish(event(1, vec![7])).await.unwrap();
     assert_eq!(receive(&mut receiver).await.data.as_ref(), &[7]);
 
     // Rejoining uses the reporting holders retained for this type, without acquiring boot seeds.
     drop(receiver);
     drop(observed);
-    a.membership.stop().await;
+    a.topology_view.stop().await;
     while middle.neighbors().any(|p| p == a.endpoint_id()) {
         middle
             .next()
@@ -642,10 +642,10 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
             .expect("the publisher stays subscribed")
             .unwrap();
     }
-    while b.membership.neighbours() > 1 || c.membership.neighbours() > 1 {
+    while b.topology_view.neighbours() > 1 || c.topology_view.neighbours() > 1 {
         tokio::task::yield_now().await;
     }
-    a.membership.start().await;
+    a.topology_view.start().await;
     let mut rejoined = a
         .gossip()
         .subscribe(channel_id(&fabric, LATER), vec![])
@@ -672,7 +672,7 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     // Q72 = b: after a rejoin, gossip is best-effort and an app event is the app's to order by
     // its own `sequence`. B's forwarded copy of event 1, sent before A left, may arrive on A's
     // new subscription; the app skips any event at or below the sequence it already applied.
-    let mut receiver = a.membership.join_channel(LATER).await.unwrap();
+    let mut receiver = a.topology_view.join_channel(LATER).await.unwrap();
     publisher.publish(event(2, vec![8])).await.unwrap();
     let next = tokio::time::timeout(Duration::from_secs(10), async {
         loop {

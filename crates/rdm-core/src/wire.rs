@@ -1,4 +1,4 @@
-//! The wire shape of a membership digest, shared by every postcard codec that carries one: a
+//! The wire shape of a topology digest, shared by every postcard codec that carries one: a
 //! gossip frame (`rafka-mesh-transport` `wire`) and the join (`rafka-node-rpc-contract` `join`).
 //!
 //! `MeshDigest` is JSON elsewhere (REST, files, tests); its `skip_serializing_if` fields and its
@@ -102,7 +102,7 @@ impl From<&MeshDigest> for WireDigest {
 }
 
 /// A heartbeat decoded: it carries no status, so the digest holds `Pending`, the status of a birth
-/// whose status its holder was not told; the holder's book gives it the status it holds for the
+/// whose status its holder was not told; the holder's view gives it the status it holds for the
 /// birth. A projection entry carries the status ([`ProjectionEntry`]).
 impl From<WireDigest> for MeshDigest {
     fn from(w: WireDigest) -> Self {

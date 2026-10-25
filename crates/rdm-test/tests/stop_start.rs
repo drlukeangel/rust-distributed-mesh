@@ -22,7 +22,7 @@ use std::time::Duration;
 
 async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
     let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
-    if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.membership.book)).await { return reply; }
+    if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.topology_view.digest_view)).await { return reply; }
     match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),
         other => panic!("{} did not end in a reply: {other:?}", req.op()),
@@ -64,12 +64,12 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         admin.deployed(&launch, &key);
         let running = node::start(&launch, |b, _| b).await.expect("the node comes up");
 
-        let book = &admin.observer.membership.book;
-        let mut heard = book.heard_changes();
-        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        let digest_view = &admin.observer.topology_view.digest_view;
+        let mut heard = digest_view.heard_changes();
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
             heard.changed().await.unwrap();
         }
-        let (born, _) = book.get(launch.node_id.as_str()).unwrap();
+        let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode {
             node_id: born.node.node_id.clone(),
             name: born.node.name.clone(),
@@ -90,14 +90,14 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         let left = call(&admin, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{left:?}");
         assert!(matches!(call(&admin, &target, &probe).await, StatusReply::CurrentParked { .. }), "a parked node answers CurrentParked");
-        assert_eq!(running.membership.neighbours(), 0, "the node left its gossip topic");
+        assert_eq!(running.topology_view.neighbours(), 0, "the node left its gossip topic");
         // Stopping a parked node is done: the same receipt again.
         assert_eq!(call(&admin, &target, &stop).await, left);
 
         // The node gossips nothing while parked: the admin hears no digest of it after the stop.
-        let seq_at_stop = book.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq).unwrap();
+        let seq_at_stop = digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq).unwrap();
         tokio::time::sleep(Duration::from_millis(800)).await;
-        assert_eq!(book.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq), Some(seq_at_stop), "no digest of a parked node reaches the admin");
+        assert_eq!(digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq), Some(seq_at_stop), "no digest of a parked node reaches the admin");
         assert!(running.own.is_stopped(), "the birth is stopped, its process live");
 
         // The start: the same birth rejoins through the admin that commands it.
@@ -115,9 +115,9 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         // on its topic (its Pending, then its beats), delivered by gossip; the node's own probe
         // answer does not order them, and the join's digest is the birth's held one, not newer than
         // what the admin holds. The cell awaits that fact, inside the same deadline.
-        let mut digests = book.digest_changes();
+        let mut digests = digest_view.digest_changes();
         let after = loop {
-            if let Some((d, _)) = book.get(launch.node_id.as_str()).filter(|(d, _)| d.digest_seq > seq_at_stop) {
+            if let Some((d, _)) = digest_view.get(launch.node_id.as_str()).filter(|(d, _)| d.digest_seq > seq_at_stop) {
                 break d;
             }
             tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), digests.changed())

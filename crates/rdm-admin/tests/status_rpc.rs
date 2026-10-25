@@ -189,7 +189,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         caches: Default::default(),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         durable: Default::default(),
-        commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),
+        commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
         own: Arc::new(OnceLock::new()),
         mesh_deleter: Arc::new(OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -201,7 +201,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         rename: Default::default(),
         row_moved: Default::default(),
         loads: None,
-        book: None,
+        digest_view: None,
         first_ready: Default::default(),
         builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
     });

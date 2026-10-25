@@ -10,7 +10,7 @@
 //!    the gateway dialed afresh; the value written before the restart is read back from the broker's
 //!    own data dir. Every call was the gateway's one inner invocation
 //!    of exactly the broker (`rdm.node_rpc.request.serve.via-carried-inner`).
-//! The gateway learns a birth by membership, not from the admin's view: the cell calls through the
+//! The gateway learns a birth by the topology view, not from the admin's view: the cell calls through the
 //! gateway only once the gateway's own resolver holds the birth it is about to call (the probe's
 //! `resolve` asks the gateway what it holds).
 //! The in-flight arm — a dial to a birth that moves before it is pooled ends as

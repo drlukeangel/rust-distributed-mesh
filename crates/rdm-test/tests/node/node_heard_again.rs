@@ -31,7 +31,7 @@ use std::time::Duration;
 /// The start steps, in the order every start path runs them (node-start.md steps 2-5).
 const STEPS: [&str; 7] = [
     "rdm.mesh.node.update.via-join-admitted",
-    "rdm.mesh.node.update.via-membership-joined",
+    "rdm.mesh.node.update.via-topology-joined",
     "rdm.mesh.node.update.via-before-ready-attempt",
     "rdm.mesh.node.update.via-topology-taken",
     "rdm.mesh.node.update.via-build-floor",
@@ -179,7 +179,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         if node == "mesh1.rpc.2" {
             let seq_of = |v: &str| v.rsplit('=').next().unwrap_or_default().parse::<u64>().unwrap_or(0);
             let mut installed: std::collections::BTreeMap<(String, String), Vec<(u64, u64)>> = Default::default();
-            for sp in named(&spans, "rdm.mesh.membership.update.via-digest").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == rpc_node_id) {
+            for sp in named(&spans, "rdm.mesh.topology.update.via-digest").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == rpc_node_id) {
                 let seq = s(&sp["attributes"]["digest_seq"]).parse::<u64>().unwrap_or(0);
                 installed.entry((s(&sp["attributes"]["node"]), s(&sp["attributes"]["incarnation_id"]))).or_default().push((at(sp), seq));
             }
@@ -193,13 +193,13 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
                 .collect();
             assert!(back.is_empty(), "{node}: a late copy of an older digest never takes back what a peer holds: {back:?}");
             let subject = format!("{rpc_node_id}/");
-            let refused: Vec<(String, u64, u64)> = named(&spans, "rdm.mesh.membership.reject.via-stale")
+            let refused: Vec<(String, u64, u64)> = named(&spans, "rdm.mesh.topology.reject.via-stale")
                 .into_iter()
                 .filter(|sp| s(&sp["attributes"]["frame"]) == "digest" && s(&sp["attributes"]["subject"]).starts_with(&subject))
                 .map(|sp| (s(&sp["attributes"]["node"]), seq_of(&s(&sp["attributes"]["held_key"])), seq_of(&s(&sp["attributes"]["frame_key"]))))
                 .collect();
             assert!(refused.iter().all(|(_, held, offered)| offered < held), "{node}: each late copy a peer refused as stale offered a digest_seq below the one it held: {refused:?}");
-            let copies = named(&spans, "rdm.mesh.membership.update.via-duplicate").into_iter().filter(|sp| s(&sp["attributes"]["frame"]) == "digest" && s(&sp["attributes"]["identity"]).starts_with(&subject)).count();
+            let copies = named(&spans, "rdm.mesh.topology.update.via-duplicate").into_iter().filter(|sp| s(&sp["attributes"]["frame"]) == "digest" && s(&sp["attributes"]["identity"]).starts_with(&subject)).count();
             eprintln!("{node}: late copies refused, stale {} and duplicate {copies}; installed per (peer, incarnation): {:?}", refused.len(), installed.iter().map(|(k, v)| (k.clone(), v.len())).collect::<Vec<_>>());
         }
         // The cert: issued again for the same birth at the heard-again join.

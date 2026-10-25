@@ -181,7 +181,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
     use rdm_test::families::{BrokerData, BrokerDataReply, BrokerDataRequest, PROOF_FAULT, PROOF_HANG};
     let broker = born("mesh1.broker.1").await;
     let gateway = born("mesh1.gateway.1").await;
-    // The gateway's live resolver learns the broker's birth, as membership would feed it.
+    // The gateway's live resolver learns the broker's birth, as the topology view would feed it.
     let addr = broker.running.routers[0].endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     gateway.running.node_rpc.resolver.apply(
         ResolvedNode {

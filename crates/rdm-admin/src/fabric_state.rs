@@ -170,7 +170,7 @@ struct Checklist {
 #[derive(Debug, Default)]
 pub struct Checklists {
     checklists: Mutex<HashMap<StateKey, Checklist>>,
-    /// The openings this book has made, the last one's number.
+    /// The openings this view has made, the last one's number.
     openings: Mutex<u64>,
     tick: watch::Sender<u64>,
 }
@@ -201,7 +201,7 @@ impl Checklists {
         self.checklists.lock().unwrap().get(key).map(|r| r.opening)
     }
 
-    /// The checklists this book holds.
+    /// The checklists this view holds.
     pub fn keys(&self) -> Vec<StateKey> {
         self.checklists.lock().unwrap().keys().cloned().collect()
     }
@@ -481,37 +481,37 @@ mod tests {
     #[test]
     fn a_check_in_counts_only_as_the_planned_birth_of_the_open_checklist() {
         let (fabric, node, inc) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
-        let book = Checklists::default();
+        let digest_view = Checklists::default();
         let k = key("66h8qrqvaajk", 1, &fabric);
         let up = |build: &str, attempt: u32, inc: &IncarnationId| StateCommand::StateCommit.up(&key(build, attempt, &fabric), node.clone(), inc.clone());
         fn sender<'a>(_node: &'a NodeId, held: &'a IncarnationId) -> Option<(Option<&'a IncarnationId>, &'static str)> {
             Some((Some(held), "mesh2.admin.1"))
         }
 
-        let early = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc));
+        let early = digest_view.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc));
         assert!(matches!(&early, StatusReply::NotReady { reason } if reason.contains("no open commit-state checklist")), "a check-in before the down op: {early:?}");
 
-        book.open(&k);
-        book.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
-        assert!(!book.complete(&k));
-        assert_eq!(book.missing(&k), vec![Missing { who: "mesh2.admin.1".into(), why: "no-check-in" }]);
+        digest_view.open(&k);
+        digest_view.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
+        assert!(!digest_view.complete(&k));
+        assert_eq!(digest_view.missing(&k), vec![Missing { who: "mesh2.admin.1".into(), why: "no-check-in" }]);
 
-        let foreign = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("t9ktgq6zvxtt", 1, &inc));
+        let foreign = digest_view.check_in("mesh1.admin.1", sender(&node, &inc), &up("t9ktgq6zvxtt", 1, &inc));
         assert!(matches!(&foreign, StatusReply::NotReady { reason } if reason.contains("field build_id: checklist holds 66h8qrqvaajk, reported t9ktgq6zvxtt")), "{foreign:?}");
-        let old = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 2, &inc));
+        let old = digest_view.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 2, &inc));
         assert!(matches!(&old, StatusReply::NotReady { reason } if reason.contains("field attempt: checklist holds 1, reported 2")), "{old:?}");
         let other = IncarnationId::mint();
-        assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &other), &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedStaleIncarnation { held: other.clone() });
-        assert_eq!(book.check_in("mesh1.admin.1", None, &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a subject the view does not hold");
+        assert_eq!(digest_view.check_in("mesh1.admin.1", sender(&node, &other), &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedStaleIncarnation { held: other.clone() });
+        assert_eq!(digest_view.check_in("mesh1.admin.1", None, &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a subject the view does not hold");
 
-        assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc)), StatusReply::Applied);
-        assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc)), StatusReply::AlreadyApplied);
-        assert!(book.complete(&k));
+        assert_eq!(digest_view.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc)), StatusReply::Applied);
+        assert_eq!(digest_view.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc)), StatusReply::AlreadyApplied);
+        assert!(digest_view.complete(&k));
 
         let reborn = IncarnationId::mint();
-        book.expect(&k, planned(&node, &reborn, "mesh2.admin.1"), Vec::new());
-        assert!(!book.complete(&k), "a replaced birth does not match its planned birth by the old birth's check-in");
-        assert_eq!(book.missing(&k), vec![Missing { who: "mesh2.admin.1".into(), why: "checked-in-as-another-birth" }]);
+        digest_view.expect(&k, planned(&node, &reborn, "mesh2.admin.1"), Vec::new());
+        assert!(!digest_view.complete(&k), "a replaced birth does not match its planned birth by the old birth's check-in");
+        assert_eq!(digest_view.missing(&k), vec![Missing { who: "mesh2.admin.1".into(), why: "checked-in-as-another-birth" }]);
     }
 
     /// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who is calling"): a check-in is
@@ -521,13 +521,13 @@ mod tests {
     #[test]
     fn a_check_in_for_a_subject_the_view_does_not_hold_is_subject_unknown() {
         let (fabric, node, inc) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
-        let book = Checklists::default();
+        let digest_view = Checklists::default();
         let k = key("66h8qrqvaajk", 1, &fabric);
-        book.open(&k);
-        book.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
+        digest_view.open(&k);
+        digest_view.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
         let up = StateCommand::StateCommit.up(&k, node.clone(), inc.clone());
-        assert_eq!(book.check_in("mesh1.admin.1", None, &up), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
-        assert!(!book.complete(&k), "nothing counted");
+        assert_eq!(digest_view.check_in("mesh1.admin.1", None, &up), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
+        assert!(!digest_view.complete(&k), "nothing counted");
     }
 
     fn target(inc: &IncarnationId, status: NodeStatus) -> Node {
@@ -541,15 +541,15 @@ mod tests {
         Topology { fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process }, meshes: Vec::new(), nodes }
     }
 
-    /// A book holding an open checklist that names `n` (as `inc`), the command to it out and then not delivered.
+    /// A view holding an open checklist that names `n` (as `inc`), the command to it out and then not delivered.
     fn undelivered(typed: bool, status: NodeStatus) -> (Checklists, StateKey, Node, IncarnationId) {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
-        let (book, k, n) = (Checklists::default(), key("66h8qrqvaajk", 1, &fabric), target(&inc, status));
-        book.open(&k);
-        book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
-        assert_eq!(book.take_due(&k, &view_of(vec![n.clone()])).len(), 1);
-        book.undelivered(&k, &n.node_id, &inc, typed);
-        (book, k, n, inc)
+        let (digest_view, k, n) = (Checklists::default(), key("66h8qrqvaajk", 1, &fabric), target(&inc, status));
+        digest_view.open(&k);
+        digest_view.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
+        assert_eq!(digest_view.take_due(&k, &view_of(vec![n.clone()])).len(), 1);
+        digest_view.undelivered(&k, &n.node_id, &inc, typed);
+        (digest_view, k, n, inc)
     }
 
     /// CONTRACT: a planned birth is commanded once as its exact birth, once it is deliverable; a birth
@@ -557,22 +557,22 @@ mod tests {
     #[test]
     fn a_planned_birth_is_commanded_once_per_exact_birth() {
         let (fabric, a, b) = (FabricId::mint(), IncarnationId::mint(), IncarnationId::mint());
-        let book = Checklists::default();
+        let digest_view = Checklists::default();
         let k = key("66h8qrqvaajk", 1, &fabric);
         let n = target(&a, NodeStatus::ReadyForTraffic);
-        book.open(&k);
-        book.expect(&k, planned(&n.node_id, &a, "mesh2.admin.1"), Vec::new());
-        assert!(book.take_due(&k, &view_of(vec![])).is_empty(), "a birth the view does not hold is not sent to");
+        digest_view.open(&k);
+        digest_view.expect(&k, planned(&n.node_id, &a, "mesh2.admin.1"), Vec::new());
+        assert!(digest_view.take_due(&k, &view_of(vec![])).is_empty(), "a birth the view does not hold is not sent to");
         let dead = Node { status: NodeStatus::Dead, ..n.clone() };
-        assert!(book.take_due(&k, &view_of(vec![dead])).is_empty(), "a birth that is not live is not sent to");
+        assert!(digest_view.take_due(&k, &view_of(vec![dead])).is_empty(), "a birth that is not live is not sent to");
         let view = view_of(vec![n.clone()]);
-        assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"]);
-        assert!(book.take_due(&k, &view).is_empty(), "the call is out");
-        book.answered(&k, &n.node_id, &a);
-        assert!(book.take_due(&k, &view).is_empty(), "an answered op is not sent again");
+        assert_eq!(digest_view.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"]);
+        assert!(digest_view.take_due(&k, &view).is_empty(), "the call is out");
+        digest_view.answered(&k, &n.node_id, &a);
+        assert!(digest_view.take_due(&k, &view).is_empty(), "an answered op is not sent again");
         let reborn = Node { incarnation_id: Some(b.clone()), ..n.clone() };
-        book.expect(&k, planned(&n.node_id, &b, "mesh2.admin.1"), Vec::new());
-        assert_eq!(book.take_due(&k, &view_of(vec![reborn])).len(), 1, "the new birth is commanded as itself");
+        digest_view.expect(&k, planned(&n.node_id, &b, "mesh2.admin.1"), Vec::new());
+        assert_eq!(digest_view.take_due(&k, &view_of(vec![reborn])).len(), 1, "the new birth is commanded as itself");
     }
 
     /// CONTRACT (R-S2): a command that was not delivered is sent again only on an eligible event, never
@@ -581,10 +581,10 @@ mod tests {
     #[test]
     fn an_undelivered_command_is_not_sent_again_by_reading_the_checklist_again() {
         for typed in [false, true] {
-            let (book, k, n, _) = undelivered(typed, NodeStatus::ReadyForTraffic);
+            let (digest_view, k, n, _) = undelivered(typed, NodeStatus::ReadyForTraffic);
             let view = view_of(vec![n]);
             for _ in 0..3 {
-                assert!(book.take_due(&k, &view).is_empty(), "typed={typed}: nothing happened to the target: the command is not sent again");
+                assert!(digest_view.take_due(&k, &view).is_empty(), "typed={typed}: nothing happened to the target: the command is not sent again");
             }
         }
     }
@@ -594,14 +594,14 @@ mod tests {
     #[test]
     fn a_pending_birth_is_not_commanded_until_it_reaches_ready_for_traffic() {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
-        let book = Checklists::default();
+        let digest_view = Checklists::default();
         let k = key("66h8qrqvaajk", 1, &fabric);
         let n = target(&inc, NodeStatus::Pending);
-        book.open(&k);
-        book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
-        assert!(book.take_due(&k, &view_of(vec![n.clone()])).is_empty(), "a Pending birth is not commanded before node.start completes");
+        digest_view.open(&k);
+        digest_view.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
+        assert!(digest_view.take_due(&k, &view_of(vec![n.clone()])).is_empty(), "a Pending birth is not commanded before node.start completes");
         let ready = Node { status: NodeStatus::ReadyForTraffic, ..n };
-        assert_eq!(book.take_due(&k, &view_of(vec![ready])).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"], "commanded once ReadyForTraffic");
+        assert_eq!(digest_view.take_due(&k, &view_of(vec![ready])).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"], "commanded once ReadyForTraffic");
     }
 
     /// CONTRACT (node-rpc.md §43: retry stops "on the receiver's proven exit or accepted removal";
@@ -611,40 +611,40 @@ mod tests {
     /// own retry, `reachable-again`).
     #[test]
     fn a_command_whose_birth_is_gone_is_not_sent_again_when_the_target_reads_reachable() {
-        let (book, k, n, _) = undelivered(false, NodeStatus::ReadyForTraffic);
+        let (digest_view, k, n, _) = undelivered(false, NodeStatus::ReadyForTraffic);
         let gone = Node { status: NodeStatus::PendingReconnect, ..n.clone() };
-        assert!(book.take_due(&k, &view_of(vec![gone])).is_empty(), "an unreachable target is sent nothing");
-        assert!(book.take_due(&k, &view_of(vec![n.clone()])).is_empty(), "reachable again: nothing is sent to the birth whose exit ended the call");
+        assert!(digest_view.take_due(&k, &view_of(vec![gone])).is_empty(), "an unreachable target is sent nothing");
+        assert!(digest_view.take_due(&k, &view_of(vec![n.clone()])).is_empty(), "reachable again: nothing is sent to the birth whose exit ended the call");
         let b = IncarnationId::mint();
-        book.expect(&k, planned(&n.node_id, &b, "mesh2.admin.1"), Vec::new());
+        digest_view.expect(&k, planned(&n.node_id, &b, "mesh2.admin.1"), Vec::new());
         let reborn = Node { incarnation_id: Some(b), ..n };
-        assert_eq!(book.take_due(&k, &view_of(vec![reborn])).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"], "the birth that replaces it is commanded as its own");
+        assert_eq!(digest_view.take_due(&k, &view_of(vec![reborn])).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"], "the birth that replaces it is commanded as its own");
     }
 
     /// CONTRACT (R-S2): a command that the birth refused as not ready is sent again when the birth's
     /// state changed, and when its destination moved, and not otherwise.
     #[test]
     fn an_undelivered_command_is_sent_again_when_the_targets_state_or_destination_changed() {
-        let (book, k, n, inc) = undelivered(true, NodeStatus::ConnectionsDeleting);
-        assert!(book.take_due(&k, &view_of(vec![n.clone()])).is_empty());
+        let (digest_view, k, n, inc) = undelivered(true, NodeStatus::ConnectionsDeleting);
+        assert!(digest_view.take_due(&k, &view_of(vec![n.clone()])).is_empty());
         let ready = Node { status: NodeStatus::ReadyForTraffic, ..n.clone() };
-        assert_eq!(book.take_due(&k, &view_of(vec![ready])).iter().map(|d| d.2).collect::<Vec<_>>(), ["state-changed"], "its state changed");
-        book.undelivered(&k, &n.node_id, &inc, true);
+        assert_eq!(digest_view.take_due(&k, &view_of(vec![ready])).iter().map(|d| d.2).collect::<Vec<_>>(), ["state-changed"], "its state changed");
+        digest_view.undelivered(&k, &n.node_id, &inc, true);
         let moved = Node { transport_addr: Some("127.0.0.1:9".parse().unwrap()), ..n.clone() };
-        assert_eq!(book.take_due(&k, &view_of(vec![moved])).iter().map(|d| d.2).collect::<Vec<_>>(), ["destination-changed"], "its destination moved");
+        assert_eq!(digest_view.take_due(&k, &view_of(vec![moved])).iter().map(|d| d.2).collect::<Vec<_>>(), ["destination-changed"], "its destination moved");
     }
 
     /// CONTRACT (R-S2): a command not delivered is sent again when the target addressed this primary,
     /// and the address counts once.
     #[test]
     fn an_undelivered_command_is_sent_again_when_the_target_addresses_the_primary() {
-        let (book, k, n, _) = undelivered(false, NodeStatus::ReadyForTraffic);
+        let (digest_view, k, n, _) = undelivered(false, NodeStatus::ReadyForTraffic);
         let view = view_of(vec![n.clone()]);
-        assert!(book.take_due(&k, &view).is_empty());
-        book.heard_from(&NodeId::mint());
-        assert!(book.take_due(&k, &view).is_empty(), "a stranger addressing this primary is not the target");
-        book.heard_from(&n.node_id);
-        assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["addressed"], "the target addressed this primary");
+        assert!(digest_view.take_due(&k, &view).is_empty());
+        digest_view.heard_from(&NodeId::mint());
+        assert!(digest_view.take_due(&k, &view).is_empty(), "a stranger addressing this primary is not the target");
+        digest_view.heard_from(&n.node_id);
+        assert_eq!(digest_view.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["addressed"], "the target addressed this primary");
     }
 
     /// CONTRACT (R-S2): the target addressing this primary while the command to it is out is an
@@ -658,17 +658,17 @@ mod tests {
     #[test]
     fn an_address_that_arrives_while_the_command_is_out_sends_it_again_once_the_call_ends_undelivered() {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
-        let (book, k, n) = (Checklists::default(), key("66h8qrqvaajk", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
-        book.open(&k);
-        book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
+        let (digest_view, k, n) = (Checklists::default(), key("66h8qrqvaajk", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
+        digest_view.open(&k);
+        digest_view.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
         let view = view_of(vec![n.clone()]);
-        assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"]);
-        book.heard_from(&n.node_id);
-        assert!(book.take_due(&k, &view).is_empty(), "the call is out: nothing is sent beside it");
-        book.undelivered(&k, &n.node_id, &inc, true);
-        assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["addressed"], "the address made while the call was out sends the command again");
-        book.undelivered(&k, &n.node_id, &inc, true);
-        assert!(book.take_due(&k, &view).is_empty(), "the address counts once");
+        assert_eq!(digest_view.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"]);
+        digest_view.heard_from(&n.node_id);
+        assert!(digest_view.take_due(&k, &view).is_empty(), "the call is out: nothing is sent beside it");
+        digest_view.undelivered(&k, &n.node_id, &inc, true);
+        assert_eq!(digest_view.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["addressed"], "the address made while the call was out sends the command again");
+        digest_view.undelivered(&k, &n.node_id, &inc, true);
+        assert!(digest_view.take_due(&k, &view).is_empty(), "the address counts once");
     }
 
     /// CONTRACT (i146 e3; node-rpc.md §43): the target going unreachable while the command to it is
@@ -681,22 +681,22 @@ mod tests {
     #[test]
     fn a_target_going_unreachable_and_back_while_the_command_is_out_sends_nothing_beside_the_call() {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
-        let (book, k, n) = (Checklists::default(), key("7k63hjhgtbsw", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
-        book.open(&k);
-        book.expect(&k, planned(&n.node_id, &inc, "mesh1.admin.2"), Vec::new());
+        let (digest_view, k, n) = (Checklists::default(), key("7k63hjhgtbsw", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
+        digest_view.open(&k);
+        digest_view.expect(&k, planned(&n.node_id, &inc, "mesh1.admin.2"), Vec::new());
         let ready = view_of(vec![n.clone()]);
         let stale = view_of(vec![Node { status: NodeStatus::PendingReconnect, ..n.clone() }]);
-        assert_eq!(book.take_due(&k, &ready).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"]);
+        assert_eq!(digest_view.take_due(&k, &ready).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"]);
         for view in [&stale, &stale, &ready, &ready] {
-            assert!(book.take_due(&k, view).is_empty(), "the call is out: nothing is sent beside it");
+            assert!(digest_view.take_due(&k, view).is_empty(), "the call is out: nothing is sent beside it");
         }
-        let mut rx = book.subscribe();
+        let mut rx = digest_view.subscribe();
         let before = *rx.borrow_and_update();
-        assert!(book.undelivered(&k, &n.node_id, &inc, true));
+        assert!(digest_view.undelivered(&k, &n.node_id, &inc, true));
         assert!(*rx.borrow_and_update() > before, "a call's end wakes the checklist waiter");
-        assert!(book.take_due(&k, &ready).is_empty(), "a refusal by name waits for an eligible event");
+        assert!(digest_view.take_due(&k, &ready).is_empty(), "a refusal by name waits for an eligible event");
         let changed = view_of(vec![Node { status: NodeStatus::ConnectionsDeleting, ..n.clone() }]);
-        assert_eq!(book.take_due(&k, &changed).iter().map(|d| d.2).collect::<Vec<_>>(), ["state-changed"], "its state changed: sent again");
+        assert_eq!(digest_view.take_due(&k, &changed).iter().map(|d| d.2).collect::<Vec<_>>(), ["state-changed"], "its state changed: sent again");
     }
 
     #[test]

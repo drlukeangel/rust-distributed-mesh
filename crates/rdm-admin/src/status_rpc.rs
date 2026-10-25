@@ -9,7 +9,7 @@
 //! `Applied` means the declared state is held in this admin's entity state and, for a node,
 //! written to `nodes.storage` as the subject's row.
 //!
-//! Gossip is untouched: the view's `status` stays what membership says; what the authority
+//! Gossip is untouched: the view's `status` stays what the topology view says; what the authority
 //! applied is the view's `declared`.
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, EndpointId};
@@ -272,12 +272,12 @@ impl SeatFold {
     /// never fold at once. A read that fails leaves the tenure unfolded, named in the span.
     ///
     /// The fold is the successor's acquisition of the held member statuses (node-status-heartbeat-
-    /// connections.md §A.3), and `book`, this admin's digest book, is what its member projection is
-    /// published from: each folded birth of the mesh whose state is ahead of what the book holds for
-    /// it is adopted there ([`DigestBook::adopt_status`]), before the view naming this admin primary is
+    /// connections.md §A.3), and `digest_view`, this admin's digest view, is what its member projection is
+    /// published from: each folded birth of the mesh whose state is ahead of what the view holds for
+    /// it is adopted there ([`DigestView::adopt_status`]), before the view naming this admin primary is
     /// installed and so before its first projection (fabric-authority.md §7: hydration, not
     /// transition). One `rdm.node_admin.status.update.via-seat-fold` per birth adopted or refused.
-    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, book: Option<&rdm_transport::topology::DigestBook>) {
+    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, digest_view: Option<&rdm_transport::topology::DigestView>) {
         let holds = now.is_mesh_primary(&self.mesh, &self.me);
         {
             let mut folded = self.folded.lock().unwrap();
@@ -289,7 +289,7 @@ impl SeatFold {
                 return;
             }
         }
-        let me_name = book.and_then(|b| b.held_path_name()).or_else(|| now.own(&self.me).map(|n| n.name.clone())).unwrap_or_else(|| self.name.clone());
+        let me_name = digest_view.and_then(|b| b.held_path_name()).or_else(|| now.own(&self.me).map(|n| n.name.clone())).unwrap_or_else(|| self.name.clone());
         let span = tracing::info_span!(
             "rdm.node_admin.status.resolve.via-seat-taken",
             node = %me_name,
@@ -322,8 +322,8 @@ impl SeatFold {
                 span.record("fabric_event_rows", fabric.as_ref().map_or(0, |f| f.events.len()));
                 *self.folded.lock().unwrap() = true;
                 span.in_scope(|| tracing::info!("this admin took its mesh's seat: the mesh's status rows are folded into what it applied"));
-                if let Some(book) = book {
-                    span.in_scope(|| self.adopt_into(declared, book, &me_name));
+                if let Some(digest_view) = digest_view {
+                    span.in_scope(|| self.adopt_into(declared, digest_view, &me_name));
                 }
             }
             Err(e) => {
@@ -335,9 +335,9 @@ impl SeatFold {
 }
 
 impl SeatFold {
-    /// Adopt into `book` every birth of this admin's mesh that `declared` holds a state for ahead of
-    /// what `book` holds for that exact birth: the status its predecessor set, held by the successor.
-    fn adopt_into(&self, declared: &Mutex<Declared>, book: &rdm_transport::topology::DigestBook, me_name: &crate::model::PathName) {
+    /// Adopt into `digest_view` every birth of this admin's mesh that `declared` holds a state for ahead of
+    /// what `digest_view` holds for that exact birth: the status its predecessor set, held by the successor.
+    fn adopt_into(&self, declared: &Mutex<Declared>, digest_view: &rdm_transport::topology::DigestView, me_name: &crate::model::PathName) {
         let held: Vec<(NodeId, IncarnationId, crate::model::PathName, NodeState)> = {
             let declared = declared.lock().unwrap();
             declared
@@ -348,12 +348,12 @@ impl SeatFold {
                 .collect()
         };
         for (node_id, incarnation, name, state) in held {
-            let prior = book.member_status(&node_id, &incarnation);
+            let prior = digest_view.member_status(&node_id, &incarnation);
             if transition(prior.map(declared_of_member), state) != Transition::Apply {
                 continue;
             }
             let status = member_of_declared(state);
-            let outcome = match set_member_status(book, MemberStatusReceipt::SeatFold { node_id: &node_id, incarnation: &incarnation, name: &name, state }) {
+            let outcome = match set_member_status(digest_view, MemberStatusReceipt::SeatFold { node_id: &node_id, incarnation: &incarnation, name: &name, state }) {
                 Ok(_) => "adopted",
                 Err(why) => why,
             };
@@ -380,7 +380,7 @@ pub use rdm_core::status::{declared_of_member, member_of_declared};
 /// sets it from its member's report (node-status.md "Status report": "A node reports to its mesh's
 /// primary, which sets its status"); every such write goes through [`set_member_status`], naming its
 /// cause. The rule a cause applies before its write (a forward move of the declared state, a stop not
-/// yet completed, a predecessor's state ahead of what the book holds) is its caller's.
+/// yet completed, a predecessor's state ahead of what the view holds) is its caller's.
 #[derive(Debug, Clone, Copy)]
 pub enum MemberStatusReceipt<'a> {
     /// The birth's declared state, its row put, acknowledged and applied by this admin's status
@@ -423,23 +423,23 @@ pub enum MemberStatusReceipt<'a> {
     },
 }
 
-/// Set a member's status at its mesh-primary in `book`, the digest book its member projection is
+/// Set a member's status at its mesh-primary in `digest_view`, the digest view its member projection is
 /// published from, from `receipt`, its cause: the one place this admin, as its members' status
-/// authority, writes a member's status. `Ok(true)` when the book holds the status for the birth;
-/// `Ok(false)` when it sets nothing (a birth of another mesh, or one the book holds nothing of);
-/// `Err` naming why a seat fold adopts nothing. The book's own span of each cause is its record.
-pub fn set_member_status(book: &rdm_transport::topology::DigestBook, receipt: MemberStatusReceipt<'_>) -> Result<bool, &'static str> {
+/// authority, writes a member's status. `Ok(true)` when the view holds the status for the birth;
+/// `Ok(false)` when it sets nothing (a birth of another mesh, or one the view holds nothing of);
+/// `Err` naming why a seat fold adopts nothing. The view's own span of each cause is its record.
+pub fn set_member_status(digest_view: &rdm_transport::topology::DigestView, receipt: MemberStatusReceipt<'_>) -> Result<bool, &'static str> {
     use rdm_core::MemberStatus as M;
     match receipt {
         MemberStatusReceipt::Declared(row) => Ok(match row.state {
-            NodeState::ReadyForTraffic => book.started(&row.node_id, &row.incarnation_id, &row.name),
-            state => book.reported(&row.node_id, &row.incarnation_id, member_of_declared(state)),
+            NodeState::ReadyForTraffic => digest_view.started(&row.node_id, &row.incarnation_id, &row.name),
+            state => digest_view.reported(&row.node_id, &row.incarnation_id, member_of_declared(state)),
         }),
-        MemberStatusReceipt::NodeJoined { op, already: Some(state) } => Ok(book.joined_already_applied(op, member_of_declared(state))),
-        MemberStatusReceipt::NodeJoined { op, already: None } => Ok(book.joined(op)),
-        MemberStatusReceipt::StopAdmitted(op) => Ok(book.admitted(op, M::Leaving)),
-        MemberStatusReceipt::ConnectionsDeleting { node_id, incarnation } => Ok(book.reported(node_id, incarnation, M::ConnectionsDeleting)),
-        MemberStatusReceipt::SeatFold { node_id, incarnation, name, state } => book.adopt_status(node_id, incarnation, name, member_of_declared(state)).map(|_| true),
+        MemberStatusReceipt::NodeJoined { op, already: Some(state) } => Ok(digest_view.joined_already_applied(op, member_of_declared(state))),
+        MemberStatusReceipt::NodeJoined { op, already: None } => Ok(digest_view.joined(op)),
+        MemberStatusReceipt::StopAdmitted(op) => Ok(digest_view.admitted(op, M::Leaving)),
+        MemberStatusReceipt::ConnectionsDeleting { node_id, incarnation } => Ok(digest_view.reported(node_id, incarnation, M::ConnectionsDeleting)),
+        MemberStatusReceipt::SeatFold { node_id, incarnation, name, state } => digest_view.adopt_status(node_id, incarnation, name, member_of_declared(state)).map(|_| true),
     }
 }
 
@@ -447,7 +447,7 @@ pub fn set_member_status(book: &rdm_transport::topology::DigestBook, receipt: Me
 /// and the rows it writes.
 pub struct StatusAuthority {
     /// This admin's own declaration and the application channels it holds.
-    pub app_channels: Option<rdm_transport::topology::Membership>,
+    pub app_channels: Option<rdm_transport::topology::TopologyView>,
     /// This admin's `path.name`: what it is named by in spans and refusals.
     pub me: crate::model::PathName,
     /// Asked before a node's declaration is decided ([`crate::wiring::DeclarationSeam`]); the product's
@@ -488,7 +488,7 @@ pub struct StatusAuthority {
     /// view holds (Q11).
     pub durable: Arc<Mutex<Vec<crate::model::Node>>>,
     /// The commands this admin sent (as an owning mesh-admin) and awaits a completion call for.
-    pub commands: Arc<crate::node_commands::CommandBook>,
+    pub commands: Arc<crate::node_commands::CommandView>,
     /// This admin as the subject of `node.connections.delete` / `stop-node` from its own mesh-admin; filled once
     /// its digest and server exist.
     pub own: Arc<OnceLock<Arc<crate::node_self::NodeSelf>>>,
@@ -531,13 +531,13 @@ pub struct StatusAuthority {
     /// again, reading the moved row. Filled with the view.
     pub row_moved: RowMoved,
     /// Each member's load and gossip stats, as its latest digest carries them: what `node.get`
-    /// answers beside the view. `None` only where no admin owns a digest book; a view read there is
+    /// answers beside the view. `None` only where no admin owns a digest view; a view read there is
     /// refused `NotReady` by name.
     pub loads: Option<crate::views::Loads>,
-    /// This admin's digest book: as its mesh's primary it sets each member's status there through
+    /// This admin's digest view: as its mesh's primary it sets each member's status there through
     /// [`set_member_status`], from the frame or declaration that caused it. `None` only where no admin
-    /// owns a digest book.
-    pub book: Option<rdm_transport::topology::DigestBook>,
+    /// owns a digest view.
+    pub digest_view: Option<rdm_transport::topology::DigestView>,
     /// Whether the initial fabric has first reached ready-for-traffic: until it has, a caller's
     /// property command is refused `RejectedFabricNotReady` and nothing is written.
     pub first_ready: crate::fabric_state::FirstReady,
@@ -769,17 +769,17 @@ fn apply_mesh(declared: &Declared, mesh_id: &MeshId, state: MeshState) -> (Statu
 }
 
 impl StatusAuthority {
-    /// The `path.name` this admin holds now: what its digest book or its view names its birth,
+    /// The `path.name` this admin holds now: what its digest view or its view names its birth,
     /// falling back to `self.me` before its birth is in either.
     pub async fn held_name(&self) -> crate::model::PathName {
-        if let Some(held) = self.book.as_ref().and_then(|b| b.held_path_name()) {
+        if let Some(held) = self.digest_view.as_ref().and_then(|b| b.held_path_name()) {
             return held;
         }
         self.topology.read().await.own(&self.node_id).map(|n| n.name.clone()).unwrap_or_else(|| self.me.clone())
     }
 
     fn held_name_in(&self, view: &Topology) -> crate::model::PathName {
-        self.book.as_ref().and_then(|b| b.held_path_name()).or_else(|| view.own(&self.node_id).map(|n| n.name.clone())).unwrap_or_else(|| self.me.clone())
+        self.digest_view.as_ref().and_then(|b| b.held_path_name()).or_else(|| view.own(&self.node_id).map(|n| n.name.clone())).unwrap_or_else(|| self.me.clone())
     }
 
     /// The node a call's authenticated endpoint is, from the view this authority decides from: a
@@ -953,12 +953,12 @@ impl StatusAuthority {
                             StatusReply::within_reply_bound(answer, "node.get")
                         }
                     }
-                    None => rdm_core::reply::status::not_ready(format!("{me_name} reads no digest book; {} is refused", req.op())),
+                    None => rdm_core::reply::status::not_ready(format!("{me_name} reads no digest view; {} is refused", req.op())),
                 };
             }
             StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric => {
                 if self.loads.is_none() {
-                    return rdm_core::reply::status::not_ready(format!("{me_name} reads no digest book; {} is refused", req.op()));
+                    return rdm_core::reply::status::not_ready(format!("{me_name} reads no digest view; {} is refused", req.op()));
                 }
                 if matches!(req, StatusRequest::GetFabric) {
                     // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
@@ -1243,35 +1243,35 @@ impl StatusAuthority {
     /// Pending the birth's accepted join report recorded and starts no other (node-mesh-join.md step
     /// 10). Under one hold of `operation_effects`: while the birth's declared state is in its new cycle
     /// already (that Pending, or the ReadyForTraffic it declared since), the frame applies as already
-    /// applied: no new cycle and no second Pending row; its stop, if the book holds one, ends here all
-    /// the same, and the book holds the birth again with that state, never set back to Pending. A birth
+    /// applied: no new cycle and no second Pending row; its stop, if the view holds one, ends here all
+    /// the same, and the view holds the birth again with that state, never set back to Pending. A birth
     /// whose join report this admin did not record is held Pending as before: its stop ends, its next
     /// cycle begins and Pending is recorded.
     pub async fn node_joined(&self, op: &rdm_core::LifecycleOp, node: &crate::model::Node, birth: &IncarnationId) -> StatusReply {
         let _operation = self.operation_effects.write().await;
         let held = self.declared.lock().unwrap().node(&node.node_id, birth);
         if let Some(state @ (NodeState::Pending | NodeState::ReadyForTraffic)) = held {
-            if let Some(book) = &self.book {
-                let _ = set_member_status(book, MemberStatusReceipt::NodeJoined { op, already: Some(state) });
+            if let Some(digest_view) = &self.digest_view {
+                let _ = set_member_status(digest_view, MemberStatusReceipt::NodeJoined { op, already: Some(state) });
             }
             return rdm_core::reply::already_applied();
         }
-        if let Some(book) = &self.book {
-            let _ = set_member_status(book, MemberStatusReceipt::NodeJoined { op, already: None });
+        if let Some(digest_view) = &self.digest_view {
+            let _ = set_member_status(digest_view, MemberStatusReceipt::NodeJoined { op, already: None });
         }
         // The frame is a later report of the start's join, never a join of its own.
         self.pending_held(&node.node_id, &node.name, birth, false).await
     }
 
-    /// The declared-state rows of every birth this admin holds that `book` says is superseded: the
-    /// book holds a later incarnation of the node (a restart), holds the node departed
+    /// The declared-state rows of every birth this admin holds that `digest_view` says is superseded: the
+    /// view holds a later incarnation of the node (a restart), holds the node departed
     /// (node.deleted), or holds the birth's path.name under another node_id (a recovery's new node,
     /// node-recovery.md). Each such birth's keys are tombstoned, blind, and then forgotten in memory.
-    /// A birth the book holds at the same incarnation keeps its rows, however long it is silent, and
-    /// so does a birth the book does not hold at all whose path no other node holds (nothing is
+    /// A birth the view holds at the same incarnation keeps its rows, however long it is silent, and
+    /// so does a birth the view does not hold at all whose path no other node holds (nothing is
     /// proven of it).
-    pub async fn drop_superseded(&self, book: &rdm_transport::topology::DigestBook) {
-        let me_name = book.held_path_name().unwrap_or_else(|| self.me.clone());
+    pub async fn drop_superseded(&self, digest_view: &rdm_transport::topology::DigestView) {
+        let me_name = digest_view.held_path_name().unwrap_or_else(|| self.me.clone());
         // The births held and their paths, read under the lock and the lock released before any await.
         let held: Vec<((NodeId, IncarnationId), Option<crate::model::PathName>)> = {
             let declared = self.declared.lock().unwrap();
@@ -1279,13 +1279,13 @@ impl StatusAuthority {
             for row in declared.operations.values() { births.entry((row.node_id.clone(), row.incarnation_id.clone())).or_insert(Some(row.name.clone())); }
             births.into_iter().collect()
         };
-        // Who the book holds at each path.name now.
-        let at_path: std::collections::HashMap<crate::model::PathName, NodeId> = book.all().into_iter().map(|d| (d.node.name, d.node.node_id)).collect();
+        // Who the view holds at each path.name now.
+        let at_path: std::collections::HashMap<crate::model::PathName, NodeId> = digest_view.all().into_iter().map(|d| (d.node.name, d.node.node_id)).collect();
         for ((node_id, incarnation), name) in held {
-            let (why, by) = match book.get(node_id.as_str()) {
+            let (why, by) = match digest_view.get(node_id.as_str()) {
                 Some((d, _)) if d.node.incarnation != incarnation => ("new-incarnation", d.node.incarnation.to_string()),
                 Some(_) => continue,
-                None if book.is_deleted(node_id.as_str()) => ("node-deleted", String::new()),
+                None if digest_view.is_deleted(node_id.as_str()) => ("node-deleted", String::new()),
                 None => match name.as_ref().and_then(|n| at_path.get(n)) {
                     Some(other) if *other != node_id => ("new-node", other.to_string()),
                     _ => continue,
@@ -1374,7 +1374,7 @@ impl StatusAuthority {
                     let identity = DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
                     let completed = self.declared.lock().unwrap().operations.contains_key(&operation_row(&declared, &identity).key());
                     if !start && !completed {
-                        if let Some(book) = &self.book { let _ = set_member_status(book, MemberStatusReceipt::StopAdmitted(&op)); }
+                        if let Some(digest_view) = &self.digest_view { let _ = set_member_status(digest_view, MemberStatusReceipt::StopAdmitted(&op)); }
                         tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation).in_scope(|| tracing::info!("CommandAccepted reports the stop's admission; this mesh-primary sets stopping"));
                     }
                     None
@@ -1526,7 +1526,7 @@ impl StatusAuthority {
                         // The node reported it: this mesh-primary records and publishes the state the
                         // node entered (states.md "Who sets each state"), never before.
                         reported = true;
-                        let recorded = self.book.as_ref().is_some_and(|book| set_member_status(book, MemberStatusReceipt::ConnectionsDeleting { node_id, incarnation }) == Ok(true));
+                        let recorded = self.digest_view.as_ref().is_some_and(|digest_view| set_member_status(digest_view, MemberStatusReceipt::ConnectionsDeleting { node_id, incarnation }) == Ok(true));
                         let position = frames.position();
                         let span = tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", invocation_id = tracing::field::Empty, seq = tracing::field::Empty, node = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), recorder = %me_name, reported_by = "node", recorded, "otel.kind" = "internal");
                         if let Some((invocation, seq)) = position {
@@ -1674,8 +1674,8 @@ impl StatusAuthority {
             // projection. node.started, its ReadyForTraffic, also ends that exact birth's restart
             // (gossip.md "NodeRestarting stays until node.started of the same (node.id, incarnation)
             // arrives").
-            if let Some(book) = &self.book {
-                let _ = set_member_status(book, MemberStatusReceipt::Declared(row));
+            if let Some(digest_view) = &self.digest_view {
+                let _ = set_member_status(digest_view, MemberStatusReceipt::Declared(row));
             }
             let mut t = self.topology.write().await;
             if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
@@ -2181,7 +2181,7 @@ mod tests {
             fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2195,7 +2195,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
-            book: None,
+            digest_view: None,
             first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
@@ -2248,7 +2248,7 @@ mod tests {
             fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2262,7 +2262,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
-            book: None,
+            digest_view: None,
             first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
@@ -2325,7 +2325,7 @@ mod tests {
             fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2339,7 +2339,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
-            book: None,
+            digest_view: None,
             first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         }
@@ -2624,7 +2624,7 @@ mod tests {
             fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2638,7 +2638,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
-            book: None,
+            digest_view: None,
             first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
@@ -2715,7 +2715,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
-            book: None,
+            digest_view: None,
             first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         }
@@ -3022,9 +3022,9 @@ mod tests {
 
     /// CONTRACT (#3051, node-recovery.md "Steps": node.delete of the exited instance, then node.create
     /// with a new node.id; node-restart: a new incarnation of the same node.id): a birth's declared
-    /// state is a fact about that birth only. Once the book holds a later incarnation of the node, or
+    /// state is a fact about that birth only. Once the view holds a later incarnation of the node, or
     /// holds the node departed (node.deleted), the authority tombstones the old birth's declared-state
-    /// keys, blind, and forgets them; a birth the book still holds at the same incarnation (silent or
+    /// keys, blind, and forgets them; a birth the view still holds at the same incarnation (silent or
     /// not) keeps its rows. Must NOT happen: an old birth's rows on disk forever, folded back on every
     /// restart of the authority.
     #[tokio::test]
@@ -3065,7 +3065,7 @@ mod tests {
             fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -3079,7 +3079,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
-            book: None,
+            digest_view: None,
             first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
@@ -3087,12 +3087,12 @@ mod tests {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
             assert_eq!(authority.apply(Some(n.clone()), &declare).await, R::Applied, "{}", n.name);
         }
-        let book = rdm_transport::topology::DigestBook::default();
-        // rpc.1 restarted: the book holds its next incarnation.
-        book.record(digest_of(&restarted, IncarnationId::mint()));
+        let digest_view = rdm_transport::topology::DigestView::default();
+        // rpc.1 restarted: the view holds its next incarnation.
+        digest_view.record(digest_of(&restarted, IncarnationId::mint()));
         // rpc.2 deleted: its exact birth departed.
-        book.record(digest_of(&deleted, deleted.incarnation_id.clone().unwrap()));
-        book.depart(rdm_core::LifecycleOp {
+        digest_view.record(digest_of(&deleted, deleted.incarnation_id.clone().unwrap()));
+        digest_view.depart(rdm_core::LifecycleOp {
             build_id: "build1".into(),
             attempt: 1,
             operation: "node.delete:mesh1.rpc.2".into(),
@@ -3102,11 +3102,11 @@ mod tests {
             event_at_rafka_ms: 0,
         });
         // rpc.3 is held at the birth that declared (silent or not, it is not superseded).
-        book.record(digest_of(&standing, standing.incarnation_id.clone().unwrap()));
+        digest_view.record(digest_of(&standing, standing.incarnation_id.clone().unwrap()));
         let capture = crate::span_capture::Capture::new("i143-3051-superseded-rows");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            authority.drop_superseded(&book).await;
+            authority.drop_superseded(&digest_view).await;
         }
         let by_incarnation = capture.named("rdm.node_admin.status.remove.via-new-incarnation");
         let by_deletion = capture.named("rdm.node_admin.status.remove.via-node-deleted");
@@ -3117,7 +3117,7 @@ mod tests {
         assert_eq!(by_deletion.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(deleted.node_id.to_string(), "retired".to_string())], "the deleted node's birth is retired for its deletion");
         use crate::storage::NodesStorage as _;
         let rows: Vec<String> = Declaration::of_records(&status.nodes("mesh1").await.unwrap()).into_iter().map(|r| r.node_id.to_string()).collect();
-        assert_eq!(rows, vec![standing.node_id.to_string()], "only the birth the book still holds keeps its declared-state row");
+        assert_eq!(rows, vec![standing.node_id.to_string()], "only the birth the view still holds keeps its declared-state row");
         let held = authority.declared.lock().unwrap().clone();
         assert_eq!(held.node(&restarted.node_id, restarted.incarnation_id.as_ref().unwrap()), None, "the restarted node's old birth is forgotten");
         assert_eq!(held.node(&deleted.node_id, deleted.incarnation_id.as_ref().unwrap()), None, "the deleted birth is forgotten");
@@ -3126,13 +3126,13 @@ mod tests {
     }
 
     /// CONTRACT (node-recovery.md "Steps": "node.create at the same path.name", "New: node.id"): a
-    /// recovered birth is superseded by a NEW node at its path.name. Once the book holds that path
+    /// recovered birth is superseded by a NEW node at its path.name. Once the view holds that path
     /// under another node_id, the exited birth's declared-state rows are tombstoned (via-new-node),
-    /// whether or not the book still holds the exited birth's departure (that is held only
+    /// whether or not the view still holds the exited birth's departure (that is held only
     /// DEPARTED_RETENTION; an admin that rehydrates later holds none).
     /// Must NOT happen: the exited birth's rows folded back for ever because its node_id is gone.
     #[tokio::test]
-    async fn a_birth_whose_path_the_book_holds_under_a_new_node_leaves_no_declared_state_row_behind() {
+    async fn a_birth_whose_path_the_view_holds_under_a_new_node_leaves_no_declared_state_row_behind() {
         let mut admin = node("mesh1.admin.1");
         admin.mesh = "mesh1".into();
         admin.kind = NodeKind::NodeAdmin;
@@ -3165,7 +3165,7 @@ mod tests {
             fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -3179,7 +3179,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
-            book: None,
+            digest_view: None,
             first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
@@ -3189,12 +3189,12 @@ mod tests {
         let mut recovered = exited.clone();
         recovered.node_id = NodeId::mint();
         recovered.incarnation_id = Some(IncarnationId::mint());
-        let book = rdm_transport::topology::DigestBook::default();
-        book.record(digest_of(&recovered, recovered.incarnation_id.clone().unwrap()));
+        let digest_view = rdm_transport::topology::DigestView::default();
+        digest_view.record(digest_of(&recovered, recovered.incarnation_id.clone().unwrap()));
         let capture = crate::span_capture::Capture::new("i143-3051-recovered-rows");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            authority.drop_superseded(&book).await;
+            authority.drop_superseded(&digest_view).await;
         }
         let by_new_node = capture.named("rdm.node_admin.status.remove.via-new-node");
         for s in &by_new_node {

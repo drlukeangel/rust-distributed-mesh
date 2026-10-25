@@ -16,7 +16,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, MeshId, NodeId};
-use rdm_transport::topology::{gossip_addr, learn_addresses, Backbone, Membership};
+use rdm_transport::topology::{gossip_addr, learn_addresses, Backbone, TopologyView};
 use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_core::PathName;
 use rdm_admin::build::BuildId;
@@ -205,9 +205,9 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
         learn_addresses(&ep, &[seed.clone()]).unwrap();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(root.emitted_at_rafka_ms);
-        let observer = Membership::join(&gossip, &ep, &root.fabric_id, "mesh2", &MeshId::mint(), "mesh2.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        let observer = TopologyView::join(&gossip, &ep, &root.fabric_id, "mesh2", &MeshId::mint(), "mesh2.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
         let _observer_bb = Backbone::join(&gossip, &ep, &observer, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![seed]).await.unwrap();
-        let unheard = || observer.book.mesh_unheard(&root.node.name.mesh, std::time::Instant::now());
+        let unheard = || observer.digest_view.mesh_unheard(&root.node.name.mesh, std::time::Instant::now());
         tokio::time::timeout(NEVER, async {
             while unheard().is_none() {
                 tokio::time::sleep(SAMPLE).await;
@@ -247,7 +247,7 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
     std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
     let receipts: Vec<(u64, String)> = spans
         .iter()
-        .filter(|s| s["name"] == "rdm.mesh.membership.update.via-snapshot-installed" && s["attributes"]["node"] == "mesh2.admin.1" && s["attributes"]["channel"] == "backbone" && s["attributes"]["mesh"] == "mesh1")
+        .filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed" && s["attributes"]["node"] == "mesh2.admin.1" && s["attributes"]["channel"] == "backbone" && s["attributes"]["mesh"] == "mesh1")
         .map(|s| (s["start_ns"].as_u64().unwrap_or(0), s["attributes"]["snapshot_id"].as_str().unwrap_or_default().to_string()))
         .collect();
     let held_spans = spans.iter().filter(|s| s["name"] == "cell.store.update.via-held-read").count();

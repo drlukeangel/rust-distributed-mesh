@@ -517,12 +517,12 @@ rdm.node_rpc.stream.serve.via-terminal
 rdm.node_rpc.stream.reject.via-protocol-violation
 ```
 
-The live resolver's membership updates (`rdm-admin`, `rdm-test`):
+The live resolver's topology updates (`rdm-admin`, `rdm-test`):
 
 ```text
-rdm.node_rpc.node.update.via-membership
-rdm.node_rpc.node.remove.via-membership
-rdm.node_rpc.node.reject.via-membership
+rdm.node_rpc.node.update.via-topology
+rdm.node_rpc.node.remove.via-topology
+rdm.node_rpc.node.reject.via-topology
 ```
 
 The testkit oracles and the proof product's own families (`rdm-test`,
@@ -1062,7 +1062,7 @@ A fabric-primary recovered with durable topology follows [fabric recovery](lifec
 
 MeshDigest is the full gossip Digest, not an address-only report. Its MeshNode carries the
 real bound `transport_addr`, `endpoint_id`, exact `node_id` and `incarnation` together with
-its path and runtime fact. Its complete fields are the shared membership types below.
+its path and runtime fact. Its complete fields are the shared topology types below.
 
 
 ```rust

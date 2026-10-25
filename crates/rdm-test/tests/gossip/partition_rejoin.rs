@@ -112,8 +112,8 @@ fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
                 || n.contains(".deployment.delete.")
                 || n.contains(".deployment.update.")
                 || n.contains("proven-drift")
-                || n.contains("membership.remove.")
-                || n.contains("membership.reject.via-departed-birth")
+                || n.contains("topology.remove.")
+                || n.contains("topology.reject.via-departed-birth")
                 || n.contains("runtime.update.via-adopt")
                 || n.contains("node.create.via-deployment")
         })
@@ -238,7 +238,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     // silent, and each admin still holds its own-mesh admin ready.
     let fb = fallbacks(&spans, cut_at);
     assert!(fb.is_empty(), "no channel was left without a neighbour: {:?}", fb.iter().map(|sp| (attr(sp, "node"), attr(sp, "channel"))).collect::<Vec<_>>());
-    let silent: Vec<(String, String)> = named(&spans, "rdm.mesh.membership.update.via-mesh-silent").into_iter().filter(|sp| at(sp) >= cut_at).map(|sp| (attr(sp, "node"), attr(sp, "mesh"))).collect();
+    let silent: Vec<(String, String)> = named(&spans, "rdm.mesh.topology.update.via-mesh-silent").into_iter().filter(|sp| at(sp) >= cut_at).map(|sp| (attr(sp, "node"), attr(sp, "mesh"))).collect();
     for (obs, m) in &silent {
         assert!(*m != mesh_of(obs), "{obs} lost its own mesh {m}: {silent:?}");
     }
@@ -260,7 +260,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     // R-G1 (gossip.md §3.3): the absence of a differential is never a refresh. While the peer mesh
     // is unheard, no primary puts any forwarded frame about it into its mesh: no timer full, no
     // delta, and no admin's coverage of the peer mesh is renewed by a forwarded word.
-    let forwarded: Vec<(String, String)> = ["rdm.mesh.membership.update.via-forwarded-full", "rdm.mesh.membership.update.via-delta"]
+    let forwarded: Vec<(String, String)> = ["rdm.mesh.topology.update.via-forwarded-full", "rdm.mesh.topology.update.via-delta"]
         .iter()
         .flat_map(|n| named(&spans, n))
         .filter(|sp| at(sp) >= cut_at && at(sp) <= held)
@@ -291,11 +291,11 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         assert_eq!(advertised_fabric_primaries(v), advertised_fabric_primaries(&views[0].1), "{name} and {} name the same fabric primary", views[0].0);
     }
     assert_eq!(advertised_fabric_primaries(&views[0].1), fabric_primary_before, "the fabric primary that lived through the cut keeps the seat (R-A2: a lower NodeId never displaces a living holder)");
-    // Every node-admin hears the peer mesh again on the backbone: its membership watcher reports
+    // Every node-admin hears the peer mesh again on the backbone: its topology watcher reports
     // the mesh learned. An ordinary node held it as topology through the cut and reports nothing.
     let learned: BTreeSet<(String, String)> = wait_for("every node-admin reports the peer mesh learned again", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        let learned: BTreeSet<(String, String)> = named(&spans, "rdm.mesh.membership.update.via-mesh-learned").into_iter().filter(|sp| at(sp) >= healed_at).map(|sp| (attr(sp, "node"), attr(sp, "mesh"))).collect();
+        let learned: BTreeSet<(String, String)> = named(&spans, "rdm.mesh.topology.update.via-mesh-learned").into_iter().filter(|sp| at(sp) >= healed_at).map(|sp| (attr(sp, "node"), attr(sp, "mesh"))).collect();
         admins.iter().map(|(n, _)| n).all(|n| learned.contains(&(n.clone(), (if mesh1.contains(n) { "mesh2" } else { "mesh1" }).to_string()))).then_some(learned)
     })
     .await;

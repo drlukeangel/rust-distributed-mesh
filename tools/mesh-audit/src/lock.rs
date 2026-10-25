@@ -756,8 +756,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
         }
         Ratchet::GossipEnvelopeWireIsAtomic => {
             require(root, "crates/rdm-transport/src/envelope.rs", &["pub const TYPES: [&str; 19]", "pub traceparent: Option<String>", "pub tracestate: Option<String>", "decode_received", "sanitized_trace", "pub const CHUNK_TYPE: &str = \"rdm.gossip.chunk\""], ratchet, &mut out);
-            require(root, "crates/rdm-transport/src/topology.rs", &["rdm.mesh.membership.update.via-context-dropped", "crate::set_remote_parent"], ratchet, &mut out);
-            require(root, "crates/rdm-transport/src/gossip.rs", &["crate::envelope::decode_header", "crate::envelope::encode_data", "crate::envelope::CHUNK_TYPE", "rdm.mesh.channel.reject.via-queue-full", "rdm.mesh.membership.reject.via-chunk-incomplete"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/topology.rs", &["rdm.mesh.topology.update.via-context-dropped", "crate::set_remote_parent"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/gossip.rs", &["crate::envelope::decode_header", "crate::envelope::encode_data", "crate::envelope::CHUNK_TYPE", "rdm.mesh.channel.reject.via-queue-full", "rdm.mesh.topology.reject.via-chunk-incomplete"], ratchet, &mut out);
             require(root, "crates/rdm-transport/tests/digest_frames_wire.rs", &["fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling", "fn members_chunks_include_the_maximum_trace_context_in_their_complete_size"], ratchet, &mut out);
             require(root, "crates/rdm-test/tests/gossip/trace_context.rs", &["fn a_received_frames_span_shares_its_authors_trace_id", "fn a_malformed_traceparent_is_dropped_by_name_and_the_frame_applies"], ratchet, &mut out);
         }
@@ -771,7 +771,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             scan_non_test_tokens(root, &no_edge, &["serde_json::Value"], ratchet, &mut out);
             scan_non_test_tokens(root, &files_in(root, GOSSIP_FRAME_SOURCES), &["postcard::"], ratchet, &mut out);
             require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
-            require(root, "crates/rdm-transport/src/topology.rs", &["crate::envelope::encode", "crate::envelope::decode", "rdm.mesh.membership.reject.via-undecodable-frame", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/topology.rs", &["crate::envelope::encode", "crate::envelope::decode", "rdm.mesh.topology.reject.via-undecodable-frame", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/envelope.rs", &["crate::wire", "wire::encode", "wire::decode", "specversion", "datacontenttype", "rdm.mesh.digest", "rdm.node.stopped"], ratchet, &mut out);
             require(root, SEAT_FRAME_CELLS, &["fn primary_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, "crates/rdm-admin/src/fabric_builds.rs", &["rdm_transport::wire::encode", "rdm_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);

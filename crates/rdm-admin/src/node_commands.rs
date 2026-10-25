@@ -85,20 +85,20 @@ pub enum Accepted {
 /// The commands this admin has sent and not forgotten, and the bound of the
 /// `node.connections.delete { All }` a commanded birth runs (this admin's own,
 /// `AdminConfig::connections_delete_deadline`, which every birth it launches carries).
-pub struct CommandBook {
+pub struct CommandView {
     open: Mutex<HashMap<CommandKey, watch::Sender<bool>>>,
     connections_delete_deadline: Duration,
 }
 
-/// A book whose commanded births run their `node.connections.delete { All }` under the launch default.
-impl Default for CommandBook {
+/// A view whose commanded births run their `node.connections.delete { All }` under the launch default.
+impl Default for CommandView {
     fn default() -> Self {
         Self::new(rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE)
     }
 }
 
-impl CommandBook {
-    /// A book whose commanded births run their `node.connections.delete { All }` under `connections_delete_deadline`.
+impl CommandView {
+    /// A view whose commanded births run their `node.connections.delete { All }` under `connections_delete_deadline`.
     pub fn new(connections_delete_deadline: Duration) -> Self {
         Self { open: Mutex::new(HashMap::new()), connections_delete_deadline }
     }
@@ -193,12 +193,12 @@ pub fn unreachable_of(cause: &rdm_core::outcome::NotSentReason) -> Option<Unreac
 /// Send `cmd` to the exact birth `node` through `client` at `target`, opening the command before
 /// the send so a completion that races the reply finds it. The outcome is admission, not
 /// completion.
-pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target: &NodeTarget, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> CommandAdmission {
+pub async fn send_command(client: &NodeRpcClient, commands: &CommandView, target: &NodeTarget, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> CommandAdmission {
     send_command_reaching(client, commands, target, node, cmd, ctx).await.0
 }
 
 /// [`send_command`], with the reachability cause of a command that was never sent ([`unreachable_of`]).
-pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandBook, target: &NodeTarget, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> (CommandAdmission, Option<Unreachable>) {
+pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandView, target: &NodeTarget, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> (CommandAdmission, Option<Unreachable>) {
     let Some(incarnation) = node.incarnation_id.clone() else {
         return (CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.name) , code: rdm_core::outcome::Code::FailedPrecondition }, None);
     };
@@ -331,7 +331,7 @@ pub fn completion_span(node: &Node, cmd: NodeCommand, ctx: &CommandContext, rece
 
 /// Wait up to `within` for the completion of the command `ctx` names for `node`: its
 /// call, or the `Stopped` reply of its `stop-node` call (node-left).
-pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeCommand, ctx: &CommandContext, within: Duration) -> Completion {
+pub async fn await_completion(commands: &CommandView, node: &Node, cmd: NodeCommand, ctx: &CommandContext, within: Duration) -> Completion {
     let Some(incarnation) = node.incarnation_id.clone() else {
         return Completion::NotAwaited { admission: format!("{} has no known birth", node.name) };
     };
@@ -383,18 +383,18 @@ mod tests {
     /// for a command that is not open names the first field that differs from the held command.
     #[tokio::test]
     async fn a_completion_resolves_only_its_open_command() {
-        let book = CommandBook::default();
+        let commands = CommandView::default();
         let k = key("node.start:mesh1.rpc.1");
-        let mut rx = book.open(k.clone());
+        let mut rx = commands.open(k.clone());
         assert!(!*rx.borrow());
-        assert_eq!(book.complete(&k), Accepted::First);
+        assert_eq!(commands.complete(&k), Accepted::First);
         rx.wait_for(|v| *v).await.unwrap();
-        assert_eq!(book.complete(&k), Accepted::Again);
+        assert_eq!(commands.complete(&k), Accepted::Again);
         let other = CommandKey { operation: "node.stop:mesh1.rpc.1".into(), ..k.clone() };
-        assert_eq!(book.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: "node.start:mesh1.rpc.1".into(), reported: "node.stop:mesh1.rpc.1".into() });
+        assert_eq!(commands.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: "node.start:mesh1.rpc.1".into(), reported: "node.stop:mesh1.rpc.1".into() });
         let attempt = CommandKey { attempt: 2, ..k.clone() };
-        assert_eq!(book.complete(&attempt), Accepted::NoOpenCommand { field: "attempt".into(), expected: "1".into(), reported: "2".into() });
+        assert_eq!(commands.complete(&attempt), Accepted::NoOpenCommand { field: "attempt".into(), expected: "1".into(), reported: "2".into() });
         let stranger = CommandKey { node_id: NodeId::mint(), ..k.clone() };
-        assert!(matches!(book.complete(&stranger), Accepted::NoOpenCommand { field, .. } if field == "command"));
+        assert!(matches!(commands.complete(&stranger), Accepted::NoOpenCommand { field, .. } if field == "command"));
     }
 }

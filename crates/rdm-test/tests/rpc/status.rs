@@ -6,7 +6,7 @@
 //!    (i143.e4.s11), and the non-primary admin declares its own to its mesh-primary: the
 //!    authority's view shows them as `declared` before any probe asks.
 //! 1. The node's `ReadyForTraffic` asked again through the oracle: `AlreadyApplied` (one logical
-//!    event); membership's `status` is untouched.
+//!    event); topology view's `status` is untouched.
 //! 2. `Pending` after `ReadyForTraffic`: `RejectedInvalidNodeTransition`.
 //! 3. A declaration naming a node the authority does not hold: `RejectedNotPrimary`
 //!    (subject-unknown; decided for the subject, never the caller); under a wrong incarnation:
@@ -63,7 +63,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
             .await,
     );
     let view = declared_by_birth.iter().find(|n| n["name"] == "mesh1.rpc.1").unwrap().clone();
-    assert_eq!(view["status"], "ready-for-traffic", "membership's status is untouched");
+    assert_eq!(view["status"], "ready-for-traffic", "topology view's status is untouched");
     // The authority itself: its own ReadyForTraffic goes through the same door, applied by itself.
     let self_declared = declared_by_birth.iter().find(|n| n["name"] == primary["name"]).unwrap();
     assert_eq!(self_declared["declared"], "ReadyForTraffic", "the mesh primary declared its own birth to itself: {self_declared}");
@@ -171,7 +171,7 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
 }
 
 /// CONTRACT (i146 Q39: "A node's declaration is owed to the holder of its mesh's primary seat,
-/// resolved from the seat, never to an admin its book happens to hear"; R24, Luke Q11: an admin holding
+/// resolved from the seat, never to an admin its view happens to hear"; R24, Luke Q11: an admin holding
 /// no seat answers a declaration with its own seat decision): `mesh1.admin.1` yields both seats to
 /// `mesh1.admin.2` (`node.stop` runs `node.primary.update` first) and starts again as itself, holding no
 /// seat. `mesh1.rpc.1`, restarted, declares its state to `mesh1.admin.2`, the seat's holder, which takes

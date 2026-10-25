@@ -107,7 +107,7 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     assert!(k[1..k.len() - 1].iter().all(|f| f == "snapshot" || f == "primaries" || f == "rafka-time"), "{k:?}");
     let (mesh1, mesh1_pub, mesh1_v, _) = snapshot_of(&frames, "mesh1");
     let (mesh2, mesh2_pub, mesh2_v, _) = snapshot_of(&frames, "mesh2");
-    assert_eq!(mesh1, vec!["mesh1.admin.1", "mesh1.rpc.1"], "its own mesh: the members its book holds, itself among them");
+    assert_eq!(mesh1, vec!["mesh1.admin.1", "mesh1.rpc.1"], "its own mesh: the members its view holds, itself among them");
     assert_eq!(mesh2, vec!["mesh2.admin.1", "mesh2.rpc.1", "mesh2.rpc.2"]);
     assert_eq!(mesh1_pub, "mesh1.admin.1", "an own mesh's version belongs to its primary");
     assert_eq!(mesh2_pub, "mesh2.admin.1", "a source mesh's version belongs to its primary");
@@ -184,7 +184,7 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
     let spans = estate.spans();
     let mut births = Vec::new();
     for node in ["mesh1.rpc.1", "mesh2.rpc.1", "mesh2.rpc.2", "mesh2.admin.1"] {
-        let joined = named(&spans, "rdm.mesh.entry.update.via-membership-pulled").into_iter().find(|sp| attr(sp, "node") == node).unwrap_or_else(|| panic!("{node} never completed a JoinNode"));
+        let joined = named(&spans, "rdm.mesh.entry.update.via-topology-pulled").into_iter().find(|sp| attr(sp, "node") == node).unwrap_or_else(|| panic!("{node} never completed a JoinNode"));
         let maker = attr(joined, "served_by");
         let join_served: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "served_by") == maker).collect();
         let join_span = join_served.iter().find(|sp| attr(sp, "outcome") == "installed").unwrap_or_else(|| panic!("{maker} installed no join of {node}: {join_served:?}"));

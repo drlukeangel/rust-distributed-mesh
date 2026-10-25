@@ -257,7 +257,7 @@ impl NodeObserver for NoGossip<'_> {
 /// completes the step from the report the authority kept durable at admission (the birth's runtime
 /// row in nodes.storage: the exact birth, the runtime and data dir the report carried), reading no
 /// gossip; the birth never sends its JoinNode twice, one runtime runs, and every step is Complete
-/// exactly once. Must NOT happen: the step ending by deadline, or completing from a membership digest.
+/// exactly once. Must NOT happen: the step ending by deadline, or completing from a topology digest.
 // @feature: node-lifecycle
 #[test]
 fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_report() {

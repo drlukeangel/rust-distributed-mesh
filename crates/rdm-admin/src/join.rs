@@ -2,10 +2,10 @@
 //!
 //! A node binds its transport on port 0, so the operating system assigns the port and no admin
 //! ever picks one. Its first call is `JoinNode` to the node-admin that deployed it, carrying the
-//! node's full membership digest with the address read from the bound endpoint. The admin holds
+//! node's full topology digest with the address read from the bound endpoint. The admin holds
 //! what it deployed ([`Deployed`], registered by the deployment pipeline before the runtime
 //! starts), verifies the digest against it, and on a match installs the address for that key
-//! (membership's `register_location`, the live resolver, which cancels every dial aimed at the
+//! (the topology view's `register_location`, the live resolver, which cancels every dial aimed at the
 //! key's old address) and completes `WaitForBind` and `WaitForMeshJoin` from the node's own report
 //! (node-create.md step 5: from the validated report, never from gossip). Once the create that
 //! registered the deployment ends, the report stays this admin's record of the admitted birth, so
@@ -56,7 +56,7 @@ pub struct Deployed {
     /// stands at that path.name (R-JN1 item 6), and handed its row's config when that row is its own
     /// create's claim. Set by the one that registers the deployment, never
     /// inferred from the last accepted name, which an admin that joined after the stop lacks
-    /// (`MeshMembership::stopped_unheard`).
+    /// (`TopologyView::stopped_unheard`).
     pub held: bool,
     /// The listeners the birth was assigned (Q151): each declared name of its kind on the birth's
     /// address, port 0. Its report carries exactly these names, each on its assigned address with the
@@ -325,7 +325,7 @@ pub struct JoinDoor {
     pub joins: Arc<Joins>,
     /// What the admin answers a joiner with.
     pub answer: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<JoinAnswer, String>> + Send>> + Send + Sync>,
-    /// Install the reported address for the key: membership's `register_location`, the live
+    /// Install the reported address for the key: the topology view's `register_location`, the live
     /// resolver, and with it the cancel of every dial aimed at the key's old address.
     pub install: Arc<dyn Fn(&MeshDigest) + Send + Sync>,
     /// Join and persist the declared app types before the birth is admitted.

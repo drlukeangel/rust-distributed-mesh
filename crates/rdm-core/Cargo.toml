@@ -2,7 +2,7 @@
 name = "rdm-core"
 version = "0.1.0"
 edition = "2021"
-description = "RDM core: ids and identity, Fabric/Mesh/Node model, membership and RuntimeFact types, Node RPC contract, and op names (no transport or runtime)"
+description = "RDM core: ids and identity, Fabric/Mesh/Node model, the topology view and RuntimeFact types, Node RPC contract, and op names (no transport or runtime)"
 publish = false
 autotests = false
 

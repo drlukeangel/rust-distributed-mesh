@@ -12,18 +12,18 @@
 //!
 //! A stamp is offered only when the authority is `ReadyForTraffic` ("No node is ready-for-traffic
 //! before it has rafka-time", origin-ordering.md), because a pending publisher may not hold the
-//! lineage's time yet: the status the node's book holds for it, from its own projection (a heartbeat
-//! carries no status). A digest the book did not admit as newer is not a sample either.
+//! lineage's time yet: the status the node's view holds for it, from its own projection (a heartbeat
+//! carries no status). A digest the view did not admit as newer is not a sample either.
 //!
 //! The stamps are publication time: `MeshDigest::emitted_at_rafka_ms` is read from the composed
-//! clock inside [`crate::topology::Membership::publish`] as the frame is built, and
+//! clock inside [`crate::topology::TopologyView::publish`] as the frame is built, and
 //! `Frame::Members::published_at_rafka_ms` is read from the same clock at the start of
 //! `Backbone::publish`, before the chunks are built and sent.
 
 use crate::clock::{Ignored, Observed, SharedClock};
 use rdm_core::{MemberStatus, MeshDigest, PublisherId};
 
-use crate::topology::SeatBook;
+use crate::topology::PrimaryView;
 
 /// What a received frame is to the clock.
 #[derive(Debug, PartialEq, Eq)]
@@ -37,9 +37,9 @@ pub(crate) enum Verdict {
     Sample { authority: String, stamp_ms: u64 },
 }
 
-/// A member's view of one mesh-channel digest, as its book holds it after the heartbeat: `d.status`
+/// A member's view of one mesh-channel digest, as its digest view holds it after the heartbeat: `d.status`
 /// is the status held for the authority's birth.
-pub(crate) fn from_mesh_primary_digest(mesh: &str, me: &str, i_am_mesh_primary: bool, seats: &SeatBook, d: &MeshDigest, admitted_as_newer: bool) -> Verdict {
+pub(crate) fn from_mesh_primary_digest(mesh: &str, me: &str, i_am_mesh_primary: bool, seats: &PrimaryView, d: &MeshDigest, admitted_as_newer: bool) -> Verdict {
     if i_am_mesh_primary || d.node.name.mesh != mesh || d.node.name.to_string() == me {
         return Verdict::NotTheAuthority;
     }
@@ -58,7 +58,7 @@ pub(crate) fn from_mesh_primary_digest(mesh: &str, me: &str, i_am_mesh_primary: 
 }
 
 /// A mesh primary's view of one backbone Members aggregate that installed.
-pub(crate) fn from_fabric_primary_members(me: &str, i_am_mesh_primary: bool, seats: &SeatBook, publisher: &PublisherId, publisher_digest: Option<&MeshDigest>, published_at_rafka_ms: u64) -> Verdict {
+pub(crate) fn from_fabric_primary_members(me: &str, i_am_mesh_primary: bool, seats: &PrimaryView, publisher: &PublisherId, publisher_digest: Option<&MeshDigest>, published_at_rafka_ms: u64) -> Verdict {
     if !i_am_mesh_primary || publisher.node == me {
         return Verdict::NotTheAuthority;
     }
@@ -145,8 +145,8 @@ mod tests {
         }
     }
 
-    fn with_primary(seat: Seat, mesh: &str, id: &NodeId, inc: &IncarnationId, revision: u64) -> SeatBook {
-        let b = SeatBook::default();
+    fn with_primary(seat: Seat, mesh: &str, id: &NodeId, inc: &IncarnationId, revision: u64) -> PrimaryView {
+        let b = PrimaryView::default();
         b.take(seat, &Primary { mesh: mesh.into(), node_id: id.clone(), incarnation: inc.clone(), revision });
         b
     }
@@ -172,9 +172,9 @@ mod tests {
         }
     }
 
-    /// CONTRACT: a digest the book did not admit as newer is no sample.
+    /// CONTRACT: a digest the view did not admit as newer is no sample.
     #[test]
-    fn a_digest_the_book_did_not_admit_offers_no_sample() {
+    fn a_digest_the_view_did_not_admit_offers_no_sample() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let seats = with_primary(Seat::MeshPrimary, MESH, &id, &inc, 1);
         let d = digest("mesh1.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 7_000);
@@ -194,7 +194,7 @@ mod tests {
             assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, d, true), Verdict::NotTheAuthority, "{}", d.node.name);
         }
         let d = digest("mesh1.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 7_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &SeatBook::default(), &d, true), Verdict::NotTheAuthority, "no seat record");
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &PrimaryView::default(), &d, true), Verdict::NotTheAuthority, "no seat record");
         // The authority retargets with the seat record: the superseded holder offers nothing.
         let (id2, inc2) = (NodeId::mint(), IncarnationId::mint());
         seats.take(Seat::MeshPrimary, &Primary { mesh: MESH.into(), node_id: id2.clone(), incarnation: inc2.clone(), revision: 2 });

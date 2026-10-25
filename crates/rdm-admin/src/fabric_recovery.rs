@@ -22,7 +22,7 @@ use crate::election::Incumbency;
 use crate::model::{Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use rdm_core::Primary;
-use rdm_transport::topology::DigestBook;
+use rdm_transport::topology::DigestView;
 use std::sync::{Arc, Mutex};
 use tracing::Instrument as _;
 
@@ -41,13 +41,13 @@ pub struct FabricRecovery {
     pub own_mesh: bool,
 }
 
-/// Fabric recovery in `view` with the records `inc` and the book `book`; `None` while the fabric-primary
+/// Fabric recovery in `view` with the records `inc` and the digest view `digest_view`; `None` while the fabric-primary
 /// record names a heard holder, or no record is held.
-pub fn of(view: &Topology, inc: &Incumbency, book: &DigestBook) -> Option<FabricRecovery> {
+pub fn of(view: &Topology, inc: &Incumbency, digest_view: &DigestView) -> Option<FabricRecovery> {
     let members: Vec<Node> = view.members().cloned().collect();
     let target = crate::election::fabric_recovery_target(&members, inc)?.clone();
     let lost = rdm_core::handover::HandoverBirth { mesh: target.mesh.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
-    let at = members.iter().find(|n| n.node_id == target.node_id).map(|n| n.name.clone()).or_else(|| crate::admin::lost_birth_name(book, &lost));
+    let at = members.iter().find(|n| n.node_id == target.node_id).map(|n| n.name.clone()).or_else(|| crate::admin::lost_birth_name(digest_view, &lost));
     // Without the lost birth's path.name this admin cannot tell the node re-created there from the mesh's
     // other node-admins: it names no executor of the mesh's own (a node that recovery re-created learns of
     // the workflow from its maker).
@@ -173,10 +173,10 @@ pub async fn record_primaries_taken(builds: &dyn crate::build_state::BuildStateA
     Ok(taken)
 }
 
-/// A hook that reads fabric recovery in a view (the records and the book are the admin's own).
+/// A hook that reads fabric recovery in a view (the records and the digest view are the admin's own).
 pub type Reader = Arc<dyn Fn(&Topology) -> Option<FabricRecovery> + Send + Sync>;
 
-/// A [`Reader`] set once its admin's book and records are held.
+/// A [`Reader`] set once its admin's view and records are held.
 #[derive(Default)]
 pub struct ReaderSlot(std::sync::OnceLock<Reader>);
 
@@ -198,9 +198,9 @@ impl ReaderSlot {
     }
 }
 
-/// The reader over `book`'s records.
-pub fn reader(book: DigestBook, records: Arc<crate::admin::Records>) -> Reader {
-    Arc::new(move |t: &Topology| of(t, &crate::admin::incumbency_of(&book, &records), &book))
+/// The reader over `digest_view`'s records.
+pub fn reader(digest_view: DigestView, records: Arc<crate::admin::Records>) -> Reader {
+    Arc::new(move |t: &Topology| of(t, &crate::admin::incumbency_of(&digest_view, &records), &digest_view))
 }
 
 /// Whether `me` runs fabric recovery of `mesh` in `t` while the mesh has no mesh-primary: the writer of
@@ -211,14 +211,14 @@ pub fn executes_for(read: Option<&Reader>, t: &Topology, me: &PathName, mesh: &s
 
 /// The workflow's door on one admin.
 pub struct FabricRecoveryDoor {
-    /// This admin's path.name as born; its held name is the book's.
+    /// This admin's path.name as born; its held name is the view's.
     pub me: PathName,
     /// This admin's node id.
     pub me_id: NodeId,
     /// Its view.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
-    /// Its digest book.
-    pub book: DigestBook,
+    /// Its digest view.
+    pub digest_view: DigestView,
     /// Its records.
     pub records: Arc<crate::admin::Records>,
     /// Node investigation on the lost birth, and its command back when reached.
@@ -242,8 +242,8 @@ pub struct FabricRecoveryDoor {
 impl FabricRecoveryDoor {
     /// A door for the admin these name.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(me: PathName, me_id: NodeId, topology: Arc<tokio::sync::RwLock<Topology>>, book: DigestBook, records: Arc<crate::admin::Records>, looker: crate::seat_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool) -> Self {
-        Self { me, me_id, topology, book, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None) }
+    pub fn new(me: PathName, me_id: NodeId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::seat_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool) -> Self {
+        Self { me, me_id, topology, digest_view, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None) }
     }
 
     /// This door's admin is the adoption launch under an in-force fabric.delete, at its own new path.name
@@ -263,13 +263,13 @@ impl FabricRecoveryDoor {
     }
 
     fn held_name(&self) -> PathName {
-        self.book.held_path_name().unwrap_or_else(|| self.me.clone())
+        self.digest_view.held_path_name().unwrap_or_else(|| self.me.clone())
     }
 
     /// Fabric recovery in this admin's view now.
     pub async fn read(&self) -> Option<FabricRecovery> {
         let t = self.topology.read().await.clone();
-        of(&t, &crate::admin::incumbency_of(&self.book, &self.records), &self.book)
+        of(&t, &crate::admin::incumbency_of(&self.digest_view, &self.records), &self.digest_view)
     }
 
     /// Start the workflow when this admin runs it: in its own mesh at the first tick after the mark, once
@@ -393,7 +393,7 @@ impl FabricRecoveryDoor {
                             next_look = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
                         }
                         // From the backbone, `running`: the investigation's report stands and the executor
-                        // writes nothing, no row, no name release, no mark against the birth in its own book,
+                        // writes nothing, no row, no name release, no mark against the birth in its own view,
                         // no create (fabric-recovery.md step 3, Q153). A runtime this executor inspects running
                         // but cannot reach is unreachable from it, not lost. The next investigation decides
                         // again a staleness floor on, while the record still names the unheard birth.
@@ -457,7 +457,7 @@ impl FabricRecoveryDoor {
                 return None;
             }
         };
-        let mesh_revision = self.book.seats.mesh(&target.mesh).map(|m| m.revision + 1).unwrap_or(1);
+        let mesh_revision = self.digest_view.seats.mesh(&target.mesh).map(|m| m.revision + 1).unwrap_or(1);
         // With an attempt won, the transition is recorded in it; with none claimed yet there is no attempt
         // to supersede, and the drive's claim of the first is the one claim (build.md §1).
         if let Some(attempt) = attempt {
@@ -509,7 +509,7 @@ impl FabricRecoveryDoor {
     /// (fabric-recovery.md step 4): node.primary.update's call on it, each record at its next revision.
     async fn restore(&self, target: &Primary, node: &Node) -> Result<Vec<rdm_node::member_handover::Entry>, rdm_core::handover::NodePrimaryUpdateReply> {
         let door = self.handover.get().cloned().ok_or_else(|| rdm_core::reply::handover::not_ready("this admin's node.primary.update door is not built yet".into()))?;
-        let seats = self.book.seats.clone();
+        let seats = self.digest_view.seats.clone();
         let mesh_record = seats.mesh(&target.mesh);
         door.restore(target, mesh_record.as_ref(), node).await
     }

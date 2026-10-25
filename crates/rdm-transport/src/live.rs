@@ -1,4 +1,4 @@
-//! The live resolver: one per process, fed by that process's membership.
+//! The live resolver: one per process, fed by that process's topology view.
 //!
 //! Location and identity only. It answers where an exact node is now
 //! (`Found`), that it departed (`Gone`) or that this process does not know it
@@ -8,14 +8,14 @@
 //!
 //! `Gone` comes only from a departure the process was told of: the exact
 //! birth's removal or replacement, proven by whoever executed it and carried
-//! by membership. A departed node is held `Gone` for the departed retention
+//! by the topology view. A departed node is held `Gone` for the departed retention
 //! (local age since this process accepted it, never another machine's clock),
 //! then forgotten: it resolves `Unknown`. A departed node never returns; a
 //! replacement is a new logical node at the same path.
 //!
 //! The process composition (node-admin's running state, the rpc node's) feeds
 //! it: [`LiveNodeResolver::apply`] for each current birth it holds,
-//! [`LiveNodeResolver::depart`] for each departure. Neither membership nor
+//! [`LiveNodeResolver::depart`] for each departure. Neither the topology view nor
 //! Node RPC depends on the other.
 
 use crate::resolve::{NodeResolver, NodeTarget, ResolvedNode};
@@ -93,7 +93,7 @@ struct Live {
     /// Births known to have exited (an executor's proof): the node resolves nothing until a
     /// successor birth is applied, so nothing dials or installs the dead birth's address.
     exited: HashSet<(NodeId, IncarnationId)>,
-    /// Births parked by a published stop (`NodeStopped`): membership dropped them, so they hold no
+    /// Births parked by a published stop (`NodeStopped`): the topology view dropped them, so they hold no
     /// path; each stays reachable by its exact node id (its authority's `start`, `update`, `delete`)
     /// until it rejoins as itself or departs.
     parked: HashSet<(NodeId, IncarnationId)>,
@@ -147,7 +147,7 @@ impl LiveNodeResolver {
         self.changed.send_modify(|v| *v += 1);
     }
 
-    /// Take one current birth as membership holds it. `supersedes` is the
+    /// Take one current birth as the topology view holds it. `supersedes` is the
     /// birth this one replaces (its lineage), `None` for a first birth.
     pub fn apply(&self, birth: ResolvedNode, supersedes: Option<&IncarnationId>) -> Applied {
         let mut live = self.live.write().unwrap();
@@ -159,7 +159,7 @@ impl LiveNodeResolver {
         if live.retired.get(&id).is_some_and(|r| r.contains(&birth.incarnation)) {
             return Applied::Refused(Refusal::StaleIncarnation { node_id: id, incarnation: birth.incarnation });
         }
-        // Membership holds the birth again: a parked birth rejoined as itself (or a later birth of
+        // The topology view holds the birth again: a parked birth rejoined as itself (or a later birth of
         // the node is heard), and it holds its path again.
         let unparked = live.parked.iter().any(|(n, _)| n == &id);
         let applied = match live.nodes.get(&id) {
@@ -228,8 +228,8 @@ impl LiveNodeResolver {
 
 impl LiveNodeResolver {
     /// The exact birth `incarnation` of `node_id` is parked: its stop was published (`NodeStopped`)
-    /// and membership dropped it (ops-naming "A parked node stays reachable": peers drop it from
-    /// their books and pools on the published departure, so its authority is the only caller left).
+    /// and the topology view dropped it (ops-naming "A parked node stays reachable": peers drop it from
+    /// their views and pools on the published departure, so its authority is the only caller left).
     /// It gives up its path, which passes to another node heard at it, if any; it still resolves by
     /// its exact node id until it rejoins as itself ([`Self::apply`]) or departs. `false` when this
     /// process holds another birth of the node, none, or the birth is parked already.
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn membership_names_the_birth_a_connection_fact_may_be_judged_against() {
+    fn topology_view_names_the_birth_a_connection_fact_may_be_judged_against() {
         use rdm_core::connections::{Birth, CurrentIncarnations};
         let r = LiveNodeResolver::default();
         let a = birth("mesh1.rpc.1", 7000);
@@ -490,7 +490,7 @@ mod tests {
     }
 }
 
-/// Membership as the connections holder reads it: the birth each node holds now. A node this
+/// The topology view as the connections holder reads it: the birth each node holds now. A node this
 /// process has not heard of is `Unknown` and nothing is judged; a node that departed, or whose path
 /// another node holds, is `Departed`.
 impl rdm_core::connections::CurrentIncarnations for LiveNodeResolver {

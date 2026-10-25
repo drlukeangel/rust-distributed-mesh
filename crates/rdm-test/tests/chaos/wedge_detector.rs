@@ -849,7 +849,7 @@ async fn silent_case(run: &Run) {
     let primitive = json!({"signal": "SIGSTOP", "pid": pid, "node": name});
     ev.primitive = Some(Primitive { armed: true, ack: primitive.clone() });
 
-    // The membership consequence: the view stops calling it ready, within the staleness window.
+    // The topology consequence: the view stops calling it ready, within the staleness window.
     let silent_view = run.estate.until_node(&name, &format!("{name} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.status != NodeStatus::ReadyForTraffic).cloned()).await;
     let silent_view = serde_json::to_value(silent_view).expect("a view serializes");
 

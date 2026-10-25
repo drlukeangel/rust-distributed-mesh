@@ -93,7 +93,7 @@ Exact Rust naming may differ. The semantic cuts may not:
 
 ### 2.1 RuntimeFact is compact exact current-runtime identity
 
-Every current managed birth publishes one compact typed RuntimeFact as part of its membership digest and projection.
+Every current managed birth publishes one compact typed RuntimeFact as part of its topology digest and projection.
 
 ```text
 RuntimeFact {
@@ -120,7 +120,7 @@ A provider's local handle cache is never the source of truth merely because that
 
 ### 2.2 Provider produces or discovers the locator; the node publishes the fact
 
-Do not equate provider-specific locator acquisition with membership publication.
+Do not equate provider-specific locator acquisition with topology publication.
 
 ```text
 provider / runtime bootstrap seam
@@ -128,7 +128,7 @@ provider / runtime bootstrap seam
 
 node / runtime birth
     -> publishes ONE normalized RuntimeFact
-       through its own current membership digest and projection
+       through its own current topology digest and projection
 ```
 
 There is no competing launcher-owned RuntimeFact stream.
@@ -268,7 +268,7 @@ Which executable a node runs, and how it is named, recorded, replaced and read, 
 
 The externally started Day-0 adoption: `AdoptCurrentRuntime`, `RegisterExactRuntimeHandle`, `ResolveProviderControlDomain`, `PublishRuntimeFactAndCurrentRuntimeMetadata`, then the normal bootstrap.
 
-The successor's management cut: from a current membership birth's RuntimeFact and runtime metadata, resolve the control domain, adopt the published runtime (or route to an executor of its domain), and inspect or terminate as the Build requires.
+The successor's management cut: from a current topology birth's RuntimeFact and runtime metadata, resolve the control domain, adopt the published runtime (or route to an executor of its domain), and inspect or terminate as the Build requires.
 
 A `node.delete` of a live target runs the whole [node.stop](lifecycles/node-stop.md) (its first step [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`), then `TerminateRuntime` on the exact handle, then identity release with storage retained. A `node.delete` of a target whose provider state is `OsStopped` skips the stop by name and begins at `TerminateRuntime`: the stop cannot execute, and the delete was explicitly commanded. The recovery of a birth begins with the same `TerminateRuntime { node_id, incarnation, handle }` step whatever its verdict but `os-stopped`; of an exited runtime it removes what the runtime left, and a runtime already removed terminates as done (Q145). Externally visible steps reconcile forward; published topology is never blindly reversed.
 

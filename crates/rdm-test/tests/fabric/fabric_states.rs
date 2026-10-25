@@ -130,7 +130,7 @@ async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_n
     let roles: Vec<String> = ["broker.1", "gateway.1", "compute.1"].iter().map(|n| format!("{lost_mesh}.{n}")).collect();
     // A role node's re-declaration to the new mesh-primary is a call it makes: no object reports it, and the
     // span the node records is the only place the fact lives. Its `to` names the mesh-primary by path.name
-    // when the node's book holds its digest, else by its node id; the call is to that exact birth either
+    // when the node's view holds its digest, else by its node id; the call is to that exact birth either
     // way (rdm-node node.rs `declare_once`).
     wait_for("every role node of the mesh declared its state to the new primary", Duration::from_secs(90), || {
         let spans = estate.spans();
@@ -177,7 +177,7 @@ async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members:
         let landed_by = std::time::Instant::now() + Duration::from_secs(15);
         loop {
             let spans = estate.spans();
-            let frames = named(&spans, "rdm.mesh.membership.update.via-state-frame");
+            let frames = named(&spans, "rdm.mesh.topology.update.via-state-frame");
             let landed = want.iter().filter(|n| !n.contains(".admin.")).all(|subject| {
                 let other = if subject.starts_with("mesh1.") { "mesh2." } else { "mesh1." };
                 let peer_primary = primaries.iter().find(|p| p.starts_with(other)).cloned().unwrap_or_default();
@@ -252,7 +252,7 @@ async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members:
     let name_of: std::collections::BTreeMap<&String, &String> = id_of.iter().map(|(n, i)| (i, n)).collect();
     let primary_of = |mesh: &str| primaries.iter().find(|p| p.starts_with(&format!("{mesh}."))).cloned().expect("a primary per mesh");
     let hooks: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-state-hook").into_iter().filter(|h| start(h) >= start(root) && flag(&h["attributes"]["bound"])).collect();
-    let frames: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-state-frame").into_iter().filter(|f| start(f) >= start(root)).collect();
+    let frames: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-state-frame").into_iter().filter(|f| start(f) >= start(root)).collect();
     let mut firsts = Vec::new();
     for (state_key, command_frame, completion, completion_frame) in [("commit-state", "state-committing", "state-committed", "state-committed"), ("open-traffic", "traffic-opening", "traffic-opened", "traffic-opened")] {
         let sent = |hook: &str, subject: &str| -> Vec<&Value> { hooks.iter().copied().filter(|h| h["attributes"]["hook"] == hook && s(&h["attributes"]["subject_id"]) == id_of[subject]).collect() };

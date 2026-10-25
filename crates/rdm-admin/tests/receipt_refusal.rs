@@ -351,7 +351,7 @@ async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rdm_admin::build_st
     let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::join(
         &gossip,
-        &rdm_transport::topology::LocationBook::new(&endpoint, name).unwrap(),
+        &rdm_transport::topology::LocationView::new(&endpoint, name).unwrap(),
         &rdm_core::FabricId::mint(),
         vec![],
         local,

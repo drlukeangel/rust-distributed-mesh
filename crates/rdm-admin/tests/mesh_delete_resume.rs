@@ -17,7 +17,7 @@ use rdm_admin::fabric_builds::BuildMessage;
 use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, LifecycleEvents, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::join::Joins;
-use rdm_admin::mesh_delete::{await_mesh_deleted, MeshDeleteBook, MESH_DELETED_WAIT, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, Admitted, Amended, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rdm_admin::mesh_delete::{await_mesh_deleted, MeshDeleteView, MESH_DELETED_WAIT, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, Admitted, Amended, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rdm_core::status::StatusReply;
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::node_rows::{ClaimFor, Claimed, NodeRows, RowRefused};
@@ -1494,12 +1494,12 @@ fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row()
     let lost = node(FINAL);
     let h = handle(FINAL, 49_001);
     let fleet = Fleet { pids: [(49_001, FINAL.to_string())].into_iter().collect(), ..Default::default() };
-    let book = rdm_transport::topology::DigestBook::default();
+    let digest_view = rdm_transport::topology::DigestView::default();
     let (without_row, with_row) = tokio::runtime::Runtime::new().unwrap().block_on(async {
         let nodes = MemoryNodesStorage::default();
-        let without_row = inspect_birth(&fleet, &book, Some(&nodes), &lost).await;
+        let without_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
         nodes.put_runtime(&RuntimeRow { node_id: lost.node_id.clone(), name: lost.name.clone(), incarnation_id: lost.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
-        let with_row = inspect_birth(&fleet, &book, Some(&nodes), &lost).await;
+        let with_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
         (without_row, with_row)
     });
     assert!(matches!(&without_row, Finding::Unproven { reason } if reason.contains("no runtime row")), "no digest and no row: unproven, naming both: {without_row:?}");
@@ -1511,11 +1511,11 @@ fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row()
 /// absence proves exit"): the admin the fabric-primary created for a leaving mesh with no admin
 /// left works the roster, not its view's liveness. `mesh2.rpc.1` was stopped by the lost primary
 /// before its exit was proven, and the created admin's view does not list it. It is still a roster
-/// birth with no Exited receipt, and its record is the one this admin's membership holds of that
+/// birth with no Exited receipt, and its record is the one this admin's topology view holds of that
 /// exact birth: the record of another birth at the path is never taken.
 /// Its workflow runs, its row is written Deleted on its receipt, and the tier completes.
 #[test]
-fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_membership_holds() {
+fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_topology_view_holds() {
     let cap = capture();
     let records: Vec<Node> = [FAILING, EXITING, FINAL].iter().map(|n| node(n)).collect();
     let birth = |name: &str| RosterBirth::of(records.iter().find(|n| n.name.to_string() == name).unwrap()).unwrap();
@@ -1531,7 +1531,7 @@ fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_membershi
     let stale = roster_records(&view, &roster, |b| (b.node == FAILING).then(|| other_birth.clone()));
     assert!(!stale.iter().any(|n| n.name.to_string() == FAILING), "a held record of another birth at the path is not the roster birth's: {stale:?}");
     let worked = roster_records(&view, &roster, |b| (b.node == FAILING).then(|| held_stopped.clone()));
-    assert_eq!(worked.iter().find(|n| n.name.to_string() == FAILING), Some(&held_stopped), "the stopped roster birth is worked from the record its membership holds: {worked:?}");
+    assert_eq!(worked.iter().find(|n| n.name.to_string() == FAILING), Some(&held_stopped), "the stopped roster birth is worked from the record its topology view holds: {worked:?}");
     assert_eq!(worked.len(), 3, "every roster birth has its record: {worked:?}");
 
     let runtime = RuntimeProof::of(&handle(FINAL, 46_000).fact().unwrap());
@@ -1562,7 +1562,7 @@ fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_membershi
 /// only the tiers without a terminal receipt"; R11: the accepted roster is immutable and decides what
 /// runs; R13: "Rebuild after a seat change reads the mesh's own rows"): the admin created for a
 /// leaving mesh with no admin left joined after `mesh2.rpc.1` stopped, so neither its view nor its
-/// membership holds that birth. The roster birth runs from the roster itself: its member workflow is
+/// the topology view holds that birth. The roster birth runs from the roster itself: its member workflow is
 /// handed a record naming exactly that birth (path.name, node id, incarnation), its exact Exited
 /// receipt is in the manifest, and its row, read from the mesh's own rows before the tiers run, is
 /// written Deleted with its config kept by its node.delete's NodeDeleted step. Must NOT happen: the tier refused "this view holds no record
@@ -1960,13 +1960,13 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
 
 /// The owner's open leave of mesh2, admitted over `records` with `FINAL` its final primary, and the
 /// receiver its handoff resolves.
-fn open_leave(book: &MeshDeleteBook, records: &[Node]) -> (MeshDeleteKey, tokio::sync::watch::Receiver<Option<rdm_admin::mesh_delete::MeshDeleteOutcome>>, RosterBirth) {
+fn open_leave(mesh_delete_view: &MeshDeleteView, records: &[Node]) -> (MeshDeleteKey, tokio::sync::watch::Receiver<Option<rdm_admin::mesh_delete::MeshDeleteOutcome>>, RosterBirth) {
     let roster = live_roster(records).unwrap();
     let final_primary = RosterBirth::of(records.iter().find(|n| n.name.to_string() == FINAL).unwrap()).unwrap();
     let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: String::new() };
     let key = MeshDeleteKey { operation: operation(&key.mesh_id), ..key };
     let admitted = Admitted { roster, final_primary: final_primary.clone(), final_runtime: RuntimeProof::of(&handle(FINAL, 46_000).fact().unwrap()), amendments: Vec::new() };
-    let handoff = book.open(key.clone(), admitted);
+    let handoff = mesh_delete_view.open(key.clone(), admitted);
     (key, handoff, final_primary)
 }
 
@@ -1988,8 +1988,8 @@ fn run_paused<F: std::future::Future>(cap: &Capture, f: F) -> F::Output {
 fn the_owners_wait_ends_when_the_final_primary_is_lost_never_on_a_timer() {
     let cap = capture();
     let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
-    let book = MeshDeleteBook::default();
-    let (key, handoff, final_primary) = open_leave(&book, &records);
+    let mesh_delete_view = MeshDeleteView::default();
+    let (key, handoff, final_primary) = open_leave(&mesh_delete_view, &records);
     let (end, open_after_silence, waited, trace_id) = run_paused(&cap, async {
         let root = tracing::info_span!("cell.owner-wait-proven-exit", operation = %key.operation);
         let trace_id = trace_id(&root);
@@ -2042,12 +2042,12 @@ fn the_owners_wait_ends_when_the_final_primary_is_lost_never_on_a_timer() {
 fn a_handoff_held_ends_the_owners_wait_with_its_manifest_before_a_later_proven_exit() {
     let cap = capture();
     let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
-    let book = MeshDeleteBook::default();
-    let (key, handoff, final_primary) = open_leave(&book, &records);
+    let mesh_delete_view = MeshDeleteView::default();
+    let (key, handoff, final_primary) = open_leave(&mesh_delete_view, &records);
     let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: live_roster(&records).unwrap(), final_primary: final_primary.clone(), final_runtime: None, receipts: Vec::new() };
     let end = run_paused(&cap, async {
         let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
-        assert!(book.resolve(&key, manifest.clone()), "the first outcome of the leave");
+        assert!(mesh_delete_view.resolve(&key, manifest.clone()), "the first outcome of the leave");
         view_tx.send_modify(|t| *t += 1);
         await_mesh_deleted(&key, FINAL, handoff, view_rx, || std::future::ready(Some("its exit-proof row is read".to_string())), MESH_DELETED_WAIT).await
     });

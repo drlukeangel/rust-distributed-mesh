@@ -80,14 +80,14 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         .expect("the node comes up");
         let seams = seams.get().cloned().expect("the node handed its seams");
 
-        let book = &admin.observer.membership.book;
-        // Every digest the admin's book takes ticks this count: the cell awaits a published digest, never the cadence.
-        let mut digests = book.digest_changes();
-        let mut heard = book.heard_changes();
-        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        let digest_view = &admin.observer.topology_view.digest_view;
+        // Every digest the admin's view takes ticks this count: the cell awaits a published digest, never the cadence.
+        let mut digests = digest_view.digest_changes();
+        let mut heard = digest_view.heard_changes();
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
             heard.changed().await.unwrap();
         }
-        let (d, _) = book.get(launch.node_id.as_str()).unwrap();
+        let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         assert_eq!(d.node.name, born);
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
@@ -117,12 +117,12 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
             StatusReply::BusyHoldingConnections { connections } => assert_eq!(connections, held_ids, "the refusal names each connection the node holds"),
             other => panic!("a node holding a connection answered {other:?}"),
         }
-        let seq = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
+        let seq = digest_view.get(launch.node_id.as_str()).unwrap().0.digest_seq;
         digests.borrow_and_update();
-        while book.get(launch.node_id.as_str()).unwrap().0.digest_seq == seq {
+        while digest_view.get(launch.node_id.as_str()).unwrap().0.digest_seq == seq {
             digests.changed().await.unwrap();
         }
-        assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, born, "a Busy node keeps publishing its birth's name");
+        assert_eq!(digest_view.get(launch.node_id.as_str()).unwrap().0.node.name, born, "a Busy node keeps publishing its birth's name");
 
         // node.connections.delete { All }, held open by one call in flight at the node: it answers
         // only once that call has its reply, its receipt counting it, and the route is closed.
@@ -159,7 +159,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         assert!(dialled.get("peer").is_some_and(|p| !p.is_empty()) && dialled.get("peer") == deletes[0].get("peer"), "the observed fact and the delete name the same peer: {dialled:#?} vs {deletes:#?}");
         assert!(fields_of("rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "All hard-cuts no pool");
         assert_eq!(call(apply.clone()).await, StatusReply::Applied);
-        assert_eq!(running.membership.held_name(&born), taken, "the node holds the applied name");
+        assert_eq!(running.topology_view.held_name(&born), taken, "the node holds the applied name");
 
         // The same name again is done; a stale incarnation is refused naming the one held.
         assert_eq!(call(apply.clone()).await, StatusReply::AlreadyApplied);

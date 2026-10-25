@@ -356,9 +356,9 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     // The window ends when the fabric primary hears the mesh again, or when it loses the seat to the mesh's new
     // mesh (its drift pass is then no one's but the new holder's). Heard again is its first direct backbone receipt
     // of the mesh after the verdict (the snapshot installed off the backbone), the instant the R-D1 fence reads
-    // (`Ladder::fence` over `DigestBook::mesh_unheard`); the ladder's own heard-again verdict comes on its next
+    // (`Ladder::fence` over `DigestView::mesh_unheard`); the ladder's own heard-again verdict comes on its next
     // checklist, after it.
-    let heard_again = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed")
+    let heard_again = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed")
         .into_iter()
         .filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "channel") == "backbone" && at_ns(sp) >= at_ns(verdict))
         .map(at_ns)

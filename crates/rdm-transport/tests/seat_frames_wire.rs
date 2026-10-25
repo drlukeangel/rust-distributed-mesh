@@ -1,12 +1,12 @@
-//! Fixed bytes for the primary frames on the membership channels (R-A2; R-W1: postcard, positional,
-//! append-only), and the book that holds the primary records. These literals lock the type names and the data field order independently of codec
+//! Fixed bytes for the primary frames on the topology channels (R-A2; R-W1: postcard, positional,
+//! append-only), and the view that holds the primary records. These literals lock the type names and the data field order independently of codec
 //! round trips. Never regenerate an expectation from the Rust serializer to make a schema change
 //! pass: a changed byte here is a moved wire format and needs a rebirth.
 
 use crate::gossip_wire::{WireGolden, golden, assert_roundtrip};
 
 use rdm_core::{IncarnationId, NodeId, Seat, Primary};
-use rdm_transport::topology::{Frame, SeatBook, SeatTaken};
+use rdm_transport::topology::{Frame, PrimaryView, SeatTaken};
 
 fn bytes(hex: &str) -> Vec<u8> {
     let hex: String = hex.split_whitespace().collect();
@@ -44,15 +44,15 @@ fn primary_frames_match_the_frozen_wire_schema() {
 
 /// CONTRACT: a primary record is replaced only by one that supersedes it, and a repeat changes nothing.
 #[test]
-fn the_book_holds_the_superseding_primary_record() {
-    let book = SeatBook::default();
-    assert_eq!(book.take(Seat::FabricPrimary, &primary(1)), SeatTaken::Held { previous: None });
-    assert_eq!(book.take(Seat::FabricPrimary, &primary(1)), SeatTaken::Same);
-    assert_eq!(book.take(Seat::FabricPrimary, &primary(3)), SeatTaken::Held { previous: Some(primary(1)) });
-    assert_eq!(book.take(Seat::FabricPrimary, &primary(2)), SeatTaken::Refused { held: primary(3) }, "an older revision never replaces");
-    assert_eq!(book.take(Seat::MeshPrimary, &primary(1)), SeatTaken::Held { previous: None }, "a mesh's seat is its own record");
-    assert_eq!(book.fabric(), Some(primary(3)));
-    assert_eq!(book.mesh("m"), Some(primary(1)));
+fn the_view_holds_the_superseding_primary_record() {
+    let primary_view = PrimaryView::default();
+    assert_eq!(primary_view.take(Seat::FabricPrimary, &primary(1)), SeatTaken::Held { previous: None });
+    assert_eq!(primary_view.take(Seat::FabricPrimary, &primary(1)), SeatTaken::Same);
+    assert_eq!(primary_view.take(Seat::FabricPrimary, &primary(3)), SeatTaken::Held { previous: Some(primary(1)) });
+    assert_eq!(primary_view.take(Seat::FabricPrimary, &primary(2)), SeatTaken::Refused { held: primary(3) }, "an older revision never replaces");
+    assert_eq!(primary_view.take(Seat::MeshPrimary, &primary(1)), SeatTaken::Held { previous: None }, "a mesh's seat is its own record");
+    assert_eq!(primary_view.fabric(), Some(primary(3)));
+    assert_eq!(primary_view.mesh("m"), Some(primary(1)));
 }
 
 /// CONTRACT: `NewFabricPrimary` is variant 14, appended after `NodeConnectionsDeleted` (13), a reserved position (R-G3): the committed
@@ -82,14 +82,14 @@ fn both(mesh_revision: u64, fabric_revision: u64) -> Vec<(Seat, rdm_core::Primar
 /// records one update names are held together under one lock, so no reader sees one moved and the
 /// other not; and a stale update moves neither.
 #[test]
-fn the_book_holds_an_updates_primaries_together() {
-    let book = SeatBook::default();
-    book.take(Seat::MeshPrimary, &primary(3));
-    book.take(Seat::FabricPrimary, &primary(8));
-    assert!(book.take_together(&both(4, 9)).iter().all(|t| matches!(t, SeatTaken::Held { .. })));
-    assert_eq!((book.mesh("m"), book.fabric()), (Some(primary(4)), Some(primary(9))));
-    book.take(Seat::FabricPrimary, &primary(10));
+fn the_view_holds_an_updates_primaries_together() {
+    let primary_view = PrimaryView::default();
+    primary_view.take(Seat::MeshPrimary, &primary(3));
+    primary_view.take(Seat::FabricPrimary, &primary(8));
+    assert!(primary_view.take_together(&both(4, 9)).iter().all(|t| matches!(t, SeatTaken::Held { .. })));
+    assert_eq!((primary_view.mesh("m"), primary_view.fabric()), (Some(primary(4)), Some(primary(9))));
+    primary_view.take(Seat::FabricPrimary, &primary(10));
     // An older update moves neither seat.
-    assert!(book.take_together(&both(2, 2)).iter().all(|t| matches!(t, SeatTaken::Refused { .. })));
-    assert_eq!((book.mesh("m"), book.fabric()), (Some(primary(4)), Some(primary(10))));
+    assert!(primary_view.take_together(&both(2, 2)).iter().all(|t| matches!(t, SeatTaken::Refused { .. })));
+    assert_eq!((primary_view.mesh("m"), primary_view.fabric()), (Some(primary(4)), Some(primary(10))));
 }

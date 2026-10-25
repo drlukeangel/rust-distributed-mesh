@@ -187,18 +187,18 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_st
         .await
         .unwrap();
         root.stop_reconciling();
-        assert!(root.membership.held_types().is_empty());
+        assert!(root.topology_view.held_types().is_empty());
         let node = broker(&root, &dir.join("broker"), &root_dir).await;
-        assert!(root.membership.app_types().is_empty());
+        assert!(root.topology_view.app_types().is_empty());
         assert_eq!(
-            root.membership.held_types(),
+            root.topology_view.held_types(),
             [KIND.to_string(), LARGE.to_string()].into()
         );
-        assert_eq!(node.membership.held_types(), node.membership.app_types());
-        let sender = node.membership.join_channel(KIND).await.unwrap();
-        let mut receiver = root.membership.join_channel(KIND).await.unwrap();
-        let large_sender = node.membership.join_channel(LARGE).await.unwrap();
-        let mut large_receiver = root.membership.join_channel(LARGE).await.unwrap();
+        assert_eq!(node.topology_view.held_types(), node.topology_view.app_types());
+        let sender = node.topology_view.join_channel(KIND).await.unwrap();
+        let mut receiver = root.topology_view.join_channel(KIND).await.unwrap();
+        let large_sender = node.topology_view.join_channel(LARGE).await.unwrap();
+        let mut large_receiver = root.topology_view.join_channel(LARGE).await.unwrap();
         // Observe actual per-channel neighbour establishment; elapsed boot time proves nothing.
         tokio::time::timeout(BOUND, async {
             loop {
@@ -265,7 +265,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_st
         // a record published into the draining queue would be lost for a reason the shape does not
         // measure (the :313 reds of 2026-10-19, read in i143-prd.md).
         // The testkit drops one incoming part; publishing, assembly expiry and recovery stay public.
-        rdm_test::gossip_faults::drop_chunk_once(&root.membership, LARGE, 1)
+        rdm_test::gossip_faults::drop_chunk_once(&root.topology_view, LARGE, 1)
             .await
             .unwrap();
         let mut incomplete = large_receiver.lost();
@@ -396,7 +396,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_st
         let spans = capture.spans().unwrap();
         assert!(spans
             .iter()
-            .any(|s| s["name"] == "rdm.mesh.membership.reject.via-chunk-incomplete"));
+            .any(|s| s["name"] == "rdm.mesh.topology.reject.via-chunk-incomplete"));
         assert!(spans
             .iter()
             .any(|s| s["name"] == "rdm.mesh.channel.reject.via-queue-full"));

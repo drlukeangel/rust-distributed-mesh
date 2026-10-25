@@ -1,24 +1,24 @@
-//! A member of a mesh's gossip membership, standing alone: one endpoint bound on loopback, the gossip
-//! protocol on it, a router accepting gossip, and the membership joined under a publisher identity
+//! A member of a mesh's gossip topology, standing alone: one endpoint bound on loopback, the gossip
+//! protocol on it, a router accepting gossip, and the topology view joined under a publisher identity
 //! of its own. It is what an app-channel cell needs and nothing else: no Node RPC, no admin, no
 //! launch. A cell joins its declared app types and opens a channel with
-//! `member.membership.join_channel(ty)`. The member owns its endpoint, its gossip and its router;
+//! `member.topology_view.join_channel(ty)`. The member owns its endpoint, its gossip and its router;
 //! dropping it drops them.
 //!
 //! An embedding names no iroh crate: a member is reached through another's [`MemberAddr`].
 
 use iroh::protocol::Router;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, PublisherId};
-use rdm_transport::topology::Membership;
+use rdm_transport::topology::TopologyView;
 
 /// Where a [`Member`] is reached: the seed another member joins through.
 #[derive(Debug, Clone)]
 pub struct MemberAddr(iroh::EndpointAddr);
 
-/// A joined member of one mesh's membership (see the module docs).
+/// A joined member of one mesh's topology view (see the module docs).
 pub struct Member {
-    /// Its membership: the mesh channel joined and its declared app types held.
-    pub membership: Membership,
+    /// Its topology view: the mesh channel joined and its declared app types held.
+    pub topology_view: TopologyView,
     /// The publisher identity its app events are sourced from.
     pub author: PublisherId,
     endpoint: iroh::Endpoint,
@@ -39,11 +39,11 @@ impl Member {
         let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let author = PublisherId { node: name.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let mesh_name = name.split('.').next().unwrap_or(name);
-        let membership = Membership::join(&gossip, &endpoint, fabric, mesh_name, mesh, name, rdm_transport::clock::os_clock(), seeds.iter().map(|s| s.0.clone()).collect(), types)
+        let topology_view = TopologyView::join(&gossip, &endpoint, fabric, mesh_name, mesh, name, rdm_transport::clock::os_clock(), seeds.iter().map(|s| s.0.clone()).collect(), types)
             .await
             .unwrap_or_else(|e| panic!("{name}: the member does not join mesh {mesh_name} ({mesh}): {e}"));
-        membership.set_author(&author);
-        Member { membership, author, endpoint, gossip, _router: router }
+        topology_view.set_author(&author);
+        Member { topology_view, author, endpoint, gossip, _router: router }
     }
 
     /// Where this member is reached: its endpoint and the loopback address it bound.

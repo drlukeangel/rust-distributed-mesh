@@ -135,7 +135,7 @@ pub struct Node {
     #[serde(default = "routable_default")]
     pub routable: bool,
     /// The lifecycle state this birth declared to its authority and the authority applied
-    /// (`status_rpc`); `None` until it declares. Not `status`: that is what membership hears.
+    /// (`status_rpc`); `None` until it declares. Not `status`: that is what the topology view hears.
     #[serde(default)]
     pub declared: Option<String>,
     /// Stopped and parked: `Leaving` with a live process, waiting for a start or a delete.

@@ -167,7 +167,7 @@ async fn stop_then_start(test: &str, node: &str) {
     assert!(!declared.is_empty(), "{node}'s stop declared its Stopped naming the stop");
     let applied = received.iter().chain(declared.iter()).filter(|sp| sp["attributes"]["outcome"] == "applied").count();
     assert_eq!(applied, 1, "exactly one of the declaration and the stop stream's stopped applied the birth's Stopped: received {received:#?}, declared {declared:#?}");
-    assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == node).count(), 0, "the node gossiped no node-left");
+    assert_eq!(named(&spans, "rdm.mesh.topology.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == node).count(), 0, "the node gossiped no node-left");
     let served = of_node("rdm.node_admin.status.update.via-start-node");
     assert_eq!((served.len(), served[0]["attributes"]["outcome"].as_str()), (1, Some("started")), "{served:?}");
     // node-mesh-join.md step 10: the start's Pending is recorded and published once, by the mesh
@@ -582,7 +582,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
     assert_eq!(received.iter().map(|sp| attr(sp, "outcome")).collect::<Vec<_>>(), vec!["already-applied".to_string()], "the released stream's stopped found the row held: {received:#?}");
     assert!(start_ns(node_stopped[0]) < start_ns(received[0]), "NodeStopped was published before the held stream's stopped was recorded");
     for kind in ["node-leaving", "node-left"] {
-        let heard: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| attr(sp, "kind") == kind && attr(sp, "subject") == NODE).collect();
+        let heard: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-lifecycle-frame").into_iter().filter(|sp| attr(sp, "kind") == kind && attr(sp, "subject") == NODE).collect();
         assert!(heard.is_empty(), "no {kind} frame is published or heard: {heard:#?}");
     }
     let trace = node_stopped[0]["trace_id"].as_str().unwrap_or("").to_string();

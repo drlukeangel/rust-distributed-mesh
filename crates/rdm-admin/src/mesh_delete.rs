@@ -697,7 +697,7 @@ pub fn stored_roster(rows: &[crate::storage::NodeRow], mesh: &str, mesh_id: &Mes
 /// The records the leave's member workflows act on (R11: the leave acts on the immutable accepted
 /// roster's exact births; mesh-delete.md "Failure/certainty behavior": "No timeout or gossip absence
 /// proves exit"): every roster birth as `view` holds that exact birth (node id and incarnation), else
-/// as `held` gives it, the record this admin's membership holds of the birth. A birth the view does
+/// as `held` gives it, the record this admin's topology view holds of the birth. A birth the view does
 /// not list and that has no Exited receipt is worked from the held record. A birth neither holds is
 /// absent here, and runs from the roster birth itself
 /// ([`members_exited`], [`RosterBirth::record`]).
@@ -709,7 +709,7 @@ pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&Rost
             view.iter().find(|n| exact(b, n)).cloned().or_else(|| {
                 let n = held(b).filter(|n| exact(b, n))?;
                 tracing::info_span!("rdm.node_admin.mesh.resolve.via-held-record", member = %b.node, node_id = %b.node_id, incarnation_id = %b.incarnation_id, status = ?n.status)
-                    .in_scope(|| tracing::info!("a roster birth the view no longer holds is worked from the record this admin's membership holds of it"));
+                    .in_scope(|| tracing::info!("a roster birth the view no longer holds is worked from the record this admin's topology view holds of it"));
                 Some(n)
             })
         })
@@ -753,7 +753,7 @@ pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executo
 /// receipted steps are reused and the steps without a receipt are executed in order, `NodeDeleted`
 /// included. A failed or unrunnable member leaves its tier incomplete. `me` is the final primary
 /// (still running, its exact runtime `final_runtime`); `records` are the Node records of the roster's
-/// births ([`roster_records`]: the view's record, else the membership's record of that exact birth),
+/// births ([`roster_records`]: the view's record, else the topology view's record of that exact birth),
 /// and a roster birth they hold no record of runs from the roster birth itself
 /// ([`RosterBirth::record`]): the accepted roster decides what runs (mesh-delete.md, "Resume after
 /// the primary's loss" step 3); `known` are step receipts read from the owner's Build facts at
@@ -1238,11 +1238,11 @@ struct OpenLeave {
 
 /// The mesh leaves this admin, as the fabric-primary, has admitted and awaits a `MeshDeleted` for.
 #[derive(Default)]
-pub struct MeshDeleteBook {
+pub struct MeshDeleteView {
     open: Mutex<HashMap<MeshDeleteKey, OpenLeave>>,
 }
 
-impl MeshDeleteBook {
+impl MeshDeleteView {
     /// Open `key` before `DeleteMesh` is sent, holding what admission captured; returns what
     /// resolves when a validated handoff arrives. Opening again keeps the first capture.
     pub fn open(&self, key: MeshDeleteKey, admitted: Admitted) -> watch::Receiver<Option<MeshDeleteOutcome>> {
@@ -1986,16 +1986,16 @@ mod tests {
     /// leave does not overwrite that outcome.
     #[test]
     fn an_incomplete_report_ends_the_open_leave_at_once_with_its_reason() {
-        let book = MeshDeleteBook::default();
+        let mesh_delete_view = MeshDeleteView::default();
         let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "mesh.delete:m".into() };
         let last = birth("mesh2.admin.1", "i3");
         let runtime = receipt(&last).runtime.unwrap();
-        let rx = book.open(key.clone(), Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime, amendments: Vec::new() });
+        let rx = mesh_delete_view.open(key.clone(), Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime, amendments: Vec::new() });
         assert!(rx.borrow().is_none());
-        assert!(book.incomplete(&key, "roster births without an exact Exited receipt: mesh2.rpc.1 i1".into()));
+        assert!(mesh_delete_view.incomplete(&key, "roster births without an exact Exited receipt: mesh2.rpc.1 i1".into()));
         assert_eq!(rx.borrow().clone(), Some(Err("roster births without an exact Exited receipt: mesh2.rpc.1 i1".into())), "the wait resolves now with the reason");
         let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
-        assert!(!book.resolve(&key, manifest), "the first outcome stands");
+        assert!(!mesh_delete_view.resolve(&key, manifest), "the first outcome stands");
         assert!(matches!(rx.borrow().clone(), Some(Err(_))));
     }
 
@@ -2062,9 +2062,9 @@ mod tests {
         assert!(matches!(end, MeshDeleteRunEnd::Exited { .. }), "the run records its manifest under attempt 1");
 
         // The owner's wait for attempt 1's report is bounded: it ends the attempt incomplete.
-        let book = MeshDeleteBook::default();
+        let mesh_delete_view = MeshDeleteView::default();
         let (_view, view_rx) = watch::channel(0u64);
-        let wait = book.open(first.clone(), admitted.clone());
+        let wait = mesh_delete_view.open(first.clone(), admitted.clone());
         let lost = await_mesh_deleted(&first, &last.node, wait, view_rx.clone(), || std::future::ready(None), std::time::Duration::from_millis(50)).await;
         assert!(matches!(&lost, Err(crate::executor::RunEnd::Incomplete(r)) if r.contains("sent no valid mesh-deleted")), "a lost report ends attempt 1 incomplete: {lost:?}");
 
@@ -2088,9 +2088,9 @@ mod tests {
         assert!(matches!(handoff_verdict(&facts, &next, &admitted, &reference), HandoffVerdict::Accept(m) if m == manifest), "attempt 2's report is accepted from the manifest recorded under attempt 1");
 
         // ... and resolves it exactly once.
-        let wait = book.open(next.clone(), admitted.clone());
-        assert!(book.resolve(&next, manifest.clone()), "the first replay resolves attempt 2");
-        assert!(!book.resolve(&next, manifest.clone()), "a second replay is AlreadyApplied");
+        let wait = mesh_delete_view.open(next.clone(), admitted.clone());
+        assert!(mesh_delete_view.resolve(&next, manifest.clone()), "the first replay resolves attempt 2");
+        assert!(!mesh_delete_view.resolve(&next, manifest.clone()), "a second replay is AlreadyApplied");
         let got = await_mesh_deleted(&next, &last.node, wait, view_rx, || std::future::ready(None), std::time::Duration::from_millis(50)).await;
         assert_eq!(got.ok(), Some(manifest), "attempt 2 continues with the replayed manifest");
     }

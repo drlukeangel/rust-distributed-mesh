@@ -13,7 +13,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, Primary};
-use rdm_transport::topology::{learn_addresses, Backbone, Frame, Membership, StatusEvent};
+use rdm_transport::topology::{learn_addresses, Backbone, Frame, TopologyView, StatusEvent};
 use rdm_transport::snapshot::PublisherId;
 use serde_json::Value;
 use std::time::Duration;
@@ -126,19 +126,19 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
         let (p1_d, p2_d, rpc1, rpc2, rpc3, rpc4) = (digest("mesh1.admin.1", 41_001), digest("mesh1.admin.2", 41_002), digest("mesh1.rpc.1", 41_011), digest("mesh1.rpc.2", 41_012), digest("mesh1.rpc.3", 41_013), digest("mesh1.rpc.4", 41_014));
-        let m1 = Membership::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
-        let m2 = Membership::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.2", clock(), vec![a1.clone()], &[]).await.unwrap();
-        let m = Membership::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![a1.clone()], &[]).await.unwrap();
+        let m1 = TopologyView::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
+        let m2 = TopologyView::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.2", clock(), vec![a1.clone()], &[]).await.unwrap();
+        let m = TopologyView::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![a1.clone()], &[]).await.unwrap();
         let bb1 = Backbone::join(&n1.gossip, &n1.ep, &m1, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, vec![]).await.unwrap();
         let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() }, vec![a1.clone()]).await.unwrap();
         m2.wait_for_neighbour().await;
         m.wait_for_neighbour().await;
         let (pub1, pub2) = (PublisherId { node: "mesh1.admin.1".into(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, PublisherId { node: "mesh1.admin.2".into(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() });
         let held_at_member = || m.held_source_version("mesh1");
-        let seq_at_member = |d: &MeshDigest| m.book.get(d.node.node_id.as_str()).map(|(h, _)| h.digest_seq);
-        for book in [&m1.book, &m2.book] {
+        let seq_at_member = |d: &MeshDigest| m.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.digest_seq);
+        for digest_view in [&m1.digest_view, &m2.digest_view] {
             for d in [&p1_d, &p2_d, &rpc1] {
-                book.record(d.clone());
+                digest_view.record(d.clone());
             }
         }
 
@@ -159,7 +159,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         bb2.publish(&m2, bb2.own_members(&m2)).await;
         until("the member to install the successor's full", || held_at_member().is_some_and(|(p, _)| p == pub2)).await;
         let (_, v1) = held_at_member().unwrap();
-        m2.book.record(rpc2.clone());
+        m2.digest_view.record(rpc2.clone());
         bb2.publish(&m2, bb2.own_members(&m2)).await;
         until("the member to apply the successor's delta", || held_at_member().is_some_and(|(p, v)| p == pub2 && v > v1)).await;
         let (_, v2) = held_at_member().unwrap();
@@ -167,7 +167,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         // mesh1.admin.2 executes mesh1.rpc.3's delete: its NodeDeleting at the version it moved to.
         let deleting = op_of(&rpc3, "delete-node");
         let (_, deleting_version) = bb2.publish_status_event(StatusEvent::Deleting, &deleting).await;
-        until("the member to hold mesh1.rpc.3's NodeDeleting", || m.book.in_flight().contains(&deleting)).await;
+        until("the member to hold mesh1.rpc.3's NodeDeleting", || m.digest_view.in_flight().contains(&deleting)).await;
         // mesh1.rpc.2's heartbeat at digest_seq 7.
         m2.forward(&Frame::Digest { digest: with_seq(&rpc2, 7) }).await.unwrap();
         until("the member to hold mesh1.rpc.2 at digest_seq 7", || seq_at_member(&rpc2) == Some(7)).await;
@@ -203,7 +203,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         until("the member to hold each sender's newer heartbeat", || seq_at_member(&p1_d) == Some(5) && seq_at_member(&rpc2) == Some(9)).await;
 
         assert_eq!(held_at_member(), Some((pub2.clone(), v2)), "the member keeps the successor's projection at its version");
-        assert!(!m.book.in_flight().iter().any(|op| op.node_id == rpc4.node.node_id), "the late stop is not held: {:?}", m.book.in_flight());
+        assert!(!m.digest_view.in_flight().iter().any(|op| op.node_id == rpc4.node.node_id), "the late stop is not held: {:?}", m.digest_view.in_flight());
         assert!(m.desynced_sources().is_empty(), "no source is marked desynchronized: {:?}", m.desynced_sources());
 
         drop((bb1, bb2));
@@ -212,16 +212,16 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         }
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let at = |name: &str, node: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && attr(s, "node") == node).collect() };
-        let ignored: Vec<&Value> = at("rdm.mesh.membership.reject.via-stale", "mesh1.rpc.1").into_iter()
+        let ignored: Vec<&Value> = at("rdm.mesh.topology.reject.via-stale", "mesh1.rpc.1").into_iter()
             .filter(|s| s["start_unix_nano"].as_u64().is_some_and(|t| t >= late_from)).collect();
         let fields = |s: &Value| (attr(s, "channel"), attr(s, "frame"), attr(s, "subject"), attr(s, "held_key"), attr(s, "frame_key"), s["name"].as_str().unwrap_or_default().to_string());
         let mut said: Vec<_> = ignored.iter().map(|s| fields(s)).collect();
         let birth = |d: &MeshDigest| format!("{}/{}", d.node.node_id, d.node.incarnation.as_str());
         let mut expected = vec![
-            ("mesh:mesh1".to_string(), "members".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", v2 + 7), "rdm.mesh.membership.reject.via-stale".to_string()),
-            ("mesh:mesh1".to_string(), "members-delta".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", pred_version + 1), "rdm.mesh.membership.reject.via-stale".to_string()),
-            ("mesh:mesh1".to_string(), "node-stopped".to_string(), format!("{pub2} mesh1"), format!("topology_version={deleting_version}"), format!("topology_version={}", deleting_version - 1), "rdm.mesh.membership.reject.via-stale".to_string()),
-            ("mesh:mesh1".to_string(), "digest".to_string(), birth(&rpc2), "digest_seq=7".to_string(), "digest_seq=3".to_string(), "rdm.mesh.membership.reject.via-stale".to_string()),
+            ("mesh:mesh1".to_string(), "members".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", v2 + 7), "rdm.mesh.topology.reject.via-stale".to_string()),
+            ("mesh:mesh1".to_string(), "members-delta".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", pred_version + 1), "rdm.mesh.topology.reject.via-stale".to_string()),
+            ("mesh:mesh1".to_string(), "node-stopped".to_string(), format!("{pub2} mesh1"), format!("topology_version={deleting_version}"), format!("topology_version={}", deleting_version - 1), "rdm.mesh.topology.reject.via-stale".to_string()),
+            ("mesh:mesh1".to_string(), "digest".to_string(), birth(&rpc2), "digest_seq=7".to_string(), "digest_seq=3".to_string(), "rdm.mesh.topology.reject.via-stale".to_string()),
         ];
         // The successor's delta stamp is the member's held key of mesh1: read it from the span itself.
         let held_stamp = ignored.iter().find(|s| attr(s, "frame") == "members").map(|s| attr(s, "held_key")).unwrap_or_default();
@@ -234,7 +234,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         assert_eq!(said, expected, "each late frame is ignored by the receive path, by name: {ignored:#?}");
         let held_published_at: u64 = held_stamp.strip_prefix("published_at_rafka_ms=").and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
         assert!(held_published_at > pred_stamp && held_stamp.ends_with(&format!(" topology_version={v2}")), "the held key of mesh1 is the successor's, stamped after the late frames: {held_stamp}");
-        for refusal in ["rdm.mesh.membership.reject.via-predecessor-publisher", "rdm.mesh.membership.reject.via-unseated-publisher"] {
+        for refusal in ["rdm.mesh.topology.reject.via-predecessor-publisher", "rdm.mesh.topology.reject.via-unseated-publisher"] {
             assert!(spans.iter().all(|s| s["name"] != refusal), "no frame is refused for who published it: {refusal}");
         }
         let mut lines = String::new();
@@ -246,7 +246,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
 }
 
 /// A supplied author survives an empty publication, receipt, forwarding, neighbour replay and
-/// topology-read install. A same-name member in the forwarder's book supplies no author identity.
+/// topology-read install. A same-name member in the forwarder's view supplies no author identity.
 #[test]
 fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-publisher-birth").unwrap();
@@ -259,12 +259,12 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let source_birth = digest("mesh2.admin.1", 42001);
         let forwarder_birth = digest("mesh1.admin.1", 42002);
         let author = PublisherId::from(&source_birth.node);
-        let src = Membership::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let fwd = Membership::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let src = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let fwd = TopologyView::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         // Deliberately a different exact birth at the author's descriptive path.
         let impostor = digest("mesh2.admin.1", 42003);
         assert_ne!(impostor.node.node_id, author.node_id);
-        fwd.book.record(impostor);
+        fwd.digest_view.record(impostor);
         let source_bb = Backbone::join(&source.gossip, &source.ep, &src, "mesh2", author.clone(), vec![]).await.unwrap();
         let fwd_bb = Backbone::join(&forwarder.gossip, &forwarder.ep, &fwd, "mesh1", PublisherId::from(&forwarder_birth.node), vec![source_addr]).await.unwrap();
         source_bb.set_mesh_primary(true);
@@ -277,14 +277,14 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         assert_eq!(held_author, author, "receipt keeps the supplied author, not the same-name member");
 
         // This neighbour joins after the empty source installed: its baseline is a replayed full.
-        let mem = Membership::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![forwarder_addr], &[]).await.unwrap();
+        let mem = TopologyView::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![forwarder_addr], &[]).await.unwrap();
         until("the new neighbour to install the forwarded replay", || mem.held_source_version("mesh2").is_some()).await;
         assert_eq!(mem.held_source_version("mesh2"), Some((author.clone(), version)));
         let own = digest("mesh1.rpc.1", 42004);
         let served = mem.held_topology(&own).into_iter().find(|s| s.mesh == "mesh2").unwrap();
         assert_eq!(served.publisher, author);
         assert!(served.digests.is_empty(), "the author is carried even without an author digest");
-        let read = Membership::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let read = TopologyView::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let chunk = rdm_transport::snapshot::Chunk { mesh: served.mesh, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, departed: served.departed };
         assert!(matches!(read.take_read_chunk(chunk, "mesh1"), rdm_transport::snapshot::Taken::Installed(_)));
         assert_eq!(read.held_source_version("mesh2"), Some((author.clone(), version)), "a topology read retains the same exact author");
@@ -309,8 +309,8 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
         learn_addresses(&source.ep, &[addr_of(&probe.ep)]).unwrap();
         let mesh = MeshId::mint();
         let author = PublisherId { node: "mesh1.admin.1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let membership = Membership::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let backbone = Backbone::join(&source.gossip, &source.ep, &membership, "mesh1", author.clone(), vec![]).await.unwrap();
+        let topology_view = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let backbone = Backbone::join(&source.gossip, &source.ep, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
         let mut local = probe.gossip.subscribe(rdm_transport::topology::mesh_channel(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();
         let mut remote = probe.gossip.subscribe(rdm_transport::topology::backbone_channel(&fabric()), vec![source.ep.id()]).await.unwrap();
@@ -319,7 +319,7 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
         let (_local_sender, mut local) = local.split(); let (_remote_sender, mut remote) = remote.split();
         let mut ids = std::collections::BTreeSet::new();
         for count in [2, 1] {
-            assert!(backbone.publish(&membership, vec![]).await);
+            assert!(backbone.publish(&topology_view, vec![]).await);
             let events = tokio::time::timeout(Duration::from_secs(5), async {
                 let mut events = Vec::new();
                 while events.len() < count {

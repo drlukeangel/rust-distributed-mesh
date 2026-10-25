@@ -99,7 +99,7 @@ async fn roles_are_born_by_build_under_their_kind() {
     }
 
     // The same digest carries the node's mesh-channel counts (R-L2): it has heard the members of
-    // its mesh, holds a gossip neighbour, and has sent and decoded membership frames.
+    // its mesh, holds a gossip neighbour, and has sent and decoded topology frames.
     // A digest is a periodic sample: the Build is ready on declarations, before every member has
     // published a sample taken after the others joined. Read `node.get` until the samples are in.
     let sampled = |ns: &[NodeView]| ns.iter().all(|n| n.gossip.as_ref().is_some_and(|g| g.neighbours >= 1 && g.frames_received >= 1 && g.frames_sent >= 1));

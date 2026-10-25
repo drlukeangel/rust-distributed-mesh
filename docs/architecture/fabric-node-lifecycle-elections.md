@@ -208,7 +208,7 @@ it is itself deleted, and the fabric-primary stays fabric-primary to the end.
 
 ## 7. Publication and consumption
 
-Election inputs travel through current membership/topology dissemination. The elected result may also be
+Election inputs travel through current topology dissemination. The elected result may also be
 published for fast consumption.
 
 Consumers do not reconstruct the algorithm. They consume the elected primary.

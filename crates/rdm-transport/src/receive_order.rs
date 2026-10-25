@@ -2,12 +2,12 @@
 //! declared subject, identity and ordering fields, never the transport sender.
 //!
 //! MeshStatus and FabricStatus compare the envelope's composite written-seat revision and
-//! change-time sequence through [`admit_status_context`] under the status book's installation lock. A delayed predecessor loses
+//! change-time sequence through [`admit_status_context`] under the status view's installation lock. A delayed predecessor loses
 //! by revision even with a later timestamp (R10). Within one held author/revision, [`admit_status`]
 //! preserves change-time ordering and the existing named duplicate/inconsistency outcomes.
 //! Forwarding metadata never changes status content; retained context survives entry installation.
 //!
-//! Digest uses [`admit_digest`] against the actual installed heartbeat under the digest book's
+//! Digest uses [`admit_digest`] against the actual installed heartbeat under the digest view's
 //! lock, including a read-installed floor. Lower is `via-stale`; equal wire content is
 //! `via-duplicate`; equal sequence with different wire content is `via-inconsistent`.
 //! The primary's separately held membership status is not heartbeat content. A refused or
@@ -46,19 +46,19 @@
 //! State hooks use [`HookReceipts`] shared by the view's local apply path and all channels. Each
 //! full operation identity has one ordinary receive span and at most one carrier invocation;
 //! repeats emit `via-duplicate`. These receipts drive no checklist or lifecycle. Only the admin's
-//! existing open-checklist book decides whether an ordinary check-in is carried (Q21: x).
+//! existing open-checklist view decides whether an ordinary check-in is carried (Q21: x).
 //!
 //! The envelope refuses reserved types before domain decoding. [`refuse_reserved`] also protects
 //! in-process domain calls for Concern (position 10, Q23), NodeConnectionsDeleting (11),
 //! NodeLeaving (12), NodeLeft (13), NodeConnectionsDeleted (14), and NewFabricPrimary (15).
-//! Receipt emits `via-reserved` before any identity book, apply span or carrier runs. No reserved
+//! Receipt emits `via-reserved` before any identity view, apply span or carrier runs. No reserved
 //! body installs a projection, records a fact, registers a contact or commands investigation.
 
 use crate::topology::Frame;
 use crate::snapshot::PublisherId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// Reserved page positions have one receive outcome. Inspect only the kind, before any book,
+/// Reserved page positions have one receive outcome. Inspect only the kind, before any view,
 /// identity receipt, ordinary apply span or completion carrier can run.
 pub(crate) fn refuse_reserved(f: &Frame, node: &str, via: &str) -> bool {
     let (frame, position) = match f.data() {
@@ -70,7 +70,7 @@ pub(crate) fn refuse_reserved(f: &Frame, node: &str, via: &str) -> bool {
         Frame::NewFabricPrimary { .. } => ("new-fabric-primary", 15),
         _ => return false,
     };
-    tracing::info_span!("rdm.mesh.membership.reject.via-reserved", node, frame, position, via)
+    tracing::info_span!("rdm.mesh.topology.reject.via-reserved", node, frame, position, via)
         .in_scope(|| tracing::info!("the reserved position installs nothing and invokes no carrier"));
     true
 }
@@ -82,22 +82,22 @@ pub(crate) fn admit_status_context(frame: &str, subject: &str, held: Option<&cra
     let (h, o) = (held.sequence.as_ref()?, offered.sequence.as_ref()?);
     if held.source == offered.source && held.primary_revision() == offered.primary_revision() { return None; }
     if o < h {
-        tracing::info_span!("rdm.mesh.membership.reject.via-stale", frame, subject, held_key = %h, frame_key = %o)
+        tracing::info_span!("rdm.mesh.topology.reject.via-stale", frame, subject, held_key = %h, frame_key = %o)
             .in_scope(|| tracing::info!("status sequence is below the held committed revision and change time"));
         return Some(false);
     }
     if o > h { return Some(true); }
     if held_status == status {
-        tracing::info_span!("rdm.mesh.membership.update.via-duplicate", frame, identity = %offered.id, outcome = "ignored")
+        tracing::info_span!("rdm.mesh.topology.update.via-duplicate", frame, identity = %offered.id, outcome = "ignored")
             .in_scope(|| tracing::info!("identical status sequence and content"));
     } else {
-        tracing::info_span!("rdm.mesh.membership.reject.via-inconsistent", frame, subject, revision = %o)
+        tracing::info_span!("rdm.mesh.topology.reject.via-inconsistent", frame, subject, revision = %o)
             .in_scope(|| tracing::info!("equal status sequence with conflicting content"));
     }
     Some(false)
 }
 
-/// Admit a replacement status against the projection held under the status book's lock. The
+/// Admit a replacement status against the projection held under the status view's lock. The
 /// declared subject, publisher and change instant identify it; forwarding metadata is not content.
 /// This also serves statuses installed by a read, so classification and installation share the
 /// same held fact instead of maintaining a separate receive history.
@@ -105,7 +105,7 @@ pub(crate) fn admit_status(frame: &'static str, subject: &str, held: Option<(&st
     let Some((held_publisher, held_revision, held_status)) = held else { return true };
     if revision < held_revision {
         tracing::info_span!(
-            "rdm.mesh.membership.reject.via-stale",
+            "rdm.mesh.topology.reject.via-stale",
             frame,
             subject = %format!("{subject} {publisher}"),
             held_key = %format!("changed_at_rafka_ms={}", held_revision),
@@ -116,7 +116,7 @@ pub(crate) fn admit_status(frame: &'static str, subject: &str, held: Option<(&st
     if publisher == held_publisher && revision == held_revision {
         if status != held_status {
             tracing::info_span!(
-                "rdm.mesh.membership.reject.via-inconsistent",
+                "rdm.mesh.topology.reject.via-inconsistent",
                 frame,
                 subject = %format!("{subject} {publisher}"),
                 revision,
@@ -125,7 +125,7 @@ pub(crate) fn admit_status(frame: &'static str, subject: &str, held: Option<(&st
             ).in_scope(|| tracing::info!("a status at the held revision has different content: refused"));
         } else {
             tracing::info_span!(
-                "rdm.mesh.membership.update.via-duplicate",
+                "rdm.mesh.topology.update.via-duplicate",
                 frame,
                 identity = %format!("{subject} {publisher} changed_at_rafka_ms={revision}"),
                 outcome = "ignored",
@@ -146,7 +146,7 @@ pub(crate) fn admit_digest(held: &rdm_core::MeshDigest, offered: &rdm_core::Mesh
     let subject = format!("{}/{}", offered.node.node_id, offered.node.incarnation);
     if offered.digest_seq < held.digest_seq {
         tracing::info_span!(
-            "rdm.mesh.membership.reject.via-stale",
+            "rdm.mesh.topology.reject.via-stale",
             node, channel, frame = "digest", subject = %subject,
             held_key = %format!("digest_seq={}", held.digest_seq),
             frame_key = %format!("digest_seq={}", offered.digest_seq),
@@ -156,13 +156,13 @@ pub(crate) fn admit_digest(held: &rdm_core::MeshDigest, offered: &rdm_core::Mesh
     if offered.digest_seq == held.digest_seq {
         if rdm_core::wire::WireDigest::from(held) == rdm_core::wire::WireDigest::from(offered) {
             tracing::info_span!(
-                "rdm.mesh.membership.update.via-duplicate",
+                "rdm.mesh.topology.update.via-duplicate",
                 node, channel, frame = "digest", identity = %format!("{subject} digest_seq={}", offered.digest_seq),
                 outcome = "ignored",
             ).in_scope(|| tracing::info!("the identical heartbeat is ignored, with no address registration"));
         } else {
             tracing::info_span!(
-                "rdm.mesh.membership.reject.via-inconsistent",
+                "rdm.mesh.topology.reject.via-inconsistent",
                 node, channel, frame = "digest", subject = %subject, revision = offered.digest_seq,
             ).in_scope(|| tracing::info!("equal digest sequence with different heartbeat content: nothing installed"));
         }
@@ -174,17 +174,17 @@ pub(crate) fn admit_digest(held: &rdm_core::MeshDigest, offered: &rdm_core::Mesh
 /// Name a publication's classification at the installation door. The caller holds the actual
 /// source projection lock; forwarding metadata never supplies its identity or ordering.
 pub(crate) fn publication_duplicate(frame: &'static str, identity: &str) {
-    tracing::info_span!("rdm.mesh.membership.update.via-duplicate", frame, identity, outcome = "ignored")
+    tracing::info_span!("rdm.mesh.topology.update.via-duplicate", frame, identity, outcome = "ignored")
         .in_scope(|| tracing::info!("the publication identity and content are already held"));
 }
 
 pub(crate) fn publication_inconsistent(frame: &'static str, mesh: &str, publisher: &PublisherId, revision: u64) {
-    tracing::info_span!("rdm.mesh.membership.reject.via-inconsistent", frame, subject = %format!("{mesh} {publisher}"), revision)
+    tracing::info_span!("rdm.mesh.topology.reject.via-inconsistent", frame, subject = %format!("{mesh} {publisher}"), revision)
         .in_scope(|| tracing::info!("equal publication revision or chunk identity with different content: refused"));
 }
 
 pub(crate) fn publication_stale(frame: &'static str, mesh: &str, publisher: &PublisherId, held: u64, offered: u64) {
-    tracing::info_span!("rdm.mesh.membership.reject.via-stale", frame, subject = %format!("{mesh} {publisher}"), held_key = %format!("topology_version={held}"), frame_key = %format!("topology_version={offered}"))
+    tracing::info_span!("rdm.mesh.topology.reject.via-stale", frame, subject = %format!("{mesh} {publisher}"), held_key = %format!("topology_version={held}"), frame_key = %format!("topology_version={offered}"))
         .in_scope(|| tracing::info!("the publication is below the actual installed source version"));
 }
 
@@ -205,7 +205,7 @@ pub(crate) fn node_deleted_receipt(held: Option<&rdm_core::LifecycleOp>, offered
     let Some(held) = held else { return NodeDeletedReceipt::Apply };
     if held.key() == offered.key() && held.node_id == offered.node_id && held.incarnation == offered.incarnation {
         tracing::info_span!(
-            "rdm.mesh.membership.update.via-duplicate",
+            "rdm.mesh.topology.update.via-duplicate",
             frame = "node-deleted",
             identity = %format!("node-deleted {} {} {} {}/{}", offered.build_id, offered.attempt, offered.operation, offered.node_id, offered.incarnation),
             build_id = %offered.build_id,
@@ -239,7 +239,7 @@ impl LifecycleIdentity {
 
 fn duplicate_lifecycle(frame: &str, op: &rdm_core::LifecycleOp) {
     tracing::info_span!(
-        "rdm.mesh.membership.update.via-duplicate",
+        "rdm.mesh.topology.update.via-duplicate",
         frame,
         identity = %format!("{} {} {} {}/{}", op.build_id, op.attempt, op.operation, op.node_id, op.incarnation),
         outcome = "ignored",
@@ -252,7 +252,7 @@ fn duplicate_lifecycle(frame: &str, op: &rdm_core::LifecycleOp) {
 pub(crate) fn admit_overlay(frame: &str, op: &rdm_core::LifecycleOp, held: Option<&rdm_core::LifecycleOp>, ended: bool) -> bool {
     if ended {
         tracing::info_span!(
-            "rdm.mesh.membership.update.via-lifecycle-reconciled",
+            "rdm.mesh.topology.update.via-lifecycle-reconciled",
             frame, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation,
             node_id = %op.node_id, incarnation_id = %op.incarnation,
             outcome = "ignored", evidence = "operation-ended",
@@ -269,7 +269,7 @@ pub(crate) fn admit_overlay(frame: &str, op: &rdm_core::LifecycleOp, held: Optio
 /// Name the carried projection refusal separately from recording the operation fact as seen.
 pub(crate) fn reject_lifecycle_version(frame: &str, subject: &str, held: u64, offered: u64) {
     tracing::info_span!(
-        "rdm.mesh.membership.reject.via-stale",
+        "rdm.mesh.topology.reject.via-stale",
         frame, subject, held_key = %format!("topology_version={held}"), frame_key = %format!("topology_version={offered}"),
     ).in_scope(|| tracing::info!("the lifecycle frame's carried projection revision is below the held one: refused"));
 }
@@ -309,7 +309,7 @@ impl HookReceipts {
             return true;
         }
         tracing::info_span!(
-            "rdm.mesh.membership.update.via-duplicate",
+            "rdm.mesh.topology.update.via-duplicate",
             frame = kind,
             identity = %format!("{kind} {} {} {} {} {}/{}", hook.fabric_id, hook.build_id, hook.attempt, hook.operation, hook.node_id, hook.incarnation),
             outcome = "ignored",
@@ -579,7 +579,7 @@ mod tests {
         assert!(order.admit(&StatusEvent::Stopped.frame(operation, relabeled, 19)).is_err(), "a carried projection floor belongs to the birth, not its label");
     }
 
-    /// CONTRACT: every membership Frame variant has exactly one receive-table row naming its
+    /// CONTRACT: every topology Frame variant has exactly one receive-table row naming its
     /// category, subject, ordering and identity; a new variant without a rule fails by name.
     #[test]
     fn every_frame_kind_has_a_row_in_the_receive_rules() {
@@ -604,7 +604,7 @@ mod tests {
                 assert!(!value.is_empty(), "Frame::{name} has no {field} rule");
             }
         }
-        assert!(count > 0, "the membership Frame declaration must contain variants");
+        assert!(count > 0, "the topology Frame declaration must contain variants");
     }
 
     use super::*;
@@ -705,20 +705,20 @@ mod tests {
 
     /// CONTRACT (R-RX3: Digest orders by `digest_seq`, per birth; gossip.md §3.1: a new incarnation's
     /// `digest_seq` starts again at 1): a heartbeat below the held `digest_seq` of its exact birth is
-    /// ignored, naming the birth and both sequences; a copy of the held one is taken (the book absorbs
+    /// ignored, naming the birth and both sequences; a copy of the held one is taken (the view absorbs
     /// it); a new incarnation of the same node at sequence 1 is taken. Must NOT happen: a restarted
     /// node's heartbeats ignored against its previous birth's sequence.
     #[test]
     fn a_heartbeat_below_the_held_digest_seq_of_its_birth_is_ignored_and_a_new_incarnation_starts_again() {
-        let book = crate::topology::DigestBook::default();
+        let digest_view = crate::topology::DigestView::default();
         let d = birth("mesh1.rpc.1");
         let at = |seq| MeshDigest { digest_seq: seq, ..d.clone() };
-        assert!(book.record(at(7)));
-        assert!(!book.record(at(7)), "the installed heartbeat classifier ignores its identical repeat");
-        assert!(!book.record(at(3)), "a heartbeat below the installed exact birth's sequence is ignored");
-        assert_eq!(book.get(d.node.node_id.as_str()).unwrap().0.digest_seq, 7);
+        assert!(digest_view.record(at(7)));
+        assert!(!digest_view.record(at(7)), "the installed heartbeat classifier ignores its identical repeat");
+        assert!(!digest_view.record(at(3)), "a heartbeat below the installed exact birth's sequence is ignored");
+        assert_eq!(digest_view.get(d.node.node_id.as_str()).unwrap().0.digest_seq, 7);
         let restarted = MeshDigest { node: MeshNode { incarnation: IncarnationId::mint(), ..d.node.clone() }, digest_seq: 1, ..d.clone() };
-        assert!(book.record(restarted), "a new incarnation is another source");
+        assert!(digest_view.record(restarted), "a new incarnation is another source");
     }
 
     /// CONTRACT (R-RX3: lifecycle facts order by `topology_version`; the version is the publisher's

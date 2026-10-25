@@ -6,15 +6,15 @@
 //! a new admin only active Builds. The launching admin is killed. From public
 //! surfaces only:
 //! - the successor holds the mesh and the fabric, and its view advertises
-//!   every rpc node's data dir (current birth metadata, from membership);
+//!   every rpc node's data dir (current birth metadata, from the topology view);
 //! - it restarts one of A's births (same node id, new incarnation) and
 //!   retires another (its runtime is gone), from the runtime each birth
-//!   publishes with its membership, never from Build history.
+//!   publishes with its topology view, never from Build history.
 //!
 //! Evidence: the bootstrap admin's ready span names its own self-adopted
 //! runtime (day 0); each rpc node's ready span names the runtime its provider
 //! recorded; the successor's `rdm.node_admin.runtime.update.via-adopt`
-//! names the same locator fingerprint, `source = self-published-membership`,
+//! names the same locator fingerprint, `source = self-published-topology`,
 //! and the successor as adopter and executor.
 //!
 //! And each prerequisite is its own committed step before Ready (PRD §5.3):
@@ -104,7 +104,7 @@ async fn a_successor_manages_births_it_never_launched() {
     // Day 0: the bootstrap admin published the runtime it adopted for itself.
     let boot = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node"] == "mesh1.admin.1").cloned().expect("the bootstrap admin is ready");
     assert_eq!(boot["attributes"]["runtime_locator_kind"], if estate.owner.provider == "container" { "container-id" } else { "process-pid-start" });
-    assert_eq!(boot["attributes"]["source"], "self-published-membership");
+    assert_eq!(boot["attributes"]["source"], "self-published-topology");
     let ns = |sp: &Value, k: &str| sp[k].as_u64().unwrap_or_else(|| panic!("{k} on {sp}"));
     let steps_of = |node: &str, pipeline_step: &dyn Fn(&Value) -> bool| -> Vec<Value> {
         let mut v: Vec<Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
@@ -179,7 +179,7 @@ async fn a_successor_manages_births_it_never_launched() {
         assert_ne!(a["adopter_node_id"], launcher["node_id"], "{name}: the killed launcher never adopts");
         assert!(admins_now.contains(&s(&a["adopter_node_id"])), "{name}: adopted by a current admin {admins_now:?}: {a}");
         assert_eq!(a["execution_node_id"], a["adopter_node_id"], "{name}: the adopter executes");
-        assert_eq!(a["source"], "self-published-membership");
+        assert_eq!(a["source"], "self-published-topology");
         for k in ["deployment_id", "provider", "provider_control_domain_fingerprint", "runtime_locator_kind", "runtime_locator_fingerprint"] {
             assert_eq!(a[k], r[k], "{name}: the adopted runtime is the one it published ({k})");
         }

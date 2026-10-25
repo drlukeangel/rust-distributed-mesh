@@ -189,7 +189,7 @@ pub struct ExactBirth {
     pub incarnation: IncarnationId,
 }
 
-/// The membership one node holds of a mesh, read through `node.topology.get`: the births it holds
+/// The topology view one node holds of a mesh, read through `node.topology.get`: the births it holds
 /// and the open overlays and retained departures it knows. What a peer reports of another node.
 #[derive(Debug, Clone, Default)]
 pub struct HeldView {

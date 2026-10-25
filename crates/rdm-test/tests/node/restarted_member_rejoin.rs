@@ -90,9 +90,9 @@ async fn restarted_member_pulls_current_admin_within_staleness_window() {
     assert!(elapsed <= staleness_ms, "the first attempt was answered within the staleness window ({elapsed} ms of {staleness_ms})");
     let admin_endpoint_short: String = s(&admin["endpoint_id"]).chars().take(10).collect();
     assert_eq!(s(&first["attributes"]["anchor"]), admin_endpoint_short, "the pull went to the admin that launched the birth");
-    let failed: Vec<&Value> = named(&spans, "rdm.mesh.entry.reject.via-membership-pull-failed").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
+    let failed: Vec<&Value> = named(&spans, "rdm.mesh.entry.reject.via-topology-pull-failed").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
     assert!(failed.is_empty(), "no pull of the reborn birth failed: {failed:?}");
-    let pulled: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-membership-pulled").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
+    let pulled: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-topology-pulled").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
     assert_eq!(pulled.len(), 1, "one completed pull after the restart: {pulled:?}");
     assert_eq!(pulled[0]["attributes"]["served_by"], "mesh1.admin.1");
     // The admin logs the request it answered, after the restart, for this node.
@@ -123,19 +123,19 @@ async fn restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_
     std::fs::create_dir_all(&dir).unwrap();
     let (admin, before, after, restart_at, spans) = restart_one_member(cell).await;
 
-    // A restarted node rejoins on the process it parked on: its entry pull completes (`membership-joined`)
+    // A restarted node rejoins on the process it parked on: its entry pull completes (`topology_view-joined`)
     // and its mesh channel is resubscribed at once after (the resubscribe span names no node: the first
     // one on the channel after the rejoin is the node's own).
-    let rejoin = named(&spans, "rdm.mesh.node.update.via-membership-joined").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).min_by_key(|sp| at(sp)).cloned().expect("the restarted node rejoined its mesh");
-    let joined = named(&spans, "rdm.mesh.membership.update.via-resubscribe")
+    let rejoin = named(&spans, "rdm.mesh.node.update.via-topology-joined").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).min_by_key(|sp| at(sp)).cloned().expect("the restarted node rejoined its mesh");
+    let joined = named(&spans, "rdm.mesh.topology.update.via-resubscribe")
         .into_iter()
         .filter(|sp| sp["attributes"]["channel"] == "mesh:mesh1" && at(sp) >= at(&rejoin))
         .min_by_key(|sp| at(sp))
         .cloned()
         .expect("the restarted node resubscribed its mesh channel");
-    let pulled: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-membership-pulled").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
+    let pulled: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-topology-pulled").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
     assert_eq!(pulled.len(), 1, "the entry completed once after the restart: {pulled:?}");
-    let failed: Vec<&Value> = named(&spans, "rdm.mesh.entry.reject.via-membership-pull-failed").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
+    let failed: Vec<&Value> = named(&spans, "rdm.mesh.entry.reject.via-topology-pull-failed").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
     assert!(failed.is_empty(), "no pull of the reborn birth failed: {failed:?}");
 
     let result = json!({

@@ -159,6 +159,6 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
             .find(|sp| sp["attributes"]["node"] == birth["name"] && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])
             .unwrap_or_else(|| panic!("{} adopted by the late admin", birth["name"]));
         assert_eq!(adopted["attributes"]["adopter"], late_name.as_str());
-        assert_eq!(adopted["attributes"]["source"], "self-published-membership");
+        assert_eq!(adopted["attributes"]["source"], "self-published-topology");
     }
 }

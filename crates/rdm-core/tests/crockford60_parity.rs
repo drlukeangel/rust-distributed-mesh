@@ -38,10 +38,10 @@ fn every_rafka_minted_id_is_a_node_mesh_and_fabric_id_as_is() {
     }
 }
 
-/// Acceptance 13: canonical ids survive the membership digest's encoding
+/// Acceptance 13: canonical ids survive the topology digest's encoding
 /// exactly (the frame every gossip channel carries).
 #[test]
-fn a_membership_digest_carries_its_product_ids_exactly() {
+fn a_topology_digest_carries_its_product_ids_exactly() {
     let (node_id, fabric_id) = (NodeId::mint(), FabricId::mint());
     let d = MeshDigest { held_hash: Default::default(),
         fabric_id: fabric_id.clone(),

@@ -126,10 +126,10 @@ pub async fn restart_canary(owner: Owner) -> Value {
     })
     .await;
     // gossip.md "Node-stopped lifecycle overlay": "Inside node.restart, the stop's stopped is published as
-    // NodeRestarting, not NodeStopped; peers hold the instance and expect it back" (Q135). No book takes
+    // NodeRestarting, not NodeStopped; peers hold the instance and expect it back" (Q135). No view takes
     // the restarted birth as stopped: a NodeStopped held there refuses its heartbeats until a node.joined
     // the restart may never publish again.
-    let stopped: Vec<&Value> = named(&spans, "rdm.mesh.membership.remove.via-node-stopped").into_iter().filter(|s| s["attributes"]["node_id"] == node_id.as_str() && s["attributes"]["build_id"] == restart_build.as_str()).collect();
+    let stopped: Vec<&Value> = named(&spans, "rdm.mesh.topology.remove.via-node-stopped").into_iter().filter(|s| s["attributes"]["node_id"] == node_id.as_str() && s["attributes"]["build_id"] == restart_build.as_str()).collect();
     assert!(stopped.is_empty(), "the restart's stop is held by NodeRestarting, never published as NodeStopped: {stopped:#?}");
     // The restart's attempt is the node.restart call that opened it: its reconcile is a child of
     // that call's request span (the claim returns the attempt's context), never of the span that

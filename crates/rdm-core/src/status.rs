@@ -1780,7 +1780,7 @@ pub enum Transition<S> {
 }
 
 
-/// What a node declared, as its mesh-primary's book holds it: the one mapping from the declaration
+/// What a node declared, as its mesh-primary's view holds it: the one mapping from the declaration
 /// vocabulary to the member status ([`declared_of_member`] is its inverse).
 pub fn member_of_declared(s: NodeState) -> crate::MemberStatus {
     use crate::MemberStatus as M;

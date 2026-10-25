@@ -4,14 +4,14 @@
 //! a typed Status refusal naming the mismatch"). The leaving mesh-primary decides a `DeleteMesh` on
 //! the workflow of the leave it holds (`mesh_delete::MeshDeleteRuns::admit`, which its door
 //! `admin::mesh_delete::admit_delete_mesh` answers from); the fabric-primary decides a `MeshDeleted` on the
-//! workflows it holds open (`mesh_delete::MeshDeleteBook::admitted_for`, which its door `validate_handoff`
+//! workflows it holds open (`mesh_delete::MeshDeleteView::admitted_for`, which its door `validate_handoff`
 //! answers from).
 // @feature: node-lifecycle
 
 use crate::mesh_delete_resume::{capture, trace_id};
 use rdm_core::{BuildId, MeshId, NodeId};
 use rdm_admin::deployment::pipeline::RuntimeProof;
-use rdm_admin::mesh_delete::{admit_delete_mesh, operation, run_admitted, Admitted, ExitManifest, MeshDeleteAdmission, MeshDeleteBook, MeshDeleteKey, DeleteMeshAdmission, MeshDeleteRunEnd, MeshDeleteRuns, RosterBirth};
+use rdm_admin::mesh_delete::{admit_delete_mesh, operation, run_admitted, Admitted, ExitManifest, MeshDeleteAdmission, MeshDeleteView, MeshDeleteKey, DeleteMeshAdmission, MeshDeleteRunEnd, MeshDeleteRuns, RosterBirth};
 use rdm_admin::status_rpc::Declared;
 use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
 use rdm_core::status::{MeshDeleteIdentity, MeshState, StatusReply};
@@ -142,16 +142,16 @@ fn a_mesh_deleted_report_naming_a_workflow_the_fabric_primary_does_not_hold_is_r
     let elsewhere = key(&MeshId::mint(), "xe5k179s7rw5", 1);
     let last = final_primary();
     let admitted = Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime(), amendments: Vec::new() };
-    let book = MeshDeleteBook::default();
-    let handoff = book.open(held.clone(), admitted);
+    let mesh_delete_view = MeshDeleteView::default();
+    let handoff = mesh_delete_view.open(held.clone(), admitted);
     let ((refused, accepted, unknown), trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.mesh.reject.via-mesh-deleted-workflow");
         let trace_id = trace_id(&root);
         let out = tracing::Instrument::instrument(
             async {
-                let refused: Vec<Result<(), StatusReply>> = [&stale, &unopened, &other].into_iter().map(|k| book.admitted_for(k).map(|_| ())).collect();
-                let accepted = book.admitted_for(&held).map(|a| a.final_primary);
-                let unknown = book.admitted_for(&elsewhere).map(|_| ());
+                let refused: Vec<Result<(), StatusReply>> = [&stale, &unopened, &other].into_iter().map(|k| mesh_delete_view.admitted_for(k).map(|_| ())).collect();
+                let accepted = mesh_delete_view.admitted_for(&held).map(|a| a.final_primary);
+                let unknown = mesh_delete_view.admitted_for(&elsewhere).map(|_| ());
                 (refused, accepted, unknown)
             },
             root,

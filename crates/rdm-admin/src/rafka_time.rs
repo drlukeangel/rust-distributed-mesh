@@ -47,9 +47,9 @@ pub async fn run_seat_move_pull(
     me: crate::model::PathName,
     me_id: NodeId,
     client: Arc<rdm_transport::NodeRpcClient>,
-    membership: rdm_transport::topology::Membership,
+    topology_view: rdm_transport::topology::TopologyView,
 ) {
-    let seats = membership.primaries().clone();
+    let seats = topology_view.primaries().clone();
     let mut changed = seats.subscribe();
     let mut last = seats.fabric().map(|h| (h.node_id, h.revision));
     loop {
@@ -71,7 +71,7 @@ pub async fn run_seat_move_pull(
             continue;
         }
         let span = tracing::info_span!("rdm.mesh.entry.resolve.via-fabric-seat-moved", node = %me, from = %from_node, to = %holder.node_id, to_mesh = %holder.mesh, revision = holder.revision, outcome = tracing::field::Empty, attempts = tracing::field::Empty, adopted_from_revision = tracing::field::Empty);
-        let (outcome, attempts, adopted_from) = pull_from_fabric_primary(&time, &me, &me_id, &client, &membership, holder).instrument(span.clone()).await;
+        let (outcome, attempts, adopted_from) = pull_from_fabric_primary(&time, &me, &me_id, &client, &topology_view, holder).instrument(span.clone()).await;
         span.record("outcome", outcome.as_str());
         span.record("attempts", attempts);
         if let Some(h) = adopted_from {
@@ -88,14 +88,14 @@ async fn pull_from_fabric_primary(
     me: &crate::model::PathName,
     me_id: &NodeId,
     client: &rdm_transport::NodeRpcClient,
-    membership: &rdm_transport::topology::Membership,
+    topology_view: &rdm_transport::topology::TopologyView,
     moved_to: rdm_core::Primary,
 ) -> (String, u32, Option<rdm_core::Primary>) {
     let mut last = String::from("no attempt");
     let mut holder = moved_to;
     for attempt in 1..=SEAT_MOVE_ATTEMPTS {
         // The holder this admin's records name now: a seat that moved again is pulled from where it is.
-        if let Some(current) = membership.primaries().fabric() {
+        if let Some(current) = topology_view.primaries().fabric() {
             if current.node_id == *me_id {
                 return ("kept: this admin took the fabric seat itself".into(), attempt - 1, None);
             }
@@ -104,8 +104,8 @@ async fn pull_from_fabric_primary(
         let read = crate::topology_read::read_topology(client, &rdm_transport::NodeTarget::ExactNode(holder.node_id.clone()), &me.to_string(), Some(&holder.mesh), None).await;
         match read {
             Ok(read) => {
-                let served_by = membership.book.all().into_iter().find(|d| d.node.node_id == holder.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| holder.node_id.to_string());
-                match read.adopt_rafka_time(time, membership, &me.to_string(), &me.mesh, me_id, &served_by) {
+                let served_by = topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == holder.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| holder.node_id.to_string());
+                match read.adopt_rafka_time(time, topology_view, &me.to_string(), &me.mesh, me_id, &served_by) {
                     Ok(_) => return ("adopted".into(), attempt, Some(holder)),
                     Err(e) => last = e.to_string(),
                 }
@@ -124,7 +124,7 @@ async fn pull_from_fabric_primary(
 /// any node answers, it is not this case"); when none does, the caller adopts its own clock
 /// ([`OWN_CLOCK_NOTHING_ALIVE`]). Every node is asked at once, so the answer comes within one read's
 /// budget however many the store names. It judges nothing and publishes nothing until it has:
-/// `contacts` are the births its durable map names, and the book of the membership it joined adds
+/// `contacts` are the births its durable map names, and the view of the membership it joined adds
 /// whoever it hears. A member adopts from whoever answers; the lineage descends from the
 /// fabric-primary whichever node that is.
 ///
@@ -135,7 +135,7 @@ pub(crate) async fn adopt_from_reachable(
     me: &crate::model::PathName,
     client: &rdm_transport::NodeRpcClient,
     resolver: &rdm_transport::LiveNodeResolver,
-    membership: &rdm_transport::topology::Membership,
+    topology_view: &rdm_transport::topology::TopologyView,
     contacts: Vec<crate::reenter::MapNode>,
     parent: &tracing::Span,
 ) -> Result<String, String> {
@@ -145,7 +145,7 @@ pub(crate) async fn adopt_from_reachable(
         let mut tried: std::collections::BTreeMap<String, String> = Default::default();
         let mut attempts = 0u32;
         let mut candidates = contacts;
-        for d in membership.book.current(membership.book.staleness_floor()) {
+        for d in topology_view.digest_view.current(topology_view.digest_view.staleness_floor()) {
             if d.node.name != *me && !candidates.iter().any(|c| c.node_id == d.node.node_id) {
                 candidates.push(crate::reenter::MapNode {
                     node_id: d.node.node_id.clone(),

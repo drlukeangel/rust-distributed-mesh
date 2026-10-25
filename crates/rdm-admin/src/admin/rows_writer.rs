@@ -2,11 +2,11 @@
 
 use super::*;
 
-/// Every birth of `fabric` this admin's book holds besides itself, heard a moment ago or only
+/// Every birth of `fabric` this admin's view holds besides itself, heard a moment ago or only
 /// carried in an installed topology read: the births a maker serves a joining admin for a mesh it
 /// holds no snapshot of, beside the ones its records hold.
-pub(crate) fn held_births(book: &DigestBook, fabric: &FabricId, me: &NodeId) -> Vec<MeshDigest> {
-    book.all().into_iter().filter(|d| &d.fabric_id == fabric && &d.node.node_id != me).collect()
+pub(crate) fn held_births(digest_view: &DigestView, fabric: &FabricId, me: &NodeId) -> Vec<MeshDigest> {
+    digest_view.all().into_iter().filter(|d| &d.fabric_id == fabric && &d.node.node_id != me).collect()
 }
 
 /// The durable runtime row of the exact birth `(node_id, incarnation)` of `node`, read by its key
@@ -37,7 +37,7 @@ pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, 
 /// sweep that writes its own mesh claims the mesh's name ([`crate::storage::claim_mesh`]) and
 /// writes the Mesh row (node-identity-and-state.md §2.7): nothing else of the mesh is written until the
 /// claim wins, and a name another mesh's live row holds leaves the mesh's rows unwritten for the tenure,
-/// named. Then each member birth's endpoint, address and the primaries the book holds for it are
+/// named. Then each member birth's endpoint, address and the primaries the view holds for it are
 /// written onto the newest facts of its node's record, from the copy this admin holds, whole
 /// (storage-whole-records.md, "The rule"), only when they differ. A birth leaves its record's births by
 /// the record's own rule ([`crate::storage::BIRTHS_KEPT`]), and a deleted node's record is `Deleted`:
@@ -63,9 +63,9 @@ impl MeshRowsWriter {
     }
 
     /// One sweep over the births `held` (every birth of the fabric this admin holds, itself
-    /// included, each with the primaries its book holds for it), `writes` the meshes whose rows this
+    /// included, each with the primaries its view holds for it), `writes` the meshes whose rows this
     /// admin writes now (its own mesh while it is its mesh-primary; a mesh with no primary while it is
-    /// the fabric-primary), `departed` whether the book holds a node departed. Returns whether a row is
+    /// the fabric-primary), `departed` whether the view holds a node departed. Returns whether a row is
     /// owed: a write or a read the store did not acknowledge, or a member whose record is not written
     /// yet (its create's claim or its arrival writes it), which the caller retries on its own clock
     /// under the one backoff rule (node-identity-and-state.md §2.7), never waiting for a birth or a
@@ -82,7 +82,7 @@ impl MeshRowsWriter {
         }
         let own = matches!(self.claim, Some(Ok(())));
         let mut owed = false;
-        // Another mesh whose mesh-primary this admin's book holds is that primary's to write (one writer per
+        // Another mesh whose mesh-primary this admin's view holds is that primary's to write (one writer per
         // record, storage-whole-records.md): the writing set comes from a view that can still show it with
         // none, and a whole write from this admin's older copy would replace what its primary wrote.
         let primaried: std::collections::BTreeSet<&str> = held
@@ -93,7 +93,7 @@ impl MeshRowsWriter {
         // A departed birth is never written: its node's record is written `Deleted` by its delete.
         for d in held.iter().filter(|d| !departed(&d.node.node_id) && writes.contains(&d.node.name.mesh) && !primaried.contains(d.node.name.mesh.as_str()) && (d.node.name.mesh != self.mesh || own)) {
             let mesh_id = if d.node.name.mesh == self.mesh { Some(self.mesh_id.clone()) } else { d.mesh_id.clone() };
-            // The birth's address and the primaries the book holds, put whole on its record from the copy
+            // The birth's address and the primaries the view holds, put whole on its record from the copy
             // this admin holds; a `Deleted` record is left as it stands.
             let written = self
                 .caches
@@ -116,7 +116,7 @@ impl MeshRowsWriter {
                 .await;
             match written {
                 Ok(Some(true)) => tracing::info_span!("rdm.node_admin.node.update.via-node-row", node = %self.me, subject = %d.node.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "written")
-                    .in_scope(|| tracing::info!("the node's record is put whole, the birth's address and the primaries the book holds recorded on it")),
+                    .in_scope(|| tracing::info!("the node's record is put whole, the birth's address and the primaries the view holds recorded on it")),
                 Ok(Some(false)) => {}
                 Ok(None) => owed = true,
                 Err(e) => {
@@ -130,15 +130,15 @@ impl MeshRowsWriter {
     }
 }
 
-/// The mesh rows writer's loop: a sweep over what `book` holds of `fabric` each time a birth or a
+/// The mesh rows writer's loop: a sweep over what `digest_view` holds of `fabric` each time a birth or a
 /// primary record changes there or `writes` (the meshes whose rows this admin writes) moves, each birth
-/// carrying the primaries the book holds for it. A row the store did not acknowledge is owed: the sweep
+/// carrying the primaries the view holds for it. A row the store did not acknowledge is owed: the sweep
 /// runs again on this writer's own clock under the one backoff rule (node-rpc.md §43), never waiting
 /// for a birth, a digest or a primary change (node-identity-and-state.md §2.7). Each sweep takes its
 /// turn of `park`.
-pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, park: crate::stop_gate::StopGate) {
-    let mut births = book.birth_changes();
-    let mut primaries = book.seats.subscribe();
+pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: DigestView, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, park: crate::stop_gate::StopGate) {
+    let mut births = digest_view.birth_changes();
+    let mut primaries = digest_view.seats.subscribe();
     let pacing = rdm_transport::delivery::Pacing::from_cadences();
     let mut owed_sweeps = 0u32;
     loop {
@@ -147,16 +147,16 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook,
         births.borrow_and_update();
         primaries.borrow_and_update();
         let meshes = writes.borrow_and_update().clone();
-        let held: Vec<MeshDigest> = book
+        let held: Vec<MeshDigest> = digest_view
             .all()
             .into_iter()
             .filter(|d| d.fabric_id == fabric)
             .map(|mut d| {
-                book.recorded_primaries(&mut d);
+                digest_view.recorded_primaries(&mut d);
                 d
             })
             .collect();
-        let owed = writer.sweep(&held, &meshes, |id| book.is_deleted(id.as_str())).await;
+        let owed = writer.sweep(&held, &meshes, |id| digest_view.is_deleted(id.as_str())).await;
         owed_sweeps = if owed { owed_sweeps + 1 } else { 0 };
         drop(turn);
         let again = async {
@@ -188,7 +188,7 @@ pub(crate) async fn recorded_births(meshes: &dyn crate::storage::MeshStorage, no
 /// record's included: an election input (elections §3), each
 /// held only when it supersedes the record held. The records record the role; the election decides it.
 /// The store root is the fabric's own, so every record on it is of this fabric.
-pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, seats: &rdm_transport::topology::SeatBook) -> Result<usize, crate::storage_error::StorageError> {
+pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, seats: &rdm_transport::topology::PrimaryView) -> Result<usize, crate::storage_error::StorageError> {
     let mut taken = 0;
     for r in crate::storage::records(meshes, nodes, own_mesh).await? {
         let Some(b) = r.newest_birth() else { continue };
@@ -460,7 +460,7 @@ impl FabricRowsWriter {
 
     /// One sweep on the seat records `seats` holds: while the fabric seat names this birth, the claim
     /// of the fabric's name (which writes the identity row) until the store answers it.
-    pub(crate) async fn sweep(&mut self, seats: &rdm_transport::topology::SeatBook) {
+    pub(crate) async fn sweep(&mut self, seats: &rdm_transport::topology::PrimaryView) {
         if !seats.fabric().is_some_and(|h| h.is_birth(&self.me.0, &self.me.1)) {
             return;
         }
@@ -494,7 +494,7 @@ pub async fn inspection_with_handle(
 ) -> (Inspected, Option<DeploymentHandle>) {
     // The runtime fact one way for every inspect (`node_investigation::runtime_of`).
     let Some(crate::node_investigation::BirthRuntime { fact, data_dir, incarnation: birth }) = crate::node_investigation::runtime_of(held_row.as_ref().map(|(dg, _)| dg), row) else {
-        return (Inspected::Unavailable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" })), None);
+        return (Inspected::Unavailable(format!("no runtime fact: the view holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" })), None);
     };
     // The exact runtime handle the inspect asks about: none when the provider refuses to adopt the
     // fact, which the inspect names as its `unavailable`.

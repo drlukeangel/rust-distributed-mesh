@@ -79,7 +79,7 @@ node.created
 ```
 
 The bracketed sequence is composed from [Node start](node-start.md); it is not another
-wire enum. A membership Digest cannot complete the caller's stream or the deployment wait
+wire enum. A topology Digest cannot complete the caller's stream or the deployment wait
 ([caller execution](../node-rpc-envelope.md#caller-execution-and-certainty)).
 
 ## Numbered end-to-end sequence

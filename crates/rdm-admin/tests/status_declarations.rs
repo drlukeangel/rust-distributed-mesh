@@ -130,10 +130,10 @@ impl Rig {
 /// mesh1: admin.1 (this authority: mesh-primary and fabric-primary), admin.2, rpc.1, rpc.2;
 /// mesh2: admin.1 (mesh2's primary).
 async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
-    rig_with_book(None).await
+    rig_with_digest_view(None).await
 }
 
-async fn rig_with_book(book: Option<rdm_transport::topology::DigestBook>) -> (Rig, BTreeMap<&'static str, Birth>) {
+async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::DigestView>) -> (Rig, BTreeMap<&'static str, Birth>) {
     let admin = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
     let mut others = BTreeMap::new();
     others.insert("admin2", birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false));
@@ -172,7 +172,7 @@ async fn rig_with_book(book: Option<rdm_transport::topology::DigestBook>) -> (Ri
         caches: Default::default(),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         durable: Default::default(),
-        commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),
+        commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
         own: Arc::new(std::sync::OnceLock::new()),
         mesh_deleter: Arc::new(std::sync::OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -184,7 +184,7 @@ async fn rig_with_book(book: Option<rdm_transport::topology::DigestBook>) -> (Ri
         rename: Default::default(),
         row_moved: Default::default(),
         loads: None,
-        book,
+        digest_view,
         first_ready: Default::default(),
         builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
     });
@@ -992,7 +992,7 @@ async fn carrier_admin(b: &Birth, target: &ResolvedNode) -> (ResolvedNode, Route
         Arc::new(rdm_admin::storage::MemoryConnectionsStorage::default()),
         Arc::new(Mutex::new(ConnectionsHeld::new())),
     ));
-    connections.held().lock().unwrap().set_membership(live.clone());
+    connections.held().lock().unwrap().set_topology_view(live.clone());
     connections.hydrate().await.unwrap();
     let node_rpc = rdm_admin::node_rpc::ProcessNodeRpc::new(live.clone(), ep.clone());
     let server = rdm_admin::admin::rpc_server(connections, node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
@@ -2103,7 +2103,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 caches: Default::default(),
                 mesh_ids: Arc::new(BTreeMap::new),
                 durable: Default::default(),
-                commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),
+                commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
                 own: Arc::new(std::sync::OnceLock::new()),
                 mesh_deleter: Arc::new(std::sync::OnceLock::new()),
                 hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2115,7 +2115,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 rename: Default::default(),
                 row_moved: Default::default(),
                 loads: Some(Arc::new(BTreeMap::new)),
-                book: None,
+                digest_view: None,
                 builds,
                 first_ready: Default::default(),
             };
@@ -2322,11 +2322,11 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let membership = rdm_transport::topology::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
-        membership.set_mesh_primary(true);
-        let (rig, b) = rig_with_book(Some(membership.book.clone())).await;
+        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        topology_view.set_mesh_primary(true);
+        let (rig, b) = rig_with_digest_view(Some(topology_view.digest_view.clone())).await;
         let rpc = &b["rpc2"];
-        assert!(membership.book.record(rdm_core::MeshDigest { held_hash: Default::default(),
+        assert!(topology_view.digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
             node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None
@@ -2365,8 +2365,8 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
     });
     let records = cap.spans("rdm.node_admin.node.update.via-connections-deleting");
     assert_eq!(records.len(), 1, "the mesh-primary records the repeated progress once: {records:?}");
-    assert_eq!(records[0].1.get("recorded").map(String::as_str), Some("true"), "the progress changed the actual book: {records:?}");
-    assert_eq!(cap.spans("rdm.mesh.membership.update.from-status-report").len(), 1, "one status write, not just one carrier span");
+    assert_eq!(records[0].1.get("recorded").map(String::as_str), Some("true"), "the progress changed the actual view: {records:?}");
+    assert_eq!(cap.spans("rdm.mesh.topology.update.from-status-report").len(), 1, "one status write, not just one carrier span");
     assert!(!records[0].1.get("invocation_id").unwrap_or(&String::new()).is_empty(), "the record names the invocation: {records:?}");
     assert_eq!(records[0].1.get("seq").map(String::as_str), Some("1"), "the progress position: {records:?}");
 }
@@ -2475,11 +2475,11 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let membership = rdm_transport::topology::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
-        membership.set_mesh_primary(true);
-        let (rig, b) = rig_with_book(Some(membership.book.clone())).await;
+        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        topology_view.set_mesh_primary(true);
+        let (rig, b) = rig_with_digest_view(Some(topology_view.digest_view.clone())).await;
         let rpc = &b["rpc2"];
-        assert!(membership.book.record(rdm_core::MeshDigest { held_hash: Default::default(),
+        assert!(topology_view.digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
             node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None
@@ -2520,20 +2520,20 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
     });
     let records: Vec<_> = cap.spans("rdm.node_admin.node.update.via-command-frame").into_iter().filter(|(_, a)| a.get("frame").map(String::as_str) == Some("node-joined")).collect();
     assert_eq!(records.len(), 1, "the mesh-primary records the repeated progress once: {records:?}");
-    let applied: Vec<_> = cap.spans("rdm.mesh.membership.update.from-status-report").into_iter().filter(|(_, a)| a.get("status").map(String::as_str) == Some("Pending")).collect();
+    let applied: Vec<_> = cap.spans("rdm.mesh.topology.update.from-status-report").into_iter().filter(|(_, a)| a.get("status").map(String::as_str) == Some("Pending")).collect();
     assert_eq!(applied.len(), 1, "one Pending status write, not just one carrier span: {applied:?}");
     assert!(!records[0].1.get("invocation_id").unwrap_or(&String::new()).is_empty(), "the record names the invocation: {records:?}");
     assert_eq!(records[0].1.get("seq").map(String::as_str), Some("1"), "the progress position: {records:?}");
 }
 
 /// A start after a stop of mesh1.rpc.2 at its mesh-primary, carried on a real command stream: the
-/// birth's stop is recorded (its Stopped row, the book's stop), the start's join report is accepted
+/// birth's stop is recorded (its Stopped row, the view's stop), the start's join report is accepted
 /// and its Pending recorded there, before the join is answered (node-mesh-join.md step 10). With
 /// `ready_first`, the node's own ReadyForTraffic declaration is decided before its mesh-primary takes
 /// the start's `NodeJoined` frame; otherwise after it. What the mesh-primary holds of the birth once
 /// it took `NodeJoined` is checked by `joined`, before `NodeStarted` is sent; the spans the run
 /// exported are returned.
-fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, joined: impl Fn(&Rig, &Birth, &rdm_transport::topology::DigestBook) + Send + Sync + 'static) -> Capture {
+fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, joined: impl Fn(&Rig, &Birth, &rdm_transport::topology::DigestView) + Send + Sync + 'static) -> Capture {
     use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest};
     let cap = capture();
     cap.run(async move {
@@ -2543,21 +2543,21 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let membership = rdm_transport::topology::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
-        membership.set_mesh_primary(true);
-        let book = membership.book.clone();
-        let (rig, b) = rig_with_book(Some(book.clone())).await;
+        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        topology_view.set_mesh_primary(true);
+        let digest_view = topology_view.digest_view.clone();
+        let (rig, b) = rig_with_digest_view(Some(digest_view.clone())).await;
         let rpc = &b["rpc2"];
         let incarnation = rpc.node.incarnation_id.clone().unwrap();
-        assert!(book.record(rdm_core::MeshDigest { held_hash: Default::default(),
+        assert!(digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
             node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
-        // The birth's stop: its Stopped row, and the book's stop of it.
+        // The birth's stop: its Stopped row, and the view's stop of it.
         let stop = rdm_core::LifecycleOp { node_id: rpc.node.node_id.clone(), incarnation: incarnation.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), attempt: 1, operation: format!("node.stop:{}", rpc.node.name), event_at_rafka_ms: 1 };
         assert_eq!(rig.authority.stop_received(&stop).await, StatusReply::Applied);
-        assert!(book.stopped(stop), "the book holds the birth's stop");
+        assert!(digest_view.stopped(stop), "the view holds the birth's stop");
         // The start's join report, accepted at the door: the birth's next cycle begins and its Pending
         // is recorded there, before the join is answered.
         assert_eq!(rig.authority.joined_pending(&rpc.node.node_id, &rpc.node.name, &incarnation, true).await, StatusReply::Applied, "the join report's Pending is recorded");
@@ -2599,7 +2599,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         let (authority, target) = (rig.authority.clone(), rpc.node.clone());
         let start = tokio::spawn(async move { authority.carry_lifecycle(&target, true, &context).await });
         tokio::time::timeout(Duration::from_secs(10), taken.notified()).await.expect("the mesh-primary took the start's NodeJoined");
-        joined(&rig, rpc, &book);
+        joined(&rig, rpc, &digest_view);
         if !ready_first {
             assert_eq!(reply(&call(&rig, rpc, &declare(rpc, NodeState::ReadyForTraffic)).await), StatusReply::Applied, "the node's ReadyForTraffic applies over the join's Pending");
         }
@@ -2607,19 +2607,19 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         let answer = tokio::time::timeout(Duration::from_secs(10), start).await.unwrap().unwrap();
         assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
         assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc.node.node_id, &incarnation), Some(NodeState::ReadyForTraffic));
-        assert_eq!(book.member_status(&rpc.node.node_id, &incarnation), Some(rdm_core::MemberStatus::ReadyForTraffic));
+        assert_eq!(digest_view.member_status(&rpc.node.node_id, &incarnation), Some(rdm_core::MemberStatus::ReadyForTraffic));
     });
     cap
 }
 
 /// What the mesh-primary holds of mesh1.rpc.2's birth once it took the start's `NodeJoined`: the
 /// declared `state`, the member status `status`, its stop over and the birth held again.
-fn held_after_node_joined(rig: &Rig, rpc: &Birth, book: &rdm_transport::topology::DigestBook, state: NodeState, status: rdm_core::MemberStatus) {
+fn held_after_node_joined(rig: &Rig, rpc: &Birth, digest_view: &rdm_transport::topology::DigestView, state: NodeState, status: rdm_core::MemberStatus) {
     let incarnation = rpc.node.incarnation_id.clone().unwrap();
     assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc.node.node_id, &incarnation), Some(state), "the start's NodeJoined belongs to the Pending its join report recorded: it applies as already applied and the birth stays declared {state:?}");
-    assert_eq!(book.member_status(&rpc.node.node_id, &incarnation), Some(status), "the book holds the birth {status:?}: NodeJoined sets nothing back");
-    assert!(book.get(rpc.node.node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == incarnation), "the birth is held again from node.mesh.joined");
-    assert!(!book.in_flight().into_iter().any(|op| op.node_id == rpc.node.node_id && op.is_stop()), "its stop is cleared at node.mesh.joined");
+    assert_eq!(digest_view.member_status(&rpc.node.node_id, &incarnation), Some(status), "the view holds the birth {status:?}: NodeJoined sets nothing back");
+    assert!(digest_view.get(rpc.node.node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == incarnation), "the birth is held again from node.mesh.joined");
+    assert!(!digest_view.in_flight().into_iter().any(|op| op.node_id == rpc.node.node_id && op.is_stop()), "its stop is cleared at node.mesh.joined");
 }
 
 /// The spans of `name` the cell's run exported for mesh1.rpc.2.
@@ -2634,16 +2634,16 @@ fn of_rpc2(cap: &Capture, name: &str) -> Vec<BTreeMap<String, String>> {
 /// took its `NodeJoined` frame stays ReadyForTraffic through that frame: declared ReadyForTraffic,
 /// its member status ReadyForTraffic, its stop cleared at node.mesh.joined and the birth held again;
 /// the birth's cycle begun once, at its join report. Must NOT happen: `NodeJoined` beginning another
-/// cycle and recording Pending again, or the book setting the ready birth back to Pending.
+/// cycle and recording Pending again, or the view setting the ready birth back to Pending.
 #[test]
 fn a_starts_node_joined_taken_after_the_births_ready_declaration_leaves_it_ready_for_traffic() {
-    let cap = start_after_a_stop_with_the_pending_recorded_at_the_join(true, |rig, rpc, book| held_after_node_joined(rig, rpc, book, NodeState::ReadyForTraffic, rdm_core::MemberStatus::ReadyForTraffic));
+    let cap = start_after_a_stop_with_the_pending_recorded_at_the_join(true, |rig, rpc, digest_view| held_after_node_joined(rig, rpc, digest_view, NodeState::ReadyForTraffic, rdm_core::MemberStatus::ReadyForTraffic));
     let begun = of_rpc2(&cap, "rdm.node_admin.status.update.via-cycle-begun");
     assert_eq!(begun.len(), 1, "the birth's cycle begins once, at its join report: {begun:?}");
     let admitted = of_rpc2(&cap, "rdm.node_admin.status.update.via-mesh-join-admitted");
     assert_eq!(admitted.iter().map(|a| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["applied".to_string(), "already-applied".to_string()], "the join report's Pending is recorded once; its retry applies as already applied: {admitted:?}");
-    let joined: Vec<_> = of_rpc2(&cap, "rdm.mesh.membership.update.via-node-joined");
-    assert_eq!(joined.iter().map(|a| (a.get("outcome").cloned().unwrap_or_default(), a.get("status").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("already-applied".to_string(), "ReadyForTraffic".to_string())], "the book took node.mesh.joined as already applied, holding the ready birth ready: {joined:?}");
+    let joined: Vec<_> = of_rpc2(&cap, "rdm.mesh.topology.update.via-node-joined");
+    assert_eq!(joined.iter().map(|a| (a.get("outcome").cloned().unwrap_or_default(), a.get("status").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("already-applied".to_string(), "ReadyForTraffic".to_string())], "the view took node.mesh.joined as already applied, holding the ready birth ready: {joined:?}");
     let frames: Vec<_> = of_rpc2(&cap, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|a| a.get("frame").map(String::as_str) == Some("node-joined")).collect();
     assert_eq!(frames.iter().map(|a| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["already-applied".to_string()], "{frames:?}");
 }
@@ -2655,11 +2655,11 @@ fn a_starts_node_joined_taken_after_the_births_ready_declaration_leaves_it_ready
 /// Must NOT happen: `NodeJoined` beginning a second cycle and putting a second Pending row.
 #[test]
 fn a_starts_node_joined_taken_while_the_birth_is_pending_from_its_join_report_begins_no_second_cycle() {
-    let cap = start_after_a_stop_with_the_pending_recorded_at_the_join(false, |rig, rpc, book| held_after_node_joined(rig, rpc, book, NodeState::Pending, rdm_core::MemberStatus::Pending));
+    let cap = start_after_a_stop_with_the_pending_recorded_at_the_join(false, |rig, rpc, digest_view| held_after_node_joined(rig, rpc, digest_view, NodeState::Pending, rdm_core::MemberStatus::Pending));
     let begun = of_rpc2(&cap, "rdm.node_admin.status.update.via-cycle-begun");
     assert_eq!(begun.len(), 1, "the birth's cycle begins once, at its join report: {begun:?}");
-    let joined: Vec<_> = of_rpc2(&cap, "rdm.mesh.membership.update.via-node-joined");
-    assert_eq!(joined.iter().map(|a| (a.get("outcome").cloned().unwrap_or_default(), a.get("status").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("already-applied".to_string(), "Pending".to_string())], "the book took node.mesh.joined as already applied: {joined:?}");
+    let joined: Vec<_> = of_rpc2(&cap, "rdm.mesh.topology.update.via-node-joined");
+    assert_eq!(joined.iter().map(|a| (a.get("outcome").cloned().unwrap_or_default(), a.get("status").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("already-applied".to_string(), "Pending".to_string())], "the view took node.mesh.joined as already applied: {joined:?}");
     let frames: Vec<_> = of_rpc2(&cap, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|a| a.get("frame").map(String::as_str) == Some("node-joined")).collect();
     assert_eq!(frames.iter().map(|a| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["already-applied".to_string()], "{frames:?}");
 }

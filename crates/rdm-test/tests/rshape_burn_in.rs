@@ -3396,7 +3396,7 @@ fn check_restart_chain(spans: &[Value], rec: &Value) -> Value {
     let ready = named(spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == id.as_str() && sp["attributes"]["incarnation_id"] == inc.as_str() && start_ns(sp) > start_ns(restarting[0])).cloned().unwrap_or_else(|| panic!("{node}: the birth {inc} left no ready span after the restart was announced"));
     let deleted: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).collect();
     assert!(deleted.is_empty(), "{node}: a successful restart emits no NodeDeleted for the same logical node: {deleted:?}");
-    let received = named(spans, "rdm.mesh.membership.update.via-node-restarting").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).count();
+    let received = named(spans, "rdm.mesh.topology.update.via-node-restarting").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).count();
     json!({"node": node, "op": op, "accepted_span": accepted["span_id"], "reconcile_span": reconcile["span_id"], "update_span": update["span_id"], "pipeline_span": pipeline["span_id"], "steps": names,
         "restarting_spans": restarting.iter().map(|sp| sp["span_id"].clone()).collect::<Vec<_>>(), "received_restarting": received, "ready_span": ready["span_id"], "node_deleted_spans": 0})
 }
@@ -3710,7 +3710,7 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
         }
     }
     let recipe_ops = replace.then(|| recipe_ops_of(spans, &node, &bid));
-    let removed = named(spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).count();
+    let removed = named(spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).count();
     let ready = named(spans, "rdm.mesh.node.update.via-ready");
     let after: Vec<&&Value> = ready.iter().filter(|r| r["attributes"]["node_id"] == id.as_str() && start_ns(r) > start_ns(deleted[0])).collect();
     assert!(after.is_empty(), "{node}: the retired NodeId {id} was Ready again after its departure: {after:?}");
@@ -3976,7 +3976,7 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
     assert_eq!(after_call["reply"]["result"], json!({"stored": true}), "{node}: the re-created node serves: {after_call}");
     assert_eq!(after_call["reply"]["incarnation_id"], ready["incarnation_id"], "{node}: served by the re-created birth: {after_call}");
     let release_ack = held.release();
-    // The released birth comes back: refused by every book, reported by its mesh-primary, and its runtime
+    // The released birth comes back: refused by every view, reported by its mesh-primary, and its runtime
     // terminated by the fabric-primary's TerminateRuntime, an attempt of the current Build
     // (node-investigation.md, Q128). The run waits for both, so its next write is the Build's next attempt.
     let t = Instant::now();
@@ -5234,8 +5234,8 @@ fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
             n.contains(".node.delete.")
                 || n.contains(".deployment.delete.")
                 || n.contains(".deployment.update.")
-                || n.contains("membership.remove.")
-                || n.contains("membership.reject.via-departed-birth")
+                || n.contains("topology.remove.")
+                || n.contains("topology.reject.via-departed-birth")
                 || n.contains("node.create.via-deployment")
         })
         .collect()
@@ -5382,7 +5382,7 @@ async fn partition_run(cell: &str, shape: Shape) {
         for ((o, p), n) in &per_pair {
             assert!(*n <= held_ns / (wm * 1_000_000) + 1, "{o} -> {p}: {n} attempts in {} ms exceeds one per {wm} ms window", held_ns / 1_000_000);
         }
-        let silent_own: Vec<String> = named(spans, "rdm.mesh.membership.update.via-mesh-silent")
+        let silent_own: Vec<String> = named(spans, "rdm.mesh.topology.update.via-mesh-silent")
             .into_iter()
             // A birth the cut's recovery terminated loses its mesh on its way out: not an admin of a
             // live mesh losing it.

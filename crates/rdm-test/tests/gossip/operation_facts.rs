@@ -1,7 +1,7 @@
 //! Live receive-path cells for operation facts: exact identity, independent of unrelated traffic.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{learn_addresses, Frame, Membership};
+use rdm_transport::topology::{learn_addresses, Frame, TopologyView};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -25,11 +25,11 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())));
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let sender = Membership::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let sender = TopologyView::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         crate::declare_gossip_probe(&sender);
-        let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
+        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
         let op = LifecycleOp { build_id: "deletion-build".into(), attempt: 1, operation: "node.delete:mesh1.rpc.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1 };
-        assert!(receiver.book.record(MeshDigest { held_hash: Default::default(),
+        assert!(receiver.digest_view.record(MeshDigest { held_hash: Default::default(),
             fabric_id: fabric.clone(), node: MeshNode { node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(sender_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None },
             status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1,
             data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None
@@ -41,39 +41,39 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
         }).await.expect("the receiver joins the live mesh");
         crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-mesh-status" && s["attributes"]["taken"] == "true") {
+            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-mesh-status" && s["attributes"]["taken"] == "true") {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("unrelated newer traffic is applied first");
         crate::forward_gossip_probe(&sender, &Frame::NodeDeleted { op: op.clone(), forwarded_by: None }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-node-deleted" && s["attributes"]["applied"] == "true") {
+            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-node-deleted" && s["attributes"]["applied"] == "true") {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the terminal fact is applied after unrelated newer traffic");
-        assert!(receiver.book.get(op.node_id.as_str()).is_none());
-        assert!(receiver.book.is_deleted(op.node_id.as_str()));
-        assert_eq!(receiver.book.deleted(), vec![op.clone()]);
+        assert!(receiver.digest_view.get(op.node_id.as_str()).is_none());
+        assert!(receiver.digest_view.is_deleted(op.node_id.as_str()));
+        assert_eq!(receiver.digest_view.deleted(), vec![op.clone()]);
         if repeat {
-            let changes = receiver.book.birth_changes();
+            let changes = receiver.digest_view.birth_changes();
             let before = *changes.borrow();
             // Different forwarding metadata reaches RDM past the transport's byte dedup;
             // the operation and exact birth remain identical.
             crate::forward_gossip_probe(&sender, &Frame::NodeDeleted { op: op.clone(), forwarded_by: Some("mesh2.admin.1".into()) }).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
-                while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-node-deleted").count() < 2 {
+                while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-node-deleted").count() < 2 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             }).await.expect("RDM receives the repeat");
             assert_eq!(*changes.borrow(), before, "the repeated fact emits no birth-change notification");
-            assert_eq!(receiver.book.deleted(), vec![op.clone()], "the terminal fact is unchanged");
+            assert_eq!(receiver.digest_view.deleted(), vec![op.clone()], "the terminal fact is unchanged");
         }
         sender_ep.close().await;
         receiver_ep.close().await;
         op
     });
     let spans = capture.spans().unwrap();
-    for sp in spans.iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.membership."))) {
+    for sp in spans.iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.topology."))) {
         println!("{}", serde_json::to_string(sp).unwrap());
     }
     (spans, op)
@@ -84,12 +84,12 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
 #[test]
 fn node_deleted_stands_after_unrelated_newer_traffic() {
     let (spans, _) = node_deleted_story(false);
-    let apply: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.remove.via-node-deleted").collect();
+    let apply: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.remove.via-node-deleted").collect();
     assert_eq!(apply.len(), 1);
     assert_eq!(apply[0]["attributes"]["was_held"], "true");
-    let status = spans.iter().find(|s| s["name"] == "rdm.mesh.membership.update.via-mesh-status").unwrap();
+    let status = spans.iter().find(|s| s["name"] == "rdm.mesh.topology.update.via-mesh-status").unwrap();
     assert!(status["end_unix_nano"].as_u64().unwrap() <= apply[0]["start_unix_nano"].as_u64().unwrap());
-    assert!(!spans.iter().any(|s| s["name"] == "rdm.mesh.membership.reject.via-stale" && s["attributes"]["frame"] == "node-deleted"));
+    assert!(!spans.iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == "node-deleted"));
 }
 
 /// CONTRACT: a NodeDeleted repeat matches kind, operation and exact birth, emits via-duplicate,
@@ -97,9 +97,9 @@ fn node_deleted_stands_after_unrelated_newer_traffic() {
 #[test]
 fn node_deleted_repeat_is_ignored_by_its_operation_and_exact_birth() {
     let (spans, op) = node_deleted_story(true);
-    assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.remove.via-node-deleted").count(), 1);
+    assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.remove.via-node-deleted").count(), 1);
     let identity = format!("node-deleted {} {} {} {}/{}", op.build_id, op.attempt, op.operation, op.node_id, op.incarnation);
-    assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-duplicate"
+    assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate"
         && s["attributes"]["frame"] == "node-deleted" && s["attributes"]["identity"] == identity
         && s["attributes"]["outcome"] == "ignored").count(), 1, "the framework must name the ignored exact operation fact");
 }
@@ -129,25 +129,25 @@ fn state_hook_story(kind: &'static str, story: HookStory) {
         learn_addresses(&receiver_ep, &[address(&sender_ep), address(&peer_ep)]).unwrap();
         learn_addresses(&peer_ep, &[address(&receiver_ep)]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let sender = Membership::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let sender = TopologyView::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         crate::declare_gossip_probe(&sender);
-        let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![address(&sender_ep)], &[]).await.unwrap();
-        let peer = Membership::join(&peer_gossip, &peer_ep, &fabric, "mesh2", &MeshId::mint(), "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![address(&sender_ep)], &[]).await.unwrap();
+        let peer = TopologyView::join(&peer_gossip, &peer_ep, &fabric, "mesh2", &MeshId::mint(), "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let _peer_backbone = Backbone::join(&peer_gossip, &peer_ep, &peer, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let backbone = Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![address(&peer_ep)]).await.unwrap();
         let key = StateKey { kind: if kind.starts_with("state-") { StateCommand::StateCommit } else { StateCommand::OpenTraffic }, fabric_id: fabric.clone(), build_id: "held-state-build".into(), attempt: 1 };
         let (subject_id, subject_incarnation) = (NodeId::mint(), IncarnationId::mint());
         sender.set_author(&rdm_core::PublisherId { node: "mesh1.rpc.2".into(), node_id: subject_id.clone(), incarnation: subject_incarnation.clone() });
-        let book = Arc::new(Checklists::default());
-        assert!(book.open(&key));
-        book.expect(&key, std::collections::BTreeMap::from([(subject_id.clone(), rdm_admin::fabric_state::Expected { incarnation: subject_incarnation.clone(), name: "mesh1.rpc.2".into() })]), Vec::new());
-        if matches!(story, HookStory::Closed) { book.close(&key); }
-        let checklist_changes = book.subscribe();
+        let digest_view = Arc::new(Checklists::default());
+        assert!(digest_view.open(&key));
+        digest_view.expect(&key, std::collections::BTreeMap::from([(subject_id.clone(), rdm_admin::fabric_state::Expected { incarnation: subject_incarnation.clone(), name: "mesh1.rpc.2".into() })]), Vec::new());
+        if matches!(story, HookStory::Closed) { digest_view.close(&key); }
+        let checklist_changes = digest_view.subscribe();
         let checklist_before = *checklist_changes.borrow();
-        let held_book = book.clone();
+        let held_digest_view = digest_view.clone();
         receiver.set_completion_carrier(Arc::new(move |f| {
             calls.fetch_add(1, Ordering::SeqCst);
-            held_book.carry_check_in(f, |f| {
+            held_digest_view.carry_check_in(f, |f| {
                 count.fetch_add(1, Ordering::SeqCst);
                 let (backbone, f) = (backbone.clone(), f.clone());
                 tokio::spawn(async move { backbone.carry_completion(f).await });
@@ -165,7 +165,7 @@ fn state_hook_story(kind: &'static str, story: HookStory) {
         tokio::time::timeout(Duration::from_secs(5), async {
             while receiver.mesh_status("mesh3").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.unwrap();
-        let changes = receiver.book.birth_changes();
+        let changes = receiver.digest_view.birth_changes();
         let before = *changes.borrow();
         let completion = kind == "state-committed" || kind == "traffic-opened";
         let publisher = if !completion || matches!(story, HookStory::AdminAuthor) { "mesh1.admin.2" } else { "mesh1.rpc.2" };
@@ -184,39 +184,39 @@ fn state_hook_story(kind: &'static str, story: HookStory) {
             crate::forward_gossip_probe(&sender, &f).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while capture.spans().unwrap().iter().filter(|s| {
-                    s["name"] == "rdm.mesh.membership.update.via-state-frame" && s["attributes"]["kind"] == kind && s["attributes"]["node"] == "mesh1.admin.1"
-                    || s["name"] == "rdm.mesh.membership.update.via-duplicate" && s["attributes"]["frame"] == kind
+                    s["name"] == "rdm.mesh.topology.update.via-state-frame" && s["attributes"]["kind"] == kind && s["attributes"]["node"] == "mesh1.admin.1"
+                    || s["name"] == "rdm.mesh.topology.update.via-duplicate" && s["attributes"]["frame"] == kind
                 }).count() < receipt as usize { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the hook reaches the RDM receiver");
         }
         if completion && !matches!(story, HookStory::Closed | HookStory::AdminAuthor) {
             tokio::time::timeout(Duration::from_secs(5), async {
-                while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-state-frame" && s["attributes"]["kind"] == kind && s["attributes"]["via"] == "backbone" && s["attributes"]["node"] == "mesh2.admin.1") { tokio::time::sleep(Duration::from_millis(10)).await; }
+                while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-state-frame" && s["attributes"]["kind"] == kind && s["attributes"]["via"] == "backbone" && s["attributes"]["node"] == "mesh2.admin.1") { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the ordinary check-in reaches the live backbone peer");
         }
         assert_eq!(*changes.borrow(), before, "hooks never change birth lifecycle");
         assert_eq!(*checklist_changes.borrow(), checklist_before, "gossip never notifies or changes the directed checklist");
-        assert!(!book.complete(&key), "even completion gossip cannot check in the planned birth");
-        assert!(if matches!(story, HookStory::Closed) { !book.is_open(&key) } else { book.is_open(&key) }, "gossip never changes the checklist book");
+        assert!(!digest_view.complete(&key), "even completion gossip cannot check in the planned birth");
+        assert!(if matches!(story, HookStory::Closed) { !digest_view.is_open(&key) } else { digest_view.is_open(&key) }, "gossip never changes the checklist view");
         sender_ep.close().await;
         receiver_ep.close().await;
         peer_ep.close().await;
         hook
     });
     let spans = capture.spans().unwrap();
-    for sp in spans.iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.membership."))) { println!("{}", serde_json::to_string(sp).unwrap()); }
-    let applies: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-state-frame" && s["attributes"]["kind"] == kind && s["attributes"]["node"] == "mesh1.admin.1").collect();
+    for sp in spans.iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.topology."))) { println!("{}", serde_json::to_string(sp).unwrap()); }
+    let applies: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-state-frame" && s["attributes"]["kind"] == kind && s["attributes"]["node"] == "mesh1.admin.1").collect();
     let completion = kind == "state-committed" || kind == "traffic-opened";
     let expected = usize::from(completion && !matches!(story, HookStory::Closed | HookStory::AdminAuthor));
     assert_eq!(applies.len(), 1, "each identity has exactly one ordinary apply span");
     assert_eq!(carried.load(Ordering::SeqCst), expected, "only an ordinary check-in of an open checklist is carried once");
     assert_eq!(called.load(Ordering::SeqCst), usize::from(completion), "a duplicate never invokes the carrier");
     assert_eq!(applies[0]["attributes"]["carried"], if !completion { "not-a-check-in" } else if matches!(story, HookStory::Closed) { "closed-checklist" } else if matches!(story, HookStory::AdminAuthor) { "node-admin" } else { "carried" });
-    let backbone_receipts = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-state-frame" && s["attributes"]["kind"] == kind && s["attributes"]["via"] == "backbone" && s["attributes"]["node"] == "mesh2.admin.1").count();
+    let backbone_receipts = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-state-frame" && s["attributes"]["kind"] == kind && s["attributes"]["via"] == "backbone" && s["attributes"]["node"] == "mesh2.admin.1").count();
     assert_eq!(backbone_receipts, expected, "the real backbone receives exactly the carried fact");
     if matches!(story, HookStory::Repeat | HookStory::ForwardedRepeat) {
         let identity = format!("{kind} {} {} {} {} {}/{}", hook.fabric_id, hook.build_id, hook.attempt, hook.operation, hook.node_id, hook.incarnation);
-        assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-duplicate" && s["attributes"]["frame"] == kind && s["attributes"]["identity"] == identity && s["attributes"]["outcome"] == "ignored").count(), 1);
+        assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate" && s["attributes"]["frame"] == kind && s["attributes"]["identity"] == identity && s["attributes"]["outcome"] == "ignored").count(), 1);
     }
 }
 

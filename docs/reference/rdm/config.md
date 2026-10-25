@@ -21,7 +21,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rdm-core/src/cadence.rs` | 37 | fn `Cadences::from_env` | argument to `ms` |
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rdm-test/src/estate.rs` | 231 | fn `spawn_admin_in_container_within` | literal |
 | `RDM_BACKBONE_INTERVAL_MS` | `tools/test-runner/src/lib.rs` | 41 | const `CADENCE` | literal |
-| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/boot.rs` | 1390 | fn `start_booted` | argument to `.insert` |
+| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/boot.rs` | 1411 | fn `start_booted` | argument to `.insert` |
 | `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/records.rs` | 133 | fn `AdminConfig::from_env` | argument to `get` |
 | `RDM_BIN_DIR` | `crates/rdm-admin/src/deployment/container.rs` | 273 | fn `launch_disk` | argument to `.get` |
 | `RDM_BIN_DIR` | `crates/rdm-test/src/estate.rs` | 48 | fn `bin_dir` | argument to `std::env::var` |
@@ -88,7 +88,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/transport_diag.rs` | 113 | fn `start` | argument to `env` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/watchdog.rs` | 193 | fn `spawn` | argument to `std::env::var` |
 | `RDM_EVIDENCE_DIR` | `tools/test-runner/src/lib.rs` | 52 | const `SCRUBBED` | literal |
-| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/boot.rs` | 1394 | fn `start_booted` | `ENV_EXECUTABLE_DIRS`, argument to `.insert` |
+| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/boot.rs` | 1415 | fn `start_booted` | `ENV_EXECUTABLE_DIRS`, argument to `.insert` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 140 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, argument to `get` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 142 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, in `format!` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/control_plane.rs` | 1207 | fn `named_executable_refusal` | `ENV_EXECUTABLE_DIRS`, in `format!` |

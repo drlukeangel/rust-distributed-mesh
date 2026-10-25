@@ -1,4 +1,4 @@
-//! Start gates, membership observer, admin session, and entry sweep.
+//! Start gates, topology observer, admin session, and entry sweep.
 
 use super::*;
 
@@ -108,14 +108,14 @@ pub fn take_over_blockers(held: &[MeshDigest], provider: &dyn crate::deployment:
 /// Readiness, drain and admission seen through each member's own digest:
 /// a node publishes `ReadyForTraffic` once it serves, and `ConnectionsDeleting` right
 /// after it starts refusing new work with the typed `ConnectionsDeleting` refusal (node-rpc §35).
-pub struct MembershipObserver {
-    /// The digest book the observer reads.
-    pub book: DigestBook,
+pub struct TopologyObserver {
+    /// The digest view the observer reads.
+    pub digest_view: DigestView,
     /// The process's one Node RPC client (ruling X), over which the typed drain reaches the
     /// exact birth; `None` only in a cell that observes without a transport.
     pub client: Option<Arc<rdm_transport::NodeRpcClient>>,
     /// The commands this admin sent and awaits a completion call for.
-    pub commands: Arc<crate::node_commands::CommandBook>,
+    pub commands: Arc<crate::node_commands::CommandView>,
     /// This admin's status authority, once it holds a view: a start begins a new cycle of the birth's
     /// declared states.
     pub authority: crate::status_rpc::AuthoritySlot,
@@ -126,14 +126,14 @@ pub struct MembershipObserver {
     pub unreachable: crate::offline::UnreachableMarks,
 }
 
-impl MembershipObserver {
+impl TopologyObserver {
     /// A command to `node` was never sent for a reachability reason: mark the birth `PendingReconnect`
     /// at once, an observer mark beside the status its mesh-primary recorded, never over it. A birth
     /// whose recorded status is a lifecycle state the node reported (connections-deleting, stopping,
     /// stopped) keeps it and is not marked (node-recovery.md step 1).
     fn mark_unreachable(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext, why: &crate::node_commands::Unreachable) {
         let Some(incarnation) = node.incarnation_id.clone() else { return };
-        let recorded = self.book.member_status(&node.node_id, &incarnation);
+        let recorded = self.digest_view.member_status(&node.node_id, &incarnation);
         let outcome = if crate::offline::marks_over(recorded) {
             let mark = crate::offline::UnreachableMark { incarnation: incarnation.clone(), at: std::time::Instant::now(), at_ms: crate::admin::records::local_now_ms(), reason: why.reason };
             self.unreachable.lock().unwrap().insert(node.node_id.clone(), mark);
@@ -158,11 +158,11 @@ impl MembershipObserver {
     }
 
     pub(crate) fn digest_of(&self, node: &Node) -> Option<MeshDigest> {
-        self.book.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref())
+        self.digest_view.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref())
     }
 }
 
-/// The blocker an exact birth names for its Ready (node-start.md step 3): only while `book` holds the
+/// The blocker an exact birth names for its Ready (node-start.md step 3): only while `digest_view` holds the
 /// birth Pending (the status its mesh-primary set, never its heartbeat's), one `ProbeNodeState` to
 /// that birth over `client`, and the hook's blocker of
 /// a Status `Blocked` answer, named with the birth and the event it runs again on and no attempt
@@ -171,9 +171,9 @@ impl MembershipObserver {
 /// and the step waits on; so does a birth that answers its state (`Current`, `CurrentParked`), a
 /// stale incarnation, or a call that ends unanswered: why it is not Ready is the Ready check's to
 /// report.
-pub async fn probed_ready_blocker(client: &rdm_transport::NodeRpcClient, book: &DigestBook, node: &Node) -> Option<String> {
+pub async fn probed_ready_blocker(client: &rdm_transport::NodeRpcClient, digest_view: &DigestView, node: &Node) -> Option<String> {
     let incarnation = node.incarnation_id.clone()?;
-    let (digest, _) = book.get(node.node_id.as_str()).filter(|(d, _)| d.node.incarnation == incarnation)?;
+    let (digest, _) = digest_view.get(node.node_id.as_str()).filter(|(d, _)| d.node.incarnation == incarnation)?;
     if digest.status != MemberStatus::Pending {
         return None;
     }
@@ -187,18 +187,18 @@ pub async fn probed_ready_blocker(client: &rdm_transport::NodeRpcClient, book: &
 }
 
 #[async_trait::async_trait]
-impl NodeObserver for MembershipObserver {
+impl NodeObserver for TopologyObserver {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication> {
-        self.book
+        self.digest_view
             .get(node_id.as_str())
             .filter(|(d, _)| &d.node.incarnation == incarnation)
             .map(|(d, _)| Publication { runtime: d.node.runtime, data_dir: d.data_dir })
     }
 
-    /// Ready once this admin's book holds the birth ready-for-traffic: the status its mesh-primary
+    /// Ready once this admin's view holds the birth ready-for-traffic: the status its mesh-primary
     /// set from the birth's node.started (this admin, as that primary, through its status authority;
     /// otherwise the primary's projection), never a heartbeat's. A refusal names the status the
-    /// book's digest carries, the member status the book holds for the birth, and whether this
+    /// view's digest carries, the member status the digest view holds for the birth, and whether this
     /// admin took the birth's node.started (the state it holds the birth declared).
     async fn ready(&self, node: &Node) -> Result<(), String> {
         let Some(d) = self.digest_of(node) else {
@@ -209,11 +209,11 @@ impl NodeObserver for MembershipObserver {
         }
         // This admin's status authority took the birth's node.started: fabric recovery's executor, of
         // another mesh, writes the records of the node it re-creates there while that mesh has no
-        // mesh-primary (build.md §5.3, Q122), and its book holds no member status of another mesh.
+        // mesh-primary (build.md §5.3, Q122), and its view holds no member status of another mesh.
         if self.authority.get().is_some_and(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation) == Some(rdm_core::status::NodeState::ReadyForTraffic)) {
             return Ok(());
         }
-        let member = match self.book.member_status(&node.node_id, &d.node.incarnation) {
+        let member = match self.digest_view.member_status(&node.node_id, &d.node.incarnation) {
             Some(s) => format!("the member status held for the birth is {s:?}"),
             None => "no member status is held for the birth (a birth of another mesh, or no node.joined taken here)".to_string(),
         };
@@ -228,7 +228,7 @@ impl NodeObserver for MembershipObserver {
     }
 
     async fn ready_blocker(&self, node: &Node) -> Option<String> {
-        probed_ready_blocker(self.client.as_deref()?, &self.book, node).await
+        probed_ready_blocker(self.client.as_deref()?, &self.digest_view, node).await
     }
 
     async fn send_command(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext) -> crate::deployment::pipeline::CommandAdmission {
@@ -298,7 +298,7 @@ pub(crate) struct AdminSession {
     pub(crate) incarnation: IncarnationId,
     pub(crate) fabric_id: FabricId,
     pub(crate) mesh_id: MeshId,
-    pub(crate) membership: Membership,
+    pub(crate) topology_view: TopologyView,
     pub(crate) backbone: Backbone,
     pub(crate) client: Arc<rdm_transport::NodeRpcClient>,
     pub(crate) server: rdm_transport::NodeRpcServer,
@@ -348,14 +348,14 @@ impl crate::node_self::Session for AdminSession {
             h.abort();
         }
         self.before_ready.gate().close();
-        crate::node_self::leave_channels(&self.membership, Some(&self.backbone), &self.node_id).await;
+        crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
     }
 
     async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
         // The stop held this admin's tasks before it (`park_tasks`): nothing it was doing goes out on
         // the connections cut below.
         let turns_in_progress = self.gate.state().borrow().in_progress();
-        let neighbours = self.membership.neighbours();
+        let neighbours = self.topology_view.neighbours();
         self.leave_channels().await;
         let pooled = self.client.close_pooled("node.connections.delete");
         let accepted = self.server.close_connections_except(spare, "node.connections.delete");
@@ -376,34 +376,34 @@ impl crate::node_self::Session for AdminSession {
 impl AdminSession {
     /// This node-admin's channel entry inside `node.mesh.join`, for its start and its standalone join
     /// alike: its mesh, then the backbone.
-    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: &mut Option<crate::connections_writer::RowsHeld>) -> Membership {
+    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: &mut Option<crate::connections_writer::RowsHeld>) -> TopologyView {
         let s = self;
         step.record("mesh_id", tracing::field::display(&s.mesh_id));
         if let Some(joined) = joined {
             // The row's name and config the join handed are held on this admin's digest and by its
-            // membership before it re-enters its topic or says anything (R-JN1).
+            // the topology view before it re-enters its topic or says anything (R-JN1).
             {
                 let mut d = s.digest.lock().unwrap();
                 if let Some(n) = &joined.control.name {
-                    s.membership.set_name(n.clone());
+                    s.topology_view.set_name(n.clone());
                     d.node.name = n.clone();
                 }
                 if let Some(c) = &joined.control.config {
-                    s.membership.set_config(c.clone());
+                    s.topology_view.set_config(c.clone());
                     d.config = c.clone();
                 }
             }
             // The member cert this join was issued, as at every join (Q87).
-            rdm_node::node::install_join_cert(&s.data_connections, &joined.control.member_cert, &s.membership.node_name().to_string(), &s.node_id, &s.incarnation);
+            rdm_node::node::install_join_cert(&s.data_connections, &joined.control.member_cert, &s.topology_view.node_name().to_string(), &s.node_id, &s.incarnation);
             // Only now are its connections recorded: the join's names the handed name.
             drop(rows.take());
         }
-        s.membership.start().await;
+        s.topology_view.start().await;
         tracing::info_span!(
             "rdm.node.mesh.update.via-joined",
-            node = %s.membership.node_name(),
+            node = %s.topology_view.node_name(),
             node_id = %s.node_id,
-            mesh = %s.membership.mesh_name(),
+            mesh = %s.topology_view.mesh_name(),
             mesh_id = %s.mesh_id,
             which = rdm_core::status::WhichMesh::Own.name(),
         )
@@ -411,15 +411,15 @@ impl AdminSession {
         s.backbone.start().await;
         tracing::info_span!(
             "rdm.node.mesh.update.via-joined",
-            node = %s.membership.node_name(),
+            node = %s.topology_view.node_name(),
             node_id = %s.node_id,
-            mesh = %s.membership.mesh_name(),
+            mesh = %s.topology_view.mesh_name(),
             mesh_id = %s.mesh_id,
             which = rdm_core::status::WhichMesh::Backbone.name(),
         )
         .in_scope(|| tracing::info!("joined the backbone channel"));
         drop(step);
-        s.membership.clone()
+        s.topology_view.clone()
     }
 }
 
@@ -447,13 +447,13 @@ pub(crate) struct AdminAfterStop<'a> {
 impl crate::workflows::node_mesh_join::MeshJoin for AdminAfterStop<'_> {
     type Error = crate::node_self::StartFailed;
 
-    fn join_types(&self) -> Vec<String> { self.session.membership.app_types().into_iter().collect() }
+    fn join_types(&self) -> Vec<String> { self.session.topology_view.app_types().into_iter().collect() }
 
     fn join_digest(&self) -> MeshDigest {
         self.session.digest.lock().unwrap().clone()
     }
 
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<Membership, crate::node_self::StartFailed> {
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<TopologyView, crate::node_self::StartFailed> {
         Ok(self.session.enter_mesh(step, joined, &mut self.rows).await)
     }
 }
@@ -479,19 +479,19 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         Some(self.operation.operation.clone())
     }
 
-    async fn joined(&mut self, membership: &Membership, _: Option<&crate::workflows::node_start::JoinThrough>, joined: Option<&crate::wire::JoinAnswer>) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
+    async fn joined(&mut self, topology_view: &TopologyView, _: Option<&crate::workflows::node_start::JoinThrough>, joined: Option<&crate::wire::JoinAnswer>) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
         let s = self.session;
         // From here on it is named by the name it installed from its join answer (`enter_channel`).
         let me = s.digest.lock().unwrap().node.name.clone();
         // The Fabric record and the Build floor the join answered, recorded as at a first start.
         if let Some(joined) = joined {
-            take_entry_control(joined, &s.accepted, &s.entry_floor, &s.wake, &s.membership.mesh_name(), &s.mesh_id).await;
+            take_entry_control(joined, &s.accepted, &s.entry_floor, &s.wake, &s.topology_view.mesh_name(), &s.mesh_id).await;
         }
         // node.joined begins this birth's next cycle: the node.started it reports, naming this start,
         // is owed afresh to its mesh's primary, before its declarer runs again.
         s.declarer.begin_own_cycle(&me, &s.incarnation.as_str(), &self.operation);
         if self.progress.is_some() {
-            if let Some(authority) = s.membership.projected_member_at(&self.commander.borrow().to_string()) {
+            if let Some(authority) = s.topology_view.projected_member_at(&self.commander.borrow().to_string()) {
                 s.declarer.own_on_stream(&me, &s.node_id, &s.incarnation, &self.operation, &authority);
             }
         }
@@ -520,12 +520,12 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.client.clone(), s.local.clone(), s.responders.clone()),
                 progress: None,
             },
-            leave: self.operation.operation.starts_with("node.mesh.join:").then(|| AdminLeave { membership: s.membership.clone(), backbone: s.backbone.clone(), before_ready: s.before_ready.clone(), before_ready_task: s.before_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
+            leave: self.operation.operation.starts_with("node.mesh.join:").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), before_ready: s.before_ready.clone(), before_ready_task: s.before_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
         };
         Ok(crate::workflows::node_start::HookParts {
             birth: crate::before_ready::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
             before_ready: s.before_ready.clone(),
-            events: crate::before_ready::Events::new(membership.book.clone(), s.addressed.clone()),
+            events: crate::before_ready::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
             cancel: self.retire.take().expect("the hook's token is handed once"),
             state: s.before_ready_cell.clone(),
             runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.before_ready_task.clone() },
@@ -540,7 +540,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
 /// step after its hook leaves the birth off its channels, Pending, for its authority's next command
 /// (node-recovery.md step 2), as a failure inside the start's own task does.
 pub(crate) struct AdminLeave {
-    membership: Membership,
+    topology_view: TopologyView,
     backbone: Backbone,
     before_ready: crate::before_ready::BeforeReadyHook,
     before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -554,7 +554,7 @@ impl AdminLeave {
             h.abort();
         }
         self.before_ready.gate().close();
-        crate::node_self::leave_channels(&self.membership, Some(&self.backbone), &self.node_id).await;
+        crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
         tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %self.name, step, reason)
             .in_scope(|| tracing::info!("the commanded start stopped at a step after its hook: the admin leaves its channels for its authority's next command"));
     }
@@ -583,7 +583,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
         }
     }
 
-    async fn topology_installed(&mut self, membership: &Membership, read: &crate::topology_read::TopologyRead) {
+    async fn topology_installed(&mut self, topology_view: &TopologyView, read: &crate::topology_read::TopologyRead) {
         let mesh_peers: Vec<EndpointAddr> = read
             .installed
             .iter()
@@ -591,7 +591,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
             .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.name.mesh == self.name.mesh)
             .filter_map(rdm_transport::topology::gossip_addr)
             .collect();
-        let _ = membership.join_peers_as("admin.session.mesh", mesh_peers).await;
+        let _ = topology_view.join_peers_as("admin.session.mesh", mesh_peers).await;
     }
 
     async fn floor(&mut self, step: &tracing::Span) {
@@ -604,7 +604,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
             // The Ready names the birth that became ready, as the first start's does.
             let incarnation = d.node.incarnation.clone();
             self.wake.wake.poke();
-            tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node = %self.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-membership").in_scope(|| tracing::info!("ready for traffic"));
+            tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node = %self.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-topology").in_scope(|| tracing::info!("ready for traffic"));
         }
     }
 }
@@ -717,7 +717,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         }
     }
 
-    async fn topology_installed(&mut self, membership: &Membership, read: &crate::topology_read::TopologyRead) {
+    async fn topology_installed(&mut self, topology_view: &TopologyView, read: &crate::topology_read::TopologyRead) {
         self.progress.at(format!("{}: node.start is at its topology step", self.me));
         let mut mesh_peers = Vec::new();
         let mut admins = Vec::new();
@@ -731,7 +731,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
                 }
             }
         }
-        let _ = membership.join_peers_as("admin.session.rejoin", mesh_peers).await;
+        let _ = topology_view.join_peers_as("admin.session.rejoin", mesh_peers).await;
         self.backbone.join_admins(admins).await;
         // The maker's topology: when the own mesh already has nodes, this admin is entering an existing
         // mesh (recovery); a mesh's first birth finds none. A maker that holds no snapshot of this mesh
@@ -739,7 +739,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         let mut map = crate::reenter::map_of_read(read, &self.fabric_id);
         map.extend(crate::reenter::map_of_stored(read));
         // A birth starts from its maker's topology: every settled node the maker's projection holds is
-        // in this admin's view as the maker knew it, until membership or the sweep says more. A fabric
+        // in this admin's view as the maker knew it, until the topology view or the sweep says more. A fabric
         // primary this admin becomes then never plans from an empty view.
         for n in map.iter().filter(|n| n.node_id != self.me_id && n.transition.is_none()) {
             if let Some(res) = n.resolved() {
@@ -794,7 +794,7 @@ pub(crate) fn spawn_entry_sweep(
         let report = crate::reenter::enter_existing_mesh(&ctx, source, map).await;
         // The entry read has told this admin what the mesh knows of its seats (or no one could).
         records.set_entering(false);
-        // A reply proves a live exact birth: the view holds it (until membership speaks for
+        // A reply proves a live exact birth: the view holds it (until the topology view speaks for
         // it), settled as ReadyForTraffic, in transition as its source held it (a Leaving
         // member that answers is alive and still leaving). A settled node that did not answer
         // stays in the map as not yet reached; one in transition is left to its own last digest.
@@ -816,7 +816,7 @@ pub(crate) struct EntryState {
     pub(crate) provider: ProviderKind,
     pub(crate) accepted: Arc<AcceptedStore>,
     pub(crate) builds: Arc<dyn BuildStateAdapter>,
-    pub(crate) membership: Membership,
+    pub(crate) topology_view: TopologyView,
     /// The rafka-time this admin adopted: a join is answered with it, never with the OS clock.
     pub(crate) time: rdm_transport::clock::RafkaTime,
     /// What this admin signs with: its cert policy rides every entry answer (fabric-certs.md
@@ -829,7 +829,7 @@ impl EntryState {
     /// topology is read with `GetTopology`).
     pub(crate) async fn answer(&self) -> Result<crate::wire::JoinAnswer, String> {
         let e = self;
-        let me = e.membership.book.held_path_name().unwrap_or_else(|| e.name.clone());
+        let me = e.topology_view.digest_view.held_path_name().unwrap_or_else(|| e.name.clone());
         // An admin that holds no rafka-time has none to hand a joiner: the join is not completed,
         // and the refusal says why.
         let rafka_time_ms = e.time.try_now_ms().ok_or_else(|| format!("{me}: this admin holds no rafka-time to answer a join with"))?;
@@ -843,7 +843,7 @@ impl EntryState {
         let fabric = e.accepted.record().await.map_err(|err| format!("{me}: its fabric.storage cannot be read for the Fabric identity: {err}"))?;
         let control = crate::wire::JoinControl { cert_policy: Some(e.issuer.policy()), provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
         let me_str = me.to_string();
-        Ok(crate::wire::JoinAnswer { served_by: me_str.clone(), control, statuses: e.membership.status_frames(&me_str) })
+        Ok(crate::wire::JoinAnswer { served_by: me_str.clone(), control, statuses: e.topology_view.status_frames(&me_str) })
     }
 }
 

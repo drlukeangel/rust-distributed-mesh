@@ -7,7 +7,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{Backbone, Membership, StatusEvent};
+use rdm_transport::topology::{Backbone, TopologyView, StatusEvent};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
@@ -79,7 +79,7 @@ async fn node() -> Node {
 /// publication as the node-admin does (publish its own mesh, then wait for the publication's wake with a 1.5 s
 /// anti-entropy deadline).
 /// While the publication waits, it executes the stop of mesh2.rpc.1 (NodeStopped) and the delete of
-/// mesh2.admin.1 (the departure its book takes). Neither is a change of mesh1's own projection, so
+/// mesh2.admin.1 (the departure its view takes). Neither is a change of mesh1's own projection, so
 /// the publication returns at its deadline and no earlier; the NodeStopped is stamped by the executor
 /// role with the version the fabric-primary holds, never an acting counter of mesh2; and no span
 /// names the fabric-primary an acting primary. Must NOT happen: the executed stop or delete waking
@@ -91,7 +91,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
     capture.run(4, async {
         let fp_n = node().await;
         let fab = fabric();
-        let fp_m = Membership::join(&fp_n.gossip, &fp_n.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let fp_m = TopologyView::join(&fp_n.gossip, &fp_n.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let fp_own = digest("mesh1.admin.1", 41_001);
         let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: fp_own.node.incarnation.clone(), node_id: fp_own.node.node_id.clone() }, vec![]).await.unwrap();
         fp_bb.set_mesh_primary(true);
@@ -103,7 +103,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         let admin2 = digest("mesh2.admin.1", 42_001);
         let rpc = digest("mesh2.rpc.1", 42_101);
         for d in [&admin2, &rpc] {
-            assert!(fp_m.book.record(d.clone()));
+            assert!(fp_m.digest_view.record(d.clone()));
         }
         // The first publication has published; the next waits.
         fp_bb.publish(&fp_m, fp_bb.own_members(&fp_m)).await;
@@ -120,7 +120,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
 
         // mesh2's primary is gone. The fabric-primary, as executor, stops mesh2.rpc.1 and deletes mesh2.admin.1.
         let (publisher, stamped) = fp_bb.publish_status_event(StatusEvent::Stopped, &op("stop-node", &rpc)).await;
-        assert!(fp_m.book.depart(op("delete-node", &admin2)), "the exit proof's departure is taken");
+        assert!(fp_m.digest_view.depart(op("delete-node", &admin2)), "the exit proof's departure is taken");
         let woke_after = publication.await.unwrap();
 
         fp_bb.set_fabric_primary(false);
@@ -132,7 +132,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         assert!(woke_after >= ANTI_ENTROPY, "the publication returned after {woke_after:?}, before its {ANTI_ENTROPY:?} deadline: the executed stop or delete of mesh2 woke it to publish for mesh2");
         let event = spans
             .iter()
-            .find(|s| s["name"] == "rdm.mesh.membership.update.via-status-event" && s["attributes"]["subject"] == "mesh2.rpc.1")
+            .find(|s| s["name"] == "rdm.mesh.topology.update.via-status-event" && s["attributes"]["subject"] == "mesh2.rpc.1")
             .unwrap_or_else(|| panic!("the stop mesh1.admin.1 executed is spanned: {spans:#?}"));
         println!("{CELL}: status event trace {} role {} topology_version {}", event["trace_id"], event["attributes"]["role"], event["attributes"]["topology_version"]);
         assert_eq!(event["attributes"]["role"], "executor", "a stop of a peer mesh's node is stamped by the executor, not as that mesh's publisher: {event}");

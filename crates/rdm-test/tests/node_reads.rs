@@ -337,9 +337,9 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         .await
         .unwrap_or_else(|e| panic!("{name} comes up: {e}"));
         let seams = seams.get().cloned().expect("the node handed its seams");
-        let book = &admin.observer.membership.book;
-        let mut heard = book.heard_changes();
-        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        let digest_view = &admin.observer.topology_view.digest_view;
+        let mut heard = digest_view.heard_changes();
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
             heard.changed().await.unwrap();
         }
         // The node originates a data-plane connection to its admin: a Direct entry of its log.
@@ -349,7 +349,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         }
         seams.connections.observations_landed().await;
 
-        let (d, _) = book.get(launch.node_id.as_str()).unwrap();
+        let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         let rpc = ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr };
         let (client, _endpoint) = caller(&[rpc]).await;
         let nodes = Nodes::new(BuildCarrier::new(client.clone(), "mesh1.admin.1".parse().unwrap()));

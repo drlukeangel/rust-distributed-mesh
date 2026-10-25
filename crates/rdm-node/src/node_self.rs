@@ -28,7 +28,7 @@ use crate::model::{IncarnationId, NodeId, PathName};
 use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
 use rdm_core::views::{ConnectionView, ConnectionsView};
 use rdm_core::{LifecycleOp, MemberStatus, MeshDigest};
-use rdm_transport::topology::Membership;
+use rdm_transport::topology::TopologyView;
 use rdm_transport::{NodeRpcClient, NodeRpcServer, NodeTarget};
 use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest, WhichMesh};
@@ -275,8 +275,8 @@ pub struct NodeSelf {
     /// The process's live resolver: an admin that commanded this birth is applied to it at the path
     /// its call came in on, so the completion call goes back there.
     pub resolver: Arc<rdm_transport::LiveNodeResolver>,
-    /// This birth's membership: the mesh channel its completion frames go out on.
-    pub membership: Membership,
+    /// This birth's topology view: the mesh channel its completion frames go out on.
+    pub topology_view: TopologyView,
     /// Set this birth's status and answer the digest to publish.
     pub set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync>,
     /// This birth's status now.
@@ -329,21 +329,21 @@ impl NodeSelf {
         server: NodeRpcServer,
         client: Arc<NodeRpcClient>,
         resolver: Arc<rdm_transport::LiveNodeResolver>,
-        membership: Membership,
+        topology_view: TopologyView,
         set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync>,
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
         connections_delete_deadline: Duration,
     ) -> Self {
-        membership.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), state_actions: Mutex::new(Arc::new(crate::fabric_states::NoScratchpad)), states_seen: Mutex::new(std::collections::HashMap::new()), acted: Arc::default() }
+        topology_view.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
+        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), state_actions: Mutex::new(Arc::new(crate::fabric_states::NoScratchpad)), states_seen: Mutex::new(std::collections::HashMap::new()), acted: Arc::default() }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
     /// `ApplyNodeName`, or from its join answer), else its birth's (R12). Every span, refusal and
     /// frame of this surface names it.
     pub fn held_name(&self) -> PathName {
-        self.membership.held_name(&self.name)
+        self.topology_view.held_name(&self.name)
     }
 
     /// This surface, publishing its state hooks on `backbone` as well as its mesh channel.
@@ -833,13 +833,13 @@ impl NodeSelf {
         let req = key.kind.up(key, self.node_id.clone(), self.incarnation.clone());
         // The check-in hook runs in the path of the completion call, before it goes out. What became
         // of it is named on the call's span: handed to gossip, or why not.
-        let hook = match crate::fabric_states::publish_hook(&self.held_name(), key, true, &self.node_id, &self.incarnation, &self.membership, self.backbone.as_ref()).await {
+        let hook = match crate::fabric_states::publish_hook(&self.held_name(), key, true, &self.node_id, &self.incarnation, &self.topology_view, self.backbone.as_ref()).await {
             Ok(()) => "published".to_string(),
             Err(e) => format!("not-published: {e}"),
         };
         let owed = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, ..rdm_transport::CallOptions::default() };
-        let holder = || self.membership.primaries().mesh(&self.name.mesh).map(|h| (h.node_id, h.incarnation));
-        let mut seats = self.membership.primaries().subscribe();
+        let holder = || self.topology_view.primaries().mesh(&self.name.mesh).map(|h| (h.node_id, h.incarnation));
+        let mut seats = self.topology_view.primaries().subscribe();
         let mut to = commander.clone();
         loop {
             seats.borrow_and_update();
@@ -954,7 +954,7 @@ impl NodeSelf {
             return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing executed", self.held_name()));
         }
         let progress = Arc::new(tokio::sync::Mutex::new(frames));
-        let op = LifecycleOp { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.held_name(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone(), event_at_rafka_ms: self.membership.clock().now_rafka_ms() };
+        let op = LifecycleOp { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.held_name(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone(), event_at_rafka_ms: self.topology_view.clock().now_rafka_ms() };
         let result = if stopping {
             self.stop(commander.cloned(), spare, op, tracing::Span::current(), Some(progress)).await
         } else {
@@ -981,8 +981,8 @@ impl NodeSelf {
                     "rdm.node.mesh.reject.via-busy-holding-connections",
                     node = %self.held_name(),
                     node_id = %self.node_id,
-                    mesh = %self.membership.mesh_name(),
-                    mesh_id = %self.membership.mesh_id(),
+                    mesh = %self.topology_view.mesh_name(),
+                    mesh_id = %self.topology_view.mesh_id(),
                     operation = %operation,
                     connections = ?connections,
                     "otel.kind" = "internal"
@@ -1005,8 +1005,8 @@ impl NodeSelf {
             "rdm.node.mesh.update.via-leaving",
             node = %self.held_name(),
             node_id = %self.node_id,
-            mesh = %self.membership.mesh_name(),
-            mesh_id = %self.membership.mesh_id(),
+            mesh = %self.topology_view.mesh_name(),
+            mesh_id = %self.topology_view.mesh_id(),
             operation = %operation,
             "otel.kind" = "internal"
         );
@@ -1018,7 +1018,7 @@ impl NodeSelf {
             let report = match &session {
                 Some(session) => session.cut(spare).await,
                 None => {
-                    leave_channels(&self.membership, self.backbone.as_ref(), &self.node_id).await;
+                    leave_channels(&self.topology_view, self.backbone.as_ref(), &self.node_id).await;
                     CutReport::default()
                 }
             };
@@ -1183,7 +1183,7 @@ impl NodeSelf {
     async fn stop_steps(&self, by: StopBy<'_>) -> (ConnectionsReceipt, Vec<tokio::task::JoinHandle<()>>) {
         use tracing::Instrument;
         // Who commanded it, the calls to spare, the operation, the stream, how many calls in flight are
-        // the asker's own (not eligible work), and whether a command's own delete runs (step 4's book).
+        // the asker's own (not eligible work), and whether a command's own delete runs (step 4's view).
         let (commander, mut spare, op, progress, asking, by_command): (Option<&NodeId>, Vec<iroh::PublicKey>, Option<&LifecycleOp>, Option<CommandProgress>, u64, bool) = match by {
             StopBy::Command { commander, spare, op, progress } => (commander, spare.into_iter().collect(), Some(op), progress, 1, true),
             StopBy::Signal => (None, Vec::new(), None, None, 0, false),
@@ -1242,14 +1242,14 @@ impl NodeSelf {
         // signal's alike. The one exception is R-NS1 item 2: when node.delete reaches a deleted mesh's
         // last admin, still its primary, its final aggregate carries the mesh deleted and itself
         // deleting, then nothing. It follows the hold, so no gated turn publishes after it.
-        let mesh_deleted = self.membership.book.statuses.mesh(&self.held_name().mesh).is_some_and(|h| h.status == "deleted" || h.status == "dead");
+        let mesh_deleted = self.topology_view.digest_view.statuses.mesh(&self.held_name().mesh).is_some_and(|h| h.status == "deleted" || h.status == "dead");
         // node.delete runs node.stop's steps: a deleted mesh's last admin is stopped only as its delete.
         let final_delete = op.filter(|op| by_command && mesh_deleted && !op.is_restart());
         if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), final_delete) {
             let del_op = if op.is_stop() { LifecycleOp { operation: format!("node.delete:{}", self.held_name()), ..op.clone() } } else { op.clone() };
-            self.membership.book.deleting(del_op);
+            self.topology_view.digest_view.deleting(del_op);
             let me = (self.set_status)(MemberStatus::Leaving);
-            let mut members: Vec<MeshDigest> = backbone.own_members(&self.membership);
+            let mut members: Vec<MeshDigest> = backbone.own_members(&self.topology_view);
             match members.iter_mut().find(|d| d.node.node_id == me.node.node_id) {
                 Some(slot) => *slot = me.clone(),
                 None => members.push(me.clone()),
@@ -1257,7 +1257,7 @@ impl NodeSelf {
             let count = members.len();
             // Best-effort dissemination (R-NS2): the stop does not wait for its delivery, and the cut
             // below follows its send at once.
-            let published = if backbone.withholds("stopping-aggregate", "backbone") { "withheld" } else if backbone.publish(&self.membership, members).await { "true" } else { "false" };
+            let published = if backbone.withholds("stopping-aggregate", "backbone") { "withheld" } else if backbone.publish(&self.topology_view, members).await { "true" } else { "false" };
             if published == "true" && mesh_deleted {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
@@ -1438,14 +1438,14 @@ impl NodeSelf {
 /// when it is a node-admin's, each left emitting `rdm.node.mesh.update.via-left`. The one place the
 /// channel leave is written: each session's `leave_channels`, a birth that holds no session, and a
 /// commanded `node.mesh.join` whose start failed at a step call it.
-pub async fn leave_channels(membership: &Membership, backbone: Option<&rdm_transport::topology::Backbone>, node_id: &NodeId) {
-    membership.stop().await;
+pub async fn leave_channels(topology_view: &TopologyView, backbone: Option<&rdm_transport::topology::Backbone>, node_id: &NodeId) {
+    topology_view.stop().await;
     tracing::info_span!(
         "rdm.node.mesh.update.via-left",
-        node = %membership.node_name(),
+        node = %topology_view.node_name(),
         node_id = %node_id,
-        mesh = %membership.mesh_name(),
-        mesh_id = %membership.mesh_id(),
+        mesh = %topology_view.mesh_name(),
+        mesh_id = %topology_view.mesh_id(),
         which = WhichMesh::Own.name(),
     )
     .in_scope(|| tracing::info!("left the mesh channel"));
@@ -1453,10 +1453,10 @@ pub async fn leave_channels(membership: &Membership, backbone: Option<&rdm_trans
         backbone.stop().await;
         tracing::info_span!(
             "rdm.node.mesh.update.via-left",
-            node = %membership.node_name(),
+            node = %topology_view.node_name(),
             node_id = %node_id,
-            mesh = %membership.mesh_name(),
-            mesh_id = %membership.mesh_id(),
+            mesh = %topology_view.mesh_name(),
+            mesh_id = %topology_view.mesh_id(),
             which = WhichMesh::Backbone.name(),
         )
         .in_scope(|| tracing::info!("left the backbone channel"));

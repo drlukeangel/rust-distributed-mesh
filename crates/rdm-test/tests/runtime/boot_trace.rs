@@ -2,7 +2,7 @@
 //!
 //! CONTRACT: `{node_admin: 1, rpc_node: 1}`. Each node's birth is one trace rooted at
 //! `rdm.mesh.node.create.via-boot`; its identity, endpoint, gossip, ALPN, accept-loop and
-//! membership steps and its `rdm.mesh.node.update.via-ready` are children of that root in the same
+//! topology steps and its `rdm.mesh.node.update.via-ready` are children of that root in the same
 //! trace, every step finishing inside the root; the launched node also shows the join it took.
 //! Every node's publish loop leaves `rdm.mesh.node.update.via-heartbeat` carrying its peer count
 //! and clock reading. What must NOT happen: a step span outside the birth's trace, a ready span
@@ -50,7 +50,7 @@ async fn a_birth_is_one_trace_of_its_boot_steps_and_its_heartbeat_is_marked() {
     let spans = estate.spans();
 
     let ns = |sp: &Value, k: &str| sp[k].as_u64().unwrap_or_else(|| panic!("{k} on {sp}"));
-    let common = ["rdm.mesh.node.create.via-endpoint-bound", "rdm.mesh.node.create.via-gossip-started", "rdm.mesh.node.add.via-alpn-registered", "rdm.mesh.node.create.via-accept-loop-started", "rdm.mesh.node.update.via-membership-joined"];
+    let common = ["rdm.mesh.node.create.via-endpoint-bound", "rdm.mesh.node.create.via-gossip-started", "rdm.mesh.node.add.via-alpn-registered", "rdm.mesh.node.create.via-accept-loop-started", "rdm.mesh.node.update.via-topology-joined"];
     let mut report = Vec::new();
     for node in ["mesh1.admin.1", "mesh1.rpc.1"] {
         let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| attr(sp, "node") == node).cloned().unwrap_or_else(|| panic!("{node} reports ready"));

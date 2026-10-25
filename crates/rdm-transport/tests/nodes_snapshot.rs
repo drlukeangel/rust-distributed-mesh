@@ -18,7 +18,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{backbone_channel, learn_addresses, Backbone, Frame, Membership, MAX_FRAME};
+use rdm_transport::topology::{backbone_channel, learn_addresses, Backbone, Frame, TopologyView, MAX_FRAME};
 use rdm_transport::snapshot::{chunks_of, Chunk, Delta, Forward, Forwarder, Full, Gap, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -446,9 +446,9 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         learn_addresses(&member_node.ep, &[fwd_addr.clone()]).unwrap();
         let fab = fabric();
         let (mesh1_id, mesh2_id) = (MeshId::mint(), MeshId::mint());
-        let src_m = Membership::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let fwd_m = Membership::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let mem_m = Membership::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()], &[]).await.unwrap();
+        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let mem_m = TopologyView::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()], &[]).await.unwrap();
         let src_birth = IncarnationId::mint();
         let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: src_birth.clone(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let fwd_bb = Backbone::join(&fwd_node.gossip, &fwd_node.ep, &fwd_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
@@ -512,8 +512,8 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         .await;
         assert_eq!(v2, v1 + 1);
         assert!(mem_m.desynced_sources().is_empty(), "the chain held: no gap, no top-up");
-        // The member's book holds the changed member as the delta stated it.
-        let seen = mem_m.book.get(changed_id.as_str()).expect("the ordinary member holds the remote member").0;
+        // The member's view holds the changed member as the delta stated it.
+        let seen = mem_m.digest_view.get(changed_id.as_str()).expect("the ordinary member holds the remote member").0;
         assert_eq!(seen.status, MemberStatus::ConnectionsDeleting, "the delta's change is applied to the member's projection");
         assert!(seen.in_flight.is_none(), "the ordinary member holds no load of a remote member");
 
@@ -527,12 +527,12 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let bumps_seen = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|s| attr(s, "node") == "mesh2.admin.1").count();
         assert_eq!(bumps_seen, 2, "the real publisher bumped twice: the first projection and the one change (12 heartbeats bumped nothing)");
         // The source primary forwards its own Mesh as a source too; the remote change is the forwarding primary's delta.
-        let deltas_sent: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.admin.1").collect();
+        let deltas_sent: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.admin.1").collect();
         assert_eq!(deltas_sent.len(), 1, "one remote change produced one delta: {deltas_sent:?}");
         assert_eq!((attr(deltas_sent[0], "base_version"), attr(deltas_sent[0], "topology_version"), attr(deltas_sent[0], "changed")), (v1.to_string(), v2.to_string(), "1".to_string()));
-        let applied = named(&spans, "rdm.mesh.membership.update.via-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.rpc.1").collect::<Vec<_>>();
+        let applied = named(&spans, "rdm.mesh.topology.update.via-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.rpc.1").collect::<Vec<_>>();
         assert_eq!(applied.len(), 1, "the ordinary member applied it once");
-        let installs = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed");
+        let installs = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed");
         let backbone_installs = installs.iter().filter(|s| attr(s, "channel") == "backbone" && attr(s, "node") == "mesh1.admin.1").count();
         assert!(backbone_installs >= 1, "the forwarding primary installed complete backbone snapshots");
         let chunked_install = installs.iter().find(|s| attr(s, "channel") == "backbone" && attr(s, "members") == "40").map(|s| (attr(s, "snapshot_id"), attr(s, "topology_version")));

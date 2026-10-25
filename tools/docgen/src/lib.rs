@@ -10,7 +10,7 @@
 //! statuses.md  every `pub enum *Status` / `*State`, with serde names, and the status-string consts
 //! spans.md     every span name rafka-mesh-audit's scanner finds, with file:line
 //! config.md    every RDM_* / RAFKA_* env name and each place the source names it
-//! SUMMARY.md   the book's chapter list: the lifecycle index, the architecture pages, the reference
+//! SUMMARY.md   the mdBook site's chapter list: the lifecycle index, the architecture pages, the reference
 //! ```
 //!
 //! Output is deterministic: declaration order where order is the wire, sorted everywhere else.

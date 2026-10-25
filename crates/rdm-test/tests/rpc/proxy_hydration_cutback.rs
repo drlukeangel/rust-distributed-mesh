@@ -8,7 +8,7 @@
 //! `mesh1.rpc.1`, the carrier `mesh1.rpc.2`, the destination `mesh1.rpc.3`. A Proxy is seeded on
 //! the source through the testkit originate door (`record-proxy`): the door runs the writer's own
 //! observer path for the Direct Failed observation and writes `Proxy Connected` naming the births
-//! the source's membership holds now (connections.md section 7); nothing in this repository runs
+//! the source's topology view holds now (connections.md section 7); nothing in this repository runs
 //! the cold discovery that writes one in the product. Every call afterwards is a real call from the
 //! source node over its own held projection.
 
@@ -125,7 +125,7 @@ fn route_span<'a>(spans: &'a [Value], own: &str, from: u64, to: u64) -> Option<&
 /// CONTRACT: a source's latest indexed Proxy survives its process and is the route of the first
 /// call from the node that comes back at its path.name (connections.md section 13 B: the Proxy is
 /// hydrated from storage and the first call uses it). The destination and carrier births it names
-/// are the ones membership holds, so it is valid; the carrier's own edge to the destination is not
+/// are the ones the topology view holds, so it is valid; the carrier's own edge to the destination is not
 /// read from anywhere but the carried call. The source dials the carrier and never the
 /// destination, and writes no Direct fact toward the destination.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

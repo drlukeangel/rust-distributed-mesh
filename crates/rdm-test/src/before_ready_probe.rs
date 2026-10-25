@@ -235,7 +235,7 @@ pub struct TestBeforeReady {
     pub pulls_dropped: AtomicU32,
     /// Side effects emitted: one per row version applied, never per arrival.
     pub effects: AtomicU32,
-    book: std::sync::OnceLock<rdm_transport::topology::DigestBook>,
+    digest_view: std::sync::OnceLock<rdm_transport::topology::DigestView>,
 }
 
 /// Counts a pull dropped before it finished.
@@ -262,7 +262,7 @@ impl TestBeforeReady {
             pulls_answered: AtomicU32::new(0),
             pulls_dropped: AtomicU32::new(0),
             effects: AtomicU32::new(0),
-            book: std::sync::OnceLock::new(),
+            digest_view: std::sync::OnceLock::new(),
         })
     }
 
@@ -287,10 +287,10 @@ impl TestBeforeReady {
         self.effects.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// The membership book the first attempt was handed: what the app subscribes to before it
+    /// The topology view the first attempt was handed: what the app subscribes to before it
     /// takes its snapshot.
-    pub fn book(&self) -> Option<rdm_transport::topology::DigestBook> {
-        self.book.get().cloned()
+    pub fn digest_view(&self) -> Option<rdm_transport::topology::DigestView> {
+        self.digest_view.get().cloned()
     }
 
     /// A copy of what is held now.
@@ -304,7 +304,7 @@ impl TestBeforeReady {
 impl BeforeReady for TestBeforeReady {
     async fn before_ready(&self, ctx: &BeforeReadyCtx) -> HookOutcome {
         self.attempts.fetch_add(1, Ordering::SeqCst);
-        let _ = self.book.set(ctx.membership.book.clone());
+        let _ = self.digest_view.set(ctx.topology_view.digest_view.clone());
         self.member_certs.lock().unwrap().push(ctx.member_cert.clone());
         self.contexts.lock().unwrap().push((
             ctx.attempt,

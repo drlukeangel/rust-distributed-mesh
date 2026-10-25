@@ -3,7 +3,7 @@
 //! cell leaves `result.json` (its direct observations) and `spans.json` (every span the cell's
 //! own threads emitted, captured by its `EvidenceCapture`) there.
 //!
-//! The receiver under proof, `DigestBook`, lives in `rafka-mesh-transport`; the digest frame it
+//! The receiver under proof, `DigestView`, lives in `rafka-mesh-transport`; the digest frame it
 //! orders, `MeshDigest`, lives in `rafka-mesh-entity`.
 //!
 //! CONTRACT: two heartbeats of one birth are ordered by `digest_seq` alone. However the supplied
@@ -11,12 +11,12 @@
 //! is taken and an equal or lower one is not, so an older heartbeat never overrides a newer one
 //! and a newer one is never mistaken for an older one. A new incarnation along the lineage is
 //! taken though its `digest_seq` starts again at 1, and a late digest of the incarnation it
-//! replaced is not. A real `Membership` given a frozen clock stamps one frozen `emitted_at_rafka_ms`
+//! replaced is not. A real `TopologyView` given a frozen clock stamps one frozen `emitted_at_rafka_ms`
 //! and a strictly increasing `digest_seq` from 1 on every heartbeat it publishes.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_transport::clock::Clock;
-use rdm_transport::topology::{DigestBook, Membership};
+use rdm_transport::topology::{DigestView, TopologyView};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -85,8 +85,8 @@ impl Birth {
     }
 }
 
-fn held(book: &DigestBook, node_id: &NodeId) -> (u64, MemberStatus, u64) {
-    let (d, _) = book.get(node_id.as_str()).expect("the birth is held");
+fn held(digest_view: &DigestView, node_id: &NodeId) -> (u64, MemberStatus, u64) {
+    let (d, _) = digest_view.get(node_id.as_str()).expect("the birth is held");
     (d.digest_seq, d.status, d.emitted_at_rafka_ms)
 }
 
@@ -99,14 +99,14 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         let fabric = FabricId::mint();
         let now = Instant::now();
         let mut observations: Vec<Value> = Vec::new();
-        let mut note = |label: &str, seq: u64, at: u64, status: MemberStatus, taken: bool, book: &DigestBook, node: &NodeId| {
-            let (hs, hst, hat) = held(book, node);
+        let mut note = |label: &str, seq: u64, at: u64, status: MemberStatus, taken: bool, digest_view: &DigestView, node: &NodeId| {
+            let (hs, hst, hat) = held(digest_view, node);
             observations.push(json!({ "offered": label, "digest_seq": seq, "emitted_at_rafka_ms": at, "status": format!("{status:?}"), "taken": taken, "held": { "digest_seq": hs, "status": format!("{hst:?}"), "emitted_at_rafka_ms": hat } }));
         };
 
         // The mesh channel: a frozen clock, a repeated stamp, a step backwards and a jump far ahead
         // all leave the order to `digest_seq`.
-        let book = DigestBook::default();
+        let digest_view = DigestView::default();
         let node_id = NodeId::mint();
         let b1 = Birth::first(&fabric, &node_id);
         for (label, seq, at, status, want) in [
@@ -119,15 +119,15 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
             ("a newer heartbeat stamped at zero", 4, 0, MemberStatus::Leaving, true),
         ] {
             let d = b1.digest(seq, at, status);
-            let taken = book.record_at(d, now);
+            let taken = digest_view.record_at(d, now);
             assert_eq!(taken, want, "{label}: seq {seq} at {at}");
-            note(label, seq, at, status, taken, &book, &node_id);
+            note(label, seq, at, status, taken, &digest_view, &node_id);
         }
-        assert_eq!(held(&book, &node_id), (4, MemberStatus::Leaving, 0), "the newest heartbeat by sequence is held whatever its stamp");
+        assert_eq!(held(&digest_view, &node_id), (4, MemberStatus::Leaving, 0), "the newest heartbeat by sequence is held whatever its stamp");
 
         // The forwarded path: a copy of the held heartbeat keeps the member heard (equal sequence is
         // taken), a lower sequence is refused whatever its stamp, a higher one is taken.
-        let fbook = DigestBook::default();
+        let fdigest_view = DigestView::default();
         let fnode = NodeId::mint();
         let f1 = Birth::first(&fabric, &fnode);
         for (label, seq, at, status, want) in [
@@ -136,11 +136,11 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
             ("forwarded lower sequence stamped far ahead", 4, 99_999_999, MemberStatus::Pending, false),
             ("forwarded higher sequence, same stamp", 6, 2_000, MemberStatus::ConnectionsDeleting, true),
         ] {
-            let taken = fbook.record_forwarded_at(f1.digest(seq, at, status), now);
+            let taken = fdigest_view.record_forwarded_at(f1.digest(seq, at, status), now);
             assert_eq!(taken, want, "{label}");
-            note(label, seq, at, status, taken, &fbook, &fnode);
+            note(label, seq, at, status, taken, &fdigest_view, &fnode);
         }
-        assert_eq!(held(&fbook, &fnode), (6, MemberStatus::ConnectionsDeleting, 2_000));
+        assert_eq!(held(&fdigest_view, &fnode), (6, MemberStatus::ConnectionsDeleting, 2_000));
 
         // A new incarnation has its own sequence: it starts again at 1 and is taken along its
         // lineage whatever its stamp; a late digest of the incarnation it replaced is not taken.
@@ -151,16 +151,16 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
             ("a late digest of the replaced incarnation with a high sequence and a far stamp", 500, 99_999_999, MemberStatus::ConnectionsDeleting, false, false),
         ] {
             let d = if new_inc { b2.digest(seq, at, status) } else { b1.digest(seq, at, status) };
-            let taken = book.record_at(d, now);
+            let taken = digest_view.record_at(d, now);
             assert_eq!(taken, want, "{label}");
-            note(label, seq, at, status, taken, &book, &node_id);
+            note(label, seq, at, status, taken, &digest_view, &node_id);
         }
-        let (_, _) = book.get(node_id.as_str()).unwrap();
-        assert_eq!(held(&book, &node_id), (2, MemberStatus::ReadyForTraffic, 10));
-        assert_eq!(book.get(node_id.as_str()).unwrap().0.node.incarnation, b2.incarnation);
+        let (_, _) = digest_view.get(node_id.as_str()).unwrap();
+        assert_eq!(held(&digest_view, &node_id), (2, MemberStatus::ReadyForTraffic, 10));
+        assert_eq!(digest_view.get(node_id.as_str()).unwrap().0.node.incarnation, b2.incarnation);
 
-        // The sender, composed with a supplied clock: a real Membership stamps every heartbeat it
-        // publishes with the next `digest_seq` (from 1) and the clock's reading, and its own book
+        // The sender, composed with a supplied clock: a real TopologyView stamps every heartbeat it
+        // publishes with the next `digest_seq` (from 1) and the clock's reading, and its own view
         // takes each one however the clock behaves (frozen, stepped back, jumped far ahead).
         let (endpoint, gossip) = {
             let transport = iroh::endpoint::QuicTransportConfig::builder().build();
@@ -170,7 +170,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         };
         let hand = Arc::new(HandClock::default());
         let me = "mesh1.rpc.1";
-        let membership = Membership::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, hand.clone(), vec![], &[]).await.unwrap();
+        let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, hand.clone(), vec![], &[]).await.unwrap();
         let sender_id = NodeId::mint();
         let sender = Birth::first(&fabric, &sender_id);
         let mut stamped: Vec<Value> = Vec::new();
@@ -182,8 +182,8 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
             ("clock back at zero", 0, MemberStatus::Leaving),
         ] {
             hand.0.store(clock_ms, Ordering::SeqCst);
-            membership.publish(&sender.digest(0, 0, status)).await.unwrap();
-            let (held, _) = membership.book.get(sender_id.as_str()).expect("the sender's own book holds its heartbeat");
+            topology_view.publish(&sender.digest(0, 0, status)).await.unwrap();
+            let (held, _) = topology_view.digest_view.get(sender_id.as_str()).expect("the sender's own view holds its heartbeat");
             let n = stamped.len() as u64 + 1;
             assert_eq!((held.digest_seq, held.emitted_at_rafka_ms, held.status), (n, clock_ms, status), "{label}: stamped with the next sequence and the clock's reading, and taken");
             stamped.push(json!({ "clock": label, "digest_seq": held.digest_seq, "emitted_at_rafka_ms": held.emitted_at_rafka_ms, "status": format!("{:?}", held.status) }));
@@ -191,8 +191,8 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         endpoint.close().await;
 
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
-        let subscribed: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-subscribe" && s["attributes"]["node"] == me).collect();
-        assert!(!subscribed.is_empty(), "the real membership emitted its subscribe span: {} spans read", spans.len());
+        let subscribed: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-subscribe" && s["attributes"]["node"] == me).collect();
+        assert!(!subscribed.is_empty(), "the real topology view emitted its subscribe span: {} spans read", spans.len());
         std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
         let result = json!({
             "cell": CELL,
