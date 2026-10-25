@@ -325,10 +325,14 @@ pub(crate) struct AdminSession {
 
 #[async_trait::async_trait]
 impl crate::node_self::Session for AdminSession {
-    async fn hold_tasks(&self) -> crate::node_self::TasksParked {
+    async fn hold_tasks(&self, commanded_by: Option<&str>) -> crate::node_self::TasksParked {
         // The gate parks, so no turn begins; the turns already past their wait point end on their
-        // own completion, and only then does the stop go on to its cut.
-        let at = self.gate.quiesce().await;
+        // own completion, and only then does the stop go on to its cut. A stop this admin's own run
+        // commanded waits for every turn but that Build's, which wait on it (stop_gate.rs).
+        let at = match commanded_by {
+            Some(build) => self.gate.quiesce_commanded_by(build).await,
+            None => self.gate.quiesce().await,
+        };
         crate::node_self::TasksParked { turns_in_progress: at.in_progress(), waited_for: at.named() }
     }
 

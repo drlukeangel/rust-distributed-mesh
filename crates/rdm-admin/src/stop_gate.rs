@@ -9,7 +9,14 @@
 //!   each turn waits before it sends. A turn already past its wait point when the gate parks runs to
 //!   the end of that turn: a stop parks with [`StopGate::quiesce`], which resolves once every such
 //!   turn has ended, so nothing a turn does follows the stop's cut. Work a turn starts on a task of
-//!   its own and waits on begins its own turn under it ([`Turn::under`]), never at the wait point;
+//!   its own and waits on begins its own turn under it ([`Turn::under`]), never at the wait point.
+//!   The same rule the other way round: a stop of this node that a turn commands and waits on does
+//!   not wait for that turn. A Build's drive pass and its run tag their turns with the Build
+//!   ([`Turn::of_build`]); a stop this node's own run commands (fabric-delete.md step 4: the
+//!   fabric-primary's own node.delete, which it executes) holds with
+//!   [`StopGate::quiesce_commanded_by`], which waits for every turn but that Build's: those turns
+//!   wait on the stop, and what they do after it is the stop's caller's own work. Every other stop
+//!   (one another node commands, a signal's) waits for every turn;
 //! - a task that takes no such lock is spawned through the gate ([`StopGate::spawn`]): while the
 //!   gate is parked its future is not polled, so it holds its place at the await it was at.
 //! Work a stop retires with the birth instead of holding it runs as [`StopGate::until_stopped`]: it
@@ -27,6 +34,8 @@ pub struct GateState {
     pub parked: bool,
     /// The turns past their wait point and not yet ended, by the task that runs them.
     pub turns: BTreeMap<&'static str, usize>,
+    /// Those of `turns` that are a Build's (its drive pass, its run), by Build id, then task.
+    pub builds: BTreeMap<String, BTreeMap<&'static str, usize>>,
 }
 
 impl GateState {
@@ -38,6 +47,43 @@ impl GateState {
     /// How many turns are in progress.
     pub fn in_progress(&self) -> usize {
         self.turns.values().sum()
+    }
+
+    /// The gate without the turns of Build `build`: what a stop that Build's own run commands
+    /// waits for.
+    pub fn but_build(&self, build: &str) -> GateState {
+        let mut left = self.clone();
+        if let Some(spared) = left.builds.remove(build) {
+            for (task, n) in spared {
+                if let Some(m) = left.turns.get_mut(task) {
+                    *m = m.saturating_sub(n);
+                    if *m == 0 {
+                        left.turns.remove(task);
+                    }
+                }
+            }
+        }
+        left
+    }
+}
+
+/// One turn of `task` fewer in `turns`.
+fn less(turns: &mut BTreeMap<&'static str, usize>, task: &'static str) {
+    if let Some(n) = turns.get_mut(task) {
+        *n -= 1;
+        if *n == 0 {
+            turns.remove(task);
+        }
+    }
+}
+
+/// One turn of `task` fewer among Build `build`'s.
+fn untag(s: &mut GateState, build: &str, task: &'static str) {
+    if let Some(of) = s.builds.get_mut(build) {
+        less(of, task);
+        if of.is_empty() {
+            s.builds.remove(build);
+        }
     }
 }
 
@@ -52,6 +98,8 @@ pub struct StopGate {
 pub struct Turn {
     state: Arc<watch::Sender<GateState>>,
     task: &'static str,
+    /// The Build this turn is of ([`Turn::of_build`]).
+    build: Option<String>,
 }
 
 impl Turn {
@@ -59,22 +107,40 @@ impl Turn {
     /// this turn starts on a task of its own and waits on (a drive pass's own run of the attempt it
     /// dispatched), which would otherwise wait at the gate for the turn that waits on it. This turn
     /// was past its wait point, so the stop's quiesce has not resolved; it waits for the new turn as
-    /// for every other, until the work drops it.
+    /// for every other, until the work drops it. It is of this turn's Build, when this turn is one's.
     pub fn under(&self, task: &'static str) -> Turn {
-        self.state.send_modify(|s| *s.turns.entry(task).or_default() += 1);
-        Turn { state: self.state.clone(), task }
+        let build = self.build.clone();
+        self.state.send_modify(|s| {
+            *s.turns.entry(task).or_default() += 1;
+            if let Some(b) = &build {
+                *s.builds.entry(b.clone()).or_default().entry(task).or_default() += 1;
+            }
+        });
+        Turn { state: self.state.clone(), task, build }
+    }
+
+    /// This turn as one of Build `build` (its id): a stop that Build's own run commands and waits on
+    /// does not wait for it ([`StopGate::quiesce_commanded_by`]).
+    pub fn of_build(mut self, build: &str) -> Turn {
+        let task = self.task;
+        let was = self.build.replace(build.to_string());
+        self.state.send_modify(|s| {
+            if let Some(b) = was.as_deref() {
+                untag(s, b, task);
+            }
+            *s.builds.entry(build.to_string()).or_default().entry(task).or_default() += 1;
+        });
+        self
     }
 }
 
 impl Drop for Turn {
     fn drop(&mut self) {
-        let task = self.task;
+        let (task, build) = (self.task, self.build.take());
         self.state.send_modify(|s| {
-            if let Some(n) = s.turns.get_mut(task) {
-                *n -= 1;
-                if *n == 0 {
-                    s.turns.remove(task);
-                }
+            less(&mut s.turns, task);
+            if let Some(b) = build.as_deref() {
+                untag(s, b, task);
             }
         });
     }
@@ -113,6 +179,17 @@ impl StopGate {
         at
     }
 
+    /// [`Self::quiesce`] for a stop of this node that Build `build`'s own run commands and waits on:
+    /// it resolves once every turn but that Build's has ended. Those turns (the run, and the drive pass
+    /// it runs under) wait on this stop, so it never waits for them; what they do after it is the
+    /// stop's caller's own remaining work. Answers the gate as it stood at the park, without them.
+    pub async fn quiesce_commanded_by(&self, build: &str) -> GateState {
+        let at = self.stop().but_build(build);
+        let mut rx = self.state.subscribe();
+        let _ = rx.wait_for(|s| s.but_build(build).turns.is_empty()).await;
+        at
+    }
+
     /// Poll them again, and let turns begin.
     pub fn resume(&self) {
         self.state.send_modify(|s| s.parked = false);
@@ -145,7 +222,7 @@ impl StopGate {
                 true
             });
             if begun {
-                return Turn { state: self.state.clone(), task };
+                return Turn { state: self.state.clone(), task, build: None };
             }
         }
     }
@@ -244,6 +321,43 @@ mod tests {
         assert_eq!(gate.state().borrow().named(), "declarer");
         drop(late);
         assert_eq!(gate.state().borrow().in_progress(), 0);
+    }
+
+    /// CONTRACT (fabric-delete.md step 4: the fabric-primary executes its own node.delete, whose stop
+    /// holds its tasks while the run that commanded it waits on it; stop_gate.rs: a stop a turn
+    /// commands and waits on does not wait for that turn): a drive pass of Build b1 and the run it
+    /// dispatched under it, a run of Build b2 and a declarer turn are in progress. A quiesce commanded
+    /// by b1's run parks the gate at once, waits for the b2 run and the declarer, and resolves with
+    /// b1's pass and run still in progress, answering only the turns it waited for; those end later
+    /// on their own. A plain quiesce on the same turns waits for b1's as well. Must NOT happen: the
+    /// stop waiting on the run that waits on it, or a quiesce commanded by b1 that skips another
+    /// Build's turn.
+    #[tokio::test]
+    async fn a_quiesce_commanded_by_a_builds_own_run_waits_for_every_turn_but_that_builds() {
+        use futures_util::FutureExt;
+        let gate = StopGate::new();
+        let pass = gate.turn("build-drive").await.of_build("b1");
+        let run = pass.under("build-run");
+        let other = gate.turn("build-run").await.of_build("b2");
+        let declarer = gate.turn("declarer").await;
+        let quiesce = gate.quiesce_commanded_by("b1");
+        tokio::pin!(quiesce);
+        assert!((&mut quiesce).now_or_never().is_none(), "b2's run and the declarer are in progress: the quiesce waits");
+        assert!(gate.is_stopped(), "the quiesce parked the gate at once");
+        drop(other);
+        assert!((&mut quiesce).now_or_never().is_none(), "the declarer is still in progress: the quiesce waits");
+        drop(declarer);
+        let at = (&mut quiesce).now_or_never().expect("every turn but b1's ended: the quiesce resolves while b1's run waits on it");
+        assert_eq!((at.in_progress(), at.named().as_str()), (2, "build-run,declarer"), "it answers the turns it waited for, not b1's");
+        assert_eq!(gate.state().borrow().named(), "build-drive,build-run", "b1's pass and run are still in progress");
+        let plain = gate.quiesce();
+        tokio::pin!(plain);
+        assert!((&mut plain).now_or_never().is_none(), "a stop no run of b1 commanded waits for b1's turns");
+        drop(run);
+        drop(pass);
+        assert!((&mut plain).now_or_never().is_some(), "b1's turns ended: the plain quiesce resolves");
+        let s = gate.state().borrow().clone();
+        assert!(s.turns.is_empty() && s.builds.is_empty(), "every count is back to nothing: {s:?}");
     }
 
     /// CONTRACT (stop_gate.rs: a task spawned through the gate is not polled while it is parked): a

@@ -143,8 +143,10 @@ pub trait Session: Send + Sync {
     /// Hold this process's own tasks for its stop, once its drain is done: no turn begins, and this
     /// resolves once every turn already past its wait point has ended, so nothing a turn does
     /// follows the stop's declaration or its cut. A surface whose tasks need no holding has nothing
-    /// to wait for.
-    async fn hold_tasks(&self) -> TasksParked {
+    /// to wait for. `commanded_by` is the Build whose run on this node commanded this stop (a node
+    /// executing its own node.delete, fabric-delete.md step 4): that run and the work it runs under
+    /// wait on this stop, so it never waits for them; `None` for every other stop.
+    async fn hold_tasks(&self, _commanded_by: Option<&str>) -> TasksParked {
         TasksParked::default()
     }
     /// Hard-cut the mesh connections: leave the gossip topics, close the pooled peer connections and
@@ -1213,11 +1215,14 @@ impl NodeSelf {
         // 2. The node's own tasks are held: no turn begins, and every turn already past its wait
         // point runs to its end before anything more is said or cut.
         if let Some(session) = &session {
+            // A stop this node commanded itself is its own run's (the in-process command of an executor
+            // that is its own subject): the hold does not wait for the turns of that run's Build.
+            let commanded_by = op.filter(|_| by_command && commander == Some(&self.node_id)).map(|o| o.build_id.as_str());
             let span = tracing::info_span!(
                 "rdm.node_admin.node.update.via-stop-quiesce",
-                node = %self.held_name(), operation = %operation, turns_in_progress = tracing::field::Empty, waited_for = tracing::field::Empty
+                node = %self.held_name(), operation = %operation, commanded_by = commanded_by.unwrap_or(""), turns_in_progress = tracing::field::Empty, waited_for = tracing::field::Empty
             );
-            let held = session.hold_tasks().instrument(span.clone()).await;
+            let held = session.hold_tasks(commanded_by).instrument(span.clone()).await;
             span.record("turns_in_progress", held.turns_in_progress);
             span.record("waited_for", held.waited_for.as_str());
         }

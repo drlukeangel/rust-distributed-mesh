@@ -458,3 +458,67 @@ async fn the_backbone_executor_takes_both_roles_and_deletes_the_admin_less_mesh_
     estate.stop().await;
     nothing_recreated_under_the_delete(&estate.spans(), accepted_ns, &fp);
 }
+
+/// The bound of the fabric-primary's own node.delete: the stop's (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`,
+/// 5 s by default, and the 10 s the mesh-primary allows a stop's reply past it), which the termination of
+/// a process runtime and its inspection fit inside.
+const OWN_DELETE_BOUND: Duration = Duration::from_secs(15);
+
+/// Whether `pid` is a running process (a zombie has exited).
+fn running(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
+}
+
+/// CONTRACT (lifecycles/fabric-delete.md "After completion": "A separate `node.delete` of the
+/// fabric-primary, called from outside the fabric; its `node.deleted` is its last reply and the caller
+/// takes its word"; step 4; node-delete.md step 1: "For a live process compose the whole node.stop"):
+/// a one-mesh fabric's fabric-primary, its sole node-admin, completes fabric.delete and reports
+/// fabric.deleted alive. An outside caller's node.delete of it is accepted and executed by that
+/// fabric-primary itself: its stop holds the admin's tasks and runs to its cut while the run that
+/// commanded it waits on it, the delete answers node.deleted, and the runtime has exited, all inside
+/// the stop's bound. What must NOT happen: the stop waiting on the run that waits on it (the StopNode
+/// step cancelled at its reply budget, TerminateRuntime never reached), or the runtime left running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_fabric_primary_left_after_fabric_deleted_is_deleted_by_an_outside_node_delete_inside_the_stop_bound() {
+    let shape = [("mesh1", 1, 1)];
+    let mut estate = ready_fabric("the_fabric_primary_left_after_fabric_deleted_is_deleted_by_an_outside_node_delete_inside_the_stop_bound", &shape).await;
+    let mut delete = delete_admitted(&estate).await;
+    let id = delete.build_id().to_string();
+    let frames = terminal_of("fabric.delete", &mut delete, SETTLE).await;
+    assert!(matches!(frames.last(), Some(BuildFrame::Complete { .. })), "fabric.delete {id} completes: {frames:?}");
+    assert_eq!(estate.live_runtimes(), vec![], "only the fabric-primary is left, for its separate node.delete");
+    let pid = estate.bootstrap_pid().expect("the fabric-primary mesh1.admin.1 is the bootstrap admin");
+    assert!(running(pid), "the fabric-primary reported fabric.deleted alive");
+
+    let mut own = estate.nodes_obj().await.delete(&path("mesh1.admin.1")).await.unwrap_or_else(|end| panic!("the outside node.delete of the fabric-primary was refused: {end}"));
+    let begun = tokio::time::Instant::now();
+    let replies = tokio::time::timeout(OWN_DELETE_BOUND, async {
+        let mut replies = Vec::new();
+        while let Some(frame) = own.next().await {
+            match frame {
+                Ok(frame) => {
+                    let end = frame.is_terminal();
+                    replies.push(format!("{frame:?}"));
+                    if end {
+                        break;
+                    }
+                }
+                // node.deleted is its last reply: the exited process serves nothing after it.
+                Err(end) => {
+                    replies.push(format!("ended: {end}"));
+                    break;
+                }
+            }
+        }
+        replies
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the fabric-primary's own node.delete answered no node.deleted within {OWN_DELETE_BOUND:?}"));
+    assert!(replies.iter().any(|r| r == &format!("{:?}", rdm_client::Frame::Event(rdm_client::NodeEvent::Deleted))), "the fabric-primary's own node.delete answers node.deleted: {replies:?}");
+    assert!(!replies.iter().any(|r| r.starts_with("Failed")), "no step of the fabric-primary's own node.delete failed: {replies:?}");
+    while running(pid) && begun.elapsed() < OWN_DELETE_BOUND {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!running(pid), "the fabric-primary's runtime exited within {OWN_DELETE_BOUND:?} of its node.delete: {replies:?}");
+    estate.stop().await;
+}

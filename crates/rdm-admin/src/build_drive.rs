@@ -1042,7 +1042,9 @@ impl DriveEnv {
             // progress when a stop parks the gate runs to its end (the attempt it dispatched, its
             // terminal handled) and the stop's quiesce waits for it, so nothing of it follows the cut.
             let _ = last_turn.take();
-            let turn = last_turn.insert(self.turns.turn("build-drive").await);
+            // Of its Build: a stop of this admin that the Build's own run commands does not wait for
+            // the pass that waits on that run (stop_gate.rs).
+            let turn = last_turn.insert(self.turns.turn("build-drive").await.of_build(&id.to_string()));
             if let Some(end) = self.may_act(drive).await {
                 return end;
             }

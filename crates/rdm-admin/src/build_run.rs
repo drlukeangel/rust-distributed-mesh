@@ -846,6 +846,9 @@ impl RunDoor {
                         }
                     };
                     drop(gated);
+                    // Of its Build: a stop of this admin that this run commands and waits on (its own
+                    // node.delete) does not wait for this turn (stop_gate.rs).
+                    let _turn = _turn.of_build(&build_id.to_string());
                     let r = exec.run_attempt(&build_id, lane.as_deref(), attempt, &context, &plan).await;
                     run.finish(terminal_of(&build_id, &r, run.last_failed_step()));
                     runs.end(&build_id, lane.as_deref(), attempt);
