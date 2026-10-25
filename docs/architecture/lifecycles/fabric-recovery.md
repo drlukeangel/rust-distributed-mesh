@@ -7,11 +7,14 @@ node-admin of every mesh is lost, whether or not any node is still alive; while 
 the fabric-primary moves and is brought back without a person
 ([the loss of the fabric-primary](#the-loss-of-the-fabric-primary-while-a-node-admin-lives),
 [elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)). It starts when a person or a script
-launches one node-admin on the fabric-primary's
-data dir ([who starts recovery](../node-admin-lifecycle.md#44-fabric-primary-recovery-and-who-starts-it));
-durable topology selects recovery, never Day 0. No surviving maker exists, so there are no
-maker JoinNode/GetTopology calls. The launched node-admin is a new node over its inherited
-data dir: a new node.id and incarnation, the same path.name and endpoint key, and a new port.
+launches one node-admin at the fabric-primary's path.name: the adoption launch ([Nothing alive](#nothing-alive),
+Q156), or a launch on the fabric-primary's data dir
+([who starts recovery](../node-admin-lifecycle.md#44-fabric-primary-recovery-and-who-starts-it)); the
+adoption launch's `RDM_NODE_NAME` or the durable topology selects recovery, never Day 0. No surviving maker
+exists, so there are no maker JoinNode/GetTopology calls. The launched node-admin is a new node at the same
+path.name: a new node.id and incarnation and a new port, with the same endpoint key over the inherited data
+dir and a new one over a new data dir. The person's steps are in the
+[fabric recovery runbook](../../eng/fabric-recovery-runbook.md).
 The sequence below reads topology from a node that is alive; when no node is,
 [Nothing alive](#nothing-alive) is the case.
 
