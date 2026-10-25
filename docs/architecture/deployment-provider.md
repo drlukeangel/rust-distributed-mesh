@@ -274,7 +274,7 @@ A `node.delete` of a live target runs the whole [node.stop](lifecycles/node-stop
 
 ## 4. Storage policy and the data dir
 
-A path's config is typed: `PathConfig { storage: StorageMeta, placement: PlacementMeta }` ([node.config.update](lifecycles/node-config-update.md)). `Tag` is an extrinsic annotation with no execution semantics. The pipeline interprets the config and resolves concrete storage actions against exact locators; the provider interprets neither.
+A node's storage and placement are typed properties of its create spec (`storage: StorageMeta`, `placement: PlacementMeta`; [build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)); `config` is the application's map, which RDM never reads. `Tag` is an extrinsic annotation with no execution semantics. The pipeline interprets the config and resolves concrete storage actions against exact locators; the provider interprets neither.
 
 Persistence belongs to the logical `path.name`, not its incarnation: Ephemeral storage is fresh for a new node; Persistent storage survives stop, start and restart, and a new node created over an inherited data dir keeps it. Delete releases no storage; `Preserve` issues no release action.
 

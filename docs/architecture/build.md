@@ -54,7 +54,7 @@ customer composition model.
 Allowed customer seams are:
 
 - implementations of the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6);
-- product Build-input/shape normalization and explicit desired path config policy;
+- product Build-input/shape normalization and each node's explicit desired properties;
 - deployment-provider bindings, resolved launch/listener configuration, and mapping of customer
   runtime-management metadata into the imported current-runtime projection;
 - current topology/runtime fact feeds and projection/public-API mappings;
@@ -127,7 +127,26 @@ submitted change
 
 The accepted topology names the exact path.names that should exist, grouped by mesh. Counts may remain product-facing resize input, but the compiler resolves a count change to exact paths before the Build is persisted.
 
-Each path's config carries the executable the node runs ([build-deployment.md](build-deployment.md)); a request creates a node by naming its `path.name` and its config, the compiler holds the executable on the path's entry before the Build is persisted, and a created path with none is refused by name. Counts are the product's door's vocabulary, expanded into named paths before the typed call; RDM mints a `path.name` only for a create it originates itself. A request that names a different executable for an existing path changes that entry, and the reconciler realizes the change as that node's replacement.
+Each node's create spec carries the executable the node runs ([build-deployment.md](build-deployment.md)); a request creates a node by naming its `path.name` and its properties, the compiler holds the executable on the path's entry before the Build is persisted, and a created path with none is refused by name. Counts are the product's door's vocabulary, expanded into named paths before the typed call; RDM mints a `path.name` only for a create it originates itself.
+
+**The create spec is the node's properties, flat (Q166).** A node entry names its `path.name` and the
+node's own properties under the [node properties](node-rpc-envelope.md#node-properties) names:
+`executable`, `storage`, `placement`, `tags` and `config`. There is no nested configuration type;
+`config` is the application's map and nothing else (RDM never reads it; capped as
+[node.config.update](lifecycles/node-config-update.md) caps it, `ConfigOverCap` refused by name at acceptance).
+
+**The Build applies the diff.** The reconciler compares each node's entry with what the node's row
+records and applies every property that differs, each by its own operation. It decides nothing else:
+
+| What differs | Applied as |
+|---|---|
+| a path added / removed | `node.create` / `node.delete`: a resize |
+| `executable` | the node's replacement: a new birth at the same `path.name` ([build-deployment.md §3](build-deployment.md#3-changing-a-nodes-executable)) |
+| `config` | in place, as `node.config.update` applies a map: the row first, then the node |
+| `tags` | in place: the node's tag rows |
+| `storage`, `placement` | onto the row, effective at the node's next birth; with an executable change they ride that re-birth (Q157) |
+
+Only a resize or a replacement puts the fabric back to pending ([states.md](lifecycles/states.md#resize-and-executable-replacement)); a change of `config`, `tags`, `storage` or `placement` alone leaves it ready-for-traffic. A node's `config` and `tags` change at any time between Builds as well, through `node.config.update` and `node.tags.*`; the last write wins.
 
 ~~~text
 B.topology:
@@ -238,7 +257,7 @@ While a Build is in progress, `builds.storage` carries enough information for an
 
 ```text
 build_id (the current Build)
-complete explicit topology map, each path's config and executable
+complete explicit topology map, each node's create spec with its executable
 submitted change history (optional; never the plan)
 current executor/attempt evidence
 completed step receipts and outputs

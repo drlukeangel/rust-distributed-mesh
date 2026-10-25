@@ -4,7 +4,9 @@
 
 `node.config.update` replaces a node's application config, the whole map. It is a single call, not a
 Build. Config is a property bag the application stores on the node; RDM never reads it
-([node properties](../node-rpc-envelope.md#node-properties)).
+([node properties](../node-rpc-envelope.md#node-properties)). A node's first config is its create spec's
+`config` in the Build ([build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine)), written to its row at the claim and
+carried in its first join; a later Build's different `config` is applied as this call applies a map.
 
 ## Numbered end-to-end sequence
 
@@ -17,9 +19,8 @@ Build. Config is a property bag the application stores on the node; RDM never re
    the durable row write, and its next start receives the config in the join answer.
 4. Emit `node.config.updated`.
 
-Row first, node second. It is refused `fabric-not-ready` until the initial fabric has first reached
-ready-for-traffic ([States](states.md#fabric-not-ready)), with nothing written. It is never refused
-because a Build is running: every change to a node record goes through its mesh-primary's one held
+Row first, node second. It is admitted at any time (Q166): never refused `fabric-not-ready`, before
+the initial fabric's first ready-for-traffic or after, and never refused because a Build is running: every change to a node record goes through its mesh-primary's one held
 record, one at a time, so any interleaving with a Build is a serial order of the two. Two topology
 changes never run together; a second is refused `BuildInProgress`
 ([Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm)).

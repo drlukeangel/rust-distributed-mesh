@@ -347,7 +347,7 @@ request-commit certainty boundary is
 
 ### Node properties
 
-Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` when not directly reachable), is refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic, and runs through that writer's defined storage operation.
+Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` when not directly reachable), is refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic (except `node.config.update`, admitted at any time, Q166), and runs through that writer's defined storage operation.
 
 | property | set by | changed by | precondition | completion |
 |---|---|---|---|---|
@@ -1403,10 +1403,11 @@ pub enum BuildChange {
     // admin launches that binding, verified at launch, whichever admin runs or resumes the step.
     // A recipe is one Build of node primitives (lifecycles/node-replace.md).
     Recipe { steps: Vec<RecipeStep> },
-    // Every create names its path's config, PathConfig { storage, placement, executable }: the
-    // executable (path, sha256, image) the node runs, compiled onto the accepted topology's entry and
-    // recorded on the row at the claim (build-deployment.md). A request naming a different executable
-    // for an existing path is that node's replacement. Positions 0, 1, 2 and 4 (the count forms) and
+    // Every create names the node's create spec, its properties flat (Q166):
+    // NodeSpec { path, storage, placement, executable, tags, config }. The executable (path, sha256,
+    // image) the node runs is compiled onto the accepted topology's entry and recorded on the row at
+    // the claim (build-deployment.md); config is the application's map, written to the row at the
+    // claim. The Build applies the diff against each node's row (build.md §1). Positions 0, 1, 2 and 4 (the count forms) and
     // 14 (the removed change of the old per-kind set) are reserved: never sent, and a request at one is an unknown
     // variant (positional, no format move).
     ConnectionsDelete { node: PathName },
@@ -1416,7 +1417,7 @@ pub enum BuildChange {
     // A deleted birth heard again, reported by the node that refused it; the fabric-primary
     // terminates its runtime (lifecycles/node-investigation.md).
     Terminate { node: PathName, node_id: NodeId, incarnation: IncarnationId },
-    Reconcile { based_on: BuildId, nodes: Vec<(PathName, PathConfig)> },
+    Reconcile { based_on: BuildId, nodes: Vec<NodeSpec> },
 }
 
 pub enum BuildSubmit {

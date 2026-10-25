@@ -13,10 +13,10 @@ life. A new executable is a new birth at the same `path.name` (Q157).
 
 ## 2. From the request to the row
 
-1. **Named per node.** A Build request that creates nodes names each path's config, and the config
-   carries the executable: its path, its sha256 and, under the container provider, the image. There
-   is no per-type default in RDM and no stored default anywhere. A created path whose config names
-   no executable is refused by name at acceptance and nothing runs. A product's door may expand a
+1. **Named per node.** A Build request that creates nodes names each node's create spec: the node's
+   own properties, flat (Q166). The spec carries the executable: its path, its sha256 and, under the
+   container provider, the image. There is no per-type default in RDM and no stored default anywhere.
+   A created path whose spec names no executable is refused by name at acceptance and nothing runs. A product's door may expand a
    per-type input into per-path entries before the typed call; RDM never sees a type-level default.
 2. **Compiled at acceptance.** The fabric-primary compiles the request against the current topology.
    Every created path's entry in the accepted topology holds its executable, and the request is never
@@ -48,10 +48,10 @@ node.primary.update, the fabric-primary's move ending the caller's stream `Fabri
 caller resubmitting the same build_id, a type's only node replaced with no update (node-primary-update.md
 "No-successor cases"), and a mesh whose only node-admin is to be replaced first given a second node-admin
 at a new `path.name` of that type on the new executable, ReadyForTraffic and mesh-primary, which stays. A path under node recovery is
-replaced after that recovery's attempt completes, never in the same attempt. The successor's storage follows the path's config: `Persistent` inherits the
+replaced after that recovery's attempt completes, never in the same attempt. The successor's storage follows its create spec's `storage`: `Persistent` inherits the
 predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one; config and tags come from
 the Deleted row (node-replace.md "Inherited"); a storage or placement change in the same request is the
-same re-birth with the new config. The row then records the new executable. node.restart keeps the executable
+same re-birth with the new properties. The row then records the new executable. node.restart keeps the executable
 (node-restart.md "Kept"); nothing changes a running birth's executable. A Build that puts the fabric
 back to pending completes only after its own ready-for-traffic state is set (states.md).
 

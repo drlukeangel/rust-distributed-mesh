@@ -75,6 +75,8 @@ name, `fabric-not-ready`:
 - every node workflow a caller submits that writes a row: node.stop, node.start, node.restart,
   node.delete, node.update and the [replace recipe](node-replace.md).
 
+`node.config.update` is not among them: it is admitted at any time (Q166).
+
 The initial accepted Build, which creates the fabric's nodes and brings the fabric to
 ready-for-traffic, runs as usual. fabric.delete is admitted before the first ready-for-traffic, the Build in progress or not (build.md §1): it ends the fabric, and its own mesh.delete and node.delete steps, and only those, run exempt from this refusal; launch and delete evidence is retained until the teardown completes. Once the fabric is ready-for-traffic these are admitted as
 usual. A Build is refused at build.create with the Build family's existing `Rejected` refusal
@@ -172,6 +174,8 @@ are separate facts.
   not a node or mesh state.
 
 ## Resize and executable replacement
+
+A Build that changes only a node's `config`, `tags`, `storage` or `placement` is neither: it applies them as [build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine) states, and the fabric stays ready-for-traffic.
 
 A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; while the fabric awaits the application's answer the Build reports Blocked naming the blocker, never Complete; a state's check-in or a hook that reports failure fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth checks in. Rafka then answers the state-sync hook at once when no application content work is needed;
 the internal state-commit and ready-for-traffic check-ins still run.

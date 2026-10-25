@@ -15,7 +15,7 @@ RDM's create owns identity, launch and admission; Rafka supplies its application
 | Identity | New node.id and incarnation; immutable path and claimed name |
 | Endpoint key | Mint into a new data dir, or load the key from an inherited data dir |
 | Port | Bind port 0; advertise the actual OS-assigned transport_addr |
-| Spec | The path's config: its executable (path, sha256, image), placement, storage and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the claim, re-hashed at the launch, never changed for the birth ([build-deployment.md](../build-deployment.md)) |
+| Spec | The create spec: the node's properties, flat (Q166): its executable (path, sha256, image), storage, placement, tags and config, and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the claim, re-hashed at the launch, never changed for the birth ([build-deployment.md](../build-deployment.md)) |
 | Progress | Every event of the complete `node.start`, then `node.created` |
 | Completion | The composed [node.start](node-start.md) ends with `node.started`; `node.created` follows it |
 | Wire | [Typed-object mapping](../node-rpc-envelope.md#typed-object-contract); no new op number in this workflow |
