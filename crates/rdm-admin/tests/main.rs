@@ -131,6 +131,7 @@ mod node_rpc_objects;
 mod stop_gate_quiesce;
 #[cfg(feature = "file-backend")]
 mod stop_gate_view_lock;
+mod own_run_stop;
 mod process_launch_environment;
 mod provider_state;
 mod provider_policy;

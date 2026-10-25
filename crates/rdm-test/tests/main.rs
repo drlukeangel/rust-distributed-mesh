@@ -74,6 +74,8 @@ mod declared_secrets;
 mod named_listeners;
 #[path = "fabric/fabric_delete.rs"]
 mod fabric_delete;
+#[path = "fabric/own_delete_matrix.rs"]
+mod own_delete_matrix;
 #[path = "rpc/proof_holder_lifecycle.rs"]
 mod proof_holder_lifecycle;
 #[path = "runtime/manifest_replay.rs"]

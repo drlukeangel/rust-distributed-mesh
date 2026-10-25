@@ -7,6 +7,8 @@
 //! rdm-rpc-probe --admin-birth <birth> delete --target ... --key <k>
 //! rdm-rpc-probe --admin-birth <birth> cas    --target ... --key <k> [--expected <v>] [--value <v>]
 //! rdm-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <node>|<node_id>|<incarnation>|<version>]
+//! rdm-rpc-probe --admin-birth <birth> fabric-delete --target path:<the entry admin>
+//! rdm-rpc-probe --admin-birth <birth> node-delete   --target path:<path.name>
 //! ```
 //!
 //! `<birth>` is the entry node-admin's birth, the JSON it prints on its birth line
@@ -14,7 +16,11 @@
 //! (`fabric.get`, then `node.get` for each mesh the fabric lists) and resolves the target from it:
 //! `exact:` is exactly that logical node and never follows a replacement;
 //! `path:` is whoever holds the path now. `cas` without `--expected` expects
-//! the key absent; without `--value` it deletes. It prints one JSON line:
+//! the key absent; without `--value` it deletes. `fabric-delete` submits fabric.delete at the entry
+//! admin and reads its stream to the terminal; `node-delete` submits node.delete of the target's path
+//! and reads its stream to its last reply (fabric-delete.md step 4: the fabric-primary's own
+//! node.delete, called from outside the fabric, whose node.deleted is its last reply): the demo
+//! estate's teardown. It prints one JSON line:
 //! `{"outcome": "Reply"|"NotSent"|"Unserved"|"Indeterminate", ...}`; a
 //! `Reply` carries the executing node's provenance and the typed result.
 
@@ -101,11 +107,11 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--since" => since = Some(take("--since")?),
             "--carrier" => carrier = Some(take("--carrier")?),
             "--failed-attempts" => failed_attempts = take("--failed-attempts")?.parse().map_err(|e| format!("--failed-attempts: {e}"))?,
-            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "stop-transport" | "topology" | "nodes" if op.is_none() => op = Some(a),
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "stop-transport" | "topology" | "nodes" | "fabric-delete" | "node-delete" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
-    let is_declare = matches!(op.as_deref(), Some("declare" | "topology" | "nodes" | "stream"));
+    let is_declare = matches!(op.as_deref(), Some("declare" | "topology" | "nodes" | "stream" | "fabric-delete" | "node-delete"));
     let admin_birth = admin_birth.ok_or("--admin-birth is required")?;
     let admin_birth: MeshNode = serde_json::from_str(&admin_birth).map_err(|e| format!("--admin-birth {admin_birth:?} is not a node-admin's birth: {e}"))?;
     Ok(Args {
@@ -304,6 +310,9 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
     }
     if a.op == "resolve" {
         return run_resolve(&a, &target).await.map(|value| (value, None));
+    }
+    if matches!(a.op.as_str(), "fabric-delete" | "node-delete") {
+        return run_delete(&a).await.map(|value| (value, None));
     }
     if a.op == "declare" {
         return run_declare(&a, &target).await.map(|value| (value, None));
@@ -531,6 +540,75 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
 /// `topology --target <node> [--mesh <name>] [--since <node>|<node_id>|<incarnation>|<version>]`: one
 /// `GetTopology` (op `0x1E`) read, every frame of the stream reported in order. The probe installs
 /// nothing: it has no membership.
+/// `fabric-delete`: fabric.delete at the entry admin, its stream read to the terminal (`Complete`,
+/// `Failed` or `FabricPrimaryMoved`). `node-delete --target path:<p>`: node.delete of `p`, its stream
+/// read to its last reply: the terminal, or the end of the stream after it, which is how the
+/// fabric-primary's own node.delete ends once node.deleted is sent (its process serves nothing
+/// after it). Each prints the replies in order and how long the call took.
+async fn run_delete(a: &Args) -> Result<Value, String> {
+    let (client, _) = enter(&a.admin_birth).await?;
+    let carrier = BuildCarrier::new(client.clone(), a.admin_birth.name.clone());
+    let begun = std::time::Instant::now();
+    let mut replies = Vec::new();
+    let result = if a.op == "fabric-delete" {
+        match carrier.create(rdm_client::Change::DeleteFabric).await {
+            Err(end) => json!({"outcome": "Rejected", "reason": end.to_string()}),
+            Ok(mut stream) => {
+                let build_id = stream.build_id().to_string();
+                let mut terminal = None;
+                while let Some(frame) = stream.next().await {
+                    match frame {
+                        Ok(frame) => {
+                            let end = matches!(frame, rdm_client::BuildFrame::Complete { .. } | rdm_client::BuildFrame::Failed { .. } | rdm_client::BuildFrame::FabricPrimaryMoved { .. });
+                            replies.push(format!("{frame:?}"));
+                            if end {
+                                terminal = Some(match frame {
+                                    rdm_client::BuildFrame::Complete { .. } => "Complete",
+                                    rdm_client::BuildFrame::Failed { .. } => "Failed",
+                                    _ => "FabricPrimaryMoved",
+                                });
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            replies.push(format!("ended: {e}"));
+                            break;
+                        }
+                    }
+                }
+                json!({"outcome": "Reply", "build_id": build_id, "terminal": terminal, "replies": replies, "elapsed_ms": begun.elapsed().as_millis() as u64})
+            }
+        }
+    } else {
+        let path: PathName = a.target.strip_prefix("path:").ok_or_else(|| format!("node-delete needs --target path:<path.name>, not {:?}", a.target))?.parse().map_err(|e| format!("--target {:?}: {e:?}", a.target))?;
+        match Nodes::new(carrier).delete(&path).await {
+            Err(end) => json!({"outcome": "Rejected", "reason": end.to_string()}),
+            Ok(mut stream) => {
+                let mut deleted = false;
+                while let Some(frame) = stream.next().await {
+                    match frame {
+                        Ok(frame) => {
+                            deleted |= frame == rdm_client::Frame::Event(rdm_client::NodeEvent::Deleted);
+                            let end = frame.is_terminal();
+                            replies.push(format!("{frame:?}"));
+                            if end {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            replies.push(format!("ended: {e}"));
+                            break;
+                        }
+                    }
+                }
+                json!({"outcome": "Reply", "node": path.to_string(), "deleted": deleted, "replies": replies, "elapsed_ms": begun.elapsed().as_millis() as u64})
+            }
+        }
+    };
+    client.endpoint().close().await;
+    Ok(result)
+}
+
 async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     use rdm_transport::stream::StreamItem;
     use rdm_core::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};

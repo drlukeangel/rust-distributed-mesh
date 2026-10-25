@@ -9,7 +9,11 @@
 #                                                evidence and store
 #   scripts/demo-estate.sh stream [<root dir>]   the data-plane proof: five `demo/echo` streams, four across
 #                                                the meshes, through the originate door (rdm-rpc-probe stream)
-#   scripts/demo-estate.sh down   [<root dir>]   stop the UI and every role process of that root
+#   scripts/demo-estate.sh down   [<root dir>]   the fabric's teardown (fabric-delete.md): fabric.delete at the
+#                                                Day-0 admin, then the fabric-primary's own node.delete from
+#                                                outside (rdm-rpc-probe fabric-delete, node-delete), its
+#                                                runtime gone inside the stop's bound; then the UI, and any
+#                                                role process still running is named and stopped
 #
 # Inputs: RDM_DEMO_BIN (the directory holding rshape-node-admin, rshape-gateway, rshape-compute,
 # rshape-broker and rafka-admin-ui, built from demo/ against this tree: `cargo build --bins` in the
@@ -92,7 +96,31 @@ d=json.load(sys.stdin); print({k: d.get(k) for k in ("outcome","streamed","kind"
 
 down() {
   ROOT=${ROOT:-$(cat "$CURRENT")}
+  export RDM_EVIDENCE_DIR=$ROOT/evidence
+  # The teardown the pages name: fabric.delete reported by the fabric-primary alive, then its own
+  # node.delete from outside, whose node.deleted is its last reply (fabric-delete.md steps 1-4). The
+  # Day-0 admin is the fabric-primary the probe enters at.
+  if [ -f "$ROOT/birth.json" ]; then
+    local birth fp fp_pid out; birth=$(cat "$ROOT/birth.json")
+    fp=$(echo "$birth" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')
+    fp_pid=$(cat "$ROOT/admin1.pid" 2>/dev/null || true)
+    out=$("$PROBE" --admin-birth "$birth" fabric-delete --target "path:$fp" 2>/dev/null || true)
+    echo "fabric.delete: $(echo "$out" | python3 -c 'import sys,json
+try: d=json.loads(sys.stdin.read()); print({k: d.get(k) for k in ("outcome","terminal","build_id","elapsed_ms","reason")})
+except Exception as e: print("no answer", e)')"
+    out=$("$PROBE" --admin-birth "$birth" node-delete --target "path:$fp" 2>/dev/null || true)
+    echo "node.delete $fp: $(echo "$out" | python3 -c 'import sys,json
+try: d=json.loads(sys.stdin.read()); print({k: d.get(k) for k in ("outcome","deleted","elapsed_ms","reason")})
+except Exception as e: print("no answer", e)')"
+    # The stop's bound: RDM_CONNECTIONS_DELETE_DEADLINE_MS (5 s) and the 10 s an executor allows a stop's reply past it.
+    if [ -n "$fp_pid" ]; then
+      for _ in $(seq 1 30); do kill -0 "$fp_pid" 2>/dev/null || break; sleep 0.5; done
+      if kill -0 "$fp_pid" 2>/dev/null; then echo "the fabric-primary $fp (pid $fp_pid) still runs 15 s after its node.delete"; else echo "the fabric-primary $fp (pid $fp_pid) ended"; fi
+    fi
+  fi
   [ -f "$ROOT/ui.pid" ] && kill "$(cat "$ROOT/ui.pid")" 2>/dev/null || true
+  local left; left=$(pgrep -fa "$BIN/rshape-" || true)
+  [ -n "$left" ] && echo "still running after the teardown, stopped by signal: $left"
   # The launched nodes carry none of the Day-0 admin's environment: they are found by their executable.
   pkill -f "$BIN/rshape-" 2>/dev/null || true
   for _ in $(seq 1 20); do pgrep -f "$BIN/rshape-" >/dev/null || break; sleep 0.5; done
