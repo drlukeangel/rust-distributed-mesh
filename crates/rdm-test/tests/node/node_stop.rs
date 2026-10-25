@@ -34,7 +34,14 @@ fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &str, ste
 /// Every frame of `stream`, in order, up to and including the terminal one.
 async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
     let mut out = Vec::new();
-    while let Some(f) = stream.next().await {
+    // Bounded: a stream that never reaches its terminal fails here, naming the frames it sent, while
+    // the estate's evidence is still kept, never at the suite's timeout.
+    let deadline = tokio::time::Instant::now() + SETTLE;
+    loop {
+        let Ok(next) = tokio::time::timeout_at(deadline, stream.next()).await else {
+            panic!("the reply stream sent no terminal within {SETTLE:?}: {out:?}");
+        };
+        let Some(f) = next else { break };
         let f = f.unwrap_or_else(|e| panic!("the reply stream broke: {e}"));
         let terminal = f.is_terminal();
         out.push(f);
