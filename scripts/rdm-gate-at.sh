@@ -43,7 +43,9 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://192.168.68.99:5318
 # Ports: every node binds :0 and the OS assigns it (R-J1); a gate reserves no port range.
 # 12 at once on this box's 20 cores (2026-10-18: release at 17a8a449 on 20 cores, 40 jobs: 3,441 evidence
 # writes stalled up to 18.4 s and 16 reds; 12 jobs: 1,169 up to 531 ms and 11, the timing reds gone).
-JOBS="${GATE_JOBS:-20}"
+# The fast gate's jobs are light: one per core. The release suite's chaos jobs each run whole fabrics,
+# and twenty at once loaded the box ~2x (release 119663355): it keeps twelve.
+if [ "$GATE" = release ]; then JOBS="${GATE_JOBS:-12}"; else JOBS="${GATE_JOBS:-20}"; fi
 # The estate binaries come from the one build below: no job builds or relinks a binary while other
 # stems are starting.
 export I143_ACCEPTANCE_SKIP_BUILD=1
