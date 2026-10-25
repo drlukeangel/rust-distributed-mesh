@@ -100,7 +100,7 @@ pub enum OriginateRequest {
         payload: Vec<u8>,
     },
     /// Mark this process's mesh transport stopped, exactly as iroh-gossip refusing a subscription
-    /// does (`membership::mark_transport_stopped`): the node exits through the one transport-stopped
+    /// does (`topology::mark_transport_stopped`): the node exits through the one transport-stopped
     /// exit, recording its reason in its data dir. The reply is sent before the mark.
     StopTransport {
         /// The reason the transport stopped.

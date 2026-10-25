@@ -1,7 +1,7 @@
 //! Independent postcard reference writer for gossip byte goldens. Expected context strings and
 //! data bytes are assembled from the ruled grammar and literal data goldens, without the codec.
 use rdm_core::{FabricId, NodeId, IncarnationId};
-use rdm_transport::{envelope::Birth, membership::Frame};
+use rdm_transport::{envelope::Birth, topology::Frame};
 
 pub fn author() -> Birth {
     Birth { fabric: FabricId::parse("04raj09p3zp7").unwrap(), node: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse("yrz49j303yh4").unwrap() }
