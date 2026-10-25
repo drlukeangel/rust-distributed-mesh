@@ -67,7 +67,7 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
         Frame::StateCommitting { hook: h, .. } | Frame::StateCommitted { hook: h, .. } | Frame::TrafficOpening { hook: h, .. } | Frame::TrafficOpened { hook: h, .. } => {
             source = format!("rdm://{}/{}/{}", h.fabric_id, a.node, a.incarnation);
             ms = h.event_at_rafka_ms;
-            (format!("round/{}/{}/{}/{}/birth/{}/{}", h.fabric_id, esc(&h.build_id), h.attempt, esc(&h.operation), h.node_id, h.incarnation), vec![h.fabric_id.to_string(), h.build_id.clone(), h.attempt.to_string(), h.operation.clone(), h.node_id.to_string(), h.incarnation.to_string()])
+            (format!("state/{}/{}/{}/{}/birth/{}/{}", h.fabric_id, esc(&h.build_id), h.attempt, esc(&h.operation), h.node_id, h.incarnation), vec![h.fabric_id.to_string(), h.build_id.clone(), h.attempt.to_string(), h.operation.clone(), h.node_id.to_string(), h.incarnation.to_string()])
         }
         Frame::NodeDeleting { op: o, .. } | Frame::NodeDeleted { op: o, .. } | Frame::NodeRestarting { op: o, .. } | Frame::NodeStopped { op: o, .. } | Frame::NodeConnectionsDeleting { op: o, .. } | Frame::NodeConnectionsDeleted { op: o, .. } | Frame::NodeLeaving { op: o, .. } | Frame::NodeLeft { op: o, .. } => {
             ms = o.event_at_rafka_ms;

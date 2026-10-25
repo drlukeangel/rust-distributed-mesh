@@ -164,7 +164,7 @@ impl Context {
             Frame::StateCommitting { hook, .. } | Frame::StateCommitted { hook, .. } | Frame::TrafficOpening { hook, .. } | Frame::TrafficOpened { hook, .. } => {
                 identity = vec![hook.fabric_id.to_string(), hook.build_id.clone(), hook.attempt.to_string(), hook.operation.clone(), hook.node_id.to_string(), hook.incarnation.to_string()];
                 time_ms = hook.event_at_rafka_ms;
-                format!("round/{}/{}/{}/{}/birth/{}/{}", hook.fabric_id, escaped(&hook.build_id), hook.attempt, escaped(&hook.operation), hook.node_id, hook.incarnation)
+                format!("state/{}/{}/{}/{}/birth/{}/{}", hook.fabric_id, escaped(&hook.build_id), hook.attempt, escaped(&hook.operation), hook.node_id, hook.incarnation)
             }
             Frame::NodeDeleting { op, .. } | Frame::NodeDeleted { op, .. } | Frame::NodeRestarting { op, .. } | Frame::NodeStopped { op, .. }
             | Frame::NodeConnectionsDeleting { op, .. } | Frame::NodeConnectionsDeleted { op, .. } | Frame::NodeLeaving { op, .. } | Frame::NodeLeft { op, .. } => {
