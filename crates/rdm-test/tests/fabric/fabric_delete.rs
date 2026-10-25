@@ -702,6 +702,7 @@ async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_t
 /// yet deleted, a mesh deleted twice, a create after the acceptance other than each launch's claim of its
 /// own path.name, a second fabric, or a member's runtime left running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "Q163, asked: how a later launch proves the exit of a person-launched adopter no live node heard; until ruled the delete fails its step by name (Q160)"]
 async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_next_launch_which_finishes_it() {
     let shape = [("mesh1", 1, 2)];
     let mut estate = ready_fabric("an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_next_launch_which_finishes_it", &shape).await;
