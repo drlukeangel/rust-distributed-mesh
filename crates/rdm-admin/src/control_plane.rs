@@ -1692,7 +1692,7 @@ mod tests {
             let p: PathName = path.parse().unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            let mut c = rdm_core::meta::PathConfig::default_for(p.kind);
+            let mut c = current.meshes["mesh1"].path_config_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default() });
             c.executable = Some(b);
             m.path_config_by_path.insert(p, c);
             next

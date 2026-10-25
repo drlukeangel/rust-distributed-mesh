@@ -3371,8 +3371,8 @@ mod tests {
         let current = j.current().await.unwrap().expect("the old Build is current");
         assert_eq!((current.build_id.clone(), current.state), (BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), BuildState::Complete));
         assert_eq!(current.topology, intent("b1").topology, "read as it is: every entry names none");
-        let admin = rdm_core::meta::PathConfig::default_for(crate::model::NodeKind::NodeAdmin);
-        let mut rpc = rdm_core::meta::PathConfig::default_for(crate::model::NodeKind::RpcNode);
+        let admin = rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Persistent { on_retire: rdm_core::meta::PersistentRetireDisposition::Preserve }, placement: Default::default(), executable: None, tags: Default::default() };
+        let mut rpc = rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default() };
         rpc.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
         let change = crate::accepted::TopologyChange::Reconcile { based_on: current.build_id.clone(), nodes: vec![("mesh1.admin.1".parse().unwrap(), admin), ("mesh1.rpc.1".parse().unwrap(), rpc)] };
         let observed = crate::topology::Topology {
@@ -3401,7 +3401,7 @@ mod tests {
         let rpc: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
         let m = stored.topology.meshes.get_mut("mesh1").unwrap();
         m.nodes.insert(rpc.clone());
-        let mut config = rdm_core::meta::PathConfig::default_for(crate::model::NodeKind::RpcNode);
+        let mut config = rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default() };
         config.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
         m.set_path_config(&rpc, config).unwrap();
         let writer = open_at(&dir).await.unwrap();
