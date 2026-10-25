@@ -617,7 +617,8 @@ impl Records {
         }
     }
 
-    /// Hold that this fabric-primary accepted mesh.deleted for the mesh `id` (a validated `MeshDeleted`).
+    /// Hold that this fabric-primary accepted mesh.deleted for the mesh `id` (a validated `MeshDeleted`),
+    /// or read its Mesh record Dead (a fabric-primary that took over after the mesh.delete).
     pub fn hold_mesh_deleted(&self, id: &MeshId) {
         self.deleted_meshes.lock().unwrap().insert(id.clone());
     }

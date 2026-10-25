@@ -1128,17 +1128,21 @@ impl FabricRounds {
             let Adopted { fabric, addressed, .. } = &mut *adopted;
             let first = fabric.is_none();
             let round = fabric.get_or_insert_with(|| AdoptedRound { began: Instant::now(), held: None });
+            // A Dead mesh reports nothing: its final primary's end is its own node.delete
+            // (mesh-delete.md step 7), as the accepted topology leaves it out of `entry_blockers`.
+            let live = |m: &&crate::model::Mesh| m.status != crate::model::ScopeStatus::Dead;
             let meshes: Vec<(String, Option<IncarnationId>, bool)> = i
                 .view
                 .meshes
                 .iter()
+                .filter(live)
                 .map(|m| {
                     let p = i.view.node_type_primary(&m.name, NodeKind::NodeAdmin);
                     (m.name.clone(), p.and_then(|p| p.incarnation_id.clone()), p.is_some_and(|p| p.node_id == self.env.node_id))
                 })
                 .collect();
             if first {
-                let targets: Vec<(String, Option<Node>)> = i.view.meshes.iter().filter(|m| m.name != mesh_name).map(|m| (m.name.clone(), i.view.node_type_primary(&m.name, NodeKind::NodeAdmin).cloned())).collect();
+                let targets: Vec<(String, Option<Node>)> = i.view.meshes.iter().filter(live).filter(|m| m.name != mesh_name).map(|m| (m.name.clone(), i.view.node_type_primary(&m.name, NodeKind::NodeAdmin).cloned())).collect();
                 for (mesh, p) in &targets {
                     if let (Some(p), Some(m)) = (p, i.view.meshes.iter().find(|m| &m.name == mesh)) {
                         addressed.insert(mesh.clone(), Addressed::of(p, m));
@@ -2078,6 +2082,29 @@ mod tests {
         records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(recovered.incarnation_id.clone().unwrap()), Instant::now());
         let done = rounds.adopted_step(awaiting, inputs());
         assert!(done.fabric && !records.adopted_degraded(), "every mesh primary reported for this round");
+    }
+
+    /// CONTRACT (mesh-delete.md: the mesh row goes Dead at mesh.deleted, and its final primary's end is its
+    /// own node.delete, step 7; Luke 2026-10-24: mesh death is read from the Mesh record, never from a view
+    /// that has not caught up): a fabric-primary that took over after mesh3's mesh.delete adopts the
+    /// fabric's status and holds it until every mesh primary reports. mesh3 is Dead, its final primary
+    /// still a live member of the view that never reports: the adopted status completes on mesh1's report
+    /// alone. Must NOT happen: the adopted status held for a Dead mesh's report, forever.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_successor_fabric_primary_never_waits_for_a_dead_meshs_report() {
+        let (me, other, last) = (member("mesh2.admin.1", true, true), member("mesh1.admin.2", true, false), member("mesh3.admin.1", true, false));
+        let mut v = view(vec![me.clone(), other.clone(), last]);
+        v.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh3".into(), status: ScopeStatus::Dead });
+        let records = Arc::new(Records::default());
+        records.set_adopted_degraded(true);
+        let book = DigestBook::default();
+        let adopted = adopted_rounds_of(&me, v.clone(), records.clone()).await;
+        let awaiting = Announced { mesh_awaiting_round: false, fabric_awaiting_round: true };
+        let inputs = || AdoptedInputs { view: &v, planned: None, book: &book };
+        assert!(!adopted.adopted_step(awaiting, inputs()).fabric, "mesh1's primary has not reported yet");
+        records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(other.incarnation_id.clone().unwrap()), Instant::now());
+        assert!(adopted.adopted_step(awaiting, inputs()).fabric, "every mesh that is not Dead reported: the Dead mesh3 is no mesh to report");
     }
 
     // @feature: node-lifecycle

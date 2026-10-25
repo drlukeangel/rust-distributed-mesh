@@ -111,13 +111,19 @@ impl crate::build_drive::Gate for SeatGate {
     }
 
     /// The meshes of `observed` whose Mesh record is Dead: one point read of each record the view does
-    /// not already hold Dead.
+    /// not already hold Dead. Each is held as the fabric-primary that accepted its mesh.deleted holds it
+    /// (`Records::hold_mesh_deleted`), so this admin's view shows it Dead from its next projection: a
+    /// fabric-primary that took over after the mesh.delete reads it from the record, never from gossip.
     async fn dead_meshes(&self, observed: &crate::topology::Topology) -> Result<std::collections::HashSet<crate::model::MeshId>, String> {
         let mut dead = std::collections::HashSet::new();
         for id in observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead).filter_map(|m| m.id.as_ref()) {
             if self.meshes.mesh(id).await.map_err(|e| format!("the Mesh record of {id} could not be read: {e}"))?.is_some_and(|r| r.dead) {
+                self.handover.records.hold_mesh_deleted(id);
                 dead.insert(id.clone());
             }
+        }
+        if !dead.is_empty() {
+            (self.project)().await;
         }
         Ok(dead)
     }
