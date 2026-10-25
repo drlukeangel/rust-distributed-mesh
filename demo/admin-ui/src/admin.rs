@@ -230,7 +230,7 @@ impl Admin {
     /// and is Complete once the fabric holds ready-for-traffic (states.md "Resize and executable replacement").
     pub async fn resubmit(&self) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
-        let nodes = current.paths.into_iter().collect();
+        let nodes = current.paths.into_values().collect();
         let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
@@ -242,9 +242,9 @@ impl Admin {
         let mut current = self.current().await?;
         let sha256 = sha256_file(&executable).map_err(|e| missing(format!("{} could not be hashed: {e}", executable.display())))?;
         let image = current.image.clone();
-        let config = current.paths.get_mut(node).ok_or_else(|| CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("the fabric holds no live node at {node}") })?;
-        config.executable = Some(Binding { launch_id: node.kind.name().into(), executable, sha256, image });
-        let nodes = current.paths.into_iter().collect();
+        let spec = current.paths.get_mut(node).ok_or_else(|| CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("the fabric holds no live node at {node}") })?;
+        spec.executable = Some(Binding { launch_id: node.kind.name().into(), executable, sha256, image });
+        let nodes = current.paths.into_values().collect();
         let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
