@@ -1388,21 +1388,12 @@ executor } plus the Won reply's context; its whole body is `AttemptRun` below.
 ### Build schema
 
 ```rust
-pub struct MeshCounts {
-    pub name: String,
-    pub node_admin: u32,
-    pub rpc_node: u32,
-    pub broker: u32,
-    pub gateway: u32,
-    pub compute: u32,
-}
-
 pub enum BuildChange {
-    ReconcileFabric { fabric: String, meshes: Vec<MeshCounts> },
-    ReconcileMesh { mesh: MeshCounts },
-    AddNode { mesh: String, node_kind: NodeKind },
+    Reserved0,
+    Reserved1,
+    Reserved2,
     RemoveNode { node: PathName },
-    CreateMesh { mesh: MeshCounts },
+    Reserved4,
     RemoveMesh { mesh: String },
     Restart { node: PathName },
     // RecipeStep = Create | Stop | Update | Start | Delete: one node primitive per step. Create names
