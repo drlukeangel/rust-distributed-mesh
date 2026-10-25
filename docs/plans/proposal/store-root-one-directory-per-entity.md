@@ -63,28 +63,43 @@ line per fact, one appender.
   node ran appends the record marked Withdrawn, over which a name claim wins as over a Deleted one,
   so the one place a record disappears today goes. Retention of a file's lines is nobody's until
   Luke rules it; this proposal introduces no compaction and assumes none.
-- **R-SR3, one append protocol for every file.** A writer appends one line in one `write` on a
-  descriptor opened `O_APPEND`, the line framed as `\n` + record + `\n`, then `fsync`s. A short write
-  (fewer bytes than the line) is a failed write, refused by name, and the writer does not retry on
-  the same descriptor until it has re-read the tail. A reader folds a file by complete lines: a blank
-  line is skipped, a line that does not parse as a record is skipped and counted, and a torn tail
-  (no closing newline) is skipped. Because every line opens with its own newline, a torn fragment
-  another writer appends after is a line of its own and swallows nothing. Both providers put the
-  root on one host kernel (the process provider's directory, the container provider's bind mount),
-  where a single `write` on `O_APPEND` to a regular file lands whole and in order; R14 item 5's
-  filesystem contract is restated for it.
+- **R-SR3, one append protocol for every file.** A line is `\n` + `<len>` + tab + record + `\n`,
+  `len` the record's byte count in decimal. A writer appends one line in one `write` on a descriptor
+  opened `O_APPEND`, then `fsync`s. Both providers put the root on one host kernel (the process
+  provider's directory, the container provider's bind mount), where a single `write` on `O_APPEND`
+  to a regular file lands whole and in order; R14 item 5's filesystem contract is restated for it.
+  A reader folds a file line by line: a blank line is skipped; a line whose record is shorter than
+  its `len`, or that ends the file without its newline, is a torn fragment, skipped and counted in
+  the open's span with its offset; a line whose record has its `len` bytes and does not parse as a
+  record is corruption, and the open is refused by name naming the file and the offset, never an
+  older line shown as current. Because every line opens with its own newline and carries its length,
+  a fragment another writer appends after is a line of its own, swallows nothing and is told from a
+  whole record. A short write (fewer bytes written than the line) is indeterminate, as a cut call is
+  (Node RPC §34): the writer's record may or may not be complete once the next writer's newline
+  lands, so before its next append the writer re-reads the tail from its consumed offset and finds
+  its record there whole or not, and only then retries or proceeds (Architect 1, 2026-10-25).
+  Corruption is refused rather than skipped because a skipped whole record exposes the line before
+  it as current, which is a lie about state; a fragment is skipped because it never was a record.
 - **R-SR4, a reader of rows it does not write reads the tail first.** A writer's own objects live in
-  its cache and its file positions follow its appends (storage-whole-records.md). Rows another
-  writer appends (another mesh's node records, every node's connection facts, the Build facts a
-  successor folds) are read by consuming the file's complete lines from the reader's last offset
-  before the answer that needs them. The shared file's view is not the writer's cache.
-- **R-SR5, one winner stays one winner.** The two conditional operations keep their guarantees
-  outside the logs. The attempt in flight on a mesh name is a create-exclusive file,
-  `locks/in-flight/<mesh name>`, taken and released as `mesh_claims.rs` does today, because an
-  append cannot refuse. A name claim is the sole writer's conditional decision and append (R14 item
-  3, unchanged): one writer per name by the writer map, serialized in its process, deciding in
-  `claim_against` from its folded view against the latest line for that name, then appending its
-  claim; two writers never hold one name because no two writers write one name.
+  its cache (storage-whole-records.md). Rows another writer appends (another mesh's node records,
+  every node's connection facts, the Build facts a successor folds) are read by consuming the
+  file's complete lines from the reader's consumed offset before the answer that needs them. The
+  consumed offset is the fold's own: it advances only over bytes the fold has read whole, never to
+  an append position, and an incomplete tail stays unconsumed. A writer's own append does not move
+  it, so after A consumes to 100, B appends and A appends, A's next fold starts at 100 and reads B's
+  line and then its own (Architect 1, 2026-10-25). The shared file's view is not the writer's cache.
+- **R-SR5, one winner stays one winner.** The conditional operations keep their guarantees outside
+  the logs, under `locks/`, because an append cannot refuse. The attempt in flight on a mesh name is
+  `locks/in-flight/<mesh name>`, taken and released as `mesh_claims.rs` does today. A name claim is
+  `locks/name/<name>`, a create-exclusive file naming its claimant, taken before the claim line is
+  appended and released at Deleted or Dead by the holder of the name, so the next claimant inserts
+  it again; a re-creation at the name inserts the lock then appends its claim over the Deleted or
+  Withdrawn line. That is what the code does today for both names: `claim_mesh_name` and the file
+  backend's `claim_node_name` are the record store's exclusive `insert` (`storage.rs:356`, `:1303`),
+  though R14 item 3 describes the node name as a conditional write; the code is kept and item 3 is
+  corrected to it (Architect 1, 2026-10-25). The writer map says who may claim a name; the lock is
+  what makes two processes that both believe they may, a recovery executor and an adoption launch,
+  yield one winner.
 
 ## 4. The layout
 
@@ -98,6 +113,7 @@ line per fact, one appender.
   connections.jsonl                              every connection fact of every source (the raw log; the latest per key is the current view)
   builds.jsonl                                   every Build fact: accepted, opened, claimed, step and attempt receipts, forgotten
   locks/in-flight/<mesh name>                    the one attempt in flight on that mesh name, create-exclusive
+  locks/name/<name>                              the holder of a mesh name or a node path.name, create-exclusive
 ```
 
 Writers, file by file; one writer per key, keys never shared:
@@ -110,6 +126,7 @@ Writers, file by file; one writer per key, keys never shared:
 | `connections.jsonl` | `node-connection` at (source, destination, alpn, kind) | the source node |
 | `builds.jsonl` | the Build facts at their keys: `<build_id>`, `<build_id>-<attempt>`, `<build_id>-<mesh>-<attempt>`, a claim, a receipt per step | the fabric-primary for a topology attempt; the mesh-primary for its drift attempt, the mesh in the key (R-BI7) |
 | `locks/in-flight/<mesh name>` | the mesh name | its claimant, create-exclusive, released at the attempt's verdict while it still names that attempt |
+| `locks/name/<name>` | the mesh name or the path.name | its claimant, create-exclusive, released at Deleted or Dead by the name's holder; the claim line in `meshes.jsonl` or `nodes.jsonl` follows the take |
 
 **Path uniqueness holds without the mesh directory.** The claim on `mesh2.admin.1` is the latest
 `node-name` line for that key, fabric-wide and independent of any mesh id, written by one writer, so
@@ -153,9 +170,9 @@ retention question, which is Luke's and not assumed here.
 
 - `rdm-node/src/record_store.rs`: `FileRecords` (one file per record, temp, fsync, rename) gives way
   to `StoreLog`: `append(record)` by R-SR3, `fold()` and `fold_from(offset)` by R-SR3 and R-SR4,
-  `lock_take(name)` and `lock_release(name, attempt)` by R-SR5. The hard-link insert goes with the
-  in-flight lock's move to `locks/`. Temp file names carry the writer's incarnation no longer, there
-  being none.
+  `lock_take(kind, name, claimant)` and `lock_release(kind, name, claimant)` by R-SR5, over
+  `locks/in-flight/` and `locks/name/`. The hard-link insert is what the locks are; it leaves the
+  records. Temp file names carry the writer's incarnation no longer, there being none.
 - `rdm-node/src/store_root.rs`: the header states §4; `nodes(mesh)`, `meshes(mesh)`, `fabric_builds()`,
   `mesh_builds(mesh)`, `connections(path.name)`, `connections_to(node id)` and `status(mesh)` go;
   `fabric()`, `meshes()`, `nodes()`, `connections()`, `builds()` (the five files), `lock(name)` and
@@ -222,8 +239,11 @@ connections.jsonl, the view the fold's latest line per key.`
   locks/}, one append-only JSONL file per storage boundary, every write the whole record as one line
   with its format and key, nothing removed, indexes folded, a layout marker; status/ is gone; path
   uniqueness lives in the node-name and mesh-name lines, one writer per name, fabric-wide.` Item 3:
-  unchanged in substance, its last sentence (the hard-link insert) → `the attempt in flight is the
-  one create-exclusive insert, under locks/`. Item 5: `relies on hard-link insertion, atomic rename,
+  corrected to the code: `The name claim is the sole writer's conditional write, not a
+  create-exclusive insert.` → `The name claim is a create-exclusive insert under locks/name/, as the
+  code has made it for both names (storage.rs:356, :1303), followed by the claim line; the attempt in
+  flight is the other, under locks/in-flight/.` Its `claim_against` sentence stands: the decision over
+  a Deleted or Withdrawn line is the claimant's, before the take. Item 5: `relies on hard-link insertion, atomic rename,
   file and directory fsync, and coherent reads and listings` → `relies on one-line O_APPEND writes
   landing whole and in order, file fsync, create-exclusive insertion under locks/, and coherent reads
   on one backing namespace (R-SR3)`. Item 7: `reads nodes/<mesh>/ and meshes/<mesh>` → `folds
@@ -237,12 +257,16 @@ connections.jsonl, the view the fold's latest line per key.`
 ### 5.4 Cells
 
 - `StoreLog`, one cell set: two writers appending concurrently to one file, every line found whole
-  and in order; a torn tail followed by another writer's line, the fragment skipped and the line
-  read; a short write refused by name and the next append whole; a blank or unparseable line skipped
-  and counted; several writes of one key, every line present after reopen and the latest read as
-  current (Architect 1's cell); `fold_from(offset)` seeing another writer's lines before an answer
-  (R-SR4); the in-flight lock taken once across two claimants and released only by the attempt that
-  holds it.
+  and in order; a torn tail followed by another writer's line, the fragment skipped and counted and
+  the line read; the short-write boundary, a record written whole but for its final newline and
+  reported short, then completed by the next writer's opening newline: the writer's tail re-read
+  finds it whole and does not append it twice, and the fold reads it once; a whole line that does
+  not parse refusing the open by name with the file and the offset; a blank line skipped; several
+  writes of one key, every line present after reopen and the latest read as current; the A–B–A
+  interleaving, A consumed to an offset, B appends, A appends, A's next fold reads B's line (R-SR4);
+  the in-flight lock taken once across two claimants and released only by the attempt that holds
+  it; two processes claiming one name, one lock taken, one claim line appended, the other refused
+  `NameHeld` and launching nothing (R-SR5).
 - The path-asserting tests move to §4: `store_root.rs` (9 assertions), `build_state.rs` (11),
   `rdm-admin/storage.rs` (6), `store_root_boot.rs` (4), `rdm-node/storage.rs` (2),
   `elections/fabric_takeover.rs` (2), `estate.rs`, `node/node_stop.rs`, `elections/node_primary_update.rs`,
