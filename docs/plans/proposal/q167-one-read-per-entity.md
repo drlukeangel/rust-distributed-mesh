@@ -47,8 +47,9 @@ because the Build topic does not. It is not a caller read and this proposal does
   `INVALID_ARGUMENT`, naming the field. An answer past the reply bound is `ReadOverBound`,
   `RESOURCE_EXHAUSTED`, as today; the caller narrows the filter. No paging is added to a Status read.
 - **R-RD3, a property's read is its row's field.** `node.tags.get`, `node.config.get`,
-  `node.cert.get`, `mesh.config.get` and `fabric.config.get` name fields of the entity's row (no wire
-  request of their own exists) and leave the pages as calls; their updates stay.
+  `node.cert.get`, `mesh.config.get` and `fabric.config.get` name fields of the entity's row and have
+  no wire request of their own; the names go from the typed-objects list and the row headings
+  (§5.3), the updates stay.
 - **R-RD4, a Build is read whole.** `builds.get` answers each Build with its header (phase, attempt,
   executor, reason, last failure), its topology (every node's `NodeSpec`: executable, storage,
   placement, tags, config) and its receipts, as `build.get` does today, so a read, edit and resubmit
@@ -68,8 +69,8 @@ because the Build topic does not. It is not a caller read and this proposal does
 | `connections.get` | `node` (required: id and incarnation), `ids` | the exact birth's own connections from its connections log, as today | the exact birth |
 | `builds.get` | `ids`, `current` | Builds newest first, each whole (R-RD4); the current one marked | the fabric-primary |
 
-`node` is required on `connections.get` because a connection is read at the live birth that holds
-it, not from a store row. "One node" is `nodes.get { ids: [id] }`; "the current Build" is
+`node` is required on `connections.get` because a connection is read at the live birth whose
+connections log holds it (connections.md, "the data plane is the connections log"). "One node" is `nodes.get { ids: [id] }`; "the current Build" is
 `builds.get { current: true }`.
 
 ## 5. Delta
@@ -127,6 +128,14 @@ node-rpc-envelope.md:
   tags index; a node's tags, config and cert are fields of its row | the rows, NodeView; a stopped
   node answers stopped; no event | OK, the empty list when nothing matches; a filter that cannot be
   meant INVALID_ARGUMENT; read bound RESOURCE_EXHAUSTED |`.
+- line 318, the connections row: the heading `node.connections.get/[delete](…)` →
+  `connections.get { node, ids? } / [node.connections.delete](…)`; `Held-connection read;` →
+  `connections.get { node, ids? } answers the exact birth's own connections from its connections log,
+  [Status 0x1B](#status-op-0x1b-rdm) Get { filter: Connections }, answered Connections;`; `as
+  node.connections.get returns them` → `as connections.get returns them`.
+- line 319, the tags row: the heading `node.tags.get/create/delete` → `node.tags.create/delete`;
+  `` `node.tags.get` answers the node's labels; `` → `a node's labels are the tags field of its row
+  (nodes.get);`.
 - line 324, `node.cert.get`: `A field of node.get:` → `A field of a node's row (nodes.get):`.
 - line 326, the mesh row's read half: `mesh.get { name } answers the one mesh with that name or
   minted id, … the filter read through the node store's tags index (Q165);` → `meshes.get { names? }
@@ -168,10 +177,12 @@ of its node row (nodes.get)`; line 70 `fabric.nodes.get { tags } or mesh.nodes.g
 → `nodes.get { tags }, with mesh for one mesh's`.
 
 fabric-mesh-node-lifecycles.md: line 100 `| [node.get](…) | Reading a node |` → `| [nodes.get](…) |
-Reading nodes |`; line 123 (0x1F) unchanged.
+Reading nodes |`; line 101 `| [node.connections.get](…) | Reading a node's held connections |` →
+`| [connections.get](…) | Reading a node's held connections |`; line 123 (0x1F) unchanged.
 
 Name pass, meaning unchanged (`node.get` → `nodes.get`, `fabric.get` → `fabrics.get`, `mesh.get` →
-`meshes.get`, `build.get` → `builds.get`): connections.md (2), fabric-certs.md (4),
+`meshes.get`, `build.get` → `builds.get`, `node.connections.get` → `connections.get { node }`):
+connections.md (lines 56 and 603), node-connections-delete.md (lines 19 and 28), fabric-certs.md (4),
 node-identity-and-state.md (4), gossip.md (2), node-rpc.md (1), lifecycles/node-recovery.md (2),
 lifecycles/fabric-ca-renew.md (2), lifecycles/node-status.md (1), lifecycles/states.md (1),
 lifecycles/node-connections-delete.md (2), eng/provider-runbook.md (5), eng/node-storage-runbook.md (1),
