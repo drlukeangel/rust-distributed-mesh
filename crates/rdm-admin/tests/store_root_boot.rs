@@ -1093,3 +1093,50 @@ fn under_a_fabric_delete_with_no_mesh_left_an_adoption_launch_creates_nothing() 
     let (at, _) = root.row_and_node("");
     assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::ReadyForTraffic)), "the lost birth's row is untouched");
 }
+
+/// The member cert `pid` installed for the birth at `node`, as the evidence spans it
+/// (`rdm.node.cert.update.via-join`, the bytes' length), within `within`.
+fn member_cert_installed(dir: &std::path::Path, pid: u32, node: &str, within: Duration) -> Option<u64> {
+    let until = Instant::now() + within;
+    loop {
+        let len = spans_of(dir, pid).into_iter().filter(|s| s["name"] == "rdm.node.cert.update.via-join" && s["attributes"]["node"] == node).filter_map(|s| s["attributes"]["cert_len"].as_u64().or_else(|| s["attributes"]["cert_len"].as_str().and_then(|v| v.parse().ok()))).max();
+        if len.is_some_and(|l| l > 0) || Instant::now() >= until {
+            return len;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (fabric-certs.md §When a cert is issued, every birth "held by the birth it was issued to";
+/// fabric-certs.md:82 "a new node over an inherited data dir never reuses its predecessor's cert";
+/// fabric-recovery.md: the node-admin over its inherited data dir is a new node): an admin
+/// re-created at its path over its inherited data dir (a new node.id and incarnation, no JoinNode) holds
+/// a member cert of its own once it boots, so an app protocol it dials admits it. Must NOT happen: the
+/// re-created admin installing no cert (its app-protocol dials refused `no-credential`).
+#[test]
+fn an_admin_re_created_at_its_path_over_its_inherited_data_dir_holds_a_member_cert() {
+    let root = Prepared::at("an_admin_re_created_at_its_path_holds_a_member_cert", History::StateCommit);
+    let mut running = root.start();
+    let _ = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
+    let installed = member_cert_installed(&root.dir, running.pid, "mesh1.admin.1", Duration::from_secs(20));
+    let _ = root.end(running);
+    assert!(installed.is_some_and(|l| l > 0), "the re-created admin installed no member cert of its own: {installed:?}");
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (fabric-certs.md §When a cert is issued; fabric-recovery.md "Nothing alive": the adoption
+/// launch "is given the fabric root and CA" and is a new birth at the lost fabric-primary's path.name):
+/// the adoption launch, which made no JoinNode, holds a member cert of its own once it has taken the
+/// path, so an app protocol it dials admits it. Must NOT happen: the adopter installing no cert.
+#[test]
+fn an_adoption_launch_holds_a_member_cert_once_it_holds_the_path() {
+    let root = Prepared::adoptable("an_adoption_launch_holds_a_member_cert");
+    let mut a = adopter(&root.dir, "adopter", &root.store, &root.fabric_id.to_string(), &minted_custody());
+    let claim = claim_of(&root.dir, a.pid, ADOPTS_WITHIN).expect("the adoption launch made no claim");
+    assert_eq!(attr_of(&claim, "outcome"), "won", "{claim}");
+    let installed = member_cert_installed(&root.dir, a.pid, "mesh1.admin.1", ADOPTS_WITHIN);
+    unsafe { libc::kill(a.pid as i32, libc::SIGTERM) };
+    let _ = exited_within(&mut a, ADOPTS_WITHIN);
+    assert!(installed.is_some_and(|l| l > 0), "the adoption launch installed no member cert of its own: {installed:?}");
+}
