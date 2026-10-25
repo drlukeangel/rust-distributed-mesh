@@ -47,10 +47,33 @@ The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/n
 |---|---|
 | small per-node settings | the node's `config` map: mine, RDM never reads it; replaced whole by `node.config.update`; at most 32 keys and 2048 bytes ([node-config-update.md](../architecture/lifecycles/node-config-update.md), [gossip.md §3.1](../architecture/gossip.md#31-frame-catalog)) |
 | mesh and fabric attributes | `mesh.config.*`, `fabric.config.*` ([node-rpc-envelope.md](../architecture/node-rpc-envelope.md#typed-objects-mapped-to-wire-and-execution-owners)) |
-| labels to select nodes by | `tags`: `node.tags.create` / `node.tags.delete` |
+| labels to select nodes by | `tags`: see [Tags](#tags) below |
 | a node's durable data | under its `RDM_DATA_DIR`; carried across restart and re-birth by its path's storage policy ([node-storage-runbook.md](node-storage-runbook.md)) |
 | my rows and events | my own storage, and my events on gossip ([gossip.md §8](../architecture/gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); RDM orders nothing of mine |
 | RDM's own records on my storage | the storage adapters ([build.md §5](../architecture/build.md#5-buildstateadapter)): persistence only, RDM writes whole records |
+
+## Tags
+
+A tag is a label on a node (and on a mesh: `mesh.tags.*`, the same shape). It selects nodes; it
+holds no value (values go in `config`). It is an annotation with no execution semantics: RDM
+decides nothing on a tag, and the provider reads none
+([deployment-provider.md §4](../architecture/deployment-provider.md#4-storage-policy-and-the-data-dir)).
+The contract is the `node.tags` row on [node-rpc-envelope.md](../architecture/node-rpc-envelope.md#typed-objects-mapped-to-wire-and-execution-owners)
+and the `tags` row of [Node properties](../architecture/node-rpc-envelope.md#node-properties).
+
+| How do I… | What happens |
+|---|---|
+| tag a node when it is created | put the labels on its path in the Build; a change of a path's tags alone is no resize, and the fabric stays ready-for-traffic |
+| add labels | `node.tags.create { label \| [labels] }`: one label or a list; a blind put per label, so a label the node already carries is reported `ALREADY_EXISTS` for that label and nothing is duplicated |
+| remove labels | `node.tags.delete { All \| [labels] }`: every label or the named ones; a label the node does not carry is reported `NOT_FOUND` for that label |
+| read a node's labels | `node.tags.get`, or the `tags` field of its node row |
+| select nodes by label | `fabric.nodes.get { tags }` or `mesh.nodes.get { tags }` (Q165): the nodes carrying all of the given labels, or any of them; read through the node store's tags index, one point read per label |
+| keep labels across a re-birth | nothing to do: tags are inherited with the config at the same path.name on recovery and on replacement |
+
+A label is 1–64 characters of `a-z 0-9 - _ . ~`, with no leading `.`, and a node carries at most 32.
+A label outside that grammar, or one past the 32, is refused by name (`INVALID_ARGUMENT`) and
+nothing is written. Tags are not config: `node.config.update` never touches them, and they do not
+count against the config cap.
 
 ## My work inside a lifecycle
 
