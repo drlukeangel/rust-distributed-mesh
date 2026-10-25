@@ -702,12 +702,13 @@ async fn gone_everywhere(estate: &Estate, path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Until the view of an admin that answers marks every one of `paths` unheard (`dead`, or also
-/// `pending-reconnect` unless `true_offline`), within `within`. `Err` names what the views held.
+/// Until the view of an admin that answers marks every held birth of `births` (`(path, node_id)`)
+/// unheard ([`marks_unheard`]), within `within`. `Err` names what the views held at each path.
 ///
 /// `direct`: the paths are judged by the admins of their own mesh (the direct observers of a held
 /// node), any one of them marking every path; otherwise by the admin that answers for the Fabric.
-async fn until_unheard(estate: &mut Estate, known: &[Admin], paths: &[String], true_offline: bool, direct: bool, within: Duration) -> Result<Duration, String> {
+async fn until_unheard(estate: &mut Estate, known: &[Admin], births: &[(String, String)], true_offline: bool, direct: bool, within: Duration) -> Result<Duration, String> {
+    let paths: Vec<String> = births.iter().map(|(p, _)| p.clone()).collect();
     let began = Instant::now();
     let until = Instant::now() + within;
     let mut last = String::new();
@@ -734,17 +735,10 @@ async fn until_unheard(estate: &mut Estate, known: &[Admin], paths: &[String], t
             }
             for judge in judges {
               if let Some(nodes) = views_at(estate, &judge).await {
-                let unheard = |p: &String| {
-                    nodes.iter().filter(|n| n["name"] == p.as_str()).all(|n| match n["status"].as_str() {
-                        Some("dead") => true,
-                        Some("pending-reconnect") => !true_offline,
-                        _ => false,
-                    })
-                };
-                if paths.iter().all(unheard) {
+                if marks_unheard(&nodes, births, true_offline) {
                     return Ok(began.elapsed());
                 }
-                last = paths.iter().map(|p| format!("{p}:{:?}", nodes.iter().filter(|n| n["name"] == p.as_str()).map(|n| s(&n["status"])).collect::<Vec<_>>())).collect::<Vec<_>>().join(" ");
+                last = paths.iter().map(|p| format!("{p}:{:?}", nodes.iter().filter(|n| n["name"] == p.as_str()).map(|n| format!("{}@{}", s(&n["status"]), s(&n["node_id"]))).collect::<Vec<_>>())).collect::<Vec<_>>().join(" ");
               }
             }
         }
@@ -754,12 +748,27 @@ async fn until_unheard(estate: &mut Estate, known: &[Admin], paths: &[String], t
     let mut views = Vec::new();
     for admin in known {
         let held = match views_at(estate, admin).await {
-            Some(v) => paths.iter().map(|p| format!("{p}:{:?}", v.iter().filter(|n| n["name"] == p.as_str()).map(|n| s(&n["status"])).collect::<Vec<_>>())).collect::<Vec<_>>().join(" "),
+            Some(v) => paths.iter().map(|p| format!("{p}:{:?}", v.iter().filter(|n| n["name"] == p.as_str()).map(|n| format!("{}@{}", s(&n["status"]), s(&n["node_id"]))).collect::<Vec<_>>())).collect::<Vec<_>>().join(" "),
             None => "unanswered".into(),
         };
         views.push(format!("{} -> {held}", admin.name));
     }
     Err(format!("not marked unheard within {}s: {last}; every admin's view: {views:?}", within.as_secs()))
+}
+
+/// Whether `view` marks every held birth of `births` (`(path, node_id)`) unheard: the birth's own row
+/// `dead`, or also `pending-reconnect` unless `true_offline`. A held birth the view no longer holds
+/// was deleted by node recovery on a verdict other than `reached`, at once (node-recovery.md step 3,
+/// Q110, Q111), so its `dead` stands only until that delete; the replacement at its path is another
+/// birth and is never read as the held one.
+fn marks_unheard(view: &[Value], births: &[(String, String)], true_offline: bool) -> bool {
+    births.iter().all(|(_, id)| {
+        view.iter().filter(|n| n["node_id"] == id.as_str()).all(|n| match n["status"].as_str() {
+            Some("dead") => true,
+            Some("pending-reconnect") => !true_offline,
+            _ => false,
+        })
+    })
 }
 
 fn primaries(nodes: &[Value]) -> (bool, String) {
@@ -1705,7 +1714,7 @@ impl Driver {
         // the i143-2787-soak-container runs); the container cell for the silence (#2784) observes
         // the same consequence within 90 s, and so does the soak there.
         let within = if container { Duration::from_secs(90) } else { self.cfg.unheard_within(true_offline, 1 + self.silenced.values().map(|x| x.members_len()).sum::<usize>()) };
-        let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, true, within).await;
+        let marked = until_unheard(&mut self.estate, &known, &[(path.clone(), s(&n["node_id"]))], true_offline, true, within).await;
         if let Ok(after) = &marked {
             entry["unheard_after_ms"] = json!(after.as_millis() as u64);
         }
@@ -1875,7 +1884,8 @@ impl Driver {
         // soak measures the time it took (`unheard_after_ms`).
         let within = Duration::from_secs(90);
         self.silenced.insert(mesh.to_string(), Cut::Container(sil));
-        let after = until_unheard(&mut self.estate, &others, &members, false, false, within).await.map_err(|e| broken("fault-is-observed", format!("{mesh} silenced: {e}")))?;
+        let births: Vec<(String, String)> = nodes.iter().filter(|n| n["mesh"] == mesh && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+        let after = until_unheard(&mut self.estate, &others, &births, false, false, within).await.map_err(|e| broken("fault-is-observed", format!("{mesh} silenced: {e}")))?;
         // The cut window the cell reads (`cut_at_ns` to its Heal row's `healed_at_ns`), as the process
         // provider's udp-drop row records it: a run's cuts are counted and judged from these rows.
         entry["silenced"] = json!({"mesh": mesh, "members": members, "fault": "silence", "cut_at_ns": cut_at_ns, "unheard_after_ms": after.as_millis() as u64});
@@ -2177,6 +2187,24 @@ pub fn summary(r: &Report) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A held birth is marked unheard by its own row: `dead`, or `pending-reconnect` when the hold is
+    /// not judged true offline. Node recovery re-creates it at once on a verdict other than `reached`
+    /// (node-recovery.md step 3, Q110, Q111), so its `dead` stands only until recovery's delete (0.45 s
+    /// in the routing soak at 119663355); the path's replacement, Pending or ready-for-traffic, is
+    /// another birth and never makes the held one heard.
+    #[test]
+    fn a_held_birth_node_recovery_replaced_is_marked_unheard() {
+        let row = |id: &str, status: &str| json!({"name": "mesh2.broker.2", "node_id": id, "status": status});
+        let held = [("mesh2.broker.2".to_string(), "y2reptx3zt5y".to_string())];
+        assert!(marks_unheard(&[row("y2reptx3zt5y", "dead")], &held, true));
+        assert!(!marks_unheard(&[row("y2reptx3zt5y", "pending-reconnect")], &held, true));
+        assert!(marks_unheard(&[row("y2reptx3zt5y", "pending-reconnect")], &held, false));
+        assert!(!marks_unheard(&[row("y2reptx3zt5y", "ready-for-traffic")], &held, false));
+        for status in ["pending", "ready-for-traffic"] {
+            assert!(marks_unheard(&[row("461hjdtmy4t4", status)], &held, true), "the replacement {status} at the path");
+        }
+    }
         use crate::model::generate;
 
     /// A failure at the last row of a generated sequence shrinks to a legal sequence that ends in
