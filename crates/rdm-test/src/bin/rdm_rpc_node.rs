@@ -53,10 +53,21 @@ async fn main() {
             Some(hook) => rdm_test::before_ready::BeforeReadyHook::new(hook),
             None => rdm_test::before_ready::BeforeReadyHook::none(),
         };
-        let started = node::start_before_ready(&launch, before_ready, |b, seams| {
+        let register = |b, seams: rdm_test::originate::Seams| {
             let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch, &seams.name), seams.resolver.clone(), &launch, &seams.name), declare_client.clone(), &launch);
             rdm_test::originate::serve(b, seams, &launch)
-        })
+        };
+        // The testkit's app protocol, registered when the estate's root holds its knob: every admitted
+        // connection's streams are echoed, and the originate door's `Stream` dials on it.
+        let started = async {
+            if node::app_protocol_knob(&launch) {
+                let (running, acceptor) = node::start_before_ready_with_alpn(&launch, before_ready, node::app_protocol(), register).await?;
+                node::echo_streams(acceptor, launch.name.to_string());
+                Ok(running)
+            } else {
+                node::start_before_ready(&launch, before_ready, register).await
+            }
+        }
         .instrument(tracing::Span::none());
         let started = tokio::select! {
             r = started => r,

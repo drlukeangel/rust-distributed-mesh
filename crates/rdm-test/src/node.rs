@@ -75,6 +75,59 @@ fn node_backend() -> Arc<dyn rdm_node::storage_backend::NodeStorageBackend> {
     return Arc::new(rdm_node::storage_backend::MemoryNodeBackend);
 }
 
+/// The testkit's app protocol: a registered ALPN (fabric-certs.md §On a connection) an estate's rpc
+/// node registers when the root holding its data dir holds [`APP_PROTOCOL_KNOB`], every admitted
+/// connection's streams answered by [`echo_streams`].
+pub const APP_PROTOCOL: &[u8] = b"rdm-test/echo/1";
+
+/// The file, under the root that holds an estate's data dirs, that has its rpc nodes register
+/// [`APP_PROTOCOL`].
+pub const APP_PROTOCOL_KNOB: &str = "app-protocol.knob";
+
+/// [`APP_PROTOCOL`] as the `Alpn` a node or a node-admin registers.
+pub fn app_protocol() -> rdm_transport::connections::Alpn {
+    rdm_transport::connections::Alpn { name: APP_PROTOCOL.to_vec(), forwardable: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
+}
+
+/// Whether `launch`'s root holds [`APP_PROTOCOL_KNOB`].
+pub fn app_protocol_knob(launch: &Launch) -> bool {
+    launch.data_dir.parent().is_some_and(|root| root.join(APP_PROTOCOL_KNOB).exists())
+}
+
+/// Answer every stream of every connection `acceptor` admits with `echo <own>: <the bytes it read>`.
+pub fn echo_streams(mut acceptor: rdm_transport::connections::Acceptor, own: String) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(conn) = acceptor.accept().await {
+            let own = own.clone();
+            tokio::spawn(async move {
+                while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                    let Ok(bytes) = recv.read_to_end(1 << 20).await else { break };
+                    let answer = format!("echo {own}: {}", String::from_utf8_lossy(&bytes));
+                    if send.write_all(answer.as_bytes()).await.is_err() || send.finish().is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    })
+}
+
+/// [`start_before_ready`], also registering one data-plane `alpn`: its dial half handed to the
+/// originate door (`OriginateRequest::Stream`), its accept half returned.
+pub async fn start_before_ready_with_alpn(
+    launch: &Launch,
+    before_ready: rdm_node::before_ready::BeforeReadyHook,
+    alpn: rdm_transport::connections::Alpn,
+    register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
+) -> Result<(RunningNode, rdm_transport::connections::Acceptor)> {
+    let name = alpn.name.clone();
+    let dialer = Arc::new(std::sync::OnceLock::new());
+    let running = start_with_rafka_time_before_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), before_ready, register, &[alpn], dialer.clone()).await?;
+    let (d, acceptor) = running.connections(&name).map_err(|e| anyhow::anyhow!("taking the {:?} handle: {e:?}", String::from_utf8_lossy(&name)))?.split();
+    let _ = dialer.set(d);
+    Ok((running, acceptor))
+}
+
 /// [`start_with_seams`], also registering one data-plane `alpn` (connections.md §5): its dial half is
 /// handed to the originate door (`OriginateRequest::Stream`), its accept half returned for the role to
 /// answer on.

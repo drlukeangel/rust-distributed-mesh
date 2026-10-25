@@ -86,6 +86,7 @@ pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, change: 
 
 #[cfg(feature = "file-backend")]
 mod admin_app_alpns;
+mod app_protocol_dials;
 mod admin_serves_forward;
 mod ids_crockford;
 #[cfg(feature = "file-backend")]

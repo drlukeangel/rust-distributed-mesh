@@ -224,6 +224,7 @@ mod proof_store;
 mod join_before_ready;
 mod member_cert;
 mod member_cert_admin;
+mod app_protocol_estate;
 mod pipeline_rerun;
 mod probe_endpoint_close;
 mod probe_entry_admin;
