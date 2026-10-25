@@ -307,7 +307,7 @@ New:
 **3.8 node-recovery.md**, the Retained row, append after "never the recovering admin's)":
 
 ```
- ; a row written before the executable field decodes with none and the node recovers once on the executable the current entry names for its path, the recovered row recording it
+ ; a row written before the executable field decodes with none, and node recovery of that birth is refused by name: the topology's entry is the target, not what the birth ran; the repair is a request naming that path's executable, the ordinary replacement ([build-deployment.md](../build-deployment.md))
 ```
 
 **3.9 states.md**, the section at line 174. Old heading and first sentences:

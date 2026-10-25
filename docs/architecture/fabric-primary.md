@@ -308,7 +308,7 @@ fabric-primary accepts Build B21 naming mesh M
     B21 is the current Build
 ```
 
-M comes into being with the `node.create` of its first node-admin ([node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent)). The joining Mesh counts toward Fabric completeness from the moment the accepted Build names it, before its Mesh row exists. A mesh join is a resize: the fabric returns to pending and climbs through state-sync, state-commit and ready-for-traffic again ([States](lifecycles/states.md#states)), and what a serving mesh does meanwhile is [States: Resize and roll](lifecycles/states.md#resize-and-roll).
+M comes into being with the `node.create` of its first node-admin ([node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent)). The joining Mesh counts toward Fabric completeness from the moment the accepted Build names it, before its Mesh row exists. A mesh join is a resize: the fabric returns to pending and climbs through state-sync, state-commit and ready-for-traffic again ([States](lifecycles/states.md#states)), and what a serving mesh does meanwhile is [States: Resize and roll](lifecycles/states.md#resize-and-executable-replacement).
 
 ### 10.2 Removing Mesh
 
