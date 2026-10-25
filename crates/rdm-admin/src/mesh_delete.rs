@@ -226,7 +226,7 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], _operation: &str, roster: &[Ros
 /// same Build and lane at that attempt or later (an attempt number names one attempt per lane). `None`
 /// for a delete cut anywhere after its exit proof (before `NodeDeleted`'s receipt, before its
 /// publication, before `Complete`): the delete is owed its remaining steps.
-fn finished_delete(steps: &[BuildStepReceipt], executor: &str, b: &RosterBirth) -> Result<Option<LifecycleOp>, String> {
+pub(crate) fn finished_delete(steps: &[BuildStepReceipt], executor: &str, b: &RosterBirth) -> Result<Option<LifecycleOp>, String> {
     let named = format!("{} {}", b.node, b.incarnation_id);
     let path: crate::model::PathName = b.node.parse().map_err(|e| format!("{executor}: the roster birth {named} names no path.name: {e:?}"))?;
     let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("{executor}: the roster birth {named}'s node id {} does not parse: {e}", b.node_id))?;

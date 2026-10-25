@@ -100,6 +100,14 @@ pub trait Gate: Send + Sync {
     async fn dead_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<crate::model::MeshId>, String> {
         Ok(Default::default())
     }
+    /// Every mesh record the store holds, for a fabric.delete's plan: the delete plans from the Mesh rows
+    /// on the store, never only from the view, which drops a mesh once its members are gone (fabric-delete.md
+    /// "Failure": a runtime inside the workflow whose delete has no receipt is never reported deleted;
+    /// mesh-delete.md "Resume after the primary's loss"). A gate with no mesh store holds none: the view's
+    /// meshes are planned.
+    async fn mesh_rows(&self) -> Result<Vec<crate::storage::MeshRecord>, String> {
+        Ok(Vec::new())
+    }
     /// Whether the fabric holds ready-for-traffic now: a Build that put the fabric back to pending is
     /// `Complete` only once the fabric's ready-for-traffic state is set from its change (Q154; states.md
     /// "Resize and roll"). A gate with no fabric change holds it.
@@ -316,6 +324,9 @@ pub struct Drive {
     /// The endpoint keys of the callers reading this drive's frames now, one per reader
     /// ([`DriveReader::of_caller`]).
     callers: Mutex<Vec<iroh::PublicKey>>,
+    /// The Mesh rows the store held when this drive's pass last read them, for a fabric.delete's plan
+    /// ([`Gate::mesh_rows`]); `None` for any other Build.
+    mesh_rows: Mutex<Option<Vec<crate::storage::MeshRecord>>>,
 }
 
 fn frame_key(f: &BuildReply) -> Option<String> {
@@ -335,7 +346,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -807,6 +818,9 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
         t
     };
     // A roll plans from what the rows recorded at this pass ([`Gate::recorded_executables`]).
+    // A fabric.delete plans every mesh the store holds a row of beside the view's ([`Gate::mesh_rows`]).
+    let stored = drive.mesh_rows.lock().unwrap().as_ref().map(|rows| crate::accepted::with_mesh_rows(t, rows));
+    let t = stored.as_ref().unwrap_or(t);
     let plan = match drive.recorded.lock().unwrap().as_ref() {
         Some(recorded) => crate::accepted::plan_for_roll(p, t, recorded),
         None => crate::accepted::plan_for_build(p, t),
@@ -1160,6 +1174,14 @@ impl DriveEnv {
             match self.gate.dead_meshes(&observed).await {
                 Ok(dead) => *drive.dead.lock().unwrap() = dead,
                 Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id}: the Mesh records could not be read for which meshes are Dead: {e}")),
+            }
+            // A fabric.delete's remaining meshes are the Mesh rows on the store (fabric-delete.md "Failure";
+            // mesh-delete.md "Resume after the primary's loss"): read at every pass, before it plans.
+            if p.deletes_fabric() {
+                match self.gate.mesh_rows().await {
+                    Ok(rows) => *drive.mesh_rows.lock().unwrap() = Some(rows),
+                    Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id} is a fabric.delete and the Mesh rows could not be read for the meshes it deletes: {e}")),
+                }
             }
             let crashed = self.unanswered_meshes(&p);
             // The claim's holder was proven departed by this pass: the next attempt is claimed without

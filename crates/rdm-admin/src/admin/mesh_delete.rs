@@ -192,13 +192,14 @@ impl AdminRunner {
 
     /// Under an in-force fabric.delete, the mesh `mesh` with no live node-admin primary is deleted in
     /// process at this executor, the holder of the fabric-primary's roles, and no node-admin is created for
-    /// it (mesh-delete.md "Resume after the primary's loss" step 2, Q160): every live member by its
-    /// ordinary node.delete, this admin its executor (node.stop, the exact exit proof); every other birth as
-    /// an unreached birth (its runtime read from its durable row, `TerminateRuntime` first when it runs). A
-    /// runtime this admin cannot inspect or terminate ends the step by name, no receipt manufactured. With
-    /// no roster admitted, the roster is the view's births of the mesh ([`crate::mesh_delete::unanswered_mesh_delete_with`]);
-    /// with one admitted, it is the admitted roster. Then mesh.deleted's and mesh-left's receipts are
-    /// recorded and the mesh leaves this view. A live node-admin of the mesh not yet its primary is no
+    /// it (mesh-delete.md "Resume after the primary's loss" step 2, Q160): its roster is the AcceptedRoster
+    /// receipt, captured once, from the mesh's node rows on the store, by the first executor that runs it
+    /// and read by every later one; every birth without a terminal receipt is deleted, a live member by its
+    /// ordinary node.delete (node.stop, the exact exit proof), this admin its executor, every other birth as
+    /// an unreached birth (its runtime read from its durable row, `TerminateRuntime` first when it runs), and
+    /// a delete holding its exit proof runs on from its receipts. A runtime this admin cannot inspect or
+    /// terminate ends the step by name, no receipt manufactured. Then mesh.deleted's and mesh-left's receipts
+    /// are recorded and the mesh leaves this view. A live node-admin of the mesh not yet its primary is no
     /// loss: the attempt ends and the next one hands that admin the workflow.
     async fn delete_mesh_in_process(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &MeshDeleteKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<(), RunEnd> {
         let outer = key.operation.as_str();
@@ -214,55 +215,97 @@ impl AdminRunner {
 
     async fn delete_mesh_in_process_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &MeshDeleteKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<(), RunEnd> {
         let outer = key.operation.as_str();
+        let me = self.held_name().to_string();
         let live: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin && n.status.is_live()).cloned().collect();
-        let admitted = crate::mesh_delete::admitted_of(steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))?;
-        let Some(adm) = admitted else {
-            // No roster admitted: the view's births of the mesh, the live members deleted first.
-            let mut in_process = Vec::new();
-            for n in &live {
-                let terminal = self.delete_member_in_process(build_id, attempt, n).await?;
-                in_process.push((RosterBirth::of(n)?, terminal));
+        // The roster is captured once and never recaptured (mesh-delete.md "Resume after the primary's
+        // loss"): the AcceptedRoster receipt an earlier executor recorded is read; with none recorded, the
+        // capture has not happened yet and this one is the first, taken from the mesh's node rows on the
+        // store, never from the view, which drops a birth once it is gone (fabric-delete.md "Failure").
+        let adm = match crate::mesh_delete::admitted_of(steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))? {
+            Some(adm) => adm,
+            None => {
+                let roster = self.stored_roster(mesh, &key.mesh_id, steps).await.map_err(|e| format!("{outer}: {e}"))?;
+                let is_admin = |b: &RosterBirth| b.node.parse::<PathName>().is_ok_and(|p| p.kind == NodeKind::NodeAdmin);
+                let final_primary = roster.iter().find(|b| is_admin(b)).or(roster.first()).cloned().ok_or_else(|| format!("{outer}: the store holds no node row of {mesh} to delete"))?;
+                let final_runtime = self.roster_birth_runtime(&final_primary, steps).await.map_err(|e| format!("{outer}: the runtime of {}, the roster's final primary, is not known here: {e}", final_primary.node))?;
+                tracing::Span::current().record("roster", roster.len());
+                accepted_roster(&*self.builds, key, STEP_ACCEPTED_ROSTER, &me, &final_primary, &final_runtime, || Ok(roster.clone())).await?;
+                let now = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
+                crate::mesh_delete::admitted_of(&now, outer).transpose().map_err(|e| format!("{outer}: {e}"))?.ok_or_else(|| format!("{outer}: the {STEP_ACCEPTED_ROSTER} receipt just recorded is not read back"))?
             }
-            let runtime_store = self.records.contacts.get().ok_or_else(|| format!("{outer}: {} holds no durable runtime rows for mesh {mesh}", self.held_name()))?;
-            let node_rows = self.records.node_rows();
-            let held_paths: Vec<PathName> = view.nodes.iter().map(|n| n.name.clone()).collect();
-            let delete = |b: RosterBirth| async move { self.delete_lost_birth(build_id, attempt, &b).await.map_err(|e| e.to_string()) };
-            return match crate::mesh_delete::unanswered_mesh_delete_with(&*self.builds, &*self.provider, &self.records, node_rows.as_deref(), &*self.mesh_storage, &**runtime_store, key, &self.held_name().to_string(), mesh, &view.nodes, &held_paths, delete, &in_process).await? {
-                crate::mesh_delete::UnansweredMeshOutcome::FullyCrashed(_) => {
-                    self.left_in_process(build_id, attempt, mesh, key).await;
-                    Ok(())
-                }
-                crate::mesh_delete::UnansweredMeshOutcome::CreateAdmin { .. } => Err(RunEnd::Incomplete(format!("{outer}: a member of {mesh} became live during its delete in process; the next attempt deletes it"))),
-            };
         };
-        // A roster admitted: each birth without its exit receipt, the live ones by their ordinary
-        // node.delete, every other as an unreached birth.
-        for b in adm.roster.iter() {
-            if crate::mesh_delete::exit_receipts(steps, outer, std::slice::from_ref(b)).contains_key(&(b.node_id.clone(), b.incarnation_id.clone())) {
-                continue;
-            }
-            match live.iter().find(|n| n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)) {
-                Some(n) => {
-                    self.delete_member_in_process(build_id, attempt, n).await?;
-                }
-                None => self.delete_silent_admin(build_id, attempt, key, mesh, b, steps).await?,
-            }
-        }
-        let now = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
         let mut roster = adm.roster.clone();
         for a in &adm.amendments {
             if !roster.contains(&a.final_primary) {
                 roster.push(a.final_primary.clone());
             }
         }
+        // Each birth by its tier (ordinary nodes, then node-admins), running only the deletes without a
+        // terminal receipt: a delete with every step's receipt stands; one that holds its exit proof and not
+        // every later step runs on from its receipts; a live member by its ordinary node.delete; every other
+        // birth as an unreached birth.
+        let is_admin = |b: &RosterBirth| b.node.parse::<PathName>().is_ok_and(|p| p.kind == NodeKind::NodeAdmin);
+        for admins in [false, true] {
+            for b in roster.iter().filter(|b| is_admin(b) == admins) {
+                let held = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
+                if crate::mesh_delete::finished_delete(&held, &me, b)?.is_some() {
+                    continue;
+                }
+                if crate::mesh_delete::exit_receipts(&held, outer, std::slice::from_ref(b)).contains_key(&(b.node_id.clone(), b.incarnation_id.clone())) {
+                    self.delete_lost_birth(build_id, attempt, b).await?;
+                    continue;
+                }
+                match live.iter().find(|n| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)) {
+                    Some(n) => {
+                        self.delete_member_in_process(build_id, attempt, n).await?;
+                    }
+                    None => self.delete_silent_admin(build_id, attempt, key, mesh, b, &held).await?,
+                }
+            }
+        }
+        let now = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
         let held = crate::mesh_delete::exit_receipts(&now, outer, &roster);
         if let Some(b) = roster.iter().find(|b| !held.contains_key(&(b.node_id.clone(), b.incarnation_id.clone()))) {
             return Err(RunEnd::Incomplete(format!("{outer}: {} {} of {mesh} holds no exit receipt after its delete in process: it is never reported deleted", b.node, b.incarnation_id)));
         }
         let node_rows = self.records.node_rows();
-        crate::mesh_delete::deleted_in_process(&*self.builds, &self.records, node_rows.as_deref(), &*self.mesh_storage, key, &self.held_name().to_string(), mesh, roster, &adm.final_primary, Some(adm.final_runtime.clone()), held.into_values().collect()).await?;
+        crate::mesh_delete::deleted_in_process(&*self.builds, &self.records, node_rows.as_deref(), &*self.mesh_storage, key, &me, mesh, roster, &adm.final_primary, Some(adm.final_runtime.clone()), held.into_values().collect()).await?;
         self.left_in_process(build_id, attempt, mesh, key).await;
         Ok(())
+    }
+
+    /// The roster of `mesh` (`mesh_id`) captured from its node rows on the store, every birth that was a
+    /// member when this Build's delete began: each row's newest birth, a row of another mesh of that name
+    /// left out; a `Deleted` row only when this Build's own node.delete of that exact birth deleted it (its
+    /// `NodeDeleting` receipt names it), never a birth an earlier Build deleted. In path order.
+    async fn stored_roster(&self, mesh: &str, mesh_id: &MeshId, steps: &[BuildStepReceipt]) -> Result<Vec<RosterBirth>, String> {
+        let store = self.records.contacts.get().ok_or_else(|| format!("{} holds no nodes.storage to read the node rows of {mesh} from", self.held_name()))?;
+        let rows = store.nodes(mesh).await.map_err(|e| format!("the node rows of {mesh} could not be read: {e}"))?;
+        let deleting = crate::deployment::pipeline::RetireStep::NodeDeleting.name();
+        let began = |r: &crate::storage::NodeRow, inc: &crate::model::IncarnationId| {
+            let op = format!("node.delete:{}", r.name);
+            steps.iter().filter(|s| s.operation == op && s.step == deleting && s.outcome == StepOutcome::Complete).filter_map(|s| s.output.clone().and_then(|v| serde_json::from_value::<rdm_core::LifecycleOp>(v).ok())).any(|o| o.node_id == r.node_id && o.incarnation == *inc)
+        };
+        let mut roster: Vec<RosterBirth> = rows
+            .iter()
+            .filter(|r| r.mesh_id.as_ref().is_none_or(|id| id == mesh_id) && r.name.mesh == mesh)
+            .filter_map(|r| r.newest_birth().map(|b| (r, b.incarnation_id.clone())))
+            .filter(|(r, inc)| r.status != NodeStatus::Deleted || began(r, inc))
+            .map(|(r, inc)| RosterBirth { node: r.name.to_string(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() })
+            .collect();
+        roster.sort();
+        roster.dedup();
+        Ok(roster)
+    }
+
+    /// The exact runtime of the roster birth `b`, by fingerprint: its delete's `TerminateRuntime` receipt in
+    /// `steps`, else the runtime this admin resolves for the birth (its digest, its durable runtime row).
+    async fn roster_birth_runtime(&self, b: &RosterBirth, steps: &[BuildStepReceipt]) -> Result<RuntimeProof, String> {
+        if let Some(proof) = crate::mesh_delete::exit_receipts(steps, "", std::slice::from_ref(b)).remove(&(b.node_id.clone(), b.incarnation_id.clone())).and_then(|t| t.runtime) {
+            return Ok(proof);
+        }
+        let (_, handle) = self.handle_for(&b.record()?).await?;
+        handle.fact().map(|f| RuntimeProof::of(&f)).ok_or_else(|| format!("{} {} has no exact runtime handle", b.node, b.incarnation_id))
     }
 
     /// The live member `n` of a mesh deleted in process: its ordinary node.delete (node.stop, the exact

@@ -943,6 +943,35 @@ fn roll_operations(topology: &FabricTopology, observed: &Topology, recorded: &Re
     ops
 }
 
+/// `observed` with every mesh of `rows` (the Mesh rows on the store) it does not hold by id added, for a
+/// fabric.delete's plan: the delete deletes every mesh the store holds a row of, never only the meshes the
+/// view still projects, which drops a mesh once its members are gone (fabric-delete.md "Failure": "a runtime
+/// inside the workflow whose delete has no receipt is never reported deleted"; mesh-delete.md "Resume after
+/// the primary's loss": the new executor runs only the tiers without a terminal receipt). A row written Dead
+/// is added Dead: the plan resumes it only while its mesh.delete is open in the Build's receipts.
+pub fn with_mesh_rows(observed: &Topology, rows: &[crate::storage::MeshRecord]) -> Topology {
+    use rdm_core::status::MeshState;
+    let mut t = observed.clone();
+    // A live row first: of a name the store holds rows of more than one mesh for, the live one is the
+    // current mesh, and a Dead row of an earlier mesh of that name is planned only as the one row of it.
+    let (live, dead): (Vec<&crate::storage::MeshRecord>, Vec<&crate::storage::MeshRecord>) = rows.iter().partition(|r| !r.dead);
+    for r in live.into_iter().chain(dead.into_iter().filter(|d| rows.iter().filter(|r| r.name == d.name).count() == 1)) {
+        // A mesh the view holds, by id or by name (a mesh the view names by its name is the current one
+        // of that name), is planned as the view holds it.
+        if t.meshes.iter().any(|m| m.id.as_ref() == Some(&r.mesh_id) || m.name == r.name) {
+            continue;
+        }
+        let status = match (r.dead, r.state()) {
+            (true, _) | (_, Some(MeshState::Dead)) => crate::model::ScopeStatus::Dead,
+            (_, Some(MeshState::Leaving)) => crate::model::ScopeStatus::Leaving,
+            (_, Some(MeshState::ReadyForTraffic)) => crate::model::ScopeStatus::ReadyForTraffic,
+            _ => crate::model::ScopeStatus::Pending,
+        };
+        t.meshes.push(crate::model::Mesh { id: Some(r.mesh_id.clone()), name: r.name.clone(), status });
+    }
+    t
+}
+
 /// The meshes, by name, whose mesh.delete `build` admitted (its `AcceptedRoster` receipt) and has not
 /// completed (no `MeshDeleted` or `MeshLeft` receipt): a deleted mesh among them is still the Build's
 /// to resume from its receipts, a deleted mesh outside them is done.

@@ -660,7 +660,10 @@ impl AdminRunner {
     /// (deployment-provider.md §2.5, node-runtime-inspect.md "What follows"), where node recovery's
     /// delete leaves it as it is.
     pub(crate) async fn delete_unreached_as(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, explicit: bool) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
-        let (unreached, handle) = self.exited_birth("node.delete", node, from).await?;
+        let (unreached, handle) = match self.exited_birth("node.delete", node, from).await {
+            Ok(resolved) => resolved,
+            Err(e) => receipted_exit(builds, build_id, node, from).await.ok_or(e)?,
+        };
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: unreached, handle, unreached: true };
         let pipeline = self.pipeline_with(&template, builds);
@@ -1567,6 +1570,39 @@ async fn built_in_binding(kind: NodeKind, executable: &std::path::Path, provider
         ProviderKind::Container => Some(crate::deployment::container::RUNTIME_IMAGE.to_string()),
     };
     Ok(rdm_core::binding::Binding { launch_id: kind.name().into(), executable: executable.to_path_buf(), sha256, image })
+}
+
+/// The exact birth `from` at `node` whose node.delete in `build_id` already holds its `TerminateRuntime`
+/// receipt naming that birth (the provider's exit proof, recorded by an earlier attempt's executor), when
+/// this admin cannot resolve its runtime: its record, and a handle of the receipted runtime that locates
+/// nothing. The delete resumes from its receipts (mesh-delete.md "Resume after the primary's loss" step 3:
+/// "Completed member receipts stand"; `DeploymentPipeline::begin` reuses every step an earlier attempt
+/// receipted), so the reused `TerminateRuntime` touches no runtime and the steps after it run. `None` when
+/// no such receipt is held.
+async fn receipted_exit(builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, node: &PathName, from: &crate::build::ExitedBirth) -> Option<(Node, DeploymentHandle)> {
+    let operation = format!("node.delete:{node}");
+    let terminate = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
+    let p = builds.read_build(build_id).await.ok()?;
+    let t = p
+        .steps
+        .iter()
+        .filter(|r| r.operation == operation && r.step == terminate && r.outcome == crate::build_state::StepOutcome::Complete)
+        .filter_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<crate::deployment::pipeline::TerminalReceipt>(v).ok()))
+        .find(|t| t.node_id == from.node_id.as_str() && t.incarnation_id == from.incarnation.as_str())?;
+    let proof = t.runtime.as_ref()?;
+    let deployment_id = rdm_core::DeploymentId::parse(&proof.deployment_id).ok()?;
+    let provider = match proof.provider.as_str() {
+        "container" => ProviderKind::Container,
+        _ => ProviderKind::Process,
+    };
+    let mut record = Node::allocated(node.clone());
+    record.node_id = from.node_id.clone();
+    record.incarnation_id = Some(from.incarnation.clone());
+    record.deployment_id = Some(deployment_id.clone());
+    record.data_dir = t.data_dir.clone();
+    tracing::info_span!("rdm.node_admin.node.resolve.via-receipted-exit", node = %node, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), build_id = %build_id.log(), operation = %operation)
+        .in_scope(|| tracing::info!("the birth's runtime is not resolved here and its delete holds the TerminateRuntime receipt: the delete resumes from its receipts"));
+    Some((record, DeploymentHandle { deployment_id, provider, pid: None, start: None, container: None, domain: None }))
 }
 
 /// Whether attempt `attempt` of `build_id` is fabric recovery's backbone re-create of `node` (its lane's
