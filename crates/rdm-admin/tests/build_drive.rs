@@ -2464,6 +2464,56 @@ async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_na
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran: {:?}", r.ran.0.lock().unwrap());
 }
 
+/// CONTRACT (states.md "The check-in checklist": "Individual lifecycle status changes do not wait for
+/// the entire check-in checklist"; build.md §1: node.stop is an attempt of the current Build, never a
+/// new Build; node-stop.md: the stop's completion is its stopped frame; Q154 holds the Build's own
+/// topology change, states.md "Resize and executable replacement"): a Build that put the fabric back
+/// to pending and completed once, after its own ready-for-traffic, takes a node.stop as its next
+/// attempt while the fabric is changing again. The stop runs, and its attempt ends `Complete` at the
+/// stop: the caller's stream ends there. Must NOT happen: the stop's attempt handed back and its
+/// stream left `Blocked` on `fabric-change`, waiting for a ready-for-traffic the stopped node itself
+/// keeps from being set.
+#[tokio::test]
+async fn a_stop_attempt_of_a_build_that_completed_ends_at_its_stop_while_the_fabric_changes() {
+    use rdm_admin::accepted::AttemptAction;
+    use rdm_admin::build_state::{AttemptOpened, AttemptReason};
+    let r = rig().await;
+    let gate = Arc::new(FabricChange { view: Some(r.env.topology.clone()), ..Default::default() });
+    gate.ready.store(true, Ordering::SeqCst);
+    let e = &r.env;
+    let env = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        turns: e.turns.clone(),
+    });
+    // The Build's topology change ran and the fabric held ready-for-traffic from it: Complete.
+    assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&Drive::detached(r.build.clone()))).await.expect("the Build's own change completes"), DriveEnd::Terminal);
+    assert_eq!(r.builds.read_build(&r.build).await.unwrap().state, rdm_admin::build_state::BuildState::Complete);
+    // The fabric is changing again, and a node.stop opens the Build's next attempt.
+    gate.ready.store(false, Ordering::SeqCst);
+    let path: PathName = "mesh1.rpc.1".parse().unwrap();
+    let from_incarnation = r.env.topology.read().await.node(&path).and_then(|n| n.incarnation_id.clone()).expect("mesh1.rpc.1 has a birth");
+    let action = AttemptAction::Stop { path: path.clone(), from_incarnation };
+    r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Stop, action: Some(action), opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }).await.unwrap();
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(2);
+    let end = tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await;
+    let mut frames = Vec::new();
+    while let Some(read) = next_within(&mut reader).await {
+        frames.push(read);
+    }
+    assert_eq!(end.ok(), Some(DriveEnd::Terminal), "the stop's attempt ends at its stop, whatever the fabric's change: {frames:?}");
+    assert!(r.ran.0.lock().unwrap().iter().any(|op| op == &format!("node.stop:{path}")), "the stop ran: {:?}", r.ran.0.lock().unwrap());
+    assert!(!frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "a lifecycle attempt never waits on the fabric's change: {frames:?}");
+    assert!(frames.iter().any(|f| matches!(f, Read::Terminal(BuildReply::Complete { attempt: 2, .. }))), "the stop's stream ends Complete for its attempt: {frames:?}");
+}
+
 /// The fixture's dispatcher, the fabric's change setting ready-for-traffic while the attempt it calls runs:
 /// after the drive planned the run and before it reads how the run ended.
 struct ReadyDuringTheRun {

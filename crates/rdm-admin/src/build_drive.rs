@@ -847,6 +847,17 @@ fn changes_the_fabric(p: &BuildProjection) -> bool {
     p.submitted_change.as_ref().is_some_and(|c| !matches!(c, crate::accepted::TopologyChange::DeleteFabric))
 }
 
+/// Whether `p`'s attempt waits for the fabric's ready-for-traffic before its Build is Complete: the
+/// Build's own topology change (Q154; states.md "Resize and executable replacement"), up to the Build's
+/// first Complete, which comes only from its own ready-for-traffic. Every later attempt of the Build
+/// (node.stop, node.start, node.restart, a primary change, node recovery, drift: attempts of an
+/// unchanged topology, build.md §1) ends at its own completion and never waits on the fabric's change
+/// (states.md "The check-in checklist": "Individual lifecycle status changes do not wait for the entire
+/// check-in checklist").
+fn waits_for_the_fabric_change(p: &BuildProjection) -> bool {
+    changes_the_fabric(p) && p.completed_at.is_none()
+}
+
 /// The node-admin of `mesh` the Build already carried across the R-D1 fence: an operation on it has a
 /// step receipt in an attempt held by an admin outside `mesh`, later than the last attempt an admin of
 /// `mesh` held (a mesh that has executed its own work since stands on its own again). That admin is
@@ -1104,8 +1115,9 @@ impl DriveEnv {
         }
         // The last run of a Build that put the fabric back to pending hands back here rather than
         // ending `Complete` while the fabric's ready-for-traffic state is not set (Q154; states.md "Resize
-        // and executable replacement"): the next pass waits for it.
-        let held = changes_the_fabric(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready();
+        // and executable replacement"): the next pass waits for it. A later attempt of a Build that completed
+        // once ends at its own completion ([`waits_for_the_fabric_change`]).
+        let held = waits_for_the_fabric_change(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready();
         if held {
             plan.hand_off_to = Some(me.to_string());
         }
@@ -1209,7 +1221,7 @@ impl DriveEnv {
                 if let Some(end) = self.idle_until_moved(&me, drive, &p).await {
                     return end;
                 }
-                // A Build that put the fabric back to pending, its work all done, is Complete only once
+                // A Build that put the fabric back to pending and never completed, its work all done, is Complete only once
                 // the fabric's ready-for-traffic state is set from its change (Q154; states.md "Resize and
                 // executable replacement": "while the fabric changes, the Build reports Blocked naming the
                 // change, never Complete"): no further attempt is claimed until the fabric holds
@@ -1220,7 +1232,7 @@ impl DriveEnv {
                 // failure; a state-sync the application reports failed fails the Build on that step (Q158:
                 // "a state's check-in or a hook that reports failure fails the Build on that step"): the
                 // next attempt is claimed and ends `Failed` on `fabric-change`, its reason the application's.
-                if p.attempt > 0 && changes_the_fabric(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
+                if p.attempt > 0 && waits_for_the_fabric_change(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
                     let Some((operation, reason)) = self.gate.state_sync_failed(&id, p.attempt) else {
                         let why = format!("{me}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready-for-traffic state is set");
                         self.blocked(drive, p.attempt, "", "fabric-change", &why);
