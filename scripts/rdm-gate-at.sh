@@ -120,6 +120,14 @@ for l in open(art_path):
 json.dump(pkgs, open(out_path, "w"), indent=2, sort_keys=True)
 PY
     cp "$CAND_DISC" "$DEPLOY/discovery-$SHA.json"
+    # A main whose code equals an earlier main's (a docs-only push) has that main's tests: reuse its
+    # discovery rather than building main's whole workspace again.
+    if [ ! -f "$MAIN_DISC" ]; then
+        for c in $(git rev-list --max-count=200 origin/main); do
+            cs=$(git rev-parse --short $c); f="$DEPLOY/discovery-$cs.json"
+            if [ -f "$f" ] && git diff --quiet $c origin/main -- crates tools Cargo.toml Cargo.lock demo 2>/dev/null; then cp "$f" "$MAIN_DISC"; break; fi
+        done
+    fi
     if [ ! -f "$MAIN_DISC" ]; then
         if [ "$SHA" = "$MAIN_SHA" ]; then
             cp "$CAND_DISC" "$MAIN_DISC"
