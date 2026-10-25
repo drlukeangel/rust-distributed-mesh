@@ -10,7 +10,7 @@
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::storage_backend::MemoryBackend;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_client::{BuildCarrier, BuildId, Builds, Fabrics, LaunchKind, NodeSelector, NodeStatus, Nodes, PathName, ScopeStatus};
+use rdm_client::{BuildCarrier, BuildId, Builds, Fabrics, LaunchKind, Meshes, NodeStatus, Nodes, PathName, ScopeStatus};
 use rdm_test::executables::{Current, Executables};
 use rdm_core::build::BuildPhase;
 use rdm_test::estate::{bin_dir, named, Estate};
@@ -88,11 +88,11 @@ fn spans_in(dir: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// `node`'s status as the admin's `node.get` of mesh1 lists it, once it is `want`.
-async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
+/// `node`'s status as the admin's `mesh.nodes.get` of mesh1 lists it, once it is `want`.
+async fn until_status(meshes: &Meshes, node: &PathName, want: NodeStatus) {
     tokio::time::timeout(WRONG, async {
         loop {
-            let listed = nodes.get(&NodeSelector::Mesh(node.mesh.clone())).await.unwrap_or_else(|e| panic!("node.get of {}: {e}", node.mesh));
+            let listed = meshes.nodes(&node.mesh, None).await.unwrap_or_else(|e| panic!("mesh.nodes.get of {}: {e}", node.mesh));
             if listed.iter().any(|n| &n.name == node && n.status == want) {
                 return;
             }
@@ -164,7 +164,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         resolver.insert(admin);
         let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm"));
         let carrier = BuildCarrier::new(client, me.node.name.clone());
-        let (nodes, builds, fabrics) = (Nodes::new(carrier.clone()), Builds::new(carrier.clone()), Fabrics::new(carrier.clone()));
+        let (nodes, meshes, builds, fabrics) = (Nodes::new(carrier.clone()), Meshes::new(carrier.clone()), Builds::new(carrier.clone()), Fabrics::new(carrier.clone()));
         let node: PathName = NODE.parse().unwrap();
         // The admin started its Day-0 Build by starting: it is followed to its end before anything is
         // submitted, as an estate's is.
@@ -182,17 +182,17 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         };
         let (based_on, request) = one_more().await;
         let created = Estate::workflow("node.create of an rpc node in mesh1", nodes.create_named(based_on, request).await).await;
-        until_status(&nodes, &node, NodeStatus::ReadyForTraffic).await;
+        until_status(&meshes, &node, NodeStatus::ReadyForTraffic).await;
         // A stop moves the stopped node's cohort seat to a secondary of its type: a second rpc node.
         let (based_on, request) = one_more().await;
         Estate::workflow("node.create of a second rpc node in mesh1", nodes.create_named(based_on, request).await).await;
-        until_status(&nodes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::ReadyForTraffic).await;
+        until_status(&meshes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::ReadyForTraffic).await;
         until_fabric_ready(&fabrics).await;
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
-        until_status(&nodes, &node, NodeStatus::ReadyForTraffic).await;
+        until_status(&meshes, &node, NodeStatus::ReadyForTraffic).await;
         Estate::workflow("node.restart of mesh1.rpc.1", nodes.restart(&node).await).await;
-        until_status(&nodes, &node, NodeStatus::ReadyForTraffic).await;
+        until_status(&meshes, &node, NodeStatus::ReadyForTraffic).await;
         let receipts = builds.get(&created.build_id).await.unwrap_or_else(|e| panic!("build.get of the create's Build {}: {e}", created.build_id));
         assert_eq!(receipts.phase, BuildPhase::Complete, "the create's Build is Complete: {receipts:#?}");
         assert!(!receipts.steps.is_empty(), "build.get answers the create's step receipts: {receipts:#?}");

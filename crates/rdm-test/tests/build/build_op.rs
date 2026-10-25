@@ -15,7 +15,7 @@
 
 use iroh::SecretKey;
 use rdm_core::{NodeKind, PathName};
-use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, NodeStatus, Nodes, Peers, StartDisposition, WorkflowKind, WorkflowStream};
+use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, Meshes, NodeEvent, NodeStatus, Nodes, Peers, StartDisposition, WorkflowKind, WorkflowStream};
 use rdm_admin::build_state::{BuildFact, StepOutcome};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::build::{Build, BuildReply, BuildRequest, StepResult};
@@ -784,7 +784,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     let _ = estate.node_views_at(&path(&caller.survivor_of(&fp))).await;
     estate.enter(&path(&restored)).await;
     estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(90)).await;
-    let mesh2 = Meshes::new(carrier.clone()).get(&MeshSelector::Mesh("mesh2".into())).await.expect("mesh2's view at the restored fabric-primary").pop().expect("the restored fabric-primary's view holds mesh2");
+    let mesh2 = Meshes::new(carrier.clone()).get("mesh2").await.expect("mesh2's view at the restored fabric-primary");
     assert_eq!(mesh2.id.map(|id| id.to_string()), Some(claimed.clone()), "mesh2 is the mesh the lost fabric-primary's claim wrote");
     Lost { build_id, attempt, restored, carrier }
 }

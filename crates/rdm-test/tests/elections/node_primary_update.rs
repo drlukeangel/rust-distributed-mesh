@@ -117,11 +117,11 @@ impl Caller {
 /// broke before its terminal ended, and, when the stream ended `FabricPrimaryMoved`, the Build followed on at
 /// the admin it named as soon as it is named.
 async fn replace_by_recipe(estate: &Estate, entry: &rdm_client::PathName, p: &str) -> (String, tokio::task::JoinHandle<Followed>) {
-    use rdm_client::{NodeSelector, Nodes};
+    use rdm_client::{Meshes, Nodes};
     let peers = estate.peers().await;
-    let nodes = Nodes::new(peers.carrier_at(entry.clone()));
+    let (nodes, meshes) = (Nodes::new(peers.carrier_at(entry.clone())), Meshes::new(peers.carrier_at(entry.clone())));
     for mesh in ["mesh1", "mesh2"] {
-        if let Ok(held) = nodes.get(&NodeSelector::Mesh(mesh.into())).await {
+        if let Ok(held) = meshes.nodes(mesh, None).await {
             peers.learn_known(&held);
         }
     }

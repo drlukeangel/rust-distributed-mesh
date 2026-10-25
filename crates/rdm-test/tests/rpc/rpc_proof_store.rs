@@ -84,7 +84,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {NODE}: {e}"));
     Estate::complete(&mut restart).await;
     let restarted = estate
-        .until_node(NODE, "the restarted birth is ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked).map(|n| serde_json::to_value(n).expect("a view serializes")))
+        .until_node(NODE, "the restarted birth is ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).map(|n| serde_json::to_value(n).expect("a view serializes")))
         .await;
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
     assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "and the birth: the process was stopped and started, never replaced");

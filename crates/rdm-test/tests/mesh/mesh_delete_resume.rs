@@ -19,7 +19,7 @@
 //! no NodeDeleted.
 
 use crate::build_log;
-use rdm_client::{CallEnd, FabricDesired, Frame, LaunchKind as NodeKind, MeshDesired, MeshSelector, PathName};
+use rdm_client::{CallEnd, FabricDesired, Frame, LaunchKind as NodeKind, MeshDesired, PathName};
 use rdm_test::typed::BuildSpec;
 use rdm_test::estate::{named, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
@@ -218,7 +218,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
                 Ok(views) => views.iter().map(|n| format!("{}={:?}", n.name, n.status)).collect(),
                 Err(e) => vec![format!("the read ended: {e}")],
             };
-            mesh2_gone = matches!(estate.meshes_obj().await.get(&MeshSelector::Mesh("mesh2".into())).await, Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-mesh");
+            mesh2_gone = matches!(estate.meshes_obj().await.get("mesh2").await, Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-mesh");
             if mesh2_gone && view.iter().all(|n| n.starts_with("mesh1.")) {
                 break;
             }

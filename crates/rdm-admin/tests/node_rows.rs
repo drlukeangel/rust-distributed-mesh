@@ -1718,7 +1718,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         let StatusReply::Nodes { nodes: stopped } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &NodeSelect::Id(north.node_id.clone())).await else {
             panic!("expected StatusReply::Nodes");
         };
-        assert!(stopped[0].parked);
+        assert!(stopped[0].stopped);
         assert_eq!((stopped[0].path().as_str(), stopped[0].node_name().as_str(), stopped[0].node_type()), ("mesh1.broker", "north", "broker"));
 
         let north_id = north.node_id.clone();
@@ -1732,7 +1732,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         let StatusReply::Nodes { nodes: started } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &NodeSelect::Id(north.node_id.clone())).await else {
             panic!("expected StatusReply::Nodes");
         };
-        assert!(!started[0].parked);
+        assert!(!started[0].stopped);
         assert_eq!((started[0].path().as_str(), started[0].node_name().as_str(), started[0].node_type()), ("mesh1.broker", "north", "broker"));
 
         // 4. Recovery: `NodeDeleted` writes the Deleted row at `mesh1.broker.north`, and the

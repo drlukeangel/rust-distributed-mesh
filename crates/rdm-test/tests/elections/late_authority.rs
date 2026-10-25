@@ -119,7 +119,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // It restarts and retires A's births.
     let (restarted, retired) = (a_births[0].clone(), a_births[1].clone());
     Estate::workflow(&format!("node.restart of {}", restarted.name), estate.nodes_obj().await.restart(&restarted.name).await).await;
-    let after = estate.until_node(&restarted.name.to_string(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked).cloned()).await;
+    let after = estate.until_node(&restarted.name.to_string(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).cloned()).await;
     assert_eq!(after.node_id, restarted.node_id, "a restart keeps the NodeId");
     Estate::workflow(&format!("node.delete of {}", retired.name), estate.nodes_obj().await.delete(&retired.name).await).await;
     estate

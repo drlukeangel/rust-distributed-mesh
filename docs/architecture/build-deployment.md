@@ -70,9 +70,10 @@ is a request naming that path's executable, the ordinary replacement.
 
 ## 5. Reads
 
-The node's row is the source. `node.get` returns each node's executable beside its status, config and
-tags (`NodeView.executable`); `fabric.nodes.get` is the mesh selector's answer over every mesh, from
-the rows. The digest, the `Members` projection and `node.topology.get` carry no executable.
+The node's row is the source. `node.get { id }` returns the one node's executable beside its status,
+config and tags (`NodeView.executable`), and `mesh.nodes.get { tags? }` and `fabric.nodes.get { tags? }`
+return every node row of one mesh or of the fabric, each with its executable; `fabric.nodes.get` is the
+mesh selector's answer over every mesh, from the rows (Q165). The digest, the `Members` projection and `node.topology.get` carry no executable.
 
 ## 6. Refusals, by name
 

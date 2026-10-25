@@ -167,7 +167,7 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     let nodes = estate.nodes_obj().await;
-    let mesh = nodes.get(&rdm_client::NodeSelector::Mesh("mesh1".into())).await.expect("node.get");
+    let mesh = estate.meshes_obj().await.nodes("mesh1", None).await.expect("mesh.nodes.get");
     let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
     let me = primary.name.to_string();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), node_id: primary.node_id.clone(), incarnation: primary.incarnation_id.clone().expect("the primary's birth") };

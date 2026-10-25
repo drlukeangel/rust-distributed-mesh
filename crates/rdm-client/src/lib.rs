@@ -12,7 +12,7 @@ pub use build_stream::{follow_with, BuildCarrier, BuildFrame, BuildReceipts, Bui
 pub use calls::{CallEnd, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
 pub use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
-    await_fact, Builds, Fabrics, MeshSelector, Meshes, NameHeld, NodeSelector, Nodes, TagFilter,
+    await_fact, Builds, Fabrics, Meshes, NameHeld, Nodes, TagFilter,
 };
 pub use peers::{birth_of_line, birth_of_view, client_bind_for, Peers, BIRTH_LINE};
 /// A node's birth, as a node-admin prints it at start ([`BIRTH_LINE`]).

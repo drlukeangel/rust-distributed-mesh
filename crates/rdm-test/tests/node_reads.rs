@@ -1,7 +1,8 @@
 //! The reads over Node RPC (node-rpc-envelope.md "Typed objects mapped to wire and execution
-//! owners"): `node.get` answers one node by id or the nodes of a mesh, `mesh.get` one mesh or
-//! every mesh of a fabric, `fabric.get` the fabric, each as the answering node-admin's view holds
-//! it, and `node.connections.get` a node's held connections (fabric-mesh-node-lifecycles.md:
+//! owners", Q165: `<entity>.get` returns one, `<parent>.<children>.get` the list): `node.get` answers
+//! one node by id, `mesh.get` one mesh, `mesh.nodes.get` the nodes of a mesh, `fabric.get` the
+//! fabric, `fabric.meshes.get` every mesh and `fabric.nodes.get` every node, each as the answering
+//! node-admin's view holds it, and `node.connections.get` a node's held connections (fabric-mesh-node-lifecycles.md:
 //! "Reading or cutting a node's held connections"). The typed objects read them from the node
 //! itself over Node RPC; they hold no control API client.
 
@@ -9,7 +10,7 @@ use rdm_core::connections::NodeConnection;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, NodeKind, PathName};
-use rdm_client::{BuildCarrier, CallEnd, ConnectionsView, ExactBirth, Fabrics, MeshSelector, Meshes, NodeRpc, NodeSelector, NodeStatus, Nodes, TagFilter};
+use rdm_client::{BuildCarrier, CallEnd, ConnectionsView, ExactBirth, Fabrics, Meshes, NodeRpc, NodeStatus, Nodes, TagFilter};
 use rdm_core::status::TagScope;
 use rdm_core::status::StatusReply;
 use rdm_admin::admin::{start_with, AdminConfig};
@@ -58,13 +59,14 @@ fn ids(view: &ConnectionsView) -> BTreeSet<String> {
     view.connections.iter().map(|c| c.id.clone()).collect()
 }
 
-/// CONTRACT: a Day-0 node-admin answers the four reads over Node RPC from what it holds, and the
-/// caller reaches nothing but the admin's Node RPC endpoint. `node.get` of `mesh1` and of the
-/// admin's id lists the admin as its view holds it (ReadyForTraffic, both seats, its birth, its
-/// load and gossip stats when its view carries them); an id it does not hold lists nothing.
-/// `mesh.get` of `mesh1`, by name and by id, is the one mesh with the admin as its primary and only
-/// node; `mesh.get` of the fabric lists every mesh the view holds; a mesh it does not hold is
-/// refused naming the mesh (`unknown-mesh`). `fabric.get` is `fabric1` with the admin as its
+/// CONTRACT (Q165: `<entity>.get` returns one, `<parent>.<children>.get` the list): a Day-0
+/// node-admin answers the reads over Node RPC from what it holds, and the caller reaches nothing but
+/// the admin's Node RPC endpoint. `mesh.nodes.get` of `mesh1` and `fabric.nodes.get` list the admin
+/// as its view holds it (ReadyForTraffic, both seats, its birth, its load and gossip stats when its
+/// view carries them); `node.get` of the admin's id is that one node, and of an id it does not hold
+/// ends `NOT_FOUND`. `mesh.get` of `mesh1`, by name and by id, is the one mesh with the admin as its
+/// primary and only node; `fabric.meshes.get` lists every mesh the view holds; a mesh it does not
+/// hold is refused naming the mesh (`unknown-mesh`). `fabric.get` is `fabric1` with the admin as its
 /// fabric-primary. `node.connections.get` of the admin's exact birth names the admin and exactly the
 /// connections it holds. Each read is served by the admin: its serve span names what was read and
 /// how much. What must NOT happen: a read that needs a control API, a read answered from anything
@@ -99,8 +101,8 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
         let meshes = Meshes::new(carrier.clone());
         let fabrics = Fabrics::new(carrier.clone());
 
-        // node.get: what the admin's view holds of itself, by mesh and by id.
-        let by_mesh = nodes.get(&NodeSelector::Mesh("mesh1".into())).await.unwrap_or_else(|e| panic!("node.get of mesh1: {e}"));
+        // mesh.nodes.get, fabric.nodes.get and node.get: what the admin's view holds of itself.
+        let by_mesh = meshes.nodes("mesh1", None).await.unwrap_or_else(|e| panic!("mesh.nodes.get of mesh1: {e}"));
         let view = running.control.topology.read().await.clone();
         let loads = (running.control.loads.get().expect("the admin reads its members' loads"))();
         let held = view.births().find(|n| n.node_id == me.node.node_id).cloned().expect("the admin's view holds the admin");
@@ -111,22 +113,29 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
         assert_eq!((got.status, got.is_primary, got.is_fabric_primary), (NodeStatus::ReadyForTraffic, true, true), "{got:#?}");
         let (load, gossip) = loads.get(me.node.node_id.as_str()).cloned().unwrap_or((None, None));
         assert_eq!((got.load.is_some(), got.gossip.is_some()), (load.is_some(), gossip.is_some()), "the load and gossip stats are what the admin's view carries: {got:#?}");
-        let by_id = nodes.get(&NodeSelector::Id(me.node.node_id.clone())).await.unwrap_or_else(|e| panic!("node.get of the admin's id: {e}"));
-        assert_eq!(by_id.iter().map(|n| n.node_id.clone()).collect::<Vec<_>>(), vec![me.node.node_id.clone()]);
-        let stranger = nodes.get(&NodeSelector::Id(NodeId::mint())).await.unwrap_or_else(|e| panic!("node.get of an id the admin does not hold: {e}"));
-        assert!(stranger.is_empty(), "an id the view does not hold lists nothing: {stranger:#?}");
-
-        // mesh.get: one mesh by name and by id, every mesh, and a mesh the admin does not hold.
-        let mesh_id = me.mesh_id.clone().expect("the Day-0 admin holds its mesh id");
-        for selector in [MeshSelector::Mesh("mesh1".into()), MeshSelector::Mesh(mesh_id.to_string())] {
-            let one = meshes.get(&selector).await.unwrap_or_else(|e| panic!("mesh.get of {selector:?}: {e}"));
-            assert_eq!(one.len(), 1, "{selector:?}: {one:#?}");
-            assert_eq!((one[0].name.as_str(), one[0].primary_admin.clone(), one[0].nodes.clone()), ("mesh1", Some(me.node.name.clone()), vec![me.node.name.clone()]), "{selector:?}");
+        let every_node = fabrics.nodes(None).await.unwrap_or_else(|e| panic!("fabric.nodes.get: {e}"));
+        assert_eq!(every_node.iter().map(|n| (n.name.clone(), n.node_id.clone())).collect::<Vec<_>>(), vec![(held.name.clone(), me.node.node_id.clone())], "the fabric topology is mesh1's one node: {every_node:#?}");
+        let by_id = nodes.get(&me.node.node_id).await.unwrap_or_else(|e| panic!("node.get of the admin's id: {e}"));
+        assert_eq!((by_id.name.clone(), by_id.node_id.clone(), by_id.incarnation_id.clone()), (held.name.clone(), me.node.node_id.clone(), Some(me.node.incarnation.clone())), "node.get is the one node: {by_id:#?}");
+        let stranger = NodeId::mint();
+        match nodes.get(&stranger).await {
+            Err(end @ CallEnd::NotFound { .. }) => {
+                assert_eq!(end.code(), rdm_core::outcome::Code::NotFound);
+                assert!(end.to_string().contains(&stranger.to_string()), "NOT_FOUND names the id: {end}");
+            }
+            other => panic!("node.get of an id the view does not hold ends NOT_FOUND, not {other:?}"),
         }
-        let every = meshes.get(&MeshSelector::Fabric).await.unwrap_or_else(|e| panic!("mesh.get of the fabric: {e}"));
+
+        // mesh.get: one mesh by name and by id, and a mesh the admin does not hold; fabric.meshes.get: every mesh.
+        let mesh_id = me.mesh_id.clone().expect("the Day-0 admin holds its mesh id");
+        for name in ["mesh1".to_string(), mesh_id.to_string()] {
+            let one = meshes.get(&name).await.unwrap_or_else(|e| panic!("mesh.get of {name}: {e}"));
+            assert_eq!((one.name.as_str(), one.primary_admin.clone(), one.nodes.clone()), ("mesh1", Some(me.node.name.clone()), vec![me.node.name.clone()]), "{name}");
+        }
+        let every = fabrics.meshes().await.unwrap_or_else(|e| panic!("fabric.meshes.get: {e}"));
         let held_meshes: Vec<String> = view.fabric_view().meshes.iter().map(|m| m.name.clone()).collect();
         assert_eq!(every.iter().map(|m| m.name.clone()).collect::<Vec<_>>(), held_meshes, "every mesh the view holds");
-        match meshes.get(&MeshSelector::Mesh("mesh9".into())).await {
+        match meshes.get("mesh9").await {
             Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "unknown-mesh" && detail.contains("mesh9"), "refused naming the mesh: {reason}: {detail}"),
             other => panic!("a mesh the admin does not hold is refused by name, not {other:?}"),
         }
@@ -164,9 +173,12 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
     // The trace: every read served by the admin, naming what was read and how much.
     let served = |name: &str, wanted: &dyn Fn(&std::collections::BTreeMap<String, String>) -> bool| spans.0.lock().unwrap().values().any(|(n, _, f)| n == name && wanted(f));
     let at = |f: &std::collections::BTreeMap<String, String>, k: &str, v: &str| f.get(k).map(String::as_str) == Some(v);
-    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "select", "mesh") && at(f, "nodes", "1")), "node.get of mesh1 served");
-    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "select", "id") && at(f, "nodes", "0")), "node.get of an unheld id served, listing nothing");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "read", "mesh.nodes.get") && at(f, "select", "mesh") && at(f, "nodes", "1")), "mesh.nodes.get of mesh1 served");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "read", "fabric.nodes.get") && at(f, "select", "fabric") && at(f, "nodes", "1")), "fabric.nodes.get served");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "read", "node.get") && at(f, "select", "id") && at(f, "nodes", "1")), "node.get of the admin's id served");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "read", "node.get") && at(f, "select", "id") && at(f, "nodes", "0")), "node.get of an unheld id served, selecting nothing");
     assert!(served("rdm.node_admin.mesh.serve.via-get", &|f| at(f, "select", "mesh") && at(f, "meshes", "1")), "mesh.get of mesh1 served");
+    assert!(served("rdm.node_admin.mesh.serve.via-get", &|f| at(f, "select", "fabric")), "fabric.meshes.get served");
     assert!(served("rdm.node_admin.mesh.reject.via-unknown-mesh", &|f| at(f, "mesh", "mesh9")), "mesh.get of mesh9 refused");
     assert!(served("rdm.node_admin.fabric.serve.via-get", &|f| f.contains_key("meshes")), "fabric.get served");
     assert!(served("rdm.node_admin.node.serve.via-connections-get", &|f| at(f, "node", "mesh1.admin.1")), "node.connections.get served by the admin");
@@ -180,11 +192,15 @@ fn labels(l: &[&str]) -> BTreeSet<String> {
 /// [labels] }` adds one label or a list; `node.tags.delete { All | [labels] }` removes every label or
 /// the named ones ... Each label is its own keyed row (label, node id) in the node store's tags index.
 /// Create is a blind put of that key, so creating a label the node already carries is ignored and
-/// writes no duplicate; delete tombstones the named keys"; node.get: "the tag filter names a label,
-/// matches every node that carries it, and is read through the node store's tags index"; proposal
-/// node-properties-own-commands.md §1, §3): a caller's `node.tags.create {rabbit, red}` of the Day-0
-/// admin ends `TagsCreated` carrying nothing already; `node.get` of its id answers those tags; `Any
-/// {rabbit}` and `All {rabbit, red}` answer the admin, `All {rabbit, blue}` and `Any {blue}` nothing.
+/// writes no duplicate; delete tombstones the named keys"; fabric.nodes.get: "with a tag filter, all
+/// of the given labels or any of them, every node of the fabric that carries them ... the filter read
+/// through the node store's tags index"; proposal
+/// node-properties-own-commands.md §1, §3; Q165: `fabric.nodes.get { tags? }` and
+/// `mesh.nodes.get { tags? }` carry the filter): a caller's `node.tags.create {rabbit, red}` of the
+/// Day-0 admin ends `TagsCreated` carrying nothing already; `node.get` of its id answers those tags;
+/// `Any {rabbit}` and `All {rabbit, red}` answer the admin, `All {rabbit, blue}` and `Any {blue}`
+/// nothing, by `fabric.nodes.get` and by `mesh.nodes.get` of mesh1 alike, and `mesh.nodes.get` of
+/// mesh2 nothing.
 /// `node.tags.create {red}` again ends `TagsCreated` naming red as already carried, and nothing
 /// changes. `node.tags.delete {rabbit, green}` ends `TagsDeleted` naming green as not carried, and
 /// rabbit no longer selects the admin. A create whose label is not a label (`Rabbit`) reaching the
@@ -195,11 +211,11 @@ fn labels(l: &[&str]) -> BTreeSet<String> {
 /// selecting the node, a duplicate row for a label already carried, or a tag read that reads anything
 /// but the tags index.
 #[test]
-fn node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_tags_index() {
-    if crate::own_process::delegated(module_path!(), "node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_tags_index") {
+fn node_tags_create_and_delete_set_a_nodes_tags_and_the_nodes_reads_answer_it_by_tag_through_the_tags_index() {
+    if crate::own_process::delegated(module_path!(), "node_tags_create_and_delete_set_a_nodes_tags_and_the_nodes_reads_answer_it_by_tag_through_the_tags_index") {
         return;
     }
-    let cap = crate::common::capture("node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_tags_index");
+    let cap = crate::common::capture("node_tags_create_and_delete_set_a_nodes_tags_and_the_nodes_reads_answer_it_by_tag_through_the_tags_index");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = std::env::temp_dir().join(format!("node-tags-{}", NodeId::mint()));
@@ -223,13 +239,24 @@ fn node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_t
         .expect("the admin's view never held it ready in both seats under a ready-for-traffic fabric");
         let admin = ResolvedNode { node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
-        let nodes = Nodes::new(BuildCarrier::new(client.clone(), me.node.name.clone()));
-        let by_id = || async { nodes.get(&NodeSelector::Id(me.node.node_id.clone())).await.unwrap_or_else(|e| panic!("node.get of the admin's id: {e}")) };
+        let carrier = BuildCarrier::new(client.clone(), me.node.name.clone());
+        let (nodes, meshes, fabrics) = (Nodes::new(carrier.clone()), Meshes::new(carrier.clone()), Fabrics::new(carrier));
+        let by_id = || async { nodes.get(&me.node.node_id).await.unwrap_or_else(|e| panic!("node.get of the admin's id: {e}")) };
+        // fabric.nodes.get { tags }, and mesh.nodes.get { tags } of mesh1 answering the same nodes and of
+        // mesh2, which holds none of them, nothing.
         let by_tags = |f: TagFilter| {
-            let nodes = nodes.clone();
-            async move { nodes.get(&NodeSelector::Tags(f.clone())).await.unwrap_or_else(|e| panic!("node.get of {f:?}: {e}")).into_iter().map(|n| n.node_id).collect::<Vec<_>>() }
+            let (meshes, fabrics) = (meshes.clone(), fabrics.clone());
+            async move {
+                let ids = |v: Vec<rdm_client::NodeView>| v.into_iter().map(|n| n.node_id).collect::<Vec<_>>();
+                let fabric = ids(fabrics.nodes(Some(&f)).await.unwrap_or_else(|e| panic!("fabric.nodes.get {f:?}: {e}")));
+                let mesh1 = ids(meshes.nodes("mesh1", Some(&f)).await.unwrap_or_else(|e| panic!("mesh.nodes.get mesh1 {f:?}: {e}")));
+                let mesh2 = ids(meshes.nodes("mesh2", Some(&f)).await.unwrap_or_else(|e| panic!("mesh.nodes.get mesh2 {f:?}: {e}")));
+                assert_eq!(mesh1, fabric, "{f:?}: mesh1 holds every node the fabric answers");
+                assert!(mesh2.is_empty(), "{f:?}: mesh2 holds none of them: {mesh2:?}");
+                fabric
+            }
         };
-        let got = by_id().await.first().cloned().expect("node.get lists the admin by its id");
+        let got = by_id().await;
         assert!(got.tags.is_empty(), "a node born with no tags carries none: {got:#?}");
         let route = rdm_transport::RouteChoice::Direct;
         let mine = vec![me.node.node_id.clone()];
@@ -240,7 +267,7 @@ fn node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_t
         // node.tags.create {rabbit, red}.
         let reply = nodes.tags_create(&birth, &me.node.node_id, &route, &labels(&["rabbit", "red"])).await.expect("node.tags.create answered");
         assert_eq!(reply, created(&[]));
-        assert_eq!(by_id().await[0].tags, labels(&["rabbit", "red"]), "node.get of the admin's id answers the labels created");
+        assert_eq!(by_id().await.tags, labels(&["rabbit", "red"]), "node.get of the admin's id answers the labels created");
         assert_eq!(by_tags(TagFilter::Any(labels(&["rabbit"]))).await, mine, "Any {{rabbit}} answers the admin");
         assert_eq!(by_tags(TagFilter::All(labels(&["rabbit", "red"]))).await, mine, "All {{rabbit, red}} answers the admin");
         assert!(by_tags(TagFilter::All(labels(&["rabbit", "blue"]))).await.is_empty(), "All {{rabbit, blue}} answers nothing: the admin carries no blue");
@@ -249,25 +276,25 @@ fn node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_t
         // A label the node already carries is ignored and named.
         let reply = nodes.tags_create(&birth, &me.node.node_id, &route, &labels(&["red"])).await.expect("node.tags.create answered");
         assert_eq!(reply, created(&["red"]), "red is already carried");
-        assert_eq!(by_id().await[0].tags, labels(&["rabbit", "red"]), "nothing changes");
+        assert_eq!(by_id().await.tags, labels(&["rabbit", "red"]), "nothing changes");
 
         // node.tags.delete {rabbit, green}: green is not carried.
         let reply = nodes.tags_delete(&birth, &me.node.node_id, &route, &TagScope::Labels(labels(&["rabbit", "green"]))).await.expect("node.tags.delete answered");
         assert_eq!(reply, deleted(&["green"]));
         assert!(by_tags(TagFilter::Any(labels(&["rabbit"]))).await.is_empty(), "Any {{rabbit}} answers nothing once rabbit is deleted");
         assert_eq!(by_tags(TagFilter::Any(labels(&["red", "rabbit"]))).await, mine, "Any {{red, rabbit}} answers the admin once");
-        assert_eq!(by_id().await[0].tags, labels(&["red"]), "node.get of the admin's id answers the label left");
+        assert_eq!(by_id().await.tags, labels(&["red"]), "node.get of the admin's id answers the label left");
 
         // A create whose label is not a label, past the typed object's own check, is refused by the
         // mesh-primary naming it, and nothing changes.
         let refused = NodeRpc::new(&client).tags_create(&me.node.node_id, &route, &birth, &labels(&["Rabbit"]), &rdm_transport::CallOptions::default()).await.expect("a typed reply");
         assert!(matches!(&refused, StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "refused naming the label: {refused:?}");
-        assert_eq!(by_id().await[0].tags, labels(&["red"]), "a refused create changes nothing");
+        assert_eq!(by_id().await.tags, labels(&["red"]), "a refused create changes nothing");
 
         // node.tags.delete { All }.
         let reply = nodes.tags_delete(&birth, &me.node.node_id, &route, &TagScope::All).await.expect("node.tags.delete answered");
         assert_eq!(reply, deleted(&[]));
-        assert!(by_id().await[0].tags.is_empty(), "the admin carries no label");
+        assert!(by_id().await.tags.is_empty(), "the admin carries no label");
         assert!(by_tags(TagFilter::Any(labels(&["red"]))).await.is_empty(), "Any {{red}} answers nothing");
 
         running.leave().await;
@@ -283,6 +310,8 @@ fn node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_t
     assert!(deletes.contains(&("tags-deleted".into(), "rabbit".into(), "green".into())), "the named delete removed rabbit: {deletes:?}");
     assert!(deletes.contains(&("tags-deleted".into(), "red".into(), "".into())), "the All delete removed red: {deletes:?}");
     let reads = named("rdm.node_admin.node.serve.via-get");
+    let mesh_tag_reads = reads.iter().filter(|(_, f)| at(f, "select") == "mesh-tags" && at(f, "read") == "mesh.nodes.get").count();
+    assert!(mesh_tag_reads > 0, "mesh.nodes.get {{ tags }} is served as a mesh-tags read");
     let tag_reads: Vec<(String, String, String, String)> = reads.iter().filter(|(_, f)| at(f, "select") == "tags").map(|(_, f)| (at(f, "filter"), at(f, "labels"), at(f, "index_reads"), at(f, "nodes"))).collect();
     assert!(tag_reads.contains(&("all".into(), "rabbit,red".into(), "2".into(), "1".into())), "All {{rabbit, red}}: two index reads, one node: {tag_reads:?}");
     assert!(tag_reads.contains(&("any".into(), "blue".into(), "1".into(), "0".into())), "Any {{blue}}: one index read, no node: {tag_reads:?}");

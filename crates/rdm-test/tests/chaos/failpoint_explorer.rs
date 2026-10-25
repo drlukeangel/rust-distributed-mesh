@@ -710,7 +710,7 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     assert_eq!(done_steps(&b, &format!("node.delete:{node}"), Some(attempt)), Vec::<String>::new(), "no step of the restart is a retire-node receipt: {b}");
     let counts = step_counts(&b, &op, attempt);
     assert!(counts.values().all(|c| *c == 1) && counts.len() == order.len(), "no step receipt twice in {op}: {counts:?}");
-    let after_node = run.estate.until_node(node, &format!("{node} ready again and no longer parked"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked).cloned()).await;
+    let after_node = run.estate.until_node(node, &format!("{node} ready again and no longer parked"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).cloned()).await;
     let after_node = serde_json::to_value(after_node).expect("a view serializes");
     assert_eq!(after_node["node_id"], before["node_id"], "a restart keeps the NodeId");
     assert_eq!(after_node["incarnation_id"], before["incarnation_id"], "a restart keeps the incarnation: it is stop then start on the parked birth");

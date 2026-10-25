@@ -72,7 +72,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let after = estate
         .until_node(node_name, "rpc.2 ready after its restart", SETTLE, |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (ready(&n) && n["parked"] == false).then_some(n)
+            (ready(&n) && n["stopped"] == false).then_some(n)
         })
         .await;
     estate.artifact("nodes-after.json", &json!(estate.node_values().await));

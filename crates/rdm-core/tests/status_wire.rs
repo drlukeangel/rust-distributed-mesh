@@ -280,7 +280,7 @@ fn node_view() -> NodeView {
         transport_addr: Some("127.0.0.1:4000".parse().unwrap()),
         listeners: vec![],
         declared: None,
-        parked: false,
+        stopped: false,
         load: Some(rdm_core::NodeLoad { cpu_used_millicores: 1, cpu_budget_millicores: 2, ram_used_bytes: 3, ram_budget_bytes: 4 }),
         gossip: Some(rdm_core::GossipStats { heard: 2, neighbours: 1, frames_sent: 3, frames_received: 4 }),
         tags: ["red".to_string()].into(),
@@ -334,6 +334,8 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(NodeSelect::Fabric, "03");
     // Tags | Any | len 1 | "red"
     golden(NodeSelect::Tags(TagFilter::Any(["red".to_string()].into())), "02010103726564");
+    // mesh.nodes.get { tags } (Q165), appended last: MeshTags | "m" | Any | len 1 | "red"
+    golden(NodeSelect::MeshTags("m".into(), TagFilter::Any(["red".to_string()].into())), "04016d010103726564");
     golden(TagScope::All, "00");
     // Labels | len 1 | "red"
     golden(TagScope::Labels(["red".to_string()].into()), "010103726564");

@@ -83,7 +83,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let path: PathName = "mesh1.rpc.1".parse().unwrap();
     let mut restart = estate.nodes_obj().await.restart(&path).await.unwrap_or_else(|end| panic!("node.restart of mesh1.rpc.1 was refused: {end}"));
     Estate::complete(&mut restart).await;
-    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 ready after its restart", SETTLE, |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
+    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 ready after its restart", SETTLE, |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
     let ca = estate.bootstrap_data_dir("mesh1").join("ca-secret");
     estate.stop().await;
     let spans = estate.spans();

@@ -950,7 +950,7 @@ impl StatusAuthority {
                                     if let Some((types, held)) = sets { n.types = types; n.held = held; n.held_hash = rdm_core::app_types::hash(&n.held); }
                                 }
                             }
-                            StatusReply::within_reply_bound(answer, "node.get")
+                            StatusReply::within_reply_bound(answer, select.read())
                         }
                     }
                     None => rdm_core::reply::status::not_ready(format!("{me_name} reads no digest view; {} is refused", req.op())),

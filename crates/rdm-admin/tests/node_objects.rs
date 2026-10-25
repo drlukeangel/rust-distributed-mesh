@@ -1062,8 +1062,12 @@ fn calls_no_op_carries_today_say_so_by_name() {
         let not_a_label = nodes.tags_create(&birth, &mp, &route, &["Rabbit".to_string()].into()).await.expect("a typed refusal");
         assert!(matches!(&not_a_label, rdm_core::status::StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "{not_a_label:?}");
         for (filter, says) in [(rdm_client::TagFilter::All(Default::default()), "names no label"), (rdm_client::TagFilter::Any(["a/b".to_string()].into()), "a/b")] {
-            match nodes.get(&rdm_client::NodeSelector::Tags(filter.clone())).await {
-                Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-tags" && detail.contains(says), "{filter:?}: {reason}: {detail}"),
+            match rdm_client::Fabrics::new(served.carrier.clone()).nodes(Some(&filter)).await {
+                Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-tags" && detail.contains(says), "fabric.nodes.get {filter:?}: {reason}: {detail}"),
+                other => panic!("{filter:?} is refused by name before anything is sent, not {other:?}"),
+            }
+            match rdm_client::Meshes::new(served.carrier.clone()).nodes("mesh1", Some(&filter)).await {
+                Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-tags" && detail.contains(says), "mesh.nodes.get {filter:?}: {reason}: {detail}"),
                 other => panic!("{filter:?} is refused by name before anything is sent, not {other:?}"),
             }
         }

@@ -2,7 +2,7 @@
 //! (MN). The provider is `MESH_SPAWN_TYPE` (process by default); the body is
 //! `rdm_test::canary::restart_canary`.
 
-use rdm_client::{CallEnd, Frame, NodeEvent, NodeSelector, NodeStatus, NodeView, Nodes};
+use rdm_client::{CallEnd, Frame, Meshes, NodeEvent, NodeStatus, NodeView};
 use rdm_core::PathName;
 use rdm_test::canary::restart_canary;
 use rdm_test::estate::{named, Estate, Owner};
@@ -45,8 +45,8 @@ fn events(frames: &[Frame]) -> Vec<NodeEvent> {
     frames.iter().filter_map(|f| if let Frame::Event(e) = f { Some(*e) } else { None }).collect()
 }
 
-async fn view_of(nodes: &Nodes, node: &PathName) -> NodeView {
-    nodes.get(&NodeSelector::Mesh(node.mesh.clone())).await.expect("node.get").into_iter().find(|n| &n.name == node).unwrap_or_else(|| panic!("node.get lists no {node}"))
+async fn view_of(meshes: &Meshes, node: &PathName) -> NodeView {
+    meshes.nodes(&node.mesh, None).await.expect("mesh.nodes.get").into_iter().find(|n| &n.name == node).unwrap_or_else(|| panic!("mesh.nodes.get lists no {node}"))
 }
 
 /// mesh1 {1 node-admin, 2 rpc nodes}, settled and ready for traffic; the rpc member that holds no
@@ -101,11 +101,11 @@ async fn a_fresh_restart_of_a_stopped_node_is_refused_by_name_and_node_start_is_
     let test = "a_fresh_restart_of_a_stopped_node_is_refused_by_name_and_node_start_is_served";
     let (mut estate, member, _rt) = mesh_with_a_member(test).await;
     let nodes = estate.nodes_obj().await;
-    let before = view_of(&nodes, &member).await;
+    let before = view_of(&estate.meshes_obj().await, &member).await;
     let stopped = frames(nodes.stop(&member).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    let parked = view_of(&nodes, &member).await;
-    assert!(parked.parked && parked.status == NodeStatus::Leaving, "node.get lists {member} parked: {parked:?}");
+    let parked = view_of(&estate.meshes_obj().await, &member).await;
+    assert!(parked.stopped && parked.status == NodeStatus::Leaving, "node.get lists {member} parked: {parked:?}");
 
     match nodes.restart(&member).await {
         Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "node-not-live" && detail.contains(&member.to_string()), "the fresh restart is refused by name: {reason}: {detail}"),
@@ -115,7 +115,7 @@ async fn a_fresh_restart_of_a_stopped_node_is_refused_by_name_and_node_start_is_
     let started = frames(nodes.start(&member).await.expect("the start was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
-    let back = view_of(&nodes, &member).await;
+    let back = view_of(&estate.meshes_obj().await, &member).await;
     assert_eq!(back.status, NodeStatus::ReadyForTraffic, "{back:?}");
     assert_eq!((&back.node_id, &back.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth starts again");
 
@@ -158,7 +158,7 @@ async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_ro
         operations.push(format!("node.restart:{path}"));
         let after = estate.until_node(&name(target), &format!("{path} ready again after its restart"), Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["parked"] == false).then_some(n)
+            (n["status"] == "ready-for-traffic" && n["stopped"] == false).then_some(n)
         }).await;
         assert_eq!((&after["node_id"], &after["incarnation_id"]), (&target["node_id"], &target["incarnation_id"]), "{path} is the same birth after its restart: {after}");
     }

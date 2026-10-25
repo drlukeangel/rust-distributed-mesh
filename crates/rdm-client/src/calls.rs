@@ -87,6 +87,13 @@ pub enum CallEnd {
         /// The receipt's step.
         step: String,
     },
+    /// A read of one entity the answering node does not hold (`node.get { id }`: `NOT_FOUND`, Q165).
+    NotFound {
+        /// The read.
+        read: &'static str,
+        /// What was asked for and who answered.
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for CallEnd {
@@ -101,6 +108,7 @@ impl std::fmt::Display for CallEnd {
             Self::BuildInProgress { current } => write!(f, "Build {current} is still reconciling; one Build at a time"),
             Self::NotBackedToday { op, why } => write!(f, "{} is not backed by an op today: {why}", op.name()),
             Self::UnrecognisedReceipt { operation, step } => write!(f, "a receipt names operation {operation} step {step}, which this client does not recognise"),
+            Self::NotFound { read, detail } => write!(f, "{read}: not found: {detail}"),
         }
     }
 }
@@ -117,6 +125,7 @@ impl CallEnd {
             Self::Unserved { .. } | Self::NotBackedToday { .. } => Code::Unimplemented,
             Self::RejectedStale { .. } => Code::Aborted,
             Self::UnrecognisedReceipt { .. } => Code::DataLoss,
+            Self::NotFound { .. } => Code::NotFound,
             Self::Refused { .. } | Self::Rejected { .. } | Self::BuildInProgress { .. } => Code::FailedPrecondition,
         }
     }
@@ -132,6 +141,7 @@ impl CallEnd {
             Self::BuildInProgress { .. } => "build-in-progress",
             Self::NotBackedToday { .. } => "not-backed-today",
             Self::UnrecognisedReceipt { .. } => "unrecognised-receipt",
+            Self::NotFound { .. } => "not-found",
         }
     }
 }

@@ -78,7 +78,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
         transport_addr: n.transport_addr,
         listeners: n.listeners.clone(),
         declared: n.declared.clone(),
-        parked: n.parked,
+        stopped: n.parked,
         load,
         gossip,
         tags,
@@ -109,6 +109,8 @@ enum Chosen<'a> {
     Fabric,
     /// The nodes the tags index named for the filter.
     Ids(BTreeSet<NodeId>),
+    /// The nodes of this mesh the tags index named for the filter.
+    MeshIds(&'a str, BTreeSet<NodeId>),
 }
 
 /// Why a `node.get` read failed: what it read, and the store's error.
@@ -174,6 +176,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             Chosen::Id(id) => &n.node_id == *id,
             Chosen::Mesh(mesh) => n.mesh == *mesh,
             Chosen::Ids(ids) => ids.contains(&n.node_id),
+            Chosen::MeshIds(mesh, ids) => n.mesh == *mesh && ids.contains(&n.node_id),
             Chosen::Fabric => true,
         })
         .collect();
@@ -200,7 +203,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
     let mut out = futures_util::future::try_join_all(read).await?;
     if let Some(s) = facts {
         let meshes: Vec<&String> = match chosen {
-            Chosen::Mesh(m) => planned.keys().filter(|k| k.as_str() == *m).collect(),
+            Chosen::Mesh(m) | Chosen::MeshIds(m, _) => planned.keys().filter(|k| k.as_str() == *m).collect(),
             _ => planned.keys().collect(),
         };
         let unheld: Vec<&PathName> = meshes.into_iter().flat_map(|m| planned[m].iter()).filter(|p| !view.births().any(|n| &n.name == *p)).collect();
@@ -211,6 +214,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
                 Chosen::Id(id) => &r.node_id == *id,
                 Chosen::Mesh(m) => r.name.mesh == *m,
                 Chosen::Ids(ids) => ids.contains(&r.node_id),
+                Chosen::MeshIds(m, ids) => r.name.mesh == *m && ids.contains(&r.node_id),
                 Chosen::Fabric => true,
             };
             if !matches_chosen || out.iter().any(|v| v.node_id == r.node_id || v.name == r.name) {
@@ -233,8 +237,9 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
     Ok(out)
 }
 
-/// `node.get` answered by the node-admin `me` from its `view`, its members' `loads` and its nodes
-/// `storage`: the births `select` selects, each with its tags. A tag filter is read from the tags
+/// The node reads (`node.get`, `mesh.nodes.get`, `fabric.nodes.get`; Q165) answered by the node-admin
+/// `me` from its `view`, its nodes' `loads` and its nodes `storage`: the births `select` selects,
+/// each with its tags. A tag filter is read from the tags
 /// index, one point read per label; a filter that is not a tag set is `RejectedTags`, named; a read
 /// that fails is `RejectedSourceFailed` naming the read. Its span names what was asked, the filter,
 /// its labels, how many index reads were made and how many nodes were answered.
@@ -249,6 +254,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
     let span = tracing::info_span!(
         "rdm.node_admin.node.serve.via-get",
         node = %me,
+        read = select.read(),
         select = select.name(),
         filter = tracing::field::Empty,
         labels = tracing::field::Empty,
@@ -276,15 +282,16 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
             NodeSelect::Id(id) => Chosen::Id(id),
             NodeSelect::Mesh(mesh) => Chosen::Mesh(mesh),
             NodeSelect::Fabric => Chosen::Fabric,
-            NodeSelect::Tags(filter) => {
+            NodeSelect::Tags(filter) | NodeSelect::MeshTags(_, filter) => {
                 span.record("filter", filter.name()).record("labels", crate::node_rows::labels(filter.labels()).as_str());
                 if let Some(reason) = filter.refusal() {
                     return rdm_core::reply::status::bounded_rejected_tags(&format!("{me}: {reason}"));
                 }
                 span.record("index_reads", filter.labels().len() as u64);
-                match tagged(me, storage, filter).await {
-                    Ok(ids) => Chosen::Ids(ids),
-                    Err(f) => return rdm_core::reply::status::bounded_source_failed(&f.source, &f.op, &f.cause),
+                match (tagged(me, storage, filter).await, select) {
+                    (Ok(ids), NodeSelect::MeshTags(mesh, _)) => Chosen::MeshIds(mesh, ids),
+                    (Ok(ids), _) => Chosen::Ids(ids),
+                    (Err(f), _) => return rdm_core::reply::status::bounded_source_failed(&f.source, &f.op, &f.cause),
                 }
             }
         };
@@ -292,9 +299,9 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
             Ok(nodes) => {
                 let count = nodes.len();
                 span.record("nodes", count as u64);
-                let reply = StatusReply::within_reply_bound(StatusReply::Nodes { nodes }, "node.get");
+                let reply = StatusReply::within_reply_bound(StatusReply::Nodes { nodes }, select.read());
                 if let StatusReply::ReadOverBound { bytes, max, .. } = &reply {
-                    tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %me, read = "node.get", select = select.name(), nodes = count, bytes, max, "otel.kind" = "internal")
+                    tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %me, read = select.read(), select = select.name(), nodes = count, bytes, max, "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the selected nodes encode past the Status reply bound; nothing of them is sent"));
                 }
                 reply
@@ -313,7 +320,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         }
         StatusReply::RejectedTags { reason } | StatusReply::RejectedSourceFailed { cause: reason, .. } => {
             span.record("detail", reason.as_str());
-            span.in_scope(|| tracing::info!("node.get refused by name"));
+            span.in_scope(|| tracing::info!(read = select.read(), "the node read refused by name"));
         }
         _ => span.in_scope(|| tracing::info!("the nodes the view holds answered")),
     }
@@ -379,9 +386,9 @@ pub fn view_answer(me: &PathName, view: &Topology, req: &StatusRequest) -> Optio
                 }
                 Some(meshes) => {
                     let count = meshes.len();
-                    let reply = StatusReply::within_reply_bound(StatusReply::Meshes { meshes }, "mesh.get");
+                    let reply = StatusReply::within_reply_bound(StatusReply::Meshes { meshes }, req.op());
                     match &reply {
-                        StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.mesh.reject.via-over-bound", node = %me, read = "mesh.get", select, meshes = count, bytes, max, "otel.kind" = "internal")
+                        StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.mesh.reject.via-over-bound", node = %me, read = req.op(), select, meshes = count, bytes, max, "otel.kind" = "internal")
                             .in_scope(|| tracing::info!("the selected meshes encode past the Status reply bound; nothing of them is sent")),
                         _ => tracing::info_span!("rdm.node_admin.mesh.serve.via-get", node = %me, select, meshes = count, "otel.kind" = "internal")
                             .in_scope(|| tracing::info!("the meshes the view holds answered")),

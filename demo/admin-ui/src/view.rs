@@ -20,7 +20,7 @@ pub fn primary_label(kind: &str, is_primary: bool, is_fabric_primary: bool) -> &
     }
 }
 
-/// node.get of every node the entry admin's view holds, as JSON objects (the client's `NodeView` serialized).
+/// mesh.nodes.get of every mesh the entry admin's view holds, as JSON objects (the client's `NodeView` serialized).
 pub async fn nodes(admin: &Admin) -> Result<Vec<Value>, CallEnd> {
     Ok(admin.nodes().await?.iter().map(|n| serde_json::to_value(n).unwrap_or(Value::Null)).collect())
 }

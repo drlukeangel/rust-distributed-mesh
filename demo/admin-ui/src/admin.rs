@@ -13,7 +13,7 @@
 use rdm_core::{NodeKind, PathName};
 use rdm_client::{
     birth_of_view, Accepted, BuildCarrier, BuildId, BuildReceipts, Builds, CallEnd, Change, ConnectionsView, ExactBirth, FabricDesired, FabricView, Fabrics,
-    MeshDesired, MeshNode, NodeSelector, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
+    MeshDesired, MeshNode, Meshes, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
 };
 use rdm_core::binding::{sha256_file, Binding};
 use rdm_core::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
@@ -67,7 +67,7 @@ impl Admin {
         let unread = |reason: String| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason };
         let based_on = fabric.build_id.as_deref().ok_or_else(|| unread("fabric.get names no current Build".into()))?;
         let based_on = BuildId::parse(based_on).map_err(|e| unread(format!("fabric.get names {based_on}, not a Build id: {e}")))?;
-        let rows = Fabrics::new(self.carrier()).nodes().await?;
+        let rows = Fabrics::new(self.carrier()).nodes(None).await?;
         let mut current = Current { based_on, paths: BTreeMap::new(), primaries: BTreeSet::new(), image: (fabric.provider == ProviderKind::Container).then(|| CONTAINER_IMAGE.to_string()) };
         for row in rows.into_iter().filter(|n| !n.name.old && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)) {
             if row.is_primary {
@@ -142,12 +142,12 @@ impl Admin {
         Fabrics::new(self.carrier()).get().await
     }
 
-    /// `node.get` of every node of every mesh the entry admin's view holds.
+    /// `mesh.nodes.get` of every mesh the entry admin's view holds.
     pub async fn nodes(&self) -> Result<Vec<NodeView>, CallEnd> {
-        let nodes = Nodes::new(self.carrier());
+        let meshes = Meshes::new(self.carrier());
         let mut out = Vec::new();
         for m in self.fabric().await?.meshes {
-            out.extend(nodes.get(&NodeSelector::Mesh(m.name.clone())).await?);
+            out.extend(meshes.nodes(&m.name, None).await?);
         }
         for n in &out {
             if let Some(birth) = birth_of_view(n) {
@@ -159,7 +159,7 @@ impl Admin {
 
     /// `fabric.nodes.get`: every node's row, the executable it records included.
     pub async fn rows(&self) -> Result<Vec<NodeView>, CallEnd> {
-        Fabrics::new(self.carrier()).nodes().await
+        Fabrics::new(self.carrier()).nodes(None).await
     }
 
     /// `node.connections.get` of `n`'s exact birth.

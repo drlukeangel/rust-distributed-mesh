@@ -11,7 +11,7 @@
 use crate::estate::Estate;
 use rdm_client::{LaunchKind as NodeKind, PathName};
 use rdm_client::{
-    birth_of_view, Accepted, BuildCarrier, BuildFrame, BuildId, BuildStream, Builds, CallEnd, Change, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
+    birth_of_view, Accepted, BuildCarrier, BuildFrame, BuildId, BuildStream, Builds, CallEnd, Change, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshView, Meshes, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
 };
 use std::sync::Arc;
 
@@ -111,7 +111,7 @@ impl Estate {
         }
     }
 
-    /// Read `node.get` at every node-admin the estate knows of, each answering for this Fabric within
+    /// Read `mesh.nodes.get` at every node-admin the estate knows of, each answering for this Fabric within
     /// its bound, and learn what each lists.
     async fn relearn(&self, peers: &Peers) {
         let admins: Vec<PathName> = self.births.lock().unwrap().keys().cloned().collect();
@@ -145,7 +145,7 @@ impl Estate {
         fabric_view_of(self.peers().await.as_ref(), admin, &self.fabric_id).await
     }
 
-    /// `node.get` of every node of every mesh `admin` holds, as that admin's view holds them, `None`
+    /// `mesh.nodes.get` of every node of every mesh `admin` holds, as that admin's view holds them, `None`
     /// when it does not answer for this Fabric within 2 s.
     pub async fn node_views_at(&self, admin: &PathName) -> Option<Vec<NodeView>> {
         let peers = self.peers().await;
@@ -185,7 +185,7 @@ impl Estate {
         match printed.iter().rev().find(|birth| birth.name == *admin) {
             Some(birth) => self.await_door(&peers, admin, birth).await,
             None => {
-                let views = node_views_of(&peers, admin, &self.fabric_id).await.unwrap_or_else(|| panic!("enter: {admin} does not answer node.get for {} over Node RPC; admins held: {:?}", self.fabric_id, self.births.lock().unwrap().keys().collect::<Vec<_>>()));
+                let views = node_views_of(&peers, admin, &self.fabric_id).await.unwrap_or_else(|| panic!("enter: {admin} does not answer mesh.nodes.get for {} over Node RPC; admins held: {:?}", self.fabric_id, self.births.lock().unwrap().keys().collect::<Vec<_>>()));
                 self.note(&peers, &views);
             }
         }
@@ -246,17 +246,17 @@ impl Estate {
         self.fabrics_obj().await.get().await
     }
 
-    /// `node.get` of every node of every mesh the admin holds, or how a call ended: a wait on the view reads
+    /// `mesh.nodes.get` of every mesh the admin holds, or how a call ended: a wait on the view reads
     /// through this, because an admin that is recovering answers some calls `Indeterminate` and the wait
     /// goes on until its own bound, naming the last ending.
     pub async fn try_node_views(&self) -> Result<Vec<NodeView>, CallEnd> {
-        let nodes = self.nodes_obj().await;
+        let meshes = self.meshes_obj().await;
         let mut all = Vec::new();
         for mesh in self.try_fabric_view().await?.meshes {
             if mesh.nodes.is_empty() {
                 continue;
             }
-            let views = nodes.get(&NodeSelector::Mesh(mesh.name.clone())).await?;
+            let views = meshes.nodes(&mesh.name, None).await?;
             self.learn(&views).await;
             all.extend(views);
         }
@@ -278,8 +278,8 @@ impl Estate {
     /// `mesh.get` of `mesh` at the admin the estate asks, `None` when it holds no such mesh.
     pub async fn mesh_view_opt(&self, mesh: &str) -> Option<MeshView> {
         let entry = self.entry().await;
-        match self.meshes_obj().await.get(&MeshSelector::Mesh(mesh.into())).await {
-            Ok(mut v) => v.pop(),
+        match self.meshes_obj().await.get(mesh).await {
+            Ok(v) => Some(v),
             Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-mesh" => None,
             Err(e) => panic!("mesh.get {mesh} at {entry}: {e}"),
         }
@@ -290,15 +290,15 @@ impl Estate {
         self.mesh_view_opt(mesh).await.unwrap_or_else(|| panic!("the admin holds no mesh {mesh}"))
     }
 
-    /// `node.get` of every node of `mesh` at the admin the estate asks.
+    /// `mesh.nodes.get` of `mesh` at the admin the estate asks.
     pub async fn mesh_node_views(&self, mesh: &str) -> Vec<NodeView> {
         let entry = self.entry().await;
-        let views = self.nodes_obj().await.get(&NodeSelector::Mesh(mesh.into())).await.unwrap_or_else(|e| panic!("node.get mesh {mesh} at {entry}: {e}"));
+        let views = self.meshes_obj().await.nodes(mesh, None).await.unwrap_or_else(|e| panic!("mesh.nodes.get {mesh} at {entry}: {e}"));
         self.learn(&views).await;
         views
     }
 
-    /// `node.get` of every node of every mesh the admin holds.
+    /// `mesh.nodes.get` of every mesh the admin holds.
     pub async fn node_views(&self) -> Vec<NodeView> {
         let mut all = Vec::new();
         for mesh in self.fabric_view().await.meshes {
@@ -315,10 +315,10 @@ impl Estate {
     pub async fn node_view_opt(&self, name: &str) -> Option<NodeView> {
         let path: PathName = name.parse().unwrap_or_else(|e| panic!("{name} is not a path.name: {e:?}"));
         let entry = self.entry().await;
-        let views = match self.nodes_obj().await.get(&NodeSelector::Mesh(path.mesh.clone())).await {
+        let views = match self.meshes_obj().await.nodes(&path.mesh, None).await {
             Ok(v) => v,
             Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-mesh" => return None,
-            Err(e) => panic!("node.get mesh {} at {entry}: {e}", path.mesh),
+            Err(e) => panic!("mesh.nodes.get {} at {entry}: {e}", path.mesh),
         };
         self.learn(&views).await;
         views.into_iter().find(|n| n.name == path)
@@ -330,7 +330,7 @@ impl Estate {
     }
 
     /// The view the Build left: every `(mesh, node_admin, rpc_node)` cohort holds exactly its count of
-    /// nodes, every one ready-for-traffic, as `node.get` reads it at the admin the estate asks. A Build's
+    /// nodes, every one ready-for-traffic, as `mesh.nodes.get` reads it at the admin the estate asks. A Build's
     /// shape is counts, not paths: a shrink retires non-primaries, so which ordinals remain depends on
     /// where the seats are. The Build's terminal frame is the executor's: the answering admin learns the
     /// nodes of another mesh by gossip, so its view converges on the shape a moment after (a wait on the
@@ -362,7 +362,7 @@ impl Estate {
         let _ = self.ready.set(crate::estate::FabricReady(()));
     }
 
-    /// The view the Build left, by name: exactly `names`, every one ready-for-traffic, as one `node.get` per
+    /// The view the Build left, by name: exactly `names`, every one ready-for-traffic, as one `mesh.nodes.get` per
     /// mesh reads it.
     pub async fn settled_named(&self, names: &std::collections::BTreeSet<String>) -> Vec<NodeView> {
         let meshes: std::collections::BTreeSet<String> = names.iter().map(|n| n.split('.').next().unwrap_or_default().to_string()).collect();
@@ -375,7 +375,7 @@ impl Estate {
         all
     }
 
-    /// The view once it holds exactly `names`, every one ready-for-traffic, as `node.get` reads it at the
+    /// The view once it holds exactly `names`, every one ready-for-traffic, as `mesh.nodes.get` reads it at the
     /// admin the estate asks. The answering admin learns a node another admin created by gossip, so its
     /// view converges a moment after the Build's terminal frame (a wait on the view, bounded by `within`,
     /// naming the last view when it does not settle).
@@ -413,7 +413,7 @@ impl Estate {
     }
 
     /// The view once every `(mesh, kind)` cohort of the fabric holds exactly its count of nodes in `want`, every
-    /// one ready-for-traffic: the view of the whole fabric, every mesh and kind named, as `node.get` reads it at
+    /// one ready-for-traffic: the view of the whole fabric, every mesh and kind named, as `mesh.nodes.get` reads it at
     /// the admin the estate asks. `within` bounds the wait and a view that does not settle is named.
     pub async fn settles_to_counts(&self, want: std::collections::BTreeMap<(String, NodeKind), usize>, within: std::time::Duration) -> Vec<NodeView> {
         self.until_view(&format!("the view settles on {want:?}, every node ready-for-traffic"), within, |views| {
@@ -445,7 +445,7 @@ impl Estate {
     }
 
     /// Wait for the answering admin's node view to hold a state no stream announces: `check` reads the
-    /// `node.get` of every mesh until it yields `Some`. A fact a reply stream carries is awaited on the
+    /// `mesh.nodes.get` of every mesh until it yields `Some`. A fact a reply stream carries is awaited on the
     /// stream; this is only for a state the admin learns by gossip or by its own detection (a node
     /// recovered after its runtime died, a peer unheard), where no call is held open to wait on. A wait that
     /// ends names `what` and the view it last read.
@@ -469,7 +469,7 @@ impl Estate {
         }
     }
 
-    /// [`Self::until_view`] at the node-admin `admin`: `check` reads what `node.get` of every mesh that admin
+    /// [`Self::until_view`] at the node-admin `admin`: `check` reads what `mesh.nodes.get` of every mesh that admin
     /// holds lists, as that admin's own view holds it, until it yields `Some`. An admin that does not answer
     /// for this Fabric within 2 s is a read that ended, and the wait goes on to its own bound.
     pub async fn until_view_at<T>(&self, admin: &PathName, what: &str, within: std::time::Duration, mut check: impl FnMut(&[NodeView]) -> Option<T>) -> T {
@@ -482,20 +482,20 @@ impl Estate {
                     }
                     format!("{:?}", views.iter().map(|n| format!("{}={:?}/{}", n.name, n.status, n.node_id)).collect::<Vec<_>>())
                 }
-                None => format!("{admin} did not answer node.get for {}", self.fabric_id),
+                None => format!("{admin} did not answer mesh.nodes.get for {}", self.fabric_id),
             };
             assert!(tokio::time::Instant::now() < deadline, "timed out after {within:?} waiting for: {what} (as {admin} holds its view); last view: {last}");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
 
-    /// [`Self::until_view`] for the one node at `name`: `check` reads what `node.get` of its mesh lists
+    /// [`Self::until_view`] for the one node at `name`: `check` reads what `mesh.nodes.get` of its mesh lists
     /// at the path, `None` while it lists nothing there.
     pub async fn until_node<T>(&self, name: &str, what: &str, within: std::time::Duration, mut check: impl FnMut(Option<&NodeView>) -> Option<T>) -> T {
         let path: PathName = name.parse().unwrap_or_else(|e| panic!("{name} is not a path.name: {e:?}"));
         let deadline = tokio::time::Instant::now() + within;
         loop {
-            let last = match self.nodes_obj().await.get(&NodeSelector::Mesh(path.mesh.clone())).await {
+            let last = match self.meshes_obj().await.nodes(&path.mesh, None).await {
                 Ok(views) => {
                     self.learn(&views).await;
                     let view = views.into_iter().find(|n| n.name == path);
@@ -529,7 +529,7 @@ impl Estate {
     /// Fabric is named.
     pub async fn node_values_at(&self, admin: &str) -> Vec<serde_json::Value> {
         let path: PathName = admin.parse().unwrap_or_else(|e| panic!("{admin} is not a path.name: {e:?}"));
-        let views = self.node_views_at(&path).await.unwrap_or_else(|| panic!("{admin} does not answer node.get for {}", self.fabric_id));
+        let views = self.node_views_at(&path).await.unwrap_or_else(|| panic!("{admin} does not answer mesh.nodes.get for {}", self.fabric_id));
         views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect()
     }
 
@@ -545,7 +545,7 @@ impl Estate {
 
     /// The data dir of `node`. Only the admin that launched a node advertises it, and that is whichever
     /// admin executed its creation, so the entry admin's view is read first and then every other
-    /// ready node-admin's, each as that admin's own `node.get`.
+    /// ready node-admin's, each as that admin's own `mesh.nodes.get`.
     pub async fn data_dir(&self, node: &str) -> String {
         self.advertised_data_dir(node).await.unwrap_or_else(|| panic!("no live admin advertises {node}'s data dir"))
     }
@@ -801,14 +801,14 @@ pub async fn fabric_view_of(peers: &Peers, admin: &PathName, fabric_id: &str) ->
     (f.id.to_string() == fabric_id).then_some(f)
 }
 
-/// `node.get` of every node of every mesh `admin` holds, over `peers`, as that admin's view holds them:
+/// `mesh.nodes.get` of every mesh `admin` holds, over `peers`, as that admin's view holds them:
 /// `None` when it does not answer for the Fabric `fabric_id` within 2 s a call.
 pub async fn node_views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Option<Vec<NodeView>> {
     let f = fabric_view_of(peers, admin, fabric_id).await?;
-    let nodes = Nodes::new(peers.carrier_at(admin.clone()));
+    let meshes = Meshes::new(peers.carrier_at(admin.clone()));
     let mut all = Vec::new();
     for mesh in f.meshes.iter().filter(|m| !m.nodes.is_empty()) {
-        all.extend(tokio::time::timeout(std::time::Duration::from_secs(2), nodes.get(&NodeSelector::Mesh(mesh.name.clone()))).await.ok()?.ok()?);
+        all.extend(tokio::time::timeout(std::time::Duration::from_secs(2), meshes.nodes(&mesh.name, None)).await.ok()?.ok()?);
     }
     Some(all)
 }

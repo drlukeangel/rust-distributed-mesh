@@ -337,12 +337,12 @@ async fn stop_start_then_restart_of_the_fabric_primary(test: &str, shape: &[(&st
     assert_ne!(fp, before.name, "the stopped admin handed over first");
     estate.enter(&fp).await;
     let stopped_view = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == before.name).expect("node.get lists the stopped admin");
-    assert!(stopped_view.parked && stopped_view.incarnation_id == before.incarnation_id, "the stopped fabric-primary is the same birth, stopped with its process live: {stopped_view:?}");
+    assert!(stopped_view.stopped && stopped_view.incarnation_id == before.incarnation_id, "the stopped fabric-primary is the same birth, stopped with its process live: {stopped_view:?}");
     assert!(running(pid), "a stop keeps the process: {pid} runs");
 
     let started = Estate::workflow("node.start of the former fabric-primary", estate.nodes_obj().await.start(&before.name).await).await;
     let back = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == before.name).expect("node.get lists the started admin");
-    assert!(!back.parked && back.incarnation_id == before.incarnation_id && back.status == NodeStatus::ReadyForTraffic, "the same birth runs again: {back:?}");
+    assert!(!back.stopped && back.incarnation_id == before.incarnation_id && back.status == NodeStatus::ReadyForTraffic, "the same birth runs again: {back:?}");
     assert!(running(pid), "the start rejoined the same process {pid}");
 
     // node.restart of the fabric-primary it handed over to: it hands over first, and it is the same node after.

@@ -122,9 +122,9 @@ pub struct NodeView {
     /// The lifecycle state the birth declared to its authority, once applied.
     #[serde(default)]
     pub declared: Option<String>,
-    /// Stopped and parked: `leaving` with a live process, waiting for a start or a delete.
+    /// A stopped node with a live process, `leaving`, waiting for a start or a delete.
     #[serde(default)]
-    pub parked: bool,
+    pub stopped: bool,
     /// The node's CPU and RAM from its latest digest, as the answering admin holds it.
     #[serde(default)]
     pub load: Option<NodeLoad>,

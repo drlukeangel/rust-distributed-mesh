@@ -98,8 +98,10 @@ impl NodeOp {
 /// A call on the `mesh` op family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MeshOp {
-    /// `mesh.get`: one mesh, or every mesh of the fabric.
+    /// `mesh.get { name }`: one mesh (Q165).
     Get,
+    /// `mesh.nodes.get { tags? }`: every node of one mesh, with an optional tag filter (Q165).
+    NodesGet,
 }
 
 impl MeshOp {
@@ -107,6 +109,7 @@ impl MeshOp {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Get => "mesh.get",
+            Self::NodesGet => "mesh.nodes.get",
         }
     }
 
@@ -114,6 +117,7 @@ impl MeshOp {
     pub fn span(self) -> tracing::Span {
         match self {
             Self::Get => tracing::info_span!("rdm.node_admin.mesh.get.via-call", op = "mesh.get", outcome = tracing::field::Empty),
+            Self::NodesGet => tracing::info_span!("rdm.node_admin.mesh.get.via-nodes-call", op = "mesh.nodes.get", outcome = tracing::field::Empty),
         }
     }
 }
@@ -123,8 +127,11 @@ impl MeshOp {
 pub enum FabricOp {
     /// `fabric.get`: the fabric as the answering admin holds it.
     Get,
-    /// `fabric.nodes.get`: every node of every mesh, from the rows.
+    /// `fabric.nodes.get { tags? }`: every node of every mesh, from the rows, with an optional tag
+    /// filter (Q165).
     NodesGet,
+    /// `fabric.meshes.get`: every mesh of the fabric (Q165).
+    MeshesGet,
 }
 
 impl FabricOp {
@@ -133,6 +140,7 @@ impl FabricOp {
         match self {
             Self::Get => "fabric.get",
             Self::NodesGet => "fabric.nodes.get",
+            Self::MeshesGet => "fabric.meshes.get",
         }
     }
 
@@ -141,6 +149,7 @@ impl FabricOp {
         match self {
             Self::Get => tracing::info_span!("rdm.node_admin.fabric.get.via-call", op = "fabric.get", outcome = tracing::field::Empty),
             Self::NodesGet => tracing::info_span!("rdm.node_admin.fabric.get.via-nodes-call", op = "fabric.nodes.get", outcome = tracing::field::Empty),
+            Self::MeshesGet => tracing::info_span!("rdm.node_admin.fabric.get.via-meshes-call", op = "fabric.meshes.get", outcome = tracing::field::Empty),
         }
     }
 }

@@ -203,7 +203,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     estate
         .until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again as the same birth", Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["parked"] == false && n["incarnation_id"] == restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())
+            (n["status"] == "ready-for-traffic" && n["stopped"] == false && n["incarnation_id"] == restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())
         })
         .await;
     assert_eq!(current_build(&estate).await, r4);

@@ -13,7 +13,7 @@
 //!
 //! `<birth>` is the entry node-admin's birth, the JSON it prints on its birth line
 //! (`rdm_client::BIRTH_LINE`). The probe reads that admin's view over Node RPC
-//! (`fabric.get`, then `node.get` for each mesh the fabric lists) and resolves the target from it:
+//! (`fabric.get`, then `mesh.nodes.get` for each mesh the fabric lists) and resolves the target from it:
 //! `exact:` is exactly that logical node and never follows a replacement;
 //! `path:` is whoever holds the path now. `cas` without `--expected` expects
 //! the key absent; without `--value` it deletes. `fabric-delete` submits fabric.delete at the entry
@@ -25,7 +25,7 @@
 //! `Reply` carries the executing node's provenance and the typed result.
 
 use rdm_core::{IncarnationId, MeshNode, NodeId, PathName};
-use rdm_client::{BuildCarrier, Fabrics, NodeSelector, NodeView, Nodes};
+use rdm_client::{BuildCarrier, Fabrics, Meshes, NodeView, Nodes};
 use rdm_transport::{CallOptions, NodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
 use rdm_test::proof_store::{ProofReply, ProofRequest, ProofStore};
@@ -216,16 +216,16 @@ async fn enter(admin: &MeshNode) -> Result<(Arc<NodeRpcClient>, Arc<StaticResolv
     }
 }
 
-/// Every node the node-admin `admin` holds in its view: `fabric.get`, then `node.get` for each mesh the
+/// Every node the node-admin `admin` holds in its view: `fabric.get`, then `mesh.nodes.get` for each mesh the
 /// fabric lists with nodes, read from that admin. A read that does not answer is refused naming the
 /// admin, the read and how it ended.
 async fn views_of(client: &Arc<NodeRpcClient>, admin: &PathName) -> Result<Vec<NodeView>, String> {
     let carrier = BuildCarrier::new(client.clone(), admin.clone());
     let fabric = Fabrics::new(carrier.clone()).get().await.map_err(|e| format!("fabric.get at the entry admin {admin}: {e}"))?;
-    let nodes = Nodes::new(carrier);
+    let meshes = Meshes::new(carrier);
     let mut all = Vec::new();
     for mesh in fabric.meshes.iter().filter(|m| !m.nodes.is_empty()) {
-        all.extend(nodes.get(&NodeSelector::Mesh(mesh.name.clone())).await.map_err(|e| format!("node.get of mesh {} at the entry admin {admin}: {e}", mesh.name))?);
+        all.extend(meshes.nodes(&mesh.name, None).await.map_err(|e| format!("mesh.nodes.get of mesh {} at the entry admin {admin}: {e}", mesh.name))?);
     }
     Ok(all)
 }
@@ -682,7 +682,7 @@ mod tests {
             transport_addr: addr.map(|a| a.parse().unwrap()),
             listeners: Vec::new(),
             declared: None,
-            parked: false,
+            stopped: false,
             load: None,
             gossip: None,
             tags: Default::default(),

@@ -395,17 +395,18 @@ pub enum StatusRequest {
         /// Which connections.
         scope: ConnectionScope,
     },
-    /// `node.get` (node-rpc-envelope.md "Typed objects mapped to wire and execution owners"): a
-    /// caller asks a node-admin for the nodes its view holds that `select` selects, answered
-    /// [`StatusReply::Nodes`]; an id the view does not hold selects nothing. A read: nothing
-    /// changes and nothing is published.
+    /// The node reads (node-rpc-envelope.md "Typed objects mapped to wire and execution owners",
+    /// Q165): `node.get { id }`, `mesh.nodes.get { tags? }` and `fabric.nodes.get { tags? }`, one
+    /// request: a caller asks a node-admin for the nodes its view holds that `select` selects,
+    /// answered [`StatusReply::Nodes`]; an id the view does not hold selects nothing, and the caller's
+    /// `node.get` ends `NOT_FOUND`. A read: nothing changes and nothing is published.
     GetNodes {
         /// Which nodes.
         select: NodeSelect,
     },
-    /// `mesh.get`: a caller asks a node-admin for one mesh its view holds, by the mesh's minted id
-    /// or its name, or for every mesh (`None`), answered [`StatusReply::Meshes`]; a mesh the view
-    /// does not hold is [`StatusReply::UnknownMesh`]. A read.
+    /// `mesh.get { name }` (`Some`): a caller asks a node-admin for one mesh its view holds, by the
+    /// mesh's minted id or its name; `fabric.meshes.get` (`None`): every mesh (Q165). Answered
+    /// [`StatusReply::Meshes`]; a mesh the view does not hold is [`StatusReply::UnknownMesh`]. A read.
     GetMeshes {
         /// The mesh's minted id or name; `None` for every mesh of the fabric.
         mesh: Option<String>,
@@ -546,19 +547,24 @@ impl WhichMesh {
     }
 }
 
-/// Which nodes `node.get` selects. Positional order is part of the wire schema.
+/// Which nodes a `GetNodes` selects (Q165). Positional order is part of the wire schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeSelect {
-    /// The node with this minted id.
+    /// The node with this minted id (`node.get { id }`).
     Id(NodeId),
-    /// Every node of the mesh with this name.
+    /// Every node of the mesh with this name (`mesh.nodes.get`, no filter).
     Mesh(String),
-    /// Every node carrying the tag labels the filter names (R-TG1), read through the node store's
-    /// tags index: one point read per label.
+    /// Every node of the fabric carrying the tag labels the filter names (R-TG1;
+    /// `fabric.nodes.get { tags }`), read through the node store's tags index: one point read per
+    /// label.
     Tags(TagFilter),
-    /// Every node of every mesh (`fabric.nodes.get`): the mesh selector's answer over every mesh,
-    /// read from the rows, no filter. Appended last: positional.
+    /// Every node of every mesh (`fabric.nodes.get`, no filter): the mesh selector's answer over
+    /// every mesh, read from the rows. Appended last: positional.
     Fabric,
+    /// Every node of the mesh with this name carrying the tag labels the filter names
+    /// (`mesh.nodes.get { tags }`), read through the tags index as `Tags` is. Appended last:
+    /// positional.
+    MeshTags(String, TagFilter),
 }
 
 impl NodeSelect {
@@ -569,12 +575,22 @@ impl NodeSelect {
             Self::Mesh(_) => "mesh",
             Self::Tags(_) => "tags",
             Self::Fabric => "fabric",
+            Self::MeshTags(..) => "mesh-tags",
+        }
+    }
+
+    /// The call this selection is, by its name in node-rpc-envelope.md (Q165).
+    pub fn read(&self) -> &'static str {
+        match self {
+            Self::Id(_) => "node.get",
+            Self::Mesh(_) | Self::MeshTags(..) => "mesh.nodes.get",
+            Self::Tags(_) | Self::Fabric => "fabric.nodes.get",
         }
     }
 }
 
-/// Which tag labels a `node.get` filter requires (node-rpc-envelope.md, node.get: "all of the given
-/// tags or any of them"). Positional order is part of the wire schema.
+/// Which tag labels a `mesh.nodes.get` or `fabric.nodes.get` filter requires (node-rpc-envelope.md:
+/// "all of the given labels or any of them"). Positional order is part of the wire schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TagFilter {
     /// The node carries every one of these labels.
@@ -603,7 +619,7 @@ impl TagFilter {
     /// at least one label, at most [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
     pub fn refusal(&self) -> Option<String> {
         if self.labels().is_empty() {
-            return Some(format!("node.get's tag filter ({}) names no label: it needs at least one", self.name()));
+            return Some(format!("the tag filter ({}) names no label: it needs at least one", self.name()));
         }
         tags_refusal(self.labels())
     }
@@ -811,8 +827,9 @@ impl StatusRequest {
             Self::ApplyNodeName { .. } => "apply-node-name",
             Self::UpdateName { .. } => "node.name.update",
             Self::DeleteConnections { .. } => "delete-connections",
-            Self::GetNodes { .. } => "node.get",
-            Self::GetMeshes { .. } => "mesh.get",
+            Self::GetNodes { select } => select.read(),
+            Self::GetMeshes { mesh: Some(_) } => "mesh.get",
+            Self::GetMeshes { mesh: None } => "fabric.meshes.get",
             Self::GetFabric => "fabric.get",
             Self::GetConnections { .. } => "node.connections.get",
             Self::CreateTags { .. } => "node.tags.create",
@@ -1962,6 +1979,7 @@ mod tests {
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: at_cap.clone() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(at_cap.clone()) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::Any(at_cap.clone())) },
+            StatusRequest::GetNodes { select: NodeSelect::MeshTags("m".repeat(MAX_TAG_BYTES), TagFilter::Any(at_cap.clone())) },
         ] {
             let len = Status::encode_request(&q).unwrap().len();
             assert!(len <= Status::MAX_REQUEST_FRAME_BYTES, "{} encodes to {len}, over {}", q.op(), Status::MAX_REQUEST_FRAME_BYTES);
@@ -2079,7 +2097,7 @@ mod tests {
             transport_addr: Some("127.0.0.1:41235".parse().unwrap()),
             listeners: vec![("control".into(), "127.0.0.1:41236".parse().unwrap())],
             declared: Some("ReadyForTraffic".into()),
-            parked: false,
+            stopped: false,
             load: Some(crate::NodeLoad { cpu_used_millicores: 2400, cpu_budget_millicores: 16000, ram_used_bytes: 123_456_789, ram_budget_bytes: 64_000_000_000 }),
             gossip: Some(crate::GossipStats { heard: 20, neighbours: 5, frames_sent: 123_456, frames_received: 654_321 }),
             tags: ["rabbit".to_string(), "zone-a".to_string()].into(),

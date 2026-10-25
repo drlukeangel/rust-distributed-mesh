@@ -195,10 +195,10 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     }
     estate.until_node("mesh1.admin.2", "mesh1.admin.2 holds the seats", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     Estate::workflow("node.start of mesh1.admin.1", estate.nodes_obj().await.start(&a1).await).await;
-    estate.until_node("mesh1.admin.1", "mesh1.admin.1 runs again holding no seat", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && !n.parked && !n.is_primary).map(|_| ())).await;
+    estate.until_node("mesh1.admin.1", "mesh1.admin.1 runs again holding no seat", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && !n.stopped && !n.is_primary).map(|_| ())).await;
     let restart_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     Estate::workflow("node.restart of mesh1.rpc.1", estate.nodes_obj().await.restart(&rpc1).await).await;
-    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && !n.parked).map(|_| ())).await;
+    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && !n.stopped).map(|_| ())).await;
 
     // A declaration straight to the admin holding no seat: its own seat decision.
     let (rpc1v, a1v, a2v) = (estate.node_value("mesh1.rpc.1").await, estate.node_value("mesh1.admin.1").await, estate.node_value("mesh1.admin.2").await);

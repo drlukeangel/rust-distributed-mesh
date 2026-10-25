@@ -37,7 +37,7 @@ pub fn node(name: &str, node_id: &NodeId, endpoint: Option<String>, addr: Option
         transport_addr: addr,
         listeners: Vec::new(),
         declared: None,
-        parked: false,
+        stopped: false,
         load: None,
         gossip: None,
         tags: Default::default(),

@@ -18,7 +18,7 @@
 //! B by a mesh1 admin names mesh2's admin primary as the previous executor.
 
 use crate::build_log;
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, Meshes};
 use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
 use rdm_test::estate::{claim_decider, named, Estate, Owner};
@@ -117,8 +117,8 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier
     assert_eq!(mesh2.id.as_ref().map(|i| i.to_string()), Some(mesh2_id.clone()), "mesh2 keeps its MeshId: {mesh2:#?}");
     // ...in mesh2's created admins too: they carry its identity.
     for admin in after.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin) {
-        let own = Meshes::new(estate.carrier_at(&admin.name).await).get(&MeshSelector::Mesh("mesh2".into())).await.unwrap_or_else(|e| panic!("mesh.get mesh2 at {}: {e}", admin.name));
-        assert_eq!(own.first().and_then(|m| m.id.as_ref()).map(|i| i.to_string()), Some(mesh2_id.clone()), "{} serves mesh2 under its own identity: {own:#?}", admin.name);
+        let own = Meshes::new(estate.carrier_at(&admin.name).await).get("mesh2").await.unwrap_or_else(|e| panic!("mesh.get mesh2 at {}: {e}", admin.name));
+        assert_eq!(own.id.as_ref().map(|i| i.to_string()), Some(mesh2_id.clone()), "{} serves mesh2 under its own identity: {own:#?}", admin.name);
     }
     let (old, new) = (births(&before), births(&after));
     for (name, incarnation) in &old {

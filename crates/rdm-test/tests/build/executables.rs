@@ -43,7 +43,7 @@ pub async fn read_request(estate: &Estate) -> (rdm_core::BuildId, Vec<(PathName,
     let carrier = estate.carrier().await;
     let facts = build_log::log_read(&carrier, &based_on).await.unwrap_or_else(|e| panic!("the Build log of the fabric-primary holds no Build {based_on}: {e}"));
     let build = build_log::projection(&facts, &based_on).unwrap_or_else(|| panic!("the fabric-primary's log holds no acceptance of {based_on}"));
-    let nodes = estate.fabrics_obj().await.nodes().await.unwrap_or_else(|e| panic!("fabric.nodes.get: {e}"));
+    let nodes = estate.fabrics_obj().await.nodes(None).await.unwrap_or_else(|e| panic!("fabric.nodes.get: {e}"));
     let mut out = Vec::new();
     for m in build.topology.meshes.values() {
         for p in &m.nodes {
@@ -98,7 +98,7 @@ fn record_of(estate: &Estate, mesh: &str, node_id: &str) -> Value {
 
 /// Every node `fabric.nodes.get` answers, by `path.name`.
 async fn fabric_nodes(estate: &Estate) -> BTreeMap<String, NodeView> {
-    estate.fabrics_obj().await.nodes().await.unwrap_or_else(|e| panic!("fabric.nodes.get: {e}")).into_iter().map(|n| (n.name.to_string(), n)).collect()
+    estate.fabrics_obj().await.nodes(None).await.unwrap_or_else(|e| panic!("fabric.nodes.get: {e}")).into_iter().map(|n| (n.name.to_string(), n)).collect()
 }
 
 /// A Build stream followed to its `Complete` (across a fabric-primary move), bounded: a Build that does not

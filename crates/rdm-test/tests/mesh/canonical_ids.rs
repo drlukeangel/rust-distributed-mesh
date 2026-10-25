@@ -15,7 +15,7 @@
 //!   created again gets a new MeshId, a node removed and created again at the
 //!   same path a new NodeId; the Fabric keeps its id throughout.
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes, NodeStatus};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, Meshes, NodeStatus};
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -76,8 +76,8 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_ne!(mesh_ids["mesh1"], mesh_ids["mesh2"]);
     for (mesh, id) in &mesh_ids {
         let meshes = estate.meshes_obj().await;
-        let by_name = meshes.get(&MeshSelector::Mesh(mesh.clone())).await.unwrap_or_else(|e| panic!("mesh.get {mesh}: {e}"));
-        let by_id = meshes.get(&MeshSelector::Mesh(id.clone())).await.unwrap_or_else(|e| panic!("mesh.get {id}: {e}"));
+        let by_name = meshes.get(mesh).await.unwrap_or_else(|e| panic!("mesh.get {mesh}: {e}"));
+        let by_id = meshes.get(id).await.unwrap_or_else(|e| panic!("mesh.get {id}: {e}"));
         assert_eq!(by_name, by_id, "a mesh resolves by name or by id");
     }
     let node_ids: BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), canonical("node id", &n["node_id"]))).collect();
@@ -101,7 +101,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let mut restart = estate.nodes_obj().await.restart(&"mesh2.rpc.2".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of mesh2.rpc.2: {e}"));
     let a = Estate::complete(&mut restart).await;
     let after = estate
-        .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked).map(json_of))
+        .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).map(json_of))
         .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
     assert_eq!(after["incarnation_id"], before["incarnation_id"], "restart keeps the incarnation");
@@ -112,7 +112,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let again = Estate::complete(&mut restart).await;
     assert_eq!(again.build_id, a.build_id, "a restart is an attempt of the accepted Build: {again:?}");
     let third = estate
-        .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked).map(json_of))
+        .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).map(json_of))
         .await;
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");
@@ -163,8 +163,8 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // id. No admin's view states the new mesh2 Dead.
     for n in recreated.iter().filter(|n| n["kind"] == "node_admin") {
         let carrier = estate.carrier_at(&s(&n["name"]).parse().unwrap()).await;
-        let m = json_of(&Meshes::new(carrier).get(&MeshSelector::Mesh("mesh2".into())).await.unwrap_or_else(|e| panic!("mesh.get mesh2 at {}: {e}", n["name"])));
-        assert_ne!(s(&m[0]["status"]), "dead", "{} states the recreated mesh2 Dead: {m}", s(&n["name"]));
+        let m = json_of(&Meshes::new(carrier).get("mesh2").await.unwrap_or_else(|e| panic!("mesh.get mesh2 at {}: {e}", n["name"])));
+        assert_ne!(s(&m["status"]), "dead", "{} states the recreated mesh2 Dead: {m}", s(&n["name"]));
     }
     let fabric_after = json_of(&estate.fabric_view().await);
     assert_eq!(s(&fabric_after["id"]), fabric_id, "the Fabric keeps its id for its lifetime");

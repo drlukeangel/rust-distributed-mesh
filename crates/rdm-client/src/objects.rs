@@ -2,8 +2,10 @@
 //!
 //! Workflows are submitted to the fabric-primary through the Build family (op `0x20`,
 //! `build.create`) and answered with a reply stream ([`WorkflowStream`]) read from the call itself.
-//! The `build` objects are that family's calls. The reads are Status calls (op `0x1B`): `node.get`,
-//! `mesh.get` and `fabric.get` go to the fabric-primary the carrier starts at, which answers from its
+//! The `build` objects are that family's calls. The reads are Status calls (op `0x1B`), one rule
+//! (Q165): `<entity>.get` returns one, `<parent>.<children>.get` the list. `node.get { id }`,
+//! `mesh.get { name }`, `mesh.nodes.get { tags? }`, `fabric.get`, `fabric.meshes.get` and
+//! `fabric.nodes.get { tags? }` go to the fabric-primary the carrier starts at, which answers from its
 //! view, and `node.connections.get` to the exact birth whose connections it reads. A read the node
 //! refuses ends `Rejected`, naming the refusal. Calls whose request is valid but that no op carries
 //! yet end `NotBackedToday`, naming why; no request is invented for them.
@@ -77,17 +79,6 @@ where
 
 pub use rdm_core::status::TagFilter;
 
-/// What `node.get` selects.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeSelector {
-    /// The node with this minted id.
-    Id(NodeId),
-    /// Every node of the mesh.
-    Mesh(String),
-    /// Every node carrying the tag labels the filter names: all of them, or any of them (R-TG1).
-    Tags(TagFilter),
-}
-
 /// A create or a rename into a `path.name` another node holds, parked or live: a name is held by
 /// exactly one node until that node is renamed or deleted (ops-naming "Identity";
 /// node-rpc-envelope.md "Meta and config"). The row writer reads the row at the name's key and
@@ -158,29 +149,18 @@ impl Nodes {
         }
     }
 
-    /// `node.get`: the nodes `selector` selects, as the fabric-primary's view holds them.
-    pub async fn get(&self, selector: &NodeSelector) -> Result<Vec<NodeView>, CallEnd> {
+    /// `node.get { id }`: the one node with the minted id `id`, as the fabric-primary's view holds
+    /// it; a node it does not hold ends [`CallEnd::NotFound`] (`NOT_FOUND`, Q165).
+    pub async fn get(&self, id: &NodeId) -> Result<NodeView, CallEnd> {
         let span = NodeOp::Get.span();
-        let r = tracing::Instrument::instrument(self.select(selector), span.clone()).await;
+        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let call = async {
+            let nodes = nodes_read(&self.carrier, &target, NodeOp::Get.name(), NodeSelect::Id(id.clone())).await?;
+            nodes.into_iter().find(|n| &n.node_id == id).ok_or_else(|| CallEnd::NotFound { read: NodeOp::Get.name(), detail: format!("{target:?} holds no node {id}") })
+        };
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
         ended_read(&span, NodeOp::Get.name(), &r);
         r
-    }
-
-    async fn select(&self, selector: &NodeSelector) -> Result<Vec<NodeView>, CallEnd> {
-        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
-        let select = match selector {
-            NodeSelector::Id(id) => NodeSelect::Id(id.clone()),
-            NodeSelector::Mesh(mesh) => NodeSelect::Mesh(mesh.clone()),
-            // A filter no node can match is refused here, by name, and nothing is sent.
-            NodeSelector::Tags(filter) => match filter.refusal() {
-                Some(reason) => return Err(refused(&target, NodeOp::Get.name(), rdm_core::reply::status::bounded_rejected_tags(&reason))),
-                None => NodeSelect::Tags(filter.clone()),
-            },
-        };
-        match read(&self.carrier, &target, &StatusRequest::GetNodes { select }).await? {
-            StatusReply::Nodes { nodes } => Ok(nodes),
-            other => Err(refused(&target, NodeOp::Get.name(), other)),
-        }
     }
 
     /// `node.name.update`: rename the exact birth `birth` to `name`, the name only (never its path), a
@@ -317,13 +297,26 @@ impl Nodes {
     }
 }
 
-/// What `mesh.get` selects.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MeshSelector {
-    /// The mesh with this minted id or this name.
-    Mesh(String),
-    /// Every mesh of the fabric.
-    Fabric,
+/// A node read on `GetNodes` (`node.get`, `mesh.nodes.get`, `fabric.nodes.get`) to `target`: the
+/// nodes it answered. A tag filter no node can match is refused here, by name, and nothing is sent.
+async fn nodes_read(carrier: &BuildCarrier, target: &NodeTarget, op: &str, select: NodeSelect) -> Result<Vec<NodeView>, CallEnd> {
+    if let NodeSelect::Tags(filter) | NodeSelect::MeshTags(_, filter) = &select {
+        if let Some(reason) = filter.refusal() {
+            return Err(refused(target, op, rdm_core::reply::status::bounded_rejected_tags(&reason)));
+        }
+    }
+    match read(carrier, target, &StatusRequest::GetNodes { select }).await? {
+        StatusReply::Nodes { nodes } => Ok(nodes),
+        other => Err(refused(target, op, other)),
+    }
+}
+
+/// A mesh read on `GetMeshes` (`mesh.get`, `fabric.meshes.get`) to `target`: the meshes it answered.
+async fn meshes_read(carrier: &BuildCarrier, target: &NodeTarget, op: &str, mesh: Option<String>) -> Result<Vec<MeshView>, CallEnd> {
+    match read(carrier, target, &StatusRequest::GetMeshes { mesh }).await? {
+        StatusReply::Meshes { meshes } => Ok(meshes),
+        other => Err(refused(target, op, other)),
+    }
 }
 
 /// The `mesh` objects: reads as Status calls to the fabric-primary the carrier starts at.
@@ -338,23 +331,32 @@ impl Meshes {
         Self { carrier }
     }
 
-    /// `mesh.get`: the meshes `selector` selects, as the fabric-primary's view holds them. A mesh it
-    /// does not hold ends `Rejected` with `unknown-mesh`, naming the mesh.
-    pub async fn get(&self, selector: &MeshSelector) -> Result<Vec<MeshView>, CallEnd> {
+    /// `mesh.get { name }`: the one mesh with the name (or minted id) `name`, as the fabric-primary's
+    /// view holds it. A mesh it does not hold ends `Rejected` with `unknown-mesh`, naming the mesh.
+    pub async fn get(&self, name: &str) -> Result<MeshView, CallEnd> {
         let span = MeshOp::Get.span();
-        let mesh = match selector {
-            MeshSelector::Mesh(m) => Some(m.clone()),
-            MeshSelector::Fabric => None,
-        };
         let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
         let call = async {
-            match read(&self.carrier, &target, &StatusRequest::GetMeshes { mesh }).await? {
-                StatusReply::Meshes { meshes } => Ok(meshes),
-                other => Err(refused(&target, MeshOp::Get.name(), other)),
-            }
+            let meshes = meshes_read(&self.carrier, &target, MeshOp::Get.name(), Some(name.to_string())).await?;
+            meshes.into_iter().next().ok_or_else(|| refused(&target, MeshOp::Get.name(), rdm_core::reply::status::unknown_mesh(name.to_string())))
         };
         let r = tracing::Instrument::instrument(call, span.clone()).await;
         ended_read(&span, MeshOp::Get.name(), &r);
+        r
+    }
+
+    /// `mesh.nodes.get { tags? }`: every node of the mesh `mesh`, as the fabric-primary reads them
+    /// from the rows, or, given `tags`, every node of it carrying the labels the filter names (all of
+    /// them, or any of them; R-TG1), read through the tags index (Q165).
+    pub async fn nodes(&self, mesh: &str, tags: Option<&TagFilter>) -> Result<Vec<NodeView>, CallEnd> {
+        let span = MeshOp::NodesGet.span();
+        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let select = match tags {
+            None => NodeSelect::Mesh(mesh.to_string()),
+            Some(filter) => NodeSelect::MeshTags(mesh.to_string(), filter.clone()),
+        };
+        let r = tracing::Instrument::instrument(nodes_read(&self.carrier, &target, MeshOp::NodesGet.name(), select), span.clone()).await;
+        ended_read(&span, MeshOp::NodesGet.name(), &r);
         r
     }
 }
@@ -386,19 +388,27 @@ impl Fabrics {
         r
     }
 
-    /// `fabric.nodes.get`: every node of every mesh, as the fabric-primary reads them from the rows (the
-    /// mesh selector's answer over every mesh, no filter), each with its status, config, tags and the
-    /// executable its row records.
-    pub async fn nodes(&self) -> Result<Vec<NodeView>, CallEnd> {
+    /// `fabric.meshes.get`: every mesh of the fabric, as the fabric-primary's view holds them (Q165).
+    pub async fn meshes(&self) -> Result<Vec<MeshView>, CallEnd> {
+        let span = FabricOp::MeshesGet.span();
+        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let r = tracing::Instrument::instrument(meshes_read(&self.carrier, &target, FabricOp::MeshesGet.name(), None), span.clone()).await;
+        ended_read(&span, FabricOp::MeshesGet.name(), &r);
+        r
+    }
+
+    /// `fabric.nodes.get { tags? }`: every node of every mesh, the fabric topology, as the
+    /// fabric-primary reads them from the rows (the mesh selector's answer over every mesh), each with
+    /// its status, config, tags and the executable its row records; given `tags`, every node of the
+    /// fabric carrying the labels the filter names, read through the tags index (Q165).
+    pub async fn nodes(&self, tags: Option<&TagFilter>) -> Result<Vec<NodeView>, CallEnd> {
         let span = FabricOp::NodesGet.span();
         let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
-        let call = async {
-            match read(&self.carrier, &target, &StatusRequest::GetNodes { select: NodeSelect::Fabric }).await? {
-                StatusReply::Nodes { nodes } => Ok(nodes),
-                other => Err(refused(&target, FabricOp::NodesGet.name(), other)),
-            }
+        let select = match tags {
+            None => NodeSelect::Fabric,
+            Some(filter) => NodeSelect::Tags(filter.clone()),
         };
-        let r = tracing::Instrument::instrument(call, span.clone()).await;
+        let r = tracing::Instrument::instrument(nodes_read(&self.carrier, &target, FabricOp::NodesGet.name(), select), span.clone()).await;
         ended_read(&span, FabricOp::NodesGet.name(), &r);
         r
     }

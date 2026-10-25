@@ -108,7 +108,7 @@ impl Current {
         let at = view.fabric_primary.clone().unwrap_or_else(|| carrier.fabric_primary().clone());
         let fetched = rdm_admin::build_facts_read::fetch_current_build(carrier.client(), &NodeTarget::CurrentPath(at.clone())).await.map_err(|e| format!("the current Build at the fabric-primary {at}: {e}"))?;
         let topology = rdm_admin::build_state::fold(&fetched.facts).remove(&fetched.build_id).map(|p| p.topology).ok_or_else(|| format!("the fabric-primary {at}'s facts of its current Build {} hold no acceptance of it", fetched.build_id))?;
-        let rows = Fabrics::new(carrier.clone()).nodes().await.map_err(|e| format!("fabric.nodes.get at {}: {e}", carrier.fabric_primary()))?;
+        let rows = Fabrics::new(carrier.clone()).nodes(None).await.map_err(|e| format!("fabric.nodes.get at {}: {e}", carrier.fabric_primary()))?;
         Ok(Self { based_on: fetched.build_id, topology, rows })
     }
 
