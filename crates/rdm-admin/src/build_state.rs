@@ -67,6 +67,11 @@ pub enum AttemptReason {
     Delete,
     /// A recipe was submitted: one Build of node primitives (build.md §1).
     Recipe,
+    /// An adoption launch opened it (Q156; fabric-recovery.md "Nothing alive"): the fabric-recovery attempt
+    /// a node-admin a person launched at the lost fabric-primary's path.name claims, `node.delete:<path>`
+    /// then `node.create:<path>` as a recovery's. Abandoned because a live admin answered, it owes no exit
+    /// (node-recovery.md "Failure and receipts", Q159).
+    Adoption,
 }
 
 impl AttemptReason {
@@ -83,6 +88,7 @@ impl AttemptReason {
             Self::Recovery => "recovery",
             Self::Delete => "delete",
             Self::Recipe => "recipe",
+            Self::Adoption => "adoption",
         }
     }
 }
@@ -1297,6 +1303,8 @@ pub struct BirthIndex {
     /// whatever order the facts arrive: the exited birth each attempt opened with
     /// `AttemptAction::Recover` names, by attempt (the first open of an attempt)...
     exit_opens: std::collections::HashMap<LaneOf, BTreeMap<u32, (crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)>>,
+    /// The recovery attempts of each lane an adoption launch opened (`AttemptReason::Adoption`).
+    adoption_opens: std::collections::HashMap<LaneOf, std::collections::BTreeSet<u32>>,
     /// ...every attempt opened, whatever it carries (the next one ends the run of the one before)...
     opens: std::collections::HashMap<LaneOf, std::collections::BTreeSet<u32>>,
     /// ...and every attempt claimed or decided, with its verdict once one is held: the first
@@ -1450,6 +1458,9 @@ pub enum BirthEntry {
         attempt: u32,
         /// When the attempt was opened.
         opened_at_ms: u64,
+        /// Whether an adoption launch opened it (`AttemptReason::Adoption`, Q156, Q159).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        adoption: bool,
     },
     /// An attempt opened, whatever it carries, under its lane.
     Opened {
@@ -1524,7 +1535,7 @@ pub fn birth_entries(fact: &BuildFact) -> Vec<BirthEntry> {
     match fact {
         BuildFact::Opened(o) => {
             if let Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) = &o.action {
-                out.push(BirthEntry::RecoveryOpened { node_id: node_id.clone(), incarnation: from_incarnation.clone(), path: path.clone(), build_id: o.build_id.clone(), mesh: o.mesh.clone(), attempt: o.attempt, opened_at_ms: o.opened_at_ms });
+                out.push(BirthEntry::RecoveryOpened { node_id: node_id.clone(), incarnation: from_incarnation.clone(), path: path.clone(), build_id: o.build_id.clone(), mesh: o.mesh.clone(), attempt: o.attempt, opened_at_ms: o.opened_at_ms, adoption: o.reason == AttemptReason::Adoption });
             }
             out.push(BirthEntry::Opened { build_id: o.build_id.clone(), mesh: o.mesh.clone(), attempt: o.attempt });
         }
@@ -1571,8 +1582,11 @@ impl BirthIndex {
                     held.push((build_id, attempt, operation));
                 }
             }
-            BirthEntry::RecoveryOpened { node_id, incarnation, path, build_id, mesh, attempt, .. } => {
+            BirthEntry::RecoveryOpened { node_id, incarnation, path, build_id, mesh, attempt, adoption, .. } => {
                 let lane: LaneOf = (build_id, mesh);
+                if adoption {
+                    self.adoption_opens.entry(lane.clone()).or_default().insert(attempt);
+                }
                 let opened = self.recoveries_opened.entry((node_id.clone(), incarnation.clone())).or_default();
                 if !opened.contains(&(lane.clone(), attempt)) {
                     opened.push((lane.clone(), attempt));
@@ -1713,9 +1727,12 @@ impl BirthIndex {
                 let until = self.opens.get(lane).and_then(|o| o.range(from + 1..).next().copied()).unwrap_or(u32::MAX);
                 let (attempt, verdict) = self.verdicts.get(lane)?.range(from..until).next_back()?;
                 let Some(AttemptOutcome::Failed { reason, code }) = verdict else { return None };
-                // A recovery refused because the birth or a node-admin answered (NameHeld's code: an
-                // adoption launch's checks after its claim, Q156) owes no exit: the birth is alive.
-                if *code == rdm_core::outcome::Code::AlreadyExists {
+                // An adoption abandoned because the birth or a live node-admin answered (an adoption
+                // launch's checks after its claim, Q156, NameHeld's code) owes no exit: the birth is
+                // alive. Only that: a recovery failed on any other name conflict owes it still
+                // (node-recovery.md "Failure and receipts", Q159).
+                let adopted = self.adoption_opens.get(lane).is_some_and(|a| a.contains(&from));
+                if adopted && *code == rdm_core::outcome::Code::AlreadyExists {
                     return None;
                 }
                 if self.recovery_of(&path, &node_id, &incarnation).is_some() {
@@ -2734,6 +2751,10 @@ mod tests {
         BuildAttemptReceipt { mesh: None, build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(), attempt, outcome }
     }
 
+    fn attempt_of(id: &str, n: u32, outcome: AttemptOutcome) -> BuildAttemptReceipt {
+        attempt(id, n, outcome)
+    }
+
     fn log() -> Vec<BuildFact> {
         vec![
             BuildFact::Accepted(intent("b1")),
@@ -3287,6 +3308,38 @@ mod tests {
         m.absorb(&[BuildFact::Claim(claim("b1", 3, "mesh1.admin.1")), BuildFact::Attempt(attempt("b1", 3, AttemptOutcome::HandedOff { to: "mesh1.admin.3".into() }))]).await;
         let p = m.read_build(&b1).await.unwrap();
         assert_eq!(p.run_of(p.attempt_to_drive()), 3, "attempt 4 continues run 3");
+    }
+
+    /// CONTRACT (node-recovery.md "Failure and receipts", Q159: the no-retry exception is scoped to an
+    /// adoption abandoned because a live admin answered, never a generic name conflict): in mesh1's lane of
+    /// one Build, the recovery of mesh1.rpc.1's exited birth fails on a name conflict (NameHeld's code), and
+    /// an adoption launch's attempt for mesh1.admin.1's lost birth is abandoned because a live admin
+    /// answered (the same code). The recovery's exit is still owed, so the mesh-primary submits it again;
+    /// the abandoned adoption owes none. Must NOT happen: a recovery that failed on a name conflict dropped
+    /// from the owed exits, or the abandoned adoption retried against a live admin.
+    #[tokio::test]
+    async fn only_an_adoption_abandoned_because_a_live_admin_answered_owes_no_exit() {
+        let m = MemoryBuildStateAdapter::new();
+        let b1 = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
+        let (rpc, admin): (crate::model::PathName, crate::model::PathName) = ("mesh1.rpc.1".parse().unwrap(), "mesh1.admin.1".parse().unwrap());
+        let (rpc_birth, admin_birth) = ((crate::model::NodeId::mint(), crate::model::IncarnationId::mint()), (crate::model::NodeId::mint(), crate::model::IncarnationId::mint()));
+        let lane = || Some("mesh1".to_string());
+        let open = |attempt: u32, reason: AttemptReason, path: &crate::model::PathName, birth: &(crate::model::NodeId, crate::model::IncarnationId)| {
+            BuildFact::Opened(AttemptOpened {
+                mesh: lane(),
+                build_id: b1.clone(),
+                attempt,
+                reason,
+                action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: birth.0.clone(), from_incarnation: birth.1.clone(), backbone: false }),
+                opened_by: "mesh1.admin.2".into(),
+                opened_at_ms: 2,
+            })
+        };
+        let claimed = |attempt: u32| BuildFact::Claim(BuildAttemptClaim { mesh: lane(), ..claim("b1", attempt, "mesh1.admin.2") });
+        let name_held = |attempt: u32| BuildFact::Attempt(BuildAttemptReceipt { mesh: lane(), ..attempt_of("b1", attempt, AttemptOutcome::Failed { reason: "NameHeld".into(), code: rdm_core::outcome::Code::AlreadyExists }) });
+        m.absorb(&[BuildFact::Accepted(intent("b1")), open(1, AttemptReason::Recovery, &rpc, &rpc_birth), claimed(1), name_held(1), open(2, AttemptReason::Adoption, &admin, &admin_birth), claimed(2), name_held(2)]).await;
+        let owed: Vec<(String, u32)> = m.exits_owed(&b1, "mesh1").await.unwrap().into_iter().map(|o| (o.path.to_string(), o.attempt)).collect();
+        assert_eq!(owed, vec![("mesh1.rpc.1".to_string(), 1)], "the recovery failed on a name conflict is owed again; the abandoned adoption is not");
     }
 
     /// CONTRACT (R-BI3: "a caller resubmits it"; one Build in flight): a failed Build may be driven

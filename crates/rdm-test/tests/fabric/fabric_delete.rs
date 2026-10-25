@@ -119,6 +119,11 @@ async fn delete_followed(estate: &Estate, stream: BuildStream, admin: &str) -> S
                             return Ok(again);
                         }
                     }
+                } else if let Ok(again) = estate.carrier_at(&path(admin)).await.reattach(&id).await {
+                    // A delete that ended before its view named a fabric-primary again (its last mesh deleted):
+                    // `admin` itself, the fabric-primary that reported fabric.deleted, answers the reattachment.
+                    *seen.lock().unwrap() = Some(admin.to_string());
+                    return Ok(again);
                 }
                 assert!(tokio::time::Instant::now() < deadline, "{admin} named no fabric-primary that resubmitted Build {id} within {SETTLE:?}");
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -352,42 +357,63 @@ async fn the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next
     nothing_recreated_under_the_delete(&estate.spans(), accepted_ns, &fp);
 }
 
-/// CONTRACT (Q156, its second cell; fabric-recovery.md "Nothing alive": "a person or a script launches a
-/// node-admin at the lost fabric-primary's path.name, with no launcher, given the fabric id, its mesh and
-/// the store root ... It installs the recorded primaries before electing (Q149) ... and restores it as
-/// fabric-primary by step 4 once ReadyForTraffic"; build.md §1: "a successor fabric-primary reads the
-/// delete as the current Build and continues the teardown"): a one-mesh fabric's sole node-admin, the
-/// fabric-primary, accepts fabric.delete and is held by its fault door at mesh1's mesh.delete, its members
-/// still serving, and is killed. A person launches a node-admin at mesh1.admin.1 over a new data dir,
-/// handed the fabric id, mesh1, the store root and the custody. It adopts the fabric, becomes the
-/// fabric-primary and finishes the delete: mesh1 is deleted and fabric.deleted is reported. What must NOT
-/// happen: the launch refused while nothing else can finish the delete, a second fabric, or a member's
-/// runtime left running beside the adopted fabric-primary.
+/// CONTRACT (Q159; fabric-recovery.md "Nothing alive": "A fabric.delete in force when no node-admin was
+/// alive is the current Build (build.md §1): the adoption launch is created at a new path.name of the
+/// node-admin type in an existing, not-yet-deleted mesh, never at the lost fabric-primary's, which the
+/// delete removes; this is the one create a delete admits ... It claims the delete's next attempt, takes by
+/// that claim and one recorded transition the fabric-primary role, the lost mesh's mesh-primary role and
+/// its own mesh's, continues the teardown, reports fabric.deleted while alive, and is then deleted by an
+/// outside caller"): a one-mesh fabric's sole node-admin, the fabric-primary, accepts fabric.delete and is
+/// held by its fault door at mesh1's mesh.delete, its members still serving, and is killed: every admin is
+/// lost during the delete. A person launches a node-admin at mesh1.admin.2, a new path.name in mesh1, over
+/// a new data dir, handed the fabric id, mesh1, the store root and the custody. Its claim of the delete's
+/// next attempt wins; it holds the fabric-primary's roles, finishes the delete (mesh1 deleted once,
+/// fabric.deleted reported) and is the one runtime left, for the outside caller's node.delete. What must
+/// NOT happen: the launch refused while nothing else can finish the delete, a create after the delete's
+/// acceptance other than the launch's own claim of its path.name, a second fabric, or a member's runtime
+/// left running beside the adopted fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "Q156 boundary, open: the adoption claim is refused build-in-progress by mesh1's in-flight row, which the delete's fabric-lane attempt the lost birth claimed holds; Q156's claim before any mutation and Q152's release of a departed claimant's row (departure proof first) need a ruling on their order"]
-async fn the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_that_finishes_the_delete() {
+async fn the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_at_a_new_path_name_that_finishes_the_delete() {
     let shape = [("mesh1", 1, 2)];
-    let mut estate = ready_fabric("the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_that_finishes_the_delete", &shape).await;
+    let mut estate = ready_fabric("the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_at_a_new_path_name_that_finishes_the_delete", &shape).await;
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
     let door = Door::at(&estate, "mesh1.admin.1").await;
     door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": format!("mesh.delete:{mesh_id}")})).await;
+    let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
     let held = door.wait_held("roster").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh1's mesh.delete: {held}");
     let custody = rdm_test::test_certs::custody_of(&estate.bootstrap_data_dir("mesh1"), "mesh1");
+    let store = rdm_test::estate::estate_store_dir(&estate.root);
+    let fabrics_before: Vec<String> = std::fs::read_dir(&store).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
     estate.kill_bootstrap();
 
-    let mut env: Vec<(&str, String)> = vec![("RDM_NODE_NAME", "mesh1.admin.1".into()), ("RDM_FABRIC_ID", estate.fabric_id.clone()), ("RDM_MESH", "mesh1".into())];
+    let mut env: Vec<(&str, String)> = vec![("RDM_NODE_NAME", "mesh1.admin.2".into()), ("RDM_FABRIC_ID", estate.fabric_id.clone()), ("RDM_MESH", "mesh1".into())];
     env.extend(custody);
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let data_dir = estate.root.join("adopted-mesh1.admin.1");
+    let data_dir = estate.root.join("adopted-mesh1.admin.2");
     let adopted = estate.restart_admin_with(&data_dir, &env);
-    assert_eq!(adopted.to_string(), "mesh1.admin.1", "the launch is born at the lost fabric-primary's path.name");
-    let fp = delete_followed(&estate, delete, "mesh1.admin.1").await;
+    assert_eq!(adopted.to_string(), "mesh1.admin.2", "the launch is born at its new path.name");
+    estate.enter(&adopted).await;
+    let fp = delete_followed(&estate, delete, "mesh1.admin.2").await;
+    assert_eq!(fp, "mesh1.admin.2", "the adoption launch is the fabric-primary that finishes the delete");
     let receipts = receipts_at(&estate, &fp, &id).await;
     assert_eq!(count(&receipts, |o| o.starts_with("mesh.delete:"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh1 is deleted once: {:?}", listed(&receipts));
     assert_eq!(count(&receipts, |o| o.starts_with("fabric.delete:"), "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
-    assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !of_node(dir, &fp)).collect::<Vec<_>>(), vec![], "only the adopted fabric-primary {fp} is left, for its separate node.delete");
+    assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !dir.starts_with(&data_dir)).collect::<Vec<_>>(), vec![], "only the adopted fabric-primary {fp} is left, for its separate node.delete");
+    let fabrics_after: Vec<String> = std::fs::read_dir(&store).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    assert_eq!(fabrics_after, fabrics_before, "no second fabric on the store");
     estate.stop().await;
+
+    let spans = estate.spans();
+    let claims: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-adoption-claim").into_iter().filter(|sp| start(sp) >= accepted_ns).collect();
+    assert!(claims.len() == 1 && claims[0]["attributes"]["outcome"] == "won" && claims[0]["attributes"]["build_id"].as_str().is_some_and(|b| id.starts_with(b) || b.starts_with(&id) || b == id), "one claim of the delete's next attempt, won: {claims:#?}");
+    // The one create a delete admits: the launch's own claim of its new path.name.
+    let created: Vec<&Value> = spans
+        .iter()
+        .filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.node_admin.node.create.")) && sp["attributes"]["moment"] != "arrival" && start(sp) >= accepted_ns)
+        .filter(|sp| !(sp["attributes"]["moment"] == "claim" && sp["attributes"]["subject"] == "mesh1.admin.2"))
+        .collect();
+    assert!(created.is_empty(), "nothing is created after the delete's acceptance but the launch itself: {created:?}");
 }

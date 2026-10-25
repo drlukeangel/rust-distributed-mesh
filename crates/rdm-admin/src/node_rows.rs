@@ -1162,6 +1162,16 @@ pub async fn claim_day0_name(storage: &dyn NodesStorage, written: &WrittenRows, 
     own_claim(None, storage, written, name, node_id, "fabric-create", ClaimFor::Create, executable).await
 }
 
+/// The adoption launch's claim of its own new `path.name` under an in-force fabric.delete (Q159;
+/// fabric-recovery.md "Nothing alive": "the adoption launch is created at a new path.name of the
+/// node-admin type in an existing, not-yet-deleted mesh ... this is the one create a delete admits"): the
+/// create door's claim ([`ClaimFor::Create`]), the first write of its birth, operation `fabric-recovery`,
+/// one `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`. Another node's live claim of the
+/// name is `NameHeld` naming it, and nothing is written.
+pub async fn claim_adopted_name(storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId) -> Result<Claimed, RowRefused> {
+    own_claim(None, storage, written, name, node_id, "fabric-recovery", ClaimFor::Create, None).await
+}
+
 /// [`claim_day0_name`] as a child of `boot` without entering `boot` (the boot root is never entered so
 /// background tasks spawned during start do not inherit it and its close time stays at `via-ready`).
 pub async fn claim_day0_name_in_boot(boot: &tracing::Span, storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId, executable: Option<&rdm_core::binding::Binding>) -> Result<Claimed, RowRefused> {

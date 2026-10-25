@@ -494,12 +494,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let (name, node_id, incarnation, supersedes, mesh_addr, seeds) = match (&cfg.launch, &inherited) {
         (Some(l), _) => (l.name.clone(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, l.seeds.clone()),
         (None, Some(lost)) if adoption.is_some() => {
-            // The adoption launch: a new birth with its own node.id, at the lost fabric-primary's path.name.
-            // Its claim of the fabric-recovery attempt is its first recovery mutation (Q156); a lost claim
-            // refuses the start by name, having written nothing else.
+            // The adoption launch: a new birth with its own node.id, at the lost fabric-primary's path.name,
+            // or, under an in-force fabric.delete, at its own new path.name (Q159). Its claim of the
+            // fabric-recovery attempt, or of the delete's next attempt, is its first recovery mutation (Q156);
+            // a lost claim refuses the start by name, having written nothing else.
             let node_id = NodeId::mint();
             let a = adoption.as_ref().expect("an adoption launch read its store");
-            let claimed = super::adoption::claim(&lost.name, &node_id, a, &*journal, &*mesh_claims, &attempt_contexts, crate::admin::local_now_ms())
+            let at = match (&a.delete, &cfg.adopt) {
+                (Some(_), Some(new)) => new.clone(),
+                _ => lost.name.clone(),
+            };
+            let claimed = super::adoption::claim(&at, &node_id, a, &*journal, &*mesh_claims, &attempt_contexts, crate::admin::local_now_ms())
                 .instrument(boot.clone())
                 .await
                 .map_err(|e| format!("refusing to start: {e}"))?;
@@ -509,7 +514,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             contacts.retain(|c| c.node_id != lost.node_id);
             contacts.sort_by_key(|c| (c.name.mesh != lost.name.mesh, c.name.to_string()));
             let seeds = contacts.iter().filter_map(|c| c.gossip_addr().and_then(|a| a.ip_addrs().next().map(|ip| (a.id.to_string(), *ip)))).chain(cfg.seeds.iter().cloned()).collect();
-            (lost.name.clone(), node_id, incarnation.clone(), None, SocketAddr::new(cfg.api_bind.ip(), 0), seeds)
+            (at, node_id, incarnation.clone(), None, SocketAddr::new(cfg.api_bind.ip(), 0), seeds)
         }
         (None, Some(own)) => {
             let node_id = NodeId::mint();
@@ -727,8 +732,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             fabric: crate::model::Fabric { id: cfg.fabric_id.clone(), name: cfg.fabric.clone(), status: crate::model::ScopeStatus::Pending, provider: provider.kind() },
         };
         let checked = super::adoption::check(claimed, &answers).instrument(boot.clone()).await;
-        let released = match checked {
+        let released: Result<(), super::adoption::Refused> = match checked {
             Err(refusal) => Err(refusal),
+            // Under an in-force fabric.delete (Q159) nothing of the lost birth is released or re-created: the
+            // launch claims its own new path.name, the one create a delete admits; the teardown deletes the
+            // lost birth with its mesh.
+            Ok(_) if claimed.under_delete.is_some() => super::adoption::take_new_name(&name, &node_id, &*nodes_storage, &caches.nodes)
+                .instrument(boot.clone())
+                .await
+                .map_err(|e| super::adoption::Refused { reason: e, answered: name.to_string() }),
             Ok(_) => async {
                 let lost = &claimed.lost;
                 let own_runtime = nodes_storage.runtime(&lost.node_id, &lost.incarnation_id).await.map_err(storage_err)?;
@@ -741,7 +753,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes, &*journal).await
             }
             .instrument(boot.clone())
-            .await,
+            .await
+            .map_err(|e| super::adoption::Refused { reason: e, answered: claimed.lost.name.to_string() }),
         };
         if let Err(refusal) = released {
             if let Err(e) = super::adoption::fail(claimed, &*journal, &*mesh_claims, &refusal).await {
@@ -2025,7 +2038,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         build_id = %held_build,
                                                     )
                                                     .in_scope(|| tracing::info!("ready for traffic: every held birth's runtime is adoptable"));
-                                                    if let Some((claimed, builds, claims)) = &adopted {
+                                                    // Under a delete the claimed attempt is the delete's own: the teardown ends it (Q159).
+                                                    if let Some((claimed, builds, claims)) = adopted.as_ref().filter(|(c, _, _)| c.under_delete.is_none()) {
                                                         if let Err(e) = super::adoption::complete(claimed, &node_id, &**builds, &**claims).await {
                                                             tracing::warn!(node = %me, error = %e, "the adoption launch's attempt could not be completed");
                                                         }
@@ -2278,7 +2292,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         recovery.clone(),
                                                         handover_slot.clone(),
                                                         cfg.fabric_primary || cfg.adopt.is_some(),
-                                                    ),
+                                                    )
+                                                    .adopted_at_new_path(adoption_claim.as_ref().is_some_and(|c| c.under_delete.is_some())),
                                                 );
                                                 {
                                                     let (

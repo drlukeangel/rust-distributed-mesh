@@ -1017,3 +1017,66 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
     d.stop(live);
     println!("trace_id={}", claim["trace_id"].as_str().unwrap_or(""));
 }
+
+impl Prepared {
+    /// fabric.delete accepted on this root after its root Build, so the delete is in force; with `dead`,
+    /// mesh1's row is Dead too, its mesh.delete done: no not-yet-deleted mesh remains.
+    fn delete_in_force(&self, dead: bool) {
+        use rdm_admin::storage::MeshStorage as _;
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
+            let writer = rdm_admin::model::IncarnationId::mint();
+            let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &self.dir.join("fixture"), &writer).await.unwrap();
+            let delete = rdm_admin::build_state::BuildAccepted {
+                build_id: rdm_admin::build::BuildId::mint(),
+                topology: rdm_admin::accepted::FabricTopology { fabric: "fabric1".into(), meshes: Default::default(), bindings: None },
+                submitted_change: Some(rdm_admin::accepted::TopologyChange::DeleteFabric),
+                submitted_at_ms: now_ms(),
+            };
+            rdm_admin::build_state::accept(&journal, &delete, None, "mesh1.admin.1", "fabric.delete").await.unwrap();
+            if dead {
+                let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &writer).await.unwrap();
+                let mut m = meshes.mesh_named("mesh1").await.unwrap().expect("mesh1's row");
+                m.dead = true;
+                meshes.put_mesh(&m).await.unwrap();
+            }
+        });
+    }
+}
+
+/// CONTRACT (Q159; fabric-recovery.md "Nothing alive": "the adoption launch is created at a new path.name of
+/// the node-admin type in an existing, not-yet-deleted mesh, never at the lost fabric-primary's, which the
+/// delete removes"): on a prepared root whose one admin, the fabric-primary, is lost while a fabric.delete
+/// is in force, an adoption launch at the lost fabric-primary's path.name is refused by name, naming the
+/// delete and the path.name the delete removes, before it claims anything. Must NOT happen: a claim, or
+/// the lost birth's row touched.
+#[test]
+fn under_a_fabric_delete_an_adoption_launch_at_the_lost_fabric_primarys_path_name_is_refused_by_name() {
+    let root = Prepared::adoptable("under_a_fabric_delete_an_adoption_launch_at_the_lost_path_name");
+    root.delete_in_force(false);
+    let mut a = adopter(&root.dir, "adopter", &root.store, &root.fabric_id.to_string(), &minted_custody());
+    let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch at the lost path.name under a delete did not end");
+    assert!(!status.success(), "{status:?} {err}");
+    assert!(err.contains("refusing to start") && err.contains("fabric.delete") && err.contains("mesh1.admin.1") && err.contains("new path.name"), "the refusal names the delete and the path.name it removes: {err}");
+    assert!(spans_of(&root.dir, a.pid).iter().all(|s| s["name"] != ADOPTION_CLAIM), "the refused launch claimed");
+    let (at, _) = root.row_and_node("");
+    assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::ReadyForTraffic)), "the lost birth's row is untouched");
+}
+
+/// CONTRACT (Q159; fabric-recovery.md "Nothing alive": "If no not-yet-deleted mesh remains, the remaining
+/// work is the dead fabric-primary's own node.delete from outside, and nothing is created"): on a prepared
+/// root whose fabric.delete is in force and whose one mesh is deleted, an adoption launch at a new
+/// path.name is refused by name, naming the outside caller's node.delete, before it claims or writes
+/// anything. Must NOT happen: a claim, a row written for the launch, or the lost birth's row touched.
+#[test]
+fn under_a_fabric_delete_with_no_mesh_left_an_adoption_launch_creates_nothing() {
+    let root = Prepared::adoptable("under_a_fabric_delete_with_no_mesh_left_an_adoption_launch");
+    root.delete_in_force(true);
+    let mut a = adopter(&root.dir, "adopter", &root.store, &root.fabric_id.to_string(), &[minted_custody(), vec![("RDM_NODE_NAME", "mesh1.admin.2".into())]].concat());
+    let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch with no mesh left did not end");
+    assert!(!status.success(), "{status:?} {err}");
+    assert!(err.contains("refusing to start") && err.contains("no not-yet-deleted mesh remains") && err.contains("node.delete from outside") && err.contains("nothing is created"), "the refusal names the outside caller's node.delete: {err}");
+    assert!(spans_of(&root.dir, a.pid).iter().all(|s| s["name"] != ADOPTION_CLAIM && s["name"] != "rdm.node_admin.node.create.via-node-row"), "the refused launch claimed or created");
+    let (at, _) = root.row_and_node("");
+    assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::ReadyForTraffic)), "the lost birth's row is untouched");
+}

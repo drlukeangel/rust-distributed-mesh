@@ -119,6 +119,9 @@ pub struct FabricRecoveryDoor {
     /// node-admin on the fabric-primary's data dir"): at the fabric-primary's path.name with no admin to
     /// run the workflow ("Nothing alive": "It is the only node, the fabric-primary"), it restores itself.
     launched_to_recover: bool,
+    /// Whether that launch is the adoption under an in-force fabric.delete, at its own new path.name
+    /// (Q159): it runs the workflow when no admin does, whatever the lost birth's path.name.
+    launched_at_new_path: bool,
     /// The birth whose workflow runs here now.
     running: Mutex<Option<crate::model::IncarnationId>>,
 }
@@ -127,7 +130,14 @@ impl FabricRecoveryDoor {
     /// A door for the admin these name.
     #[allow(clippy::too_many_arguments)]
     pub fn new(me: PathName, me_id: NodeId, topology: Arc<tokio::sync::RwLock<Topology>>, book: DigestBook, records: Arc<crate::admin::Records>, looker: crate::seat_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool) -> Self {
-        Self { me, me_id, topology, book, records, looker, recovery, handover, launched_to_recover, running: Mutex::new(None) }
+        Self { me, me_id, topology, book, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None) }
+    }
+
+    /// This door's admin is the adoption launch under an in-force fabric.delete, at its own new path.name
+    /// (Q159), when `yes`.
+    pub fn adopted_at_new_path(mut self, yes: bool) -> Self {
+        self.launched_at_new_path = yes;
+        self
     }
 
     /// Whether this admin runs the workflow `fr`: its executor, or the admin a person launched at the
@@ -136,7 +146,7 @@ impl FabricRecoveryDoor {
         let me = self.held_name();
         // Launched on the fabric-primary's own data dir, its path.name is the fabric-primary's, whether or
         // not this admin knows the lost birth's.
-        fr.executor.as_ref() == Some(&me) || (self.launched_to_recover && fr.executor.is_none() && fr.at.as_ref().is_none_or(|at| *at == me) && self.me_id != fr.target.node_id)
+        fr.executor.as_ref() == Some(&me) || (self.launched_to_recover && fr.executor.is_none() && (self.launched_at_new_path || fr.at.as_ref().is_none_or(|at| *at == me)) && self.me_id != fr.target.node_id)
     }
 
     fn held_name(&self) -> PathName {

@@ -136,6 +136,12 @@ mesh-primary is the submitter that resubmits by `build_id`. A member unheard dur
 to that workflow: its Build ends Failed, and the mesh-primary's next tick investigates the member again
 and submits the recovery.
 
+One failed attempt owes no exit and is never submitted again: an adoption launch's claimed attempt
+abandoned because the lost birth or a live node-admin answered before its first mutation
+([fabric recovery](fabric-recovery.md#nothing-alive)), closed `Failed` with NameHeld's code; the birth it
+named, or the admin that answered, is alive. Only that abandonment is exempt: a recovery that fails on
+any other name conflict owes its exit, and the mesh-primary submits it again (Q159).
+
 ### Lost data dir (`R-FM2`)
 
 Gone versus broken is decided from the filesystem error on the inherited `data_dir`, never guessed. An

@@ -166,8 +166,7 @@ No node-admin is alive, the fabric's other nodes alive or not. Nothing inside th
 - Nothing ran mesh.delete or fabric.delete, so the fabric and its meshes were never deleted.
   The launched node-admin reuses the fabric id and each MeshId it reads from the store, and
   mints none.
-- A fabric.delete in force when nothing was alive is the current Build (build.md §1): the launched
-  node-admin reads it from the store and continues the teardown; it revives nothing.
+- A fabric.delete in force when no node-admin was alive is the current Build (build.md §1): the adoption launch is created at a new path.name of the node-admin type in an existing, not-yet-deleted mesh, never at the lost fabric-primary's, which the delete removes; this is the one create a delete admits, and ordinary recovery creates none. It claims the delete's next attempt, takes by that claim and one recorded transition the fabric-primary role, the lost mesh's mesh-primary role and its own mesh's, continues the teardown, reports fabric.deleted while alive, and is then deleted by an outside caller (fabric-delete.md). If no not-yet-deleted mesh remains, the remaining work is the dead fabric-primary's own node.delete from outside, and nothing is created. It restarts nothing of the interrupted topology and revives nothing whose deletion receipt is durable; a claim and a provider's exit evidence release no mesh row by themselves. While a node-admin lives, the adoption is refused by name and that admin's executor continues (Q159).
 - A channel with no active listener ends by definition. A mesh's channel is derived from its
   MeshId ([a mesh is an entity](../node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it)),
   and it is created again under that id by its first listener. It is never resumed.
