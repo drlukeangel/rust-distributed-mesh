@@ -130,20 +130,36 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   refusal, so that one provider holds the whole truth at every instant (Luke: unblocked, a failed
   change leaves data on both sides and nothing to go back to).
   - **Freeze.** Each node, on its step-3 command, stops appending to the old provider and holds every
-    write it would make from then on as owed, as a Node RPC message is owed until acknowledged: a
-    connection fact it observes, a row its mesh-primary would write, a property update that arrives.
-    Nothing is refused and nothing is lost; the writer's cache already holds the object, only the
-    append waits, and a caller's command that would write is answered when the freeze lifts. No claim
-    is decided during the freeze: a claimant waits, as its write does.
+    write it would make from then on as owed. Nothing is refused, and nothing is acknowledged before
+    it is durable: a caller's command that would write, and a node's declaration its mesh-primary
+    would record, are answered only when their write has landed, under the one delivery rule, so the
+    caller and the declarer retry until then and a frozen writer that dies has acknowledged nothing it
+    did not write (Q54's rule, an Applied declaration durable before its answer, holds through the
+    freeze). A fact a node observes rather than is asked for, a connection event, cannot be retried
+    by anyone, so during the freeze the node appends it to a pending log in its own data dir, beside
+    `node-key`, fsynced, and replays it at the release or at its restart; the log is empty outside a
+    freeze. No claim is decided during the freeze: a claimant waits, as its write does (Architect 1).
   - **Tails.** The frozen node appends to the new provider its own lines written after the `op` step 2
     recorded for it, a short tail it alone wrote, in its own order, so no copied line ever lands after a
     newer one; the tail is final because nothing writes the old provider after the freeze. It writes
-    its own row and reports.
-  - **Commit.** When every node has reported, the fabric-primary writes the Fabric row on the new
-    provider: `storage_provider` the new one, the old appended to `previous_storage_providers`. That
-    one row is the commit point and the claim cutover: before it nothing but copies and tails has
-    reached the new provider, so a failure anywhere reverts (R-SP13); after it every node has its tail
-    on the new provider and only the release remains.
+    its own row and reports. The fabric-primary then makes the completeness pass that the commit
+    waits on, whether or not every node reported: it reads the old provider's final position per
+    writer, every writer that ever wrote, and for any writer whose last `op` on the new provider is
+    behind it, a writer that died after the copy and before its tail, or whose tail failed, it copies
+    the difference itself; and it transfers the claims, which are not lines: for every name the old
+    provider holds and every in-flight row, it takes the same on the new provider naming the same
+    holder, and reads both sets back equal. Only when every writer's last `op` and every held claim
+    match on both providers does it commit (Architect 1).
+  - **Commit.** When the completeness pass holds, the fabric-primary writes the Fabric row on the new
+    provider: `storage_provider` the new one, the old appended to `previous_storage_providers`, the
+    line's `op` the fabric-primary's own and its record naming the Build. That one row is the commit
+    point and the claim cutover: before it nothing but copies, tails and claims has reached the new
+    provider, so a failure anywhere reverts (R-SP13); after it every writer's lines and every claim
+    are on the new provider and only the release remains. The commit is known only by reading it: a
+    successor, or the fabric-primary itself after a lost reply, reads the new provider's Fabric row
+    for this Build's commit line; the line found is committed, no line with the provider answering is
+    not committed and reverts, and a provider not answering is neither, so the freeze holds until it
+    answers. A timeout never means "not committed" (Architect 1).
   - **Release.** Each node swaps its handle to the new provider, appends its owed writes there in its
     own order, answers its owed commands, and closes the old provider. Claims are decided in the new
     provider from here. A node that fails to release keeps its writes owed and retries; it is on the
@@ -248,8 +264,19 @@ So a running fabric cannot move to another storage, and no node can be asked whi
 - **Failure.** A failure before the commit, in step 1, the copy, the freeze or the tails, fails the
   Build, lifts the freeze on the old provider with the owed writes landing there, closes the new
   provider and leaves the Fabric row unchanged, every line still there; a node failing its release
-  after the commit retries it with its writes still owed and the Build still in progress;
-  `fabric.delete` mid-change interrupts the Build and both providers' records stay.
+  after the commit retries it with its writes still owed and the Build still in progress; the commit
+  written and its reply lost, then the fabric-primary dead: the successor finds the commit line and
+  releases, never reverts; the new provider not answering at the commit: the freeze holds, nothing
+  reverts, until it answers; `fabric.delete` mid-change interrupts the Build and both providers'
+  records stay.
+- **Writers that die.** A node that appends after the copy and dies before its tail: the
+  completeness pass copies its remaining lines and the commit waits on it; a held name and an active
+  attempt cross the cutover with the same holders, read back equal on both providers before the
+  commit, and the name is not free on the new provider; a frozen node dying after observing a
+  connection event finds the event in its pending log at restart and replays it; a frozen
+  mesh-primary dying with a declaration unanswered: the declarer retries and the row is written once,
+  on whichever provider the fabric is then on; a caller's config update during the freeze is
+  answered once, after its line landed.
 - **The previous provider.** After the commit it holds every line to the last tail, nothing more is
   written to it, RDM removes nothing of it, and a go-back Build copies into it only the lines it
   lacks.
