@@ -344,7 +344,7 @@ async fn a_claim_by_a_deleted_birth_is_refused_by_name_and_takes_nothing() {
     assert!(matches!(&refused, BuildClaimReply::NotReady { reason } if reason.contains("deleted birth") && reason.contains("mesh1.admin.2")), "a deleted birth's claim is refused by name: {refused:?}");
     assert_eq!(claims.in_flight("mesh1").await.unwrap(), None, "a deleted birth takes no in-flight row");
     let p = builds.read_build(&id).await.unwrap();
-    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.1")), "nothing of the refused claim is on the Build log: {p:?}");
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, None), "nothing of the refused claim is on the Build log: attempt 2 stays unclaimed: {p:?}");
 
     rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::ReadyForTraffic)).await.unwrap();
     let won = build_claim::decide_claim(&me, &builds, &claims, &contexts, &claim, "mesh1", Some((&rows, &me_id))).await;
