@@ -1283,12 +1283,16 @@ impl StatusAuthority {
         self.pending_held(&node.node_id, &node.name, birth, false).await
     }
 
-    /// The declared-state rows of every birth this admin holds that `digest_view` says is superseded: the
-    /// view holds a later incarnation of the node (a superseding birth), holds the node departed
-    /// (node.deleted), or holds the birth's path.name under another node_id (a recovery's new node,
-    /// node-recovery.md). Each such birth's keys are tombstoned, blind, and then forgotten in memory.
-    /// A birth the view holds at the same incarnation keeps its rows, however long it is silent, and
-    /// so does a birth the view does not hold at all whose path no other node holds (nothing is
+    /// The declared-state rows of every birth this admin holds that is superseded: the node rows say
+    /// another node holds the birth's path.name (a recovery's new node, node-recovery.md) or say the
+    /// birth's row released its name (node-delete.md), or `digest_view` holds a later incarnation of
+    /// the node (a superseding birth) or holds the node departed (node.deleted). Which birth holds a
+    /// path.name is the records' answer, never the view's (Q197; node-identity-and-state.md §2.3 "the
+    /// deleted row releases the `path.name`"): a birth whose row holds its name live holds it, whatever
+    /// digests of other births the view still holds there ([`Self::superseded_on_rows`]). Each such
+    /// birth's keys are tombstoned, blind, and then forgotten in memory. A birth the rows hold current
+    /// and the view holds at the same incarnation keeps its rows, however long it is silent, and so
+    /// does a birth the view does not hold at all that the rows do not show superseded (nothing is
     /// proven of it).
     pub async fn drop_superseded(&self, digest_view: &rdm_transport::topology::DigestView) {
         let me_name = digest_view.held_path_name().unwrap_or_else(|| self.me.clone());
@@ -1299,16 +1303,14 @@ impl StatusAuthority {
             for row in declared.operations.values() { births.entry((row.node_id.clone(), row.incarnation_id.clone())).or_insert(Some(row.name.clone())); }
             births.into_iter().collect()
         };
-        // Who the view holds at each path.name now.
-        let at_path: std::collections::HashMap<crate::model::PathName, NodeId> = digest_view.all().into_iter().map(|d| (d.node.name, d.node.node_id)).collect();
         for ((node_id, incarnation), name) in held {
-            let (why, by) = match digest_view.get(node_id.as_str()) {
-                Some((d, _)) if d.node.incarnation != incarnation => ("new-incarnation", d.node.incarnation.to_string()),
-                Some(_) => continue,
-                None if digest_view.is_deleted(node_id.as_str()) => ("node-deleted", String::new()),
-                None => match name.as_ref().and_then(|n| at_path.get(n)) {
-                    Some(other) if *other != node_id => ("new-node", other.to_string()),
-                    _ => continue,
+            let (why, by) = match self.superseded_on_rows(&node_id, name.as_ref()).await {
+                Some(on_rows) => on_rows,
+                None => match digest_view.get(node_id.as_str()) {
+                    Some((d, _)) if d.node.incarnation != incarnation => ("new-incarnation", d.node.incarnation.to_string()),
+                    Some(_) => continue,
+                    None if digest_view.is_deleted(node_id.as_str()) => ("node-deleted", String::new()),
+                    None => continue,
                 },
             };
             // The birth's declared states and operation effects leave its node record in one write.
@@ -1329,6 +1331,29 @@ impl StatusAuthority {
             };
             span.in_scope(|| tracing::info!("a superseded birth's declared-state keys are tombstoned: nothing of that birth is folded back"));
         }
+    }
+
+    /// What the node rows say of `node_id`'s hold on its path.name (Q197: the birth at a path is the one
+    /// the records say is current, stopped or not; node-identity-and-state.md §2.3 "the deleted row
+    /// releases the `path.name`"). `None`: its own row holds a name live (a rename's old name is another
+    /// node's to claim), or it holds no row and no other node's live claim holds `name`, or a row could
+    /// not be read (nothing is proven). `("new-node", by)`: its row released its name, or it holds none,
+    /// and `by`'s live claim holds the name (a claim whose node's row released it is no hold,
+    /// [`crate::node_rows::take_name`]). `("node-deleted", "")`: its row released its name and no live
+    /// claim holds it since.
+    async fn superseded_on_rows(&self, node_id: &NodeId, name: Option<&crate::model::PathName>) -> Option<(&'static str, String)> {
+        let storage = &*self.nodes_storage;
+        let own = storage.node(node_id).await.ok()?;
+        if own.as_ref().is_some_and(|r| !crate::node_rows::released_its_name(r)) {
+            return None;
+        }
+        let at = own.as_ref().map(|r| r.name.clone()).or_else(|| name.cloned())?;
+        if let Some(by) = storage.name_claim(&at).await.ok()?.filter(|by| by != node_id) {
+            if !storage.node(&by).await.ok()?.is_some_and(|r| crate::node_rows::released_its_name(&r)) {
+                return Some(("new-node", by.to_string()));
+            }
+        }
+        own.map(|_| ("node-deleted", String::new()))
     }
 
     /// Q47: the mesh-primary records lifecycle state only from the exact node's ordered frames.
@@ -3126,10 +3151,11 @@ mod tests {
     }
 
     /// CONTRACT (node-recovery.md "Steps": "node.create at the same path.name", "New: node.id"): a
-    /// recovered birth is superseded by a NEW node at its path.name. Once the view holds that path
-    /// under another node_id, the exited birth's declared-state rows are tombstoned (via-new-node),
-    /// whether or not the view still holds the exited birth's departure (that is held only
-    /// DEPARTED_RETENTION; an admin that rehydrates later holds none).
+    /// recovered birth is superseded by a NEW node at its path.name. Once the node rows hold that path
+    /// under another node_id (the exited birth's row released it, the new node's claim holds it; Q197:
+    /// the records, never the view, say which birth holds a path), the exited birth's declared-state
+    /// rows are tombstoned (via-new-node), whether or not the view still holds the exited birth's
+    /// departure (that is held only DEPARTED_RETENTION; an admin that rehydrates later holds none).
     /// Must NOT happen: the exited birth's rows folded back for ever because its node_id is gone.
     #[tokio::test]
     async fn a_birth_whose_path_the_view_holds_under_a_new_node_leaves_no_declared_state_row_behind() {
@@ -3188,6 +3214,10 @@ mod tests {
         let mut recovered = exited.clone();
         recovered.node_id = NodeId::mint();
         recovered.incarnation_id = Some(IncarnationId::mint());
+        // The records of the recovery: the exited birth's row is Deleted (it released the path.name),
+        // and the new node's row claims the name over it.
+        assert!(crate::node_rows::write_deleted(&*status, &authority.caches.nodes, &exited.name, &exited.node_id, None).await.is_ok(), "the exited birth's Deleted row is written");
+        assert_eq!(crate::node_rows::write_record(&*status, &crate::storage::NodeRow::new(recovered.name.clone(), recovered.node_id.clone(), recovered.status)).await, Ok(Ok(())), "the new node's row claims the path.name");
         let digest_view = rdm_transport::topology::DigestView::default();
         digest_view.record(digest_of(&recovered, recovered.incarnation_id.clone().unwrap()));
         let capture = crate::span_capture::Capture::new("i143-3051-recovered-rows");
