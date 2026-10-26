@@ -56,13 +56,6 @@ async fn current_build(estate: &Estate) -> String {
     id
 }
 
-/// Build `id` as the Build log of the admin `admin` holds it, `None` when that log holds no fact of it.
-async fn build_at(estate: &Estate, admin: &str, id: &str) -> Option<Value> {
-    let carrier = estate.carrier_at(&admin.parse().unwrap_or_else(|e| panic!("{admin} is not a path.name: {e:?}"))).await;
-    let facts = build_log::log_read(&carrier, id).await.ok()?;
-    build_log::projection(&facts, id).map(|b| serde_json::to_value(b).expect("a Build view serializes"))
-}
-
 fn paths(build: &Value, mesh: &str) -> Vec<String> {
     build["topology"]["meshes"][mesh]["nodes"].as_array().map(|a| a.iter().filter_map(|p| p.as_str().map(String::from)).collect()).unwrap_or_default()
 }
@@ -112,14 +105,12 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let late = nodes.iter().find(|n| n["name"] == "mesh1.admin.3").cloned().unwrap();
     let late_path = late["name"].as_str().unwrap().parse().unwrap();
     assert_eq!(estate.fabric_view_at(&late_path).await.expect("the late admin answers fabric.get").build_id.as_deref(), Some(c.as_str()));
-    // The late admin held the Build's acceptance before Ready; the completion is a later fact the fabric-primary
-    // appended and broadcast once, which every admin absorbs (`fabric_builds.rs` module docs: progress waits on no
-    // gossip), so the read awaits that fact as step 1 does.
+    // The late admin reads the Build records from the store root as every admin does (Q185); the completion is a
+    // later record the fabric-primary appended, so the read awaits it as step 1 does.
     let held = build_log::build_fact(&estate.carrier_at(&late_path).await, &c, "complete", Duration::from_secs(60), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
     let held = serde_json::to_value(held).expect("a Build view serializes");
     assert_eq!(held["state"], "complete", "{held}");
     assert_eq!(paths(&held, "mesh1").len(), 6, "the late admin holds the accepted Build's topology: {held}");
-    assert!(build_at(&estate, "mesh1.admin.3", &a).await.is_none(), "no completed Build history reaches it");
 
     // 5. A held birth that falls silent is not drift.
     let held_pid = estate.pid_of("mesh1.rpc.3").await;
