@@ -3120,3 +3120,14 @@ dcfbd6933 (the soak driver resubmits on build-in-progress).
 - Q185 (Luke): the Build gossip channel is removed. Building: q185-build-channel-removal, lane e6s8.
 - Q182 landed aa3967715 (a node answering no command is silent); 141 told.
 - Q177 decided by build.md §9: `Wiring.hooks` is no application door; the code conforms (owner: the lead, queued after Q183/Q185).
+
+## e12.s99 — 2026-10-26: Q185 landed, the Build gossip channel removed
+
+Landed 2e270943b..3e69b2623 (lane e6s8): every admin reads the Build records from the store root;
+the channel, its catch-up, `publish_fabric` and their cells are removed (declared in the commits);
+gossip.md, build.md and CLAUDE.md lose the channel. Q186 (Luke): a successor's creates name the
+stored Build's executables (build_takeover). The land gate's red cert_renewal cell read a member's
+view and its peer's digest without waiting: the root admin's start is faster without the channel
+(523 ms against 1814 ms) and the members' first ready declaration is owed again; the cell now waits
+for both (3e69b2623). Flame: f1330d5a5b25ccdf3f8efeb31cfa97cf (the successor claims and converges the
+delete Build from the store; no Build channel span). 141 told.
