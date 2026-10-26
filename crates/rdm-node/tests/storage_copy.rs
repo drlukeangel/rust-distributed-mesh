@@ -341,6 +341,9 @@ impl ProviderLines for LosesAnswers {
     async fn claims(&self) -> Result<Vec<Claim>, StorageError> {
         self.inner.claims().await
     }
+    async fn remove_claim(&self, claim: &Claim) -> Result<bool, StorageError> {
+        self.inner.remove_claim(claim).await
+    }
     async fn insert_claim(&self, claim: &Claim) -> Result<ClaimTaken, StorageError> {
         let taken = self.inner.insert_claim(claim).await?;
         if self.inserted.fetch_add(1, Ordering::SeqCst) + 1 == self.lose_claim {

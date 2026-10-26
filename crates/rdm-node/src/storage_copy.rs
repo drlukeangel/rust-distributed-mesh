@@ -136,6 +136,9 @@ pub trait ProviderLines: Send + Sync {
     async fn claims(&self) -> Result<Vec<Claim>, StorageError>;
     /// Insert `claim` as written: `Won` when this insert wrote it, else `Held` with the standing content.
     async fn insert_claim(&self, claim: &Claim) -> Result<ClaimTaken, StorageError>;
+    /// Let go of `claim` while it stands as written: a claim the new provider holds as the fabric left
+    /// it, in place of which the old provider's is taken. `Ok(false)`: nothing as written stood.
+    async fn remove_claim(&self, claim: &Claim) -> Result<bool, StorageError>;
     /// The content of the claim `kind` of `name`, `None` when it does not stand: how a storage change's
     /// `commit` record is read (storage.md §2 step 4).
     async fn claim(&self, kind: ClaimKind, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
@@ -255,14 +258,7 @@ async fn copy_in(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn Pr
         stores.push((store, from, to.len()));
     }
     let held = source.claims().await.map_err(CopyError::Storage)?;
-    let present = destination.claims().await.map_err(CopyError::Storage)?;
-    for claim in &present {
-        match held.iter().find(|c| c.kind == claim.kind && c.name == claim.name) {
-            None => return Err(refused(run, format!("it holds the {} {:?}, which the old provider does not", claim.kind, claim.name))),
-            Some(c) if c.content != claim.content => return Err(refused(run, format!("its {} {:?} names another claimant than the old provider's", claim.kind, claim.name))),
-            Some(_) => {}
-        }
-    }
+    let mut present = destination.claims().await.map_err(CopyError::Storage)?;
     for (store, from, verified) in &stores {
         for line in &from[*verified..] {
             destination.append_line(*store, line).await.map_err(CopyError::Storage)?;
@@ -270,6 +266,14 @@ async fn copy_in(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn Pr
             *copied += 1;
         }
     }
+    // Claims are not history: they are what stands. Every node is blocked, so what the old provider
+    // holds stands; a claim the new provider holds that the old one does not, or holds for another
+    // claimant, is the new provider's as the fabric left it (a provider a later Build names again):
+    // it is let go, and the old provider's taken in its place.
+    for claim in present.iter().filter(|p| !held.iter().any(|c| c.kind == p.kind && c.name == p.name && c.content == p.content)) {
+        destination.remove_claim(claim).await.map_err(CopyError::Storage)?;
+    }
+    present.retain(|p| held.iter().any(|c| c.kind == p.kind && c.name == p.name && c.content == p.content));
     for claim in held.iter().filter(|c| !present.iter().any(|p| p.kind == c.kind && p.name == c.name)) {
         match destination.insert_claim(claim).await.map_err(CopyError::Storage)? {
             ClaimTaken::Won => {}
@@ -368,6 +372,26 @@ impl ProviderLines for FileProviderLines {
             ClaimKind::FabricName => return Ok(self.claims().await?.into_iter().find(|c| c.kind == kind && c.name == name).map(|c| c.content)),
         };
         self.locks.read(lock, name).await
+    }
+
+    async fn remove_claim(&self, claim: &Claim) -> Result<bool, StorageError> {
+        let lock = match claim.kind {
+            ClaimKind::Name => LockKind::Name,
+            ClaimKind::InFlight => LockKind::InFlight,
+            ClaimKind::Commit => LockKind::Commit,
+            ClaimKind::FabricName => {
+                let (dir, path, content) = (self.names.clone(), self.name_path(&claim.name), claim.content.clone());
+                return crate::blocking::blocking_io(move || match std::fs::read(&path) {
+                    Ok(held) if held == content => crate::record_store::remove_file(&dir, &path),
+                    Ok(_) => Ok(false),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                    Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
+                })
+                .await;
+            }
+        };
+        let content = claim.content.clone();
+        self.locks.release(lock, &claim.name, move |held| held == content.as_slice()).await
     }
 
     async fn insert_claim(&self, claim: &Claim) -> Result<ClaimTaken, StorageError> {
