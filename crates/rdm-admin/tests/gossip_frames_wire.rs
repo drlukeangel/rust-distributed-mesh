@@ -158,6 +158,9 @@ fn topology() -> FabricTopology {
     m2.set_spec(NodeSpec { storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(broker) }).unwrap();
     m2.set_spec(NodeSpec { storage_persistence: StorageMeta::Ephemeral, ..NodeSpec::default_for(rpc) }).unwrap();
     t.meshes.insert("mesh2".into(), m2);
+    // A Build message carries no topology_storage_provider (Q184: it is written in the records, like the
+    // executable), so the shape that round-trips names none.
+    t.topology_storage_provider = None;
     t
 }
 
@@ -476,9 +479,11 @@ fn twelve_node_topology() -> FabricTopology {
     t
 }
 
-/// `t` with no entry naming an executable, tags or a config: what a Build message carries of it.
+/// `t` with no entry naming an executable, tags or a config, and no `topology_storage_provider` (Q184: it is
+/// written in the records, like the executable): what a Build message carries of it.
 fn without_executables(t: &FabricTopology) -> FabricTopology {
     let mut t = t.clone();
+    t.topology_storage_provider = None;
     for m in t.meshes.values_mut() {
         for c in m.spec_by_path.values_mut() {
             c.executable = None;
