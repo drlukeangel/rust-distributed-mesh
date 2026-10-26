@@ -2868,6 +2868,7 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-gossip",
+ "libc",
  "rdm-client",
  "rdm-core",
  "rdm-transport",
