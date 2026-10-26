@@ -16,7 +16,7 @@
 use crate::topology::{Frame, MAX_FRAME};
 use rdm_core::{LifecycleOp, MeshDigest};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 pub use rdm_core::PublisherId;
@@ -56,16 +56,50 @@ pub struct Full {
     digests: BTreeMap<String, MeshDigest>,
     in_flight: BTreeMap<OpKey, LifecycleOp>,
     departed: BTreeMap<String, LifecycleOp>,
+    /// The members' node ids by endpoint key, kept in step with `digests` ([`Full::member_at`]).
+    by_endpoint: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Full {
     /// A full from its members, the overlays still open and the departures retained; each keyed by
     /// its node id.
     pub fn new(digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>) -> Self {
+        let digests: BTreeMap<String, MeshDigest> = digests.into_iter().map(|d| (d.node.node_id.to_string(), d)).collect();
+        let mut by_endpoint: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (id, d) in &digests {
+            by_endpoint.entry(d.node.endpoint_id.0.clone()).or_default().insert(id.clone());
+        }
         Self {
-            digests: digests.into_iter().map(|d| (d.node.node_id.to_string(), d)).collect(),
+            digests,
             in_flight: in_flight.into_iter().map(|o| (o.key(), o)).collect(),
             departed: departed.into_iter().map(|o| (o.node_id.to_string(), o)).collect(),
+            by_endpoint,
+        }
+    }
+
+    /// The member at endpoint key `endpoint_id`: of two at one key, the first by node id, as a
+    /// scan of [`Self::digests`] finds it. A map read.
+    pub fn member_at(&self, endpoint_id: &str) -> Option<&MeshDigest> {
+        self.by_endpoint.get(endpoint_id).and_then(|ids| ids.first()).and_then(|id| self.digests.get(id))
+    }
+
+    /// Hold `d` as its node id's member, its endpoint key listed.
+    fn put(&mut self, d: MeshDigest) {
+        let id = d.node.node_id.to_string();
+        self.unlist(&id);
+        self.by_endpoint.entry(d.node.endpoint_id.0.clone()).or_default().insert(id.clone());
+        self.digests.insert(id, d);
+    }
+
+    /// Take `id`'s endpoint key out of the listing.
+    fn unlist(&mut self, id: &str) {
+        let Some(held) = self.digests.get(id) else { return };
+        let key = held.node.endpoint_id.0.clone();
+        if let Some(ids) = self.by_endpoint.get_mut(&key) {
+            ids.remove(id);
+            if ids.is_empty() {
+                self.by_endpoint.remove(&key);
+            }
         }
     }
 
@@ -101,7 +135,7 @@ impl Full {
 
     /// This full without any member's load.
     pub fn without_loads(&self) -> Full {
-        Full { digests: self.digests.iter().map(|(k, d)| (k.clone(), without_load(d))).collect(), in_flight: self.in_flight.clone(), departed: self.departed.clone() }
+        Full { digests: self.digests.iter().map(|(k, d)| (k.clone(), without_load(d))).collect(), in_flight: self.in_flight.clone(), departed: self.departed.clone(), by_endpoint: self.by_endpoint.clone() }
     }
 
     /// The complete difference from this full to `new`, loads omitted (gossip.md §3.3: one delta
@@ -137,9 +171,10 @@ impl Full {
     pub fn apply(&mut self, delta: &Delta) {
         for d in &delta.changed {
             self.in_flight.retain(|_, o| !((o.is_stop() || o.is_restart()) && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
-            self.digests.insert(d.node.node_id.to_string(), d.clone());
+            self.put(d.clone());
         }
         for id in &delta.removed {
+            self.unlist(id);
             self.digests.remove(id);
         }
         for o in &delta.in_flight {
@@ -747,6 +782,12 @@ impl SnapshotReceiver {
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
+    }
+
+    /// The member at endpoint key `endpoint_id` in the first source, by mesh name, that lists one
+    /// ([`Full::member_at`]): what a scan of [`Self::sources`] finds, without copying a source.
+    pub fn member_at(&self, endpoint_id: &str) -> Option<MeshDigest> {
+        self.held.iter().filter_map(|(m, h)| h.full.member_at(endpoint_id).map(|d| (m, d))).min_by(|a, b| a.0.cmp(b.0)).map(|(_, d)| d.clone())
     }
 
     /// Every complete source held, as `(mesh, publisher, version, full)`.

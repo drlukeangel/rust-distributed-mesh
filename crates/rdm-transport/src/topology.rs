@@ -3111,9 +3111,7 @@ impl TopologyView {
     /// from the backbone. The projection is the authoritative member record (gossip.md §3.1); the
     /// heartbeat view is not read. `None` when no projection this node holds names the key.
     pub fn projected_member_at(&self, endpoint: &str) -> Option<MeshDigest> {
-        [&self.view.mesh_rx, &self.view.backbone_rx]
-            .into_iter()
-            .find_map(|rx| rx.lock().unwrap().sources().into_iter().find_map(|(_, _, _, full)| full.digests().into_iter().find(|d| d.node.endpoint_id.0 == endpoint)))
+        [&self.view.mesh_rx, &self.view.backbone_rx].into_iter().find_map(|rx| rx.lock().unwrap().member_at(endpoint))
     }
 
     /// The version this node holds of `mesh` from its Mesh channel and the publisher it is of.
@@ -3944,13 +3942,100 @@ impl Fence {
     }
 }
 
+/// One member as the view holds it: its latest digest, when it was heard and how.
+type HeldMember = (MeshDigest, Instant, Heard);
+
+/// The members a [`DigestView`] holds by NodeId, with each birth also found by its endpoint key and
+/// by its path.name. Every write goes through [`Self::insert`] and [`Self::remove`], which keep the
+/// two lookups in step with the map; a read of the map is a read of it as before (`Deref`).
+///
+/// Two births can share an endpoint key (a node re-born over its inherited data dir keeps the key
+/// and takes a new NodeId) or a path.name (a successor at the same path.name while its predecessor is
+/// still held). Each key lists its births in the order the view first held each birth, or held its
+/// changed birth (what ticks [`DigestView::birth_changes`]); a fresher digest of the same birth keeps
+/// its place. A lookup answers the last of them: the birth the view took most recently.
+#[derive(Debug, Default)]
+struct HeldMembers {
+    map: HashMap<String, HeldMember>,
+    by_endpoint: HashMap<String, Vec<String>>,
+    by_name: HashMap<rdm_core::PathName, Vec<String>>,
+}
+
+impl std::ops::Deref for HeldMembers {
+    type Target = HashMap<String, HeldMember>;
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl HeldMembers {
+    /// Hold `entry` for `node_id`, as `HashMap::insert`.
+    fn insert(&mut self, node_id: String, entry: HeldMember) -> Option<HeldMember> {
+        let same_birth = self.map.get(&node_id).is_some_and(|(held, _, _)| held.node == entry.0.node);
+        if !same_birth {
+            self.unlist(&node_id);
+            self.by_endpoint.entry(entry.0.node.endpoint_id.0.clone()).or_default().push(node_id.clone());
+            self.by_name.entry(entry.0.node.name.clone()).or_default().push(node_id.clone());
+        }
+        self.map.insert(node_id, entry)
+    }
+
+    /// Drop `node_id`, as `HashMap::remove`.
+    fn remove(&mut self, node_id: &str) -> Option<HeldMember> {
+        self.unlist(node_id);
+        self.map.remove(node_id)
+    }
+
+    /// Take `node_id` out of the lookups of the birth held for it.
+    fn unlist(&mut self, node_id: &str) {
+        let Some((held, _, _)) = self.map.get(node_id) else { return };
+        if let Some(ids) = self.by_endpoint.get_mut(&held.node.endpoint_id.0) {
+            ids.retain(|id| id != node_id);
+            if ids.is_empty() {
+                self.by_endpoint.remove(&held.node.endpoint_id.0);
+            }
+        }
+        if let Some(ids) = self.by_name.get_mut(&held.node.name) {
+            ids.retain(|id| id != node_id);
+            if ids.is_empty() {
+                self.by_name.remove(&held.node.name);
+            }
+        }
+    }
+
+    /// The member held at endpoint key `endpoint_id` (see the type's note for two births at one key).
+    fn at_endpoint(&self, endpoint_id: &str) -> Option<&HeldMember> {
+        self.by_endpoint.get(endpoint_id).and_then(|ids| ids.last()).and_then(|id| self.map.get(id))
+    }
+
+    /// The member held at `name` (see the type's note for two births at one path.name).
+    fn at_name(&self, name: &rdm_core::PathName) -> Option<&HeldMember> {
+        self.by_name.get(name).and_then(|ids| ids.last()).and_then(|id| self.map.get(id))
+    }
+
+    /// Set the held hash of `node_id`'s digest: `true` when it moved. No lookup key moves.
+    fn set_held_hash(&mut self, node_id: &str, held_hash: [u8; 32]) -> bool {
+        let Some((d, _, _)) = self.map.get_mut(node_id) else { return false };
+        let moved = d.held_hash != held_hash;
+        d.held_hash = held_hash;
+        moved
+    }
+
+    /// Restart every member's silence at `now`. No lookup key moves.
+    fn restart_silence(&mut self, now: Instant) {
+        for (_, at, _) in self.map.values_mut() {
+            *at = now;
+        }
+    }
+}
+
 /// The latest digest held per logical node: when it was taken, and how it was heard.
 #[derive(Debug, Clone)]
 pub struct DigestView {
     /// Each member's latest digest, when it was heard and how. An own-mesh birth's `status` here is
     /// never read: its one status is `member_statuses`'s, and every read that hands out a digest
     /// takes it from there ([`Self::hand_out`]).
-    inner: Arc<Mutex<HashMap<String, (MeshDigest, Instant, Heard)>>>,
+    inner: Arc<Mutex<HeldMembers>>,
     /// Ticks when a member's birth (`MeshDigest::node`) is first held or
     /// changes, or a departure is accepted; a fresher digest of the same
     /// birth does not tick.
@@ -5335,14 +5420,7 @@ impl DigestView {
     pub(crate) fn set_own_held_hash(&self, held_hash: [u8; 32]) {
         let Some(own) = self.own.lock().unwrap().clone() else { return };
         let changed = {
-            let mut inner = self.inner.lock().unwrap();
-            if let Some((d, _, _)) = inner.get_mut(&own) {
-                let moved = d.held_hash != held_hash;
-                d.held_hash = held_hash;
-                moved
-            } else {
-                false
-            }
+            self.inner.lock().unwrap().set_held_hash(&own, held_hash)
         };
         if changed {
             self.heard.send_modify(|v| *v += 1);
@@ -5522,9 +5600,7 @@ impl DigestView {
     /// stop heard nothing while it was off it, so no member's silence is measured from before.
     pub fn restart_silence(&self) {
         let now = Instant::now();
-        for (_, at, _) in self.inner.lock().unwrap().values_mut() {
-            *at = now;
-        }
+        self.inner.lock().unwrap().restart_silence(now);
         for (_, at) in self.projected.lock().unwrap().values_mut() {
             *at = now;
         }
@@ -5575,6 +5651,36 @@ impl DigestView {
     pub fn get_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
         self.woken();
         let mut held = self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)));
+        self.hand_out(held.iter_mut().map(|(d, _)| d));
+        held
+    }
+
+    /// The birth held at endpoint key `endpoint_id`, as [`Self::get`] answers for its NodeId: a map
+    /// read. Two births at one key (a node re-born over its inherited data dir): the one this view
+    /// took most recently ([`HeldMembers`]).
+    pub fn get_by_endpoint(&self, endpoint_id: &str) -> Option<(MeshDigest, Duration)> {
+        self.get_by_endpoint_at(endpoint_id, Instant::now())
+    }
+
+    /// [`Self::get_by_endpoint`] at `now`.
+    pub fn get_by_endpoint_at(&self, endpoint_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
+        self.woken();
+        let mut held = self.inner.lock().unwrap().at_endpoint(endpoint_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)));
+        self.hand_out(held.iter_mut().map(|(d, _)| d));
+        held
+    }
+
+    /// The birth held at `name`, as [`Self::get`] answers for its NodeId: a map read. Two births at
+    /// one path.name (a successor while its predecessor is still held): the one this view took most
+    /// recently ([`HeldMembers`]).
+    pub fn get_by_path_name(&self, name: &rdm_core::PathName) -> Option<(MeshDigest, Duration)> {
+        self.get_by_path_name_at(name, Instant::now())
+    }
+
+    /// [`Self::get_by_path_name`] at `now`.
+    pub fn get_by_path_name_at(&self, name: &rdm_core::PathName, now: Instant) -> Option<(MeshDigest, Duration)> {
+        self.woken();
+        let mut held = self.inner.lock().unwrap().at_name(name).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)));
         self.hand_out(held.iter_mut().map(|(d, _)| d));
         held
     }
@@ -8221,6 +8327,163 @@ mod tests {
         let resolved = view.digest_view.mesh_primary("mesh1").expect("the seat holder's digest from the own-mesh topology read is held in the digest view");
         assert_eq!(resolved.node.node_id, primary.node.node_id);
         assert_eq!(resolved.status, MemberStatus::ReadyForTraffic, "the projected status from v1 is preserved");
+    }
+
+    /// A birth of `name` at endpoint key `key`, digest number `seq`.
+    fn digest_at(name: &str, key: &str, id: &NodeId, inc: &IncarnationId, seq: u64) -> MeshDigest {
+        let mut d = digest(id, inc, None, MemberStatus::ReadyForTraffic, seq);
+        d.node.name = name.parse().unwrap();
+        d.node.endpoint_id = EndpointId(key.into());
+        d
+    }
+
+    /// The lookups by endpoint key and by path.name answer what a scan of `all()` finds: for every
+    /// key one birth holds, that birth's digest and the silence `get` gives its NodeId; for a key two
+    /// births hold, one of them; for a key no held birth has, nothing.
+    fn assert_lookups_agree(view: &DigestView, gone: &[(&str, &str)]) {
+        let now = Instant::now();
+        let all = view.all();
+        for d in &all {
+            let key = d.node.endpoint_id.0.as_str();
+            let at_key: Vec<&MeshDigest> = all.iter().filter(|x| x.node.endpoint_id.0 == key).collect();
+            let (by_key, silent) = view.get_by_endpoint_at(key, now).expect("a held birth is found by its endpoint key");
+            assert!(at_key.contains(&&by_key), "the endpoint lookup answers a birth a scan finds at {key}");
+            if at_key.len() == 1 {
+                assert_eq!(view.get_at(by_key.node.node_id.as_str(), now), Some((by_key.clone(), silent)), "the endpoint lookup answers what get answers for its NodeId");
+            }
+            let at_name: Vec<&MeshDigest> = all.iter().filter(|x| x.node.name == d.node.name).collect();
+            let (by_name, silent) = view.get_by_path_name_at(&d.node.name, now).expect("a held birth is found by its path.name");
+            assert!(at_name.contains(&&by_name), "the path.name lookup answers a birth a scan finds at {}", d.node.name);
+            if at_name.len() == 1 {
+                assert_eq!(view.get_at(by_name.node.node_id.as_str(), now), Some((by_name, silent)), "the path.name lookup answers what get answers for its NodeId");
+            }
+        }
+        for (name, key) in gone {
+            if !all.iter().any(|d| d.node.endpoint_id.0 == *key) {
+                assert!(view.get_by_endpoint(key).is_none(), "no held birth has the key {key}");
+            }
+            if !all.iter().any(|d| d.node.name.to_string() == *name) {
+                assert!(view.get_by_path_name(&name.parse().unwrap()).is_none(), "no held birth has the path.name {name}");
+            }
+        }
+    }
+
+    /// CONTRACT: a birth is found by its endpoint key and by its path.name with a map read that
+    /// answers what a scan of `all()` finds, through every write to the view: a digest heard, a
+    /// newer one, a forwarded, topology or join copy, a stop and the node.joined that ends it (which
+    /// renames the birth), a successor at the same path.name with a new key or over the inherited
+    /// key, and the departure, stop or mesh deletion that removes a birth.
+    #[test]
+    fn a_birth_is_found_by_its_endpoint_key_and_its_path_name_through_every_write() {
+        let view = DigestView::default();
+        let (a, a_inc) = (NodeId::mint(), IncarnationId::mint());
+        let (b, b_inc) = (NodeId::mint(), IncarnationId::mint());
+        let (c, c_inc) = (NodeId::mint(), IncarnationId::mint());
+        let gone = [("mesh1.rpc.1", "key-a"), ("mesh1.rpc.2", "key-b"), ("mesh1.rpc.3", "key-c"), ("mesh1.rpc.4", "key-c2"), ("mesh1.rpc.9", "key-z")];
+        assert_lookups_agree(&view, &gone);
+
+        // A digest heard, then a newer one of the same birth.
+        assert!(view.record_at(digest_at("mesh1.rpc.1", "key-a", &a, &a_inc, 1), Instant::now()));
+        assert_lookups_agree(&view, &gone);
+        assert!(view.record_at(digest_at("mesh1.rpc.1", "key-a", &a, &a_inc, 2), Instant::now()));
+        assert_eq!(view.get_by_endpoint("key-a").unwrap().0.digest_seq, 2, "the newer digest is the one found");
+        assert_eq!(view.get_by_path_name(&"mesh1.rpc.1".parse().unwrap()).unwrap().0.digest_seq, 2);
+        assert_lookups_agree(&view, &gone);
+
+        // A forwarded, a topology and a join copy.
+        assert!(view.record_forwarded_at(digest_at("mesh1.rpc.2", "key-b", &b, &b_inc, 1), Instant::now()));
+        assert_lookups_agree(&view, &gone);
+        assert!(view.record_topology_at(digest_at("mesh1.rpc.2", "key-b", &b, &b_inc, 2), Instant::now()));
+        assert_lookups_agree(&view, &gone);
+        assert!(view.record_joined(digest_at("mesh1.rpc.3", "key-c", &c, &c_inc, 1)));
+        assert_lookups_agree(&view, &gone);
+
+        // A stop removes the birth; the node.joined that ends it holds it again, at the name it carries.
+        assert!(view.stopped(op_at("mesh1.rpc.3", &c, &c_inc, "node.stop:mesh1.rpc.3")));
+        assert!(view.get_by_endpoint("key-c").is_none(), "a stopped birth is not found by its key");
+        assert!(view.get_by_path_name(&"mesh1.rpc.3".parse().unwrap()).is_none(), "nor by its path.name");
+        assert_lookups_agree(&view, &gone);
+        assert!(view.joined(&op_at("mesh1.rpc.4", &c, &c_inc, "node.start:mesh1.rpc.4")));
+        assert_eq!(view.get_by_path_name(&"mesh1.rpc.4".parse().unwrap()).unwrap().0.node.node_id, c, "held again at the name node.joined gives it");
+        assert!(view.get_by_path_name(&"mesh1.rpc.3".parse().unwrap()).is_none(), "and no longer at the old one");
+        assert_lookups_agree(&view, &gone);
+
+        // A successor at the same path.name over a newly allocated data dir: a new NodeId and key.
+        let (a2, a2_inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(view.record_at(digest_at("mesh1.rpc.1", "key-a2", &a2, &a2_inc, 1), Instant::now()));
+        assert_eq!(view.get_by_path_name(&"mesh1.rpc.1".parse().unwrap()).unwrap().0.node.node_id, a2, "of two births at one path.name, the one taken most recently");
+        assert_eq!(view.get_by_endpoint("key-a").unwrap().0.node.node_id, a, "the predecessor is still found by its own key");
+        // A newer heartbeat of the predecessor keeps its place: the successor is still the one found.
+        assert!(view.record_at(digest_at("mesh1.rpc.1", "key-a", &a, &a_inc, 3), Instant::now()));
+        assert_eq!(view.get_by_path_name(&"mesh1.rpc.1".parse().unwrap()).unwrap().0.node.node_id, a2);
+        assert_lookups_agree(&view, &gone);
+
+        // A successor over the inherited data dir: a new NodeId at the same key and path.name.
+        let (b2, b2_inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(view.record_at(digest_at("mesh1.rpc.2", "key-b", &b2, &b2_inc, 1), Instant::now()));
+        assert_eq!(view.get_by_endpoint("key-b").unwrap().0.node.node_id, b2, "of two births at one key, the one taken most recently");
+        assert_eq!(view.get_by_path_name(&"mesh1.rpc.2".parse().unwrap()).unwrap().0.node.node_id, b2);
+        assert_lookups_agree(&view, &gone);
+
+        // The predecessors' departures leave the successors found.
+        assert!(view.depart_at(op_at("mesh1.rpc.1", &a, &a_inc, "node.delete:mesh1.rpc.1"), Instant::now()));
+        assert!(view.get_by_endpoint("key-a").is_none(), "a departed birth is not found by its key");
+        assert_eq!(view.get_by_path_name(&"mesh1.rpc.1".parse().unwrap()).unwrap().0.node.node_id, a2);
+        assert!(view.depart_at(op_at("mesh1.rpc.2", &b, &b_inc, "node.delete:mesh1.rpc.2"), Instant::now()));
+        assert_eq!(view.get_by_endpoint("key-b").unwrap().0.node.node_id, b2, "the successor at the inherited key is still found");
+        assert_lookups_agree(&view, &gone);
+
+        // The mesh's deletion departs every birth left.
+        view.depart_mesh_births("mesh1", "b9", 1, 9);
+        assert!(view.all().is_empty());
+        for (name, key) in gone {
+            assert!(view.get_by_endpoint(key).is_none() && view.get_by_path_name(&name.parse().unwrap()).is_none(), "nothing is found once the mesh is deleted");
+        }
+    }
+
+    /// What `projected_member_at` found before the endpoint index: a scan of every source, by mesh
+    /// name, of its members by node id.
+    fn scanned_member_at(rx: &SnapshotReceiver, key: &str) -> Option<MeshDigest> {
+        rx.sources().into_iter().find_map(|(_, _, _, full)| full.digests().into_iter().find(|d| d.node.endpoint_id.0 == key))
+    }
+
+    /// CONTRACT: a source projection's member is found by its endpoint key with a map read that
+    /// answers what a scan of the sources finds (the first source by mesh name, of two members at one
+    /// key the first by node id), through every move of a source: its install, a delta that adds a
+    /// member, moves a member's key or removes one, and a load-free copy.
+    #[test]
+    fn a_projected_member_is_found_by_its_endpoint_key_as_a_scan_of_the_sources_finds_it() {
+        let p = |mesh: &str| PublisherId { node: format!("{mesh}.admin.1"), incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
+        let (p1, p2) = (p("mesh1"), p("mesh2"));
+        let chunk = |mesh: &str, publisher: &PublisherId, digests: Vec<MeshDigest>| Chunk { mesh: mesh.into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests, in_flight: vec![], departed: vec![] };
+        let (a, b, c) = (NodeId::mint(), NodeId::mint(), NodeId::mint());
+        let inc = IncarnationId::mint();
+        let keys = ["key-a", "key-b", "key-c", "key-a2", "key-z"];
+        let mut rx = SnapshotReceiver::default();
+        let agree = |rx: &SnapshotReceiver| {
+            for key in keys {
+                assert_eq!(rx.member_at(key), scanned_member_at(rx, key), "the endpoint lookup answers what a scan finds at {key}");
+            }
+        };
+        agree(&rx);
+        assert!(matches!(rx.take_chunk(chunk("mesh2", &p2, vec![digest_at("mesh2.rpc.1", "key-a", &a, &inc, 1)])), Taken::Installed(_)));
+        assert!(matches!(rx.take_chunk(chunk("mesh1", &p1, vec![digest_at("mesh1.rpc.1", "key-a", &b, &inc, 1), digest_at("mesh1.rpc.2", "key-b", &c, &inc, 1)])), Taken::Installed(_)));
+        assert_eq!(rx.member_at("key-a").unwrap().node.node_id, b, "the first source by mesh name");
+        agree(&rx);
+        // A delta that adds a member at a held key, moves a member's key and removes one.
+        let changed = vec![digest_at("mesh1.rpc.3", "key-b", &a, &inc, 1), digest_at("mesh1.rpc.1", "key-a2", &b, &inc, 2)];
+        assert!(matches!(rx.take_delta("mesh1", &p1, 1, 2, &Delta { changed, ..Delta::default() }), Moved::Applied { .. }));
+        assert_eq!(rx.member_at("key-a").unwrap().node.node_id, a, "the moved key is found in the next source");
+        agree(&rx);
+        assert!(matches!(rx.take_delta("mesh1", &p1, 2, 3, &Delta { removed: vec![c.to_string(), b.to_string()], ..Delta::default() }), Moved::Applied { .. }));
+        agree(&rx);
+        // A load-free copy finds what its full finds.
+        let full = rx.held_full("mesh1").unwrap().clone();
+        for key in keys {
+            assert_eq!(full.without_loads().member_at(key).map(|d| d.node.node_id.clone()), full.member_at(key).map(|d| d.node.node_id.clone()));
+        }
+        rx.remove("mesh2");
+        agree(&rx);
     }
 }
 
