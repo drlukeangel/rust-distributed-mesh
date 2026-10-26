@@ -32,10 +32,9 @@ page that owns each step is linked at the step.
    first Build ([ready root](../build.md#101-ready-root--deadlock-guard)),
    and creates the fabric row and its own mesh's row. Every other mesh's row is created by that
    mesh's primary.
-4. When every mesh the accepted Build names is ready-for-traffic, the fabric-primary runs the
-   open-traffic check-ins ([States](states.md#setting-a-state)).
-5. [Ready-for-traffic](fabric-ready-for-traffic.md): every node has checked in; the application is
-   told once and opens client traffic.
+4. When every mesh the accepted Build names is ready-for-traffic, the fabric-primary sets the fabric
+   [ready-for-traffic](fabric-ready-for-traffic.md) (Q174).
+5. The application is told once (`on_fabric_ready`) and opens client traffic.
 6. Emit `fabric.created`. The call ends here.
 
 The statuses are set only by the fabric-primary and carried down, fabric-primary to
@@ -63,7 +62,7 @@ sequenceDiagram
     F->>M: node.create (first node-admin of each other mesh)
     M-->>F: node.created
     Note over F: every mesh ready-for-traffic
-    Note over F,M: open-traffic check-ins, ready-for-traffic
+    Note over F: ready-for-traffic; on_fabric_ready
     F-->>P: fabric.created
 ```
 

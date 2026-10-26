@@ -90,25 +90,34 @@ pub struct DriftHold {
 }
 
 /// Adds an app's own Node RPC ops to the server a node-admin builds, before it is built: the app clones
-/// the gate of its [`BeforeReadyHook`](crate::before_ready::BeforeReadyHook) into each
+/// the gate of its [`NodeHooks`](crate::node_hooks::NodeHooks) into each
 /// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
 pub type ServeApp = Box<dyn FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder + Send>;
 
-/// The state fields of the `traffic_opened` notice: `fabric_id`, `build_id`, `attempt`,
-/// `operation = open-traffic:<fabric_id>` and the observability context
-/// (lifecycles/fabric-ready-for-traffic.md).
+/// What `on_fabric_ready` is told: the fabric, the accepted Build and attempt whose change made it
+/// ready-for-traffic, and that attempt's observability context (fabric-node-hooks.md, Q175).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrafficOpened {
+pub struct FabricReadyCtx {
     /// The fabric.
     pub fabric_id: rdm_core::FabricId,
-    /// The accepted Build the checklist belongs to.
+    /// The accepted Build whose change made the fabric ready-for-traffic.
     pub build_id: String,
-    /// The Build attempt that holds the checklist.
+    /// Its attempt.
     pub attempt: u32,
-    /// `open-traffic:<fabric_id>`.
-    pub operation: String,
     /// The attempt's observability context.
     pub context: CallContext,
+}
+
+/// What `on_mesh_ready` is told: the fabric and the mesh that is ready-for-traffic (fabric-node-hooks.md,
+/// Q175).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshReadyCtx {
+    /// The fabric.
+    pub fabric_id: rdm_core::FabricId,
+    /// The mesh's id.
+    pub mesh_id: rdm_core::MeshId,
+    /// The mesh's name.
+    pub mesh: String,
 }
 
 /// The owner is about to record a lifecycle command frame; executable decorations may hold it.
@@ -118,22 +127,27 @@ pub trait CommandFrameSeam: Send + Sync {
     async fn before_stopped(&self, operation: &rdm_core::LifecycleOp);
 }
 
-/// The one notice the application gets after the open-traffic checklist completed and the fabric is
-/// ready-for-traffic. It gates nothing.
-pub type TrafficOpenedNotice = Arc<dyn Fn(TrafficOpened) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+/// `on_fabric_ready`: the notice the fabric-primary calls once the fabric is ready-for-traffic. Fire
+/// and forget: it gates nothing.
+pub type FabricReadyNotice = Arc<dyn Fn(FabricReadyCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// The application hooks the fabric-primary calls ([fabric and node hooks](../../../docs/architecture/fabric-node-hooks.md)).
+/// `on_mesh_ready`: the notice a mesh-primary calls once its mesh's ready-for-traffic is on its Mesh
+/// record. Fire and forget: it gates nothing.
+pub type MeshReadyNotice = Arc<dyn Fn(MeshReadyCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// The application's notices a node-admin calls ([fabric and node hooks](../../../docs/architecture/fabric-node-hooks.md)).
 #[derive(Default, Clone)]
 pub struct FabricHooks {
-    /// `traffic_opened`: optional, because it gates nothing. Its state fields name the
-    /// `open-traffic:<fabric_id>` operation.
-    pub traffic_opened: Option<TrafficOpenedNotice>,
+    /// `on_mesh_ready`: optional, because it gates nothing.
+    pub on_mesh_ready: Option<MeshReadyNotice>,
+    /// `on_fabric_ready`: optional, because it gates nothing.
+    pub on_fabric_ready: Option<FabricReadyNotice>,
 }
 
 impl FabricHooks {
     /// The hooks of an embedding with no application work: no notice.
     pub fn no_app_work() -> Self {
-        Self { traffic_opened: None }
+        Self { on_mesh_ready: None, on_fabric_ready: None }
     }
 }
 
@@ -148,11 +162,8 @@ pub struct Wiring {
     /// [`crate::admin::Running::connections`], and a registration naming RDM's own Node RPC or gossip
     /// ALPN refuses the admin's start by name (fabric-certs.md §On a connection).
     pub alpns: Vec<rdm_transport::connections::Alpn>,
-    /// The application hooks the fabric-primary calls.
+    /// The application's notices a node-admin calls.
     pub fabric_hooks: FabricHooks,
-    /// The embedding's own action a node completes before it checks in to an open-traffic checklist.
-    /// `None`: no action.
-    pub state_actions: Option<Arc<dyn crate::fabric_status::StateActions>>,
     /// Asked by the Build topic's NeighborUp catch-up before it sends.
     pub catch_up_seam: Option<Arc<dyn CatchUpSeam>>,
     /// Asked by the leave before each announcement publish.
@@ -176,10 +187,10 @@ pub struct Wiring {
     pub provider: Option<Wrap<dyn DeploymentProvider>>,
     /// Wraps the lifecycle events a retirement publishes.
     pub lifecycle_events: Option<Wrap<dyn LifecycleEvents>>,
-    /// The app's `before_ready` hook, run after the join is accepted, the topology installed
+    /// The app's `pre_node_ready` hook, run after the join is accepted, the topology installed
     /// and the mesh channel joined. The product passes none: the hook passes at once and the admin's
     /// Ready waits on nothing of the app's.
-    pub before_ready: crate::before_ready::BeforeReadyHook,
+    pub node_hooks: crate::node_hooks::NodeHooks,
     /// The app's own ops, added to the server before it is built.
     pub serve_app: Option<ServeApp>,
     /// Hooks registered, in order, before the lifecycle registry is built.

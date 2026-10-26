@@ -1,4 +1,4 @@
-//! Reserved positions are refused before any fact, status, seat or carrier path runs.
+//! Reserved positions are refused before any fact, status or seat path runs.
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, Primary, LifecycleOp};
 use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Backbone, Frame, TopologyView};
 use std::time::Duration;
@@ -52,13 +52,6 @@ fn reserved(kind: Kind) {
         let births = receiver.digest_view.birth_changes();
         let overlays = receiver.digest_view.overlay_changes();
         let before = (*seats.borrow(), *births.borrow(), *overlays.borrow());
-        let carried = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let calls = carried.clone();
-        receiver.set_completion_carrier(std::sync::Arc::new(move |_| {
-            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            tracing::info_span!("cell.reserved.update.via-carrier").in_scope(|| tracing::info!("a reserved receipt invoked the completion carrier"));
-            rdm_transport::topology::CompletionCarry::Carried
-        }));
         let op = LifecycleOp { build_id: "reserved-receive".into(), attempt: 1, operation: "node.delete:mesh1.admin.2".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.admin.2".parse().unwrap(), event_at_rafka_ms: 1 };
         let unknown = iroh::SecretKey::generate().public();
         let frame = match kind {
@@ -85,7 +78,6 @@ fn reserved(kind: Kind) {
         assert_eq!(receiver.primaries().fabric(), Some(holder.clone()));
         assert_eq!(receiver.primaries().mesh("mesh1"), Some(holder));
         assert_eq!((*seats.borrow(), *births.borrow(), *overlays.borrow()), before);
-        assert_eq!(carried.load(std::sync::atomic::Ordering::SeqCst), 0, "reserved receipt never invokes the carrier");
         assert!(receiver.location_view().addrs(unknown).is_empty(), "a reserved address declaration installs no contact");
         assert!(!receiver.digest_view.is_deleted(node_id.as_str()));
         assert!(receiver.digest_view.in_flight().is_empty());
@@ -97,12 +89,12 @@ fn reserved(kind: Kind) {
     for via in ["mesh-channel", "backbone"] {
         assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.reject.via-reserved" && s["attributes"]["position"] == kind.named().1.to_string() && s["attributes"]["frame"] == kind.named().0 && s["attributes"]["via"] == via).count(), 1, "each channel refuses the reserved frame by name");
     }
-    assert!(!spans.iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-lifecycle-frame" || s["name"] == "cell.reserved.update.via-carrier"), "reserved positions emit no ordinary apply or carrier span");
+    assert!(!spans.iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-lifecycle-frame"), "reserved positions emit no ordinary apply span");
 }
 
-/// CONTRACT: reserved position 11 installs no fact and invokes no carrier.
+/// CONTRACT: reserved position 11 installs no fact.
 #[test] fn reserved_connections_deleting() { reserved(Kind::ConnectionsDeleting); }
-/// CONTRACT: reserved position 14 installs no completion and invokes no carrier.
+/// CONTRACT: reserved position 14 installs no completion.
 #[test] fn reserved_connections_deleted() { reserved(Kind::ConnectionsDeleted); }
 /// CONTRACT: reserved position 12 changes no lifecycle or routing state.
 #[test] fn reserved_leaving() { reserved(Kind::Leaving); }

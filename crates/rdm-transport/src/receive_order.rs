@@ -43,11 +43,6 @@
 //! NodeId is refused by the existing deleted-identity rule, and an unheld terminal fact applies
 //! regardless of unrelated traffic. Event timestamps never order or expire that fact.
 //!
-//! State hooks use [`HookReceipts`] shared by the view's local apply path and all channels. Each
-//! full operation identity has one ordinary receive span and at most one carrier invocation;
-//! repeats emit `via-duplicate`. These receipts drive no checklist or lifecycle. Only the admin's
-//! existing open-checklist view decides whether an ordinary check-in is carried (Q21: x).
-//!
 //! The envelope refuses reserved types before domain decoding. [`refuse_reserved`] also protects
 //! in-process domain calls for Concern (position 10, Q23), NodeConnectionsDeleting (11),
 //! NodeLeaving (12), NodeLeft (13), NodeConnectionsDeleted (14), and NewFabricPrimary (15).
@@ -272,48 +267,6 @@ pub(crate) fn reject_lifecycle_version(frame: &str, subject: &str, held: u64, of
         "rdm.mesh.topology.reject.via-stale",
         frame, subject, held_key = %format!("topology_version={held}"), frame_key = %format!("topology_version={offered}"),
     ).in_scope(|| tracing::info!("the lifecycle frame's carried projection revision is below the held one: refused"));
-}
-
-/// One hook's identity; authored evidence time, publisher path and forwarding metadata do not
-/// distinguish another operation fact. The exact subject birth and kind always do.
-#[derive(Debug, PartialEq, Eq, Hash)]
-struct HookIdentity {
-    kind: &'static str,
-    fabric_id: rdm_core::FabricId,
-    build_id: String,
-    attempt: u32,
-    operation: String,
-    node_id: rdm_core::NodeId,
-    incarnation: rdm_core::IncarnationId,
-}
-
-/// Hook effects already applied during this receiver's lifetime. This records receipt identity,
-/// never command admission or state completion; no gossip receipt can change a checklist.
-#[derive(Default)]
-pub(crate) struct HookReceipts {
-    applied: HashSet<HookIdentity>,
-}
-
-impl HookReceipts {
-    /// Admit each full operation identity once, before its span and carrier effect. Non-hook
-    /// frames are untouched. The caller serializes admission across local apply and all channels.
-    pub(crate) fn admit(&mut self, f: &Frame) -> bool {
-        let (kind, hook) = match f.data() {
-            Frame::TrafficOpening { hook, .. } => ("traffic-opening", hook),
-            Frame::TrafficOpened { hook, .. } => ("traffic-opened", hook),
-            _ => return true,
-        };
-        if self.applied.insert(HookIdentity { kind, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt, operation: hook.operation.clone(), node_id: hook.node_id.clone(), incarnation: hook.incarnation.clone() }) {
-            return true;
-        }
-        tracing::info_span!(
-            "rdm.mesh.topology.update.via-duplicate",
-            frame = kind,
-            identity = %format!("{kind} {} {} {} {} {}/{}", hook.fabric_id, hook.build_id, hook.attempt, hook.operation, hook.node_id, hook.incarnation),
-            outcome = "ignored",
-        ).in_scope(|| tracing::info!("the state hook identity was already applied: ignored"));
-        false
-    }
 }
 
 /// Exact applied counters as inclusive runs: quiet anti-entropy does not allocate a scoped

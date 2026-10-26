@@ -1,14 +1,14 @@
-//! The before_ready probe: a testkit-only app on op `0x74` that stands in for a product's
-//! ProjectionPull. [`PullServer`] is an authority's side (rows behind a [`BeforeReadyGate`]),
-//! [`TestBeforeReady`] is a node's `before_ready` that pulls those rows and applies them once
+//! The pre_node_ready probe: a testkit-only app on op `0x74` that stands in for a product's
+//! ProjectionPull. [`PullServer`] is an authority's side (rows behind a [`PreNodeReadyGate`]),
+//! [`TestPreNodeReady`] is a node's `pre_node_ready` that pulls those rows and applies them once
 //! per row version, whether a row arrives by the pull, by gossip, or both.
 //!
 //! Testkit range only ([`TESTKIT_OPS`]); never a product binary.
 //!
 //! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
-use rdm_node::before_ready::{HookOutcome, BeforeReady, BeforeReadyCtx, RetryOn};
-use rdm_transport::{CallOptions, BeforeReadyGate, PeerContext, ServerBuilder};
+use rdm_node::node_hooks::{HookOutcome, PreNodeReady, NodeReadyCtx, RetryOn};
+use rdm_transport::{CallOptions, PreNodeReadyGate, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
@@ -17,8 +17,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// The before_ready probe protocol on op `0x74`.
-pub struct BeforeReadyPull;
+/// The pre_node_ready probe protocol on op `0x74`.
+pub struct PreNodeReadyPull;
 
 /// One row of the authority's state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,9 +76,9 @@ pub enum PullReply {
     },
 }
 
-impl NodeProtocol for BeforeReadyPull {
+impl NodeProtocol for PreNodeReadyPull {
     const OP: u8 = 0x74;
-    const NAME: &'static str = "before-ready-pull";
+    const NAME: &'static str = "pre-node-ready-pull";
     const MAX_REQUEST_FRAME_BYTES: usize = 256;
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
     const REQUEST_VARIANTS: u32 = 1;
@@ -132,7 +132,7 @@ impl NodeProtocol for BeforeReadyPull {
 /// closes to keep a pull in flight.
 pub struct PullServer {
     /// The gate this authority's hook opens.
-    pub gate: BeforeReadyGate,
+    pub gate: PreNodeReadyGate,
     rows: Mutex<Vec<Row>>,
     hold: tokio::sync::watch::Sender<bool>,
     entered: tokio::sync::watch::Sender<u32>,
@@ -142,11 +142,11 @@ pub struct PullServer {
 impl PullServer {
     /// An authority holding `rows`, gate closed, not holding pulls.
     pub fn new(rows: Vec<Row>) -> Arc<Self> {
-        Self::behind(rows, BeforeReadyGate::new())
+        Self::behind(rows, PreNodeReadyGate::new())
     }
 
     /// An authority holding `rows` behind `gate`: the gate of the hook of the node that serves it.
-    pub fn behind(rows: Vec<Row>, gate: BeforeReadyGate) -> Arc<Self> {
+    pub fn behind(rows: Vec<Row>, gate: PreNodeReadyGate) -> Arc<Self> {
         Arc::new(Self { gate, rows: Mutex::new(rows), hold: tokio::sync::watch::Sender::new(false), entered: tokio::sync::watch::Sender::new(0), answered: AtomicU32::new(0) })
     }
 
@@ -173,7 +173,7 @@ impl PullServer {
     /// Serve the probe on `b`, behind this authority's gate.
     pub fn serve(self: &Arc<Self>, b: ServerBuilder) -> ServerBuilder {
         let (me, gate) = (self.clone(), self.gate.clone());
-        b.serve_gated::<BeforeReadyPull, _, _>(OpOwner::Testkit, gate, move |_peer: PeerContext, _req: PullRequest| {
+        b.serve_gated::<PreNodeReadyPull, _, _>(OpOwner::Testkit, gate, move |_peer: PeerContext, _req: PullRequest| {
             let me = me.clone();
             async move {
                 me.entered.send_modify(|e| *e += 1);
@@ -185,7 +185,7 @@ impl PullServer {
     }
 }
 
-/// What a [`TestBeforeReady`] does on an attempt.
+/// What a [`TestPreNodeReady`] does on an attempt.
 #[derive(Debug, Clone)]
 pub enum Mode {
     /// Pull from the accepting authority; its `NotReady` is `Blocked { PrimaryReady }`.
@@ -217,8 +217,8 @@ pub struct Held {
     pub ignored: u32,
 }
 
-/// A test app's `before_ready`.
-pub struct TestBeforeReady {
+/// A test app's `pre_node_ready`.
+pub struct TestPreNodeReady {
     mode: Mutex<Mode>,
     held: Mutex<Held>,
     /// What each attempt saw of its context: `(attempt, authority named, authority reason)`.
@@ -239,7 +239,7 @@ pub struct TestBeforeReady {
 }
 
 /// Counts a pull dropped before it finished.
-struct InFlight<'a>(&'a TestBeforeReady, bool);
+struct InFlight<'a>(&'a TestPreNodeReady, bool);
 
 impl Drop for InFlight<'_> {
     fn drop(&mut self) {
@@ -249,7 +249,7 @@ impl Drop for InFlight<'_> {
     }
 }
 
-impl TestBeforeReady {
+impl TestPreNodeReady {
     /// A test hook in `mode`.
     pub fn new(mode: Mode) -> Arc<Self> {
         Arc::new(Self {
@@ -301,8 +301,8 @@ impl TestBeforeReady {
 }
 
 #[async_trait::async_trait]
-impl BeforeReady for TestBeforeReady {
-    async fn before_ready(&self, ctx: &BeforeReadyCtx) -> HookOutcome {
+impl PreNodeReady for TestPreNodeReady {
+    async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
         self.attempts.fetch_add(1, Ordering::SeqCst);
         let _ = self.digest_view.set(ctx.topology_view.digest_view.clone());
         self.member_certs.lock().unwrap().push(ctx.member_cert.clone());
@@ -310,8 +310,8 @@ impl BeforeReady for TestBeforeReady {
             ctx.attempt,
             ctx.authority.accepted().map(|a| a.name.to_string()),
             match &ctx.authority {
-                rdm_node::before_ready::Authority::None(why) => Some(why.reason().to_string()),
-                rdm_node::before_ready::Authority::Accepted(_) => None,
+                rdm_node::node_hooks::Authority::None(why) => Some(why.reason().to_string()),
+                rdm_node::node_hooks::Authority::Accepted(_) => None,
             },
         ));
         let mode = self.mode.lock().unwrap().clone();
@@ -329,7 +329,7 @@ impl BeforeReady for TestBeforeReady {
                 };
                 self.pulls_started.fetch_add(1, Ordering::SeqCst);
                 let mut guard = InFlight(self, false);
-                let (out, _) = ctx.client.call::<BeforeReadyPull>(&authority.target, &PullRequest::Pull, &CallOptions::default()).await;
+                let (out, _) = ctx.client.call::<PreNodeReadyPull>(&authority.target, &PullRequest::Pull, &CallOptions::default()).await;
                 guard.1 = true;
                 self.pulls_answered.fetch_add(1, Ordering::SeqCst);
                 match out {
@@ -350,34 +350,34 @@ impl BeforeReady for TestBeforeReady {
     }
 }
 
-/// A node's `before_ready` read from a scenario's knob file
-/// ([`crate::before_ready_knob_dir`]`/<path.name>`): each attempt reads the file; `pass` (or no file)
+/// A node's `pre_node_ready` read from a scenario's knob file
+/// ([`crate::pre_node_ready_knob_dir`]`/<path.name>`): each attempt reads the file; `pass` (or no file)
 /// returns `Ok`, any other text is `Blocked` with that text as its reason, run again when the
 /// node's authority addresses it. A scenario changes the reason or lets the hook pass by rewriting
 /// the file. Testkit only; never a product binary.
-pub struct KnobBeforeReady {
+pub struct KnobPreNodeReady {
     file: std::path::PathBuf,
 }
 
-impl KnobBeforeReady {
+impl KnobPreNodeReady {
     /// The hook for the node `name` of the estate under `root`, when the scenario recorded a knob
     /// for it; `None` otherwise (the node registers no hook).
     pub fn for_node(root: &std::path::Path, name: &str) -> Option<Arc<Self>> {
-        let file = crate::before_ready_knob_dir(root).join(name);
+        let file = crate::pre_node_ready_knob_dir(root).join(name);
         file.exists().then(|| Arc::new(Self { file }))
     }
 
     /// The hook for the node `name` of the estate under `root`, passing immediately when no knob
     /// file exists and consulting the knob file when one was written.
     pub fn always(root: &std::path::Path, name: &str) -> Arc<Self> {
-        let file = crate::before_ready_knob_dir(root).join(name);
+        let file = crate::pre_node_ready_knob_dir(root).join(name);
         Arc::new(Self { file })
     }
 }
 
 #[async_trait::async_trait]
-impl BeforeReady for KnobBeforeReady {
-    async fn before_ready(&self, _ctx: &BeforeReadyCtx) -> HookOutcome {
+impl PreNodeReady for KnobPreNodeReady {
+    async fn pre_node_ready(&self, _ctx: &NodeReadyCtx) -> HookOutcome {
         if !self.file.exists() {
             return HookOutcome::Ok;
         }

@@ -40,12 +40,10 @@ async fn main() {
             )
             .in_scope(|| tracing::info!(target: "rafka_node_rpc_testkit", "the launch's issuing material"));
         }
-        // The testkit's application answers the fabric's hooks as `RDM_TEST_APP` says.
-        let mode = test_app::Mode::from_env(|k| std::env::var(k).ok()).unwrap_or_else(|e| fail("test app", e));
         let mut wiring = admin_faults::wiring(faults.clone());
         let door = faults.clone();
         wiring.serve_app = Some(Box::new(move |b| rdm_test::fault_door::serve(b, door)));
-        wiring.fabric_hooks = test_app::hooks(mode, faults).unwrap_or_else(|e| fail("test app", e));
+        wiring.fabric_hooks = test_app::hooks();
         wiring.certs = rdm_admin::entry::material_or_exit("faulted-node-admin", cfg);
         // The testkit application's declared secret, registered at boot like its hooks.
         wiring.declared = test_app::declared();

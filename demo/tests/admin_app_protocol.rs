@@ -65,7 +65,7 @@ async fn gateway(root: &Running, dir: &Path, shared: &Path) -> rdm_node::node::R
         last_accepted_name: None,
         held: false,
     });
-    rdm_node::node::start_with_rafka_time_before_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::before_ready::BeforeReadyHook::none(), |s| s, None, |b, _| b, &[], &[rshape_consumer::data_alpn()]).await.unwrap()
+    rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[rshape_consumer::data_alpn()]).await.unwrap()
 }
 
 fn birth(n: &rdm_core::digest::MeshNode) -> Birth {

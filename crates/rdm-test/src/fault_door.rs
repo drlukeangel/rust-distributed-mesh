@@ -42,7 +42,6 @@ enum CutWire {
     Announcement { announcement: String, channel: String },
     ProviderTerminate { pid: Option<u32> },
     Declaration { node: Option<String>, state: Option<String> },
-    StateAction { node: Option<String>, command: Option<String> },
     ProviderUnproven { pids: Vec<u32> },
     DriftPass { node: Option<String> },
 }
@@ -182,13 +181,6 @@ pub enum Hit {
         /// The state it declares.
         state: String,
     },
-    /// A node-admin's state action, about to run.
-    StateAction {
-        /// The acting admin.
-        node: String,
-        /// The checklist, as its command names it.
-        command: String,
-    },
     /// A provider `inspect` answered `Unknown` while the cut is armed.
     ProviderInspect {
         /// The runtime's pid, when the handle names one.
@@ -218,7 +210,6 @@ impl Hit {
             Hit::Announcement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Hit::ProviderTerminate { pid, deployment_id } => json!({"pid": pid, "deployment_id": deployment_id}),
             Hit::Declaration { node, state } => json!({"node": node, "state": state}),
-            Hit::StateAction { node, command } => json!({"node": node, "command": command}),
             Hit::ProviderInspect { pid } => json!({"pid": pid}),
             Hit::DriftPass { node } => json!({"node": node}),
         }
@@ -428,7 +419,6 @@ mod tests {
             CutSpec::ProviderDomain,
             CutSpec::LeaveAnnouncement { announcements: vec![1, 3], channel: "mesh".into() },
             CutSpec::CatchUp,
-            CutSpec::StateAction { node: None, command: Some("open-traffic".into()) },
             CutSpec::TopologyRead,
             CutSpec::Announcement { announcement: "aggregate-in-flight".into(), channel: "any".into() },
             CutSpec::ProviderTerminate { pid: Some(4242) },

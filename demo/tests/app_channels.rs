@@ -4,12 +4,9 @@ use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::catalog::OpOwner;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_node::gossip::{Channel, Event};
-use rdm_test::before_ready_probe::{BeforeReadyPull, PullReply, PullRequest, Row};
+use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, PullReply, PullRequest, Row};
 use std::{
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 const KIND: &str = "demo.records";
@@ -55,7 +52,7 @@ async fn recv(channel: &mut Channel) -> Row {
 }
 async fn pull(client: &rdm_transport::NodeRpcClient, root: &NodeId) -> Vec<Row> {
     let (out, _) = client
-        .call::<BeforeReadyPull>(
+        .call::<PreNodeReadyPull>(
             &rdm_transport::NodeTarget::ExactNode(root.clone()),
             &PullRequest::Pull,
             &rdm_transport::CallOptions::default(),
@@ -68,18 +65,6 @@ async fn pull(client: &rdm_transport::NodeRpcClient, root: &NodeId) -> Vec<Row> 
         panic!("{reply:?}")
     };
     rows.clone()
-}
-struct Actions {
-    opens: AtomicU32,
-    changed: tokio::sync::watch::Sender<u8>,
-}
-#[async_trait::async_trait]
-impl rdm_node::fabric_states::StateActions for Actions {
-    async fn open_traffic(&self, _: &rdm_core::PathName) -> Result<(), String> {
-        self.opens.fetch_add(1, Ordering::SeqCst);
-        self.changed.send_modify(|v| *v |= 2);
-        Ok(())
-    }
 }
 async fn broker(
     root: &Running,
@@ -126,10 +111,10 @@ async fn broker(
         last_accepted_name: None,
         held: false,
     });
-    rdm_node::node::start_with_rafka_time_before_ready_and(
+    rdm_node::node::start_with_rafka_time_pre_node_ready_and(
         &launch,
         rdm_transport::clock::RafkaTime::unadopted(),
-        rdm_node::before_ready::BeforeReadyHook::none(),
+        rdm_node::node_hooks::NodeHooks::none(),
         |s| s,
         None,
         |b, _| b,
@@ -140,7 +125,7 @@ async fn broker(
 }
 
 #[test]
-fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_state_actions() {
+fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
     let dir = std::env::temp_dir().join(format!("demo-app-{}", NodeId::mint()));
     let capture =
         rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-app-channels").unwrap();
@@ -155,7 +140,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_st
             let snapshot = snapshot.clone();
             let release = release.clone();
             Box::new(move |b: rdm_transport::ServerBuilder| {
-                b.serve::<BeforeReadyPull, _, _>(OpOwner::Testkit, move |_, _| {
+                b.serve::<PreNodeReadyPull, _, _>(OpOwner::Testkit, move |_, _| {
                     let rows = snapshot.clone();
                     let release = release.clone();
                     let entered = entered.clone();
@@ -337,45 +322,6 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_st
         .await
         .unwrap();
         assert_eq!(held, Some(healed));
-        // The ordinary broker's existing StateActions seam runs before its directed check-in.
-        let actions = Arc::new(Actions {
-            opens: AtomicU32::new(0),
-            changed: tokio::sync::watch::channel(0).0,
-        });
-        node.own.set_state_actions(actions.clone());
-        let mut done = actions.changed.subscribe();
-        let birth = node.digest.node.clone();
-        let build = NodeId::mint().to_string();
-        for (kind, bit) in [(rdm_node::fabric_states::StateCommand::OpenTraffic, 2)] {
-            let state_key = rdm_node::fabric_states::StateKey {
-                fabric_id: node.digest.fabric_id.clone(),
-                build_id: build.clone(),
-                attempt: 1,
-                kind,
-            };
-            let req = kind.down(&state_key, birth.node_id.clone(), birth.incarnation.clone());
-            let (out, _) = root
-                .node_rpc
-                .client
-                .call::<rdm_core::status::Status>(
-                    &rdm_transport::NodeTarget::ExactNode(birth.node_id.clone()),
-                    &req,
-                    &rdm_transport::CallOptions::default(),
-                )
-                .await;
-            assert!(
-                matches!(
-                    out.reply().map(|r| r.value()),
-                    Some(rdm_core::status::StatusReply::Applied)
-                ),
-                "{out:?}"
-            );
-            tokio::time::timeout(BOUND, done.wait_for(|n| n & bit != 0))
-                .await
-                .unwrap()
-                .unwrap();
-        }
-        assert_eq!(actions.opens.load(Ordering::SeqCst), 1);
         drop(sender);
         drop(receiver);
         drop(large_sender);

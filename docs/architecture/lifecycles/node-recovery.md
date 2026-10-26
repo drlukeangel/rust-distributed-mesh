@@ -23,7 +23,7 @@ node.create of a node-admin into the live mesh.)
 | Steps | node.delete of the unheard instance, node.create at the same path.name; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
 | Retained | path.name, placement and storage (from the path's create spec, which a Build has applied to the row), config and tags (inherited from the deleted row) and the executable (seeded from the deleted row: a recovered node runs the bin its row records, never the recovering admin's) ; a row written before the executable field decodes with none, and node recovery of that birth is refused by name: the topology's entry is the target, not what the birth ran; the repair is a request naming that path's executable, the ordinary replacement ([build-deployment.md](../build-deployment.md)); the inherited data dir and endpoint key when the verdict is `exited` |
 | New | node.id, incarnation, OS-assigned port, exact runtime; a newly allocated data dir and endpoint key on any verdict but `exited`, and when the inherited data dir is absent (`R-FM2`) |
-| App part | The new node's start runs `before_ready` with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated one |
+| App part | The new node's start runs `pre_node_ready` with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated one |
 | Lineage | No supersedes: recovery creates a new node.id ([node identity](../node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids)) |
 
 ## Detection and the verdict
@@ -40,7 +40,7 @@ own:
    unresolved). The mark is an observer mark: it never replaces a lifecycle state the node reported and
    the mesh-primary recorded (`connections-deleting`, `stopping`, `stopped`), and it ends when a digest
    of the exact birth arrives after it, when the birth answers its tickle, or when the view no longer
-   holds that birth. A birth heard again runs its `before_ready` hook again before it is
+   holds that birth. A birth heard again runs its `pre_node_ready` hook again before it is
    ready-for-traffic ([fabric-node-hooks.md](../fabric-node-hooks.md#where-it-runs)).
 2. **Investigation.** Only the mesh-primary acts. Half a floor after the mark it runs
    [node investigation](node-investigation.md) on the exact birth: the by-destination connections index,
@@ -155,7 +155,7 @@ directory, `EIO`, `EACCES`, or decode failure) is **broken**:
   (`rdm.node_admin.node.update.via-data-dir-lost`, surfaced on `node.get` and never as a gossip
   `MemberStatus`), and the recovery Build creates the node at the same `path.name` over a newly
   allocated `data_dir` beside the old path with a newly minted endpoint key (the old key is never
-  re-minted) and `before_ready` with `inherited = false`. On any verdict but `exited` the data dir is
+  re-minted) and `pre_node_ready` with `inherited = false`. On any verdict but `exited` the data dir is
   newly allocated without the wait ([node investigation](node-investigation.md)); for a lost mesh's
   node-admin, the fabric-primary runs this arm ([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)).
 - **Broken (arm B).** On the first `PrepareStorage` failure over an existing but unreadable `data_dir`,

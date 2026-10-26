@@ -5,7 +5,6 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 
 | enum | crate | file |
 |---|---|---|
-| [`BeforeReadyState`](#t-rdm_node-before_ready-BeforeReadyState) | rdm-node | `crates/rdm-node/src/before_ready.rs` |
 | [`BuildState`](#t-rdm_admin-build_state-BuildState) | rdm-admin | `crates/rdm-admin/src/build_state.rs` |
 | [`BuildState`](#t-rdm_core-dto-BuildState) | rdm-core | `crates/rdm-core/src/dto.rs` |
 | [`ConnectionState`](#t-rdm_core-connections-ConnectionState) | rdm-core | `crates/rdm-core/src/connections.rs` |
@@ -20,29 +19,9 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 | [`NodeStatus`](#t-rdm_core-views-NodeStatus) | rdm-core | `crates/rdm-core/src/views.rs` |
 | [`OpState`](#t-rdm_core-catalog-OpState) | rdm-core | `crates/rdm-core/src/catalog.rs` |
 | [`OrderState`](#t-rdm_core-streaming-OrderState) | rdm-core | `crates/rdm-core/src/streaming.rs` |
+| [`PreNodeReadyState`](#t-rdm_node-node_hooks-PreNodeReadyState) | rdm-node | `crates/rdm-node/src/node_hooks.rs` |
 | [`ScopeStatus`](#t-rdm_core-model-ScopeStatus) | rdm-core | `crates/rdm-core/src/model.rs` |
 | [`ScopeStatus`](#t-rdm_core-views-ScopeStatus) | rdm-core | `crates/rdm-core/src/views.rs` |
-
-<a id="t-rdm_node-before_ready-BeforeReadyState"></a>
-
-### `BeforeReadyState`
-
-`crates/rdm-node/src/before_ready.rs` · enum · 5 variants · rdm-node
-
-Where one birth's hook stands.
-
-| # | variant · field | serde name | type | serde | doc |
-|---|---|---|---|---|---|
-| 0 | **`Running`** | (not serialized) |  |  | An attempt is running. |
-| 0.0 | `attempt` |  | `u32` |  | Which attempt. |
-| 1 | **`Blocked`** | (not serialized) |  |  | The last attempt was blocked and the hook waits on its event. |
-| 1.0 | `attempt` |  | `u32` |  | Which attempt. |
-| 1.1 | `reason` |  | `String` |  | What it waits for, in words. |
-| 1.2 | `retry_on` |  | `RetryOn` |  | The event that runs the hook again. |
-| 2 | **`Passed`** | (not serialized) |  |  | The hook returned `Ok`. |
-| 3 | **`Failed`** | (not serialized) |  |  | The hook failed: the node ends by name. |
-| 3.0 | `0` |  | `String` |  |  |
-| 4 | **`Cancelled`** | (not serialized) |  |  | The hook was cancelled before it passed. |
 
 <a id="t-rdm_admin-build_state-BuildState"></a>
 
@@ -119,8 +98,8 @@ The state of the fabric: the value of a FabricStatus frame.
 
 | # | variant · field | serde name | type | serde | labels | doc |
 |---|---|---|---|---|---|---|
-| 0 | **`Pending`** | (not serialized) |  |  | `as_str() = "pending"` | Created; a mesh is not yet ready-for-traffic, or the open-traffic checklist runs. |
-| 1 | **`ReadyForTraffic`** | (not serialized) |  |  | `as_str() = "ready-for-traffic"` | The open-traffic checklist completed. |
+| 0 | **`Pending`** | (not serialized) |  |  | `as_str() = "pending"` | Created; a mesh the accepted Build names is not yet ready-for-traffic. |
+| 1 | **`ReadyForTraffic`** | (not serialized) |  |  | `as_str() = "ready-for-traffic"` | Every mesh the accepted Build names is ready-for-traffic. |
 
 <a id="t-rdm_admin-lifecycle-LifecycleState"></a>
 
@@ -273,6 +252,27 @@ Where a stream stands.
 | 0 | **`NotStarted`** | (not serialized) |  |  | No frame has been sent. |
 | 1 | **`Streaming`** | (not serialized) |  |  | The stream has begun and is not terminated. |
 | 2 | **`Done`** | (not serialized) |  |  | The stream is terminated. |
+
+<a id="t-rdm_node-node_hooks-PreNodeReadyState"></a>
+
+### `PreNodeReadyState`
+
+`crates/rdm-node/src/node_hooks.rs` · enum · 5 variants · rdm-node
+
+Where one birth's hook stands.
+
+| # | variant · field | serde name | type | serde | doc |
+|---|---|---|---|---|---|
+| 0 | **`Running`** | (not serialized) |  |  | An attempt is running. |
+| 0.0 | `attempt` |  | `u32` |  | Which attempt. |
+| 1 | **`Blocked`** | (not serialized) |  |  | The last attempt was blocked and the hook waits on its event. |
+| 1.0 | `attempt` |  | `u32` |  | Which attempt. |
+| 1.1 | `reason` |  | `String` |  | What it waits for, in words. |
+| 1.2 | `retry_on` |  | `RetryOn` |  | The event that runs the hook again. |
+| 2 | **`Passed`** | (not serialized) |  |  | The hook returned `Ok`. |
+| 3 | **`Failed`** | (not serialized) |  |  | The hook failed: the node ends by name. |
+| 3.0 | `0` |  | `String` |  |  |
+| 4 | **`Cancelled`** | (not serialized) |  |  | The hook was cancelled before it passed. |
 
 <a id="t-rdm_core-model-ScopeStatus"></a>
 

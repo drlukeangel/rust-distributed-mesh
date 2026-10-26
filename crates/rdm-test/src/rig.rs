@@ -26,9 +26,6 @@ pub struct LiveMesh {
     pub resolver: Arc<StaticResolver>,
     /// The commands this admin side sent and awaits a completion call for.
     pub commands: Arc<rdm_admin::node_commands::CommandView>,
-    /// Every state check-in (`StateCommitted`, `TrafficOpened`) a node made to this admin side, in
-    /// arrival order: the request as it came.
-    pub check_ins: Arc<tokio::sync::watch::Sender<Vec<rdm_core::status::StatusRequest>>>,
 }
 
 impl LiveMesh {
@@ -119,8 +116,8 @@ impl NodeObserver for LiveMesh {
                 caches: Default::default(),
                 commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
                 hold_next_reply: Default::default(), wake: Default::default(), fabric_states: Default::default(), fabric_recovery: Default::default(), configs: Default::default(),
-                republish: Default::default(), configure: Default::default(), before_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
-                digest_view: Some(self.topology_view.digest_view.clone()), first_ready: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
+                republish: Default::default(), configure: Default::default(), pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
+                digest_view: Some(self.topology_view.digest_view.clone()), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };
             assert!(authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default(), Default::default()))).is_ok());
             return authority.carry_lifecycle(node, cmd == rdm_admin::node_commands::NodeCommand::Start, ctx).await;
@@ -515,20 +512,13 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // The completion calls a commanded node makes back (`node.connections.deleted`, `node-left`) resolve the
     // open commands of this admin side.
     let commands = Arc::new(rdm_admin::node_commands::CommandView::default());
-    // The state check-ins a node makes to this admin side as its commander are held in order and
-    // acknowledged; the admin side keeps no checklist.
-    let check_ins = Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
     let serve_commands = {
-        let (commands, check_ins, receiver, digest_view) = (commands.clone(), check_ins.clone(), name.to_string(), topology_view.digest_view.clone());
+        let (commands, receiver, digest_view) = (commands.clone(), name.to_string(), topology_view.digest_view.clone());
         move |b: rdm_transport::ServerBuilder| {
             b.serve::<rdm_core::status::Status, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer: rdm_transport::PeerContext, req: rdm_core::status::StatusRequest| {
-                let (commands, check_ins, receiver, digest_view) = (commands.clone(), check_ins.clone(), receiver.clone(), digest_view.clone());
+                let (commands, receiver, digest_view) = (commands.clone(), receiver.clone(), digest_view.clone());
                 async move {
                     use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest as R};
-                    if matches!(req, R::TrafficOpened { .. }) {
-                        check_ins.send_modify(|held| held.push(req));
-                        return Ok(rdm_core::reply::applied());
-                    }
                     // A member's report to its mesh's primary sets its status (node-status.md "Status
                     // report": "A node reports to its mesh's primary, which sets its status"), as a
                     // node-admin's status authority applies it into its view: its node.started sets
@@ -550,7 +540,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
                     match &req {
                         R::Reserved6 { .. } | R::Reserved7 { .. } => Ok(rdm_admin::node_commands::refuse_reserved(&receiver, "", &req)),
                         R::NodeLeft { .. } => Ok(rdm_admin::node_commands::refuse_node_left(&receiver, "the commanded birth", "", &req)),
-                        // The admin side serves state check-ins and declarations only: any other request
+                        // The admin side serves declarations only: any other request
                         // has no handler here, so not handled here (R24), decided by dispatch alone.
                         _ => Ok(rdm_admin::node_self::request_not_handled(&receiver, &req)),
                     }
@@ -625,7 +615,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.with_config(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
-        observer: LiveMesh { topology_view, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, check_ins },
+        observer: LiveMesh { topology_view, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands },
         seed: (admin_ep.id().to_string(), addr),
         fabric: fabric.clone(),
         joins,

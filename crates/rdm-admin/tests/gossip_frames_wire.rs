@@ -84,11 +84,6 @@ fn op(operation: &str) -> LifecycleOp {
     LifecycleOp { build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: operation.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 7 }
 }
 
-fn state_hook(verb: &str) -> rdm_core::StateHook {
-    let fabric_id = fabric();
-    rdm_core::StateHook { operation: format!("{verb}:{fabric_id}"), fabric_id, node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "3qcfk1kq47m9".into(), attempt: 2, publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 7 }
-}
-
 fn publisher() -> PublisherId {
     PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }
 }
@@ -149,8 +144,6 @@ fn frames() -> Vec<Frame> {
         Frame::FabricStatus { fabric: fabric(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 78 },
         Frame::Concern { seat: rdm_core::Seat::FabricPrimary, node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
         Frame::NewFabricPrimary { holder: rdm_core::Primary { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
-        Frame::TrafficOpening { hook: state_hook("open-traffic"), forwarded_by: None },
-        Frame::TrafficOpened { hook: state_hook("open-traffic"), forwarded_by: Some("mesh2.admin.1".into()) },
     ]
 }
 
@@ -445,7 +438,7 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
 #[test]
 fn every_kind_declares_its_ruled_type_string() {
     let cases = frames();
-    let expected = ["rdm.mesh.digest", "rdm.mesh.digest", "rdm.mesh.digest", "rdm.mesh.members", "rdm.mesh.members", "rdm.mesh.members.delta", "rdm.node.deleting", "rdm.node.deleted", "rdm.node.restarting", "rdm.node.stopped", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.mesh.status", "rdm.fabric.status", "rdm.mesh.concern", "rdm.fabric.primary.new", "rdm.fabric.traffic.opening", "rdm.fabric.traffic.opened"];
+    let expected = ["rdm.mesh.digest", "rdm.mesh.digest", "rdm.mesh.digest", "rdm.mesh.members", "rdm.mesh.members", "rdm.mesh.members.delta", "rdm.node.deleting", "rdm.node.deleted", "rdm.node.restarting", "rdm.node.stopped", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.mesh.status", "rdm.fabric.status", "rdm.mesh.concern", "rdm.fabric.primary.new"];
     assert_eq!(cases.len(), expected.len());
     for (frame, kind) in cases.iter().zip(expected) {
         let bytes = crate::gossip_wire::authored(frame).encode();
@@ -454,8 +447,8 @@ fn every_kind_declares_its_ruled_type_string() {
         crate::gossip_wire::assert_roundtrip(frame, &bytes);
         assert!(bytes.len() <= 4032);
     }
-    // 19 catalog types; the two reserved since Q171 are never sent.
-    assert_eq!(expected.into_iter().collect::<std::collections::BTreeSet<_>>().len(), 17);
+    // 19 catalog types; the two reserved since Q171 and the two since Q174 are never sent.
+    assert_eq!(expected.into_iter().collect::<std::collections::BTreeSet<_>>().len(), 15);
 }
 
 /// A twelve-node fabric whose every entry names its executable, as a complete-topology request

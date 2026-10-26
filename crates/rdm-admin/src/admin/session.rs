@@ -180,7 +180,7 @@ pub async fn probed_ready_blocker(client: &rdm_transport::NodeRpcClient, digest_
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
     match rdm_client::NodeRpc::new(client).get(&birth, &rdm_transport::CallOptions::default()).await {
         Ok(rdm_core::status::StatusReply::Blocked { node_id, incarnation: answered, reason, retry_on }) if node_id == node.node_id && answered == incarnation => {
-            Some(format!("{}: before_ready is blocked: {reason}; it runs again on {}", node.name, retry_on.name()))
+            Some(format!("{}: pre_node_ready is blocked: {reason}; it runs again on {}", node.name, retry_on.name()))
         }
         _ => None,
     }
@@ -307,10 +307,10 @@ pub(crate) struct AdminSession {
     pub(crate) accepted: Arc<AcceptedStore>,
     pub(crate) builds: Arc<dyn BuildStateAdapter>,
     pub(crate) entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>>,
-    pub(crate) before_ready: crate::before_ready::BeforeReadyHook,
-    pub(crate) addressed: Arc<crate::before_ready::Addressed>,
-    pub(crate) before_ready_cell: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>,
-    pub(crate) before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub(crate) node_hooks: crate::node_hooks::NodeHooks,
+    pub(crate) addressed: Arc<crate::node_hooks::Addressed>,
+    pub(crate) pre_node_ready_cell: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>>,
+    pub(crate) pre_node_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub(crate) wake: Arc<Records>,
     /// This admin's own Build log: a start's Build-floor step absorbs the facts it reads into it.
     pub(crate) local: Arc<dyn crate::build_state::LocalBuildLog>,
@@ -344,10 +344,10 @@ impl crate::node_self::Session for AdminSession {
     }
 
     async fn leave_channels(&self) {
-        if let Some(h) = self.before_ready_task.lock().unwrap().take() {
+        if let Some(h) = self.pre_node_ready_task.lock().unwrap().take() {
             h.abort();
         }
-        self.before_ready.gate().close();
+        self.node_hooks.gate().close();
         crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
     }
 
@@ -368,7 +368,7 @@ impl crate::node_self::Session for AdminSession {
         let held = self.digest.lock().unwrap().node.name.clone();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %held, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows, operation, progress, held_again };
-        crate::workflows::node_start::node_start(&mut start, crate::before_ready::StartKind::AfterStop).await
+        crate::workflows::node_start::node_start(&mut start, crate::node_hooks::StartKind::AfterStop).await
     }
 
 }
@@ -520,15 +520,15 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.client.clone(), s.local.clone(), s.responders.clone()),
                 progress: None,
             },
-            leave: self.operation.operation.starts_with("node.mesh.join:").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), before_ready: s.before_ready.clone(), before_ready_task: s.before_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
+            leave: self.operation.operation.starts_with("node.mesh.join:").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), pre_node_ready_task: s.pre_node_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
         };
         Ok(crate::workflows::node_start::HookParts {
-            birth: crate::before_ready::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
-            before_ready: s.before_ready.clone(),
-            events: crate::before_ready::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
+            birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
+            node_hooks: s.node_hooks.clone(),
+            events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
             cancel: self.retire.take().expect("the hook's token is handed once"),
-            state: s.before_ready_cell.clone(),
-            runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.before_ready_task.clone() },
+            state: s.pre_node_ready_cell.clone(),
+            runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.pre_node_ready_task.clone() },
             after: Box::new(after),
         })
     }
@@ -542,18 +542,18 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
 pub(crate) struct AdminLeave {
     topology_view: TopologyView,
     backbone: Backbone,
-    before_ready: crate::before_ready::BeforeReadyHook,
-    before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    node_hooks: crate::node_hooks::NodeHooks,
+    pre_node_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     node_id: NodeId,
     name: PathName,
 }
 
 impl AdminLeave {
     async fn run(self, step: &str, reason: &str) {
-        if let Some(h) = self.before_ready_task.lock().unwrap().take() {
+        if let Some(h) = self.pre_node_ready_task.lock().unwrap().take() {
             h.abort();
         }
-        self.before_ready.gate().close();
+        self.node_hooks.gate().close();
         crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
         tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %self.name, step, reason)
             .in_scope(|| tracing::info!("the commanded start stopped at a step after its hook: the admin leaves its channels for its authority's next command"));

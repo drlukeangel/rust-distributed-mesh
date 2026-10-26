@@ -9,7 +9,6 @@
 //!   `Pending -> ReadyForTraffic` the admin brings into traffic, after eligibility and before the commit,
 //!   and gates it (a product's entry step for a node, such as a returning broker's, lives here).
 use async_trait::async_trait;
-use rdm_admin::fabric_status::StateActions;
 use rdm_admin::lifecycle::{HookContext, HookPhase, LifecycleHook, LifecycleHookSpec, LifecycleScope, LifecycleState, ShapePredicate, TransitionKey};
 use rdm_admin::model::{IncarnationId, ProviderKind};
 use rdm_admin::storage::NodeRecord;
@@ -38,10 +37,10 @@ impl StorageBackend for ConsumerBackend {
         self.0.put_own_row(data_dir, writer, record).await
     }
 
-    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn StateActions>>) -> Result<StorageBoundaries, String> {
+    async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String> {
         // Where the boundaries write, as the boot's storage span records it: this backend, over the file
         // backend's own answer.
-        self.0.open(scope, embedding).await.map(|b| StorageBoundaries { writes_to: format!("rshape-backend:{}", b.writes_to), ..b })
+        self.0.open(scope).await.map(|b| StorageBoundaries { writes_to: format!("rshape-backend:{}", b.writes_to), ..b })
     }
 }
 

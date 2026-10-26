@@ -331,10 +331,6 @@ pub struct Records {
     /// The fabric state this admin projects: authoritative on the fabric-primary, the last
     /// published state on every other admin (`crate::fabric_status`).
     pub(crate) fabric_state: Mutex<crate::fabric_state::FabricState>,
-    /// Whether the fabric this admin projects has first reached ready-for-traffic: set by the first
-    /// `set_fabric_state(ReadyForTraffic)` and never cleared (states.md, "The initial fabric before
-    /// ready-for-traffic"). The control plane and the status authority read this one handle.
-    pub first_ready: crate::fabric_state::FirstReady,
     /// What keeps the fabric in its state, named (`None`: nothing, or not the fabric-primary).
     pub(crate) fabric_blocker: Mutex<Option<String>>,
     /// The fabric state the fabric-primary last put in a FabricStatus frame. The change enters the
@@ -517,28 +513,6 @@ impl Records {
         let _ = self.status.set(crate::status_rpc::SeatFold::new(self.caches.clone(), nodes, meshes, fabric, mesh, name, me));
     }
 
-    /// The fabric-primary's own ready-for-traffic row (states.md, "Who sets each state": "The
-    /// fabric-primary declares fabric state through the completed check-ins"): put on the fabric store as the
-    /// first act of entering ready-for-traffic, before the fabric state latches and the door admits
-    /// anything, so the fact is durable before anything acts on it.
-    /// Committed as an `ApplyFabricEvent` at this admin is (`crate::status_rpc::commit_fabric_event`):
-    /// the declarer's later one for this mesh answers `AlreadyApplied`. `Err` names what refused it, and
-    /// nothing is held.
-    pub async fn put_ready_row(&self, fabric_id: &FabricId) -> Result<rdm_core::status::StatusReply, String> {
-        let Some(fold) = self.status.get() else {
-            return Err(format!("no fabric store is held to put the ready-for-traffic fact of fabric {fabric_id}"));
-        };
-        let ready = crate::status_rpc::event_key(&rdm_core::status::FabricEvent::ReadyForTraffic);
-        match crate::status_rpc::commit_fabric_event(&**fold.fabric(), &self.caches, &self.declared, fabric_id, None, &ready).await {
-            r @ (rdm_core::status::StatusReply::Applied | rdm_core::status::StatusReply::AlreadyApplied) => {
-                self.first_ready.reach("ready-for-traffic");
-                Ok(r)
-            }
-            rdm_core::status::StatusReply::NotReady { reason } => Err(format!("the fabric store: {reason}")),
-            other => Err(format!("the fabric store answered {}", other.name())),
-        }
-    }
-
     /// The tick a waiter arms on to see the view change.
     pub fn subscribe_view(&self) -> tokio::sync::watch::Receiver<u64> {
         self.view_tick.subscribe()
@@ -610,9 +584,6 @@ impl Records {
 
     /// Hold the fabric state; the view follows at its next projection.
     pub fn set_fabric_state(&self, state: crate::fabric_state::FabricState) {
-        if state == crate::fabric_state::FabricState::ReadyForTraffic {
-            self.first_ready.reach("ready-for-traffic");
-        }
         let changed = std::mem::replace(&mut *self.fabric_state.lock().unwrap(), state) != state;
         if changed {
             self.wake.poke();

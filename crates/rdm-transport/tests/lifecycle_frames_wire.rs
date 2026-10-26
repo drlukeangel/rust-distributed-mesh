@@ -100,7 +100,7 @@ fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() 
 /// CONTRACT (node-status-heartbeat-connections.md R-HB1, "The version field": "Each status fact
 /// carries its subject's `topology_version` ... a named coordinated schema cut of the lifecycle
 /// frames"): the three status events keep their positions, `NodeDeleting` variant 3,
-/// `NodeRestarting` 5 and `NodeStopped` 22 (appended after `TrafficOpened`, 21). Each is the
+/// `NodeRestarting` 5 and `NodeStopped` 22 (appended after the reserved position 21). Each is the
 /// lifecycle op (build, attempt, operation, node id, incarnation, path.name, event instant), then the
 /// forwarding primary, then the publisher's exact identity (node, incarnation) and the
 /// `topology_version` at which its subject changed, appended after `forwarded_by`. A peer mesh's

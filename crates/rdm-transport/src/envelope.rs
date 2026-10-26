@@ -161,7 +161,7 @@ impl Context {
                 identity = vec![fabric.to_string(), seat_revision.to_string(), time_ms.to_string()];
                 format!("fabric/{fabric}/status")
             }
-            Frame::Reserved15 { hook, .. } | Frame::Reserved16 { hook, .. } | Frame::TrafficOpening { hook, .. } | Frame::TrafficOpened { hook, .. } => {
+            Frame::Reserved15 { hook, .. } | Frame::Reserved16 { hook, .. } | Frame::Reserved17 { hook, .. } | Frame::Reserved18 { hook, .. } => {
                 identity = vec![hook.fabric_id.to_string(), hook.build_id.clone(), hook.attempt.to_string(), hook.operation.clone(), hook.node_id.to_string(), hook.incarnation.to_string()];
                 time_ms = hook.event_at_rafka_ms;
                 format!("state/{}/{}/{}/{}/birth/{}/{}", hook.fabric_id, escaped(&hook.build_id), hook.attempt, escaped(&hook.operation), hook.node_id, hook.incarnation)
@@ -306,11 +306,12 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
     let index = TYPES.iter().position(|t| *t == kind);
     // Required context is checked before the named type outcome; no domain data is decoded.
     let Some(index) = index else { return Err(DecodeError::Unknown(kind)); };
-    if (8..=15).contains(&index) {
+    if (8..=17).contains(&index) {
         if sequence.is_some() { return Err(invalid("reserved type declares sequence").into()); }
         // Its historical page position (gossip.md "Reserved lifecycle frame positions": the reserved
         // types "retain their historical page positions"), which the types removed before them move not.
-        // `rdm.fabric.state.committing` and `rdm.fabric.state.committed` are reserved since Q171.
+        // `rdm.fabric.state.committing` and `rdm.fabric.state.committed` are reserved since Q171,
+        // `rdm.fabric.traffic.opening` and `rdm.fabric.traffic.opened` since Q174.
         return Err(DecodeError::Reserved(kind, index + 2));
     }
     match index {
@@ -342,8 +343,6 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
         Frame::NodeDeleting { publisher, .. } | Frame::NodeRestarting { publisher, .. } | Frame::NodeStopped { publisher, .. }
             if Birth::publisher(&context.source.fabric, publisher) != context.source => return Err(invalid("publisher and source disagree").into()),
         Frame::FabricStatus { fabric, .. } if fabric != &context.source.fabric => return Err(invalid("fabric and source disagree").into()),
-        Frame::TrafficOpening { hook, .. } | Frame::TrafficOpened { hook, .. }
-            if hook.fabric_id != context.source.fabric => return Err(invalid("state hook fabric and source disagree").into()),
         _ => (),
     }
     let owner = context.publication.as_ref().map(|(b, _)| b).unwrap_or(&context.source);
@@ -435,10 +434,10 @@ mod tests {
             attrs.iter_mut().find(|(n, _)| n == "type").unwrap().1 = kind.into();
             assert!(matches!(decode(&wire::encode(&(attrs, vec![255u8, 255])).unwrap()), Err(DecodeError::Reserved(k, p)) if k == kind && p == index + 10));
         }
-        for (kind, position) in [("rdm.fabric.state.committing", 16), ("rdm.fabric.state.committed", 17)] {
+        for (kind, position) in [("rdm.fabric.state.committing", 16), ("rdm.fabric.state.committed", 17), ("rdm.fabric.traffic.opening", 18), ("rdm.fabric.traffic.opened", 19)] {
             let (mut attrs, _) = parts(); attrs.retain(|(n, _)| n != "sequence");
             attrs.iter_mut().find(|(n, _)| n == "type").unwrap().1 = kind.into();
-            assert!(matches!(decode(&wire::encode(&(attrs, vec![255u8, 255])).unwrap()), Err(DecodeError::Reserved(k, p)) if k == kind && p == position), "{kind} is reserved (Q171)");
+            assert!(matches!(decode(&wire::encode(&(attrs, vec![255u8, 255])).unwrap()), Err(DecodeError::Reserved(k, p)) if k == kind && p == position), "{kind} is reserved (Q171, Q174)");
         }
         let (mut attrs, _) = parts(); attrs.iter_mut().find(|(n, _)| n == "type").unwrap().1 = "rdm.unknown".into();
         assert!(matches!(decode(&wire::encode(&(attrs, vec![255u8])).unwrap()), Err(DecodeError::Unknown(k)) if k == "rdm.unknown"));

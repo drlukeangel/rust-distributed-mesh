@@ -1,11 +1,11 @@
-//! `before_ready`: the one hook an embedding app supplies to be born full.
+//! `pre_node_ready`: the one hook an embedding app supplies to be born full.
 //!
 //! A node reaches the hook after its `JoinNode` was accepted, its `GetTopology` read installed
 //! and its mesh channel joined (node-start.md step 3). The hook returns
 //! [`HookOutcome`]:
 //!
 //! - `Ok`: RDM's own checks go on to ReadyForTraffic, and the app's own ops are served
-//!   ([`BeforeReadyGate`] opens).
+//!   ([`PreNodeReadyGate`] opens).
 //! - `Blocked { reason, retry_on }`: the node stays Pending, the blocker is named where Ready
 //!   blockers are named, and the hook runs again only when the named [`RetryOn`] event happens.
 //!   The wait arms, then re-checks the condition against a count taken before the attempt began, so
@@ -16,15 +16,15 @@
 //! their context says so ([`Authority::None`]) and the hook completes from local state
 //! (`gossip.md` section 9's fenced exception).
 //!
-//! One span per attempt (`rdm.mesh.node.update.via-before-ready-attempt`) under the boot span carries
+//! One span per attempt (`rdm.mesh.node.update.via-pre-node-ready-attempt`) under the boot span carries
 //! the outcome and the blocker or reason; `via-ready` follows the successful attempt.
-//! [`AfterReady`] is for optional work only: nothing required may live there.
+//! [`OnNodeReady`] is for optional work only: nothing required may live there.
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rdm_core::{MemberStatus, MeshDigest};
 use std::time::Duration;
 use rdm_transport::topology::{DigestView, TopologyView};
-use rdm_transport::{CancelToken, BeforeReadyGate, NodeRpcClient};
+use rdm_transport::{CancelToken, PreNodeReadyGate, NodeRpcClient};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::Instrument;
@@ -116,7 +116,7 @@ pub enum StartKind {
 
 /// What the hook is handed.
 #[derive(Clone)]
-pub struct BeforeReadyCtx {
+pub struct NodeReadyCtx {
     /// Whether this is the birth's first start or a start after a stop.
     pub start_kind: StartKind,
     /// The exact birth.
@@ -143,7 +143,7 @@ pub struct BeforeReadyCtx {
     pub inherited: bool,
 }
 
-impl BeforeReadyCtx {
+impl NodeReadyCtx {
     /// The outcome for a pull the authority answered with its typed `NotReady`: wait for that
     /// authority to be Ready.
     pub fn authority_not_ready(&self, reason: impl Into<String>) -> HookOutcome {
@@ -176,47 +176,47 @@ pub enum HookOutcome {
 
 /// The one hook: run before Ready, for every birth.
 #[async_trait::async_trait]
-pub trait BeforeReady: Send + Sync {
+pub trait PreNodeReady: Send + Sync {
     /// The step this node's role takes before it reports Ready, with `ctx.authority`.
-    async fn before_ready(&self, ctx: &BeforeReadyCtx) -> HookOutcome;
+    async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome;
 }
 
 /// Optional work after Ready. Nothing required may live here, and it is not a second projection
 /// path: the node is already serving.
 #[async_trait::async_trait]
-pub trait AfterReady: Send + Sync {
+pub trait OnNodeReady: Send + Sync {
     /// Run once, after the node published ReadyForTraffic.
-    async fn after_ready(&self, ctx: &BeforeReadyCtx);
+    async fn on_node_ready(&self, ctx: &NodeReadyCtx);
 }
 
 /// What an embedding app registers, before RDM starts.
 #[derive(Clone, Default)]
-pub struct BeforeReadyHook {
-    before: Option<Arc<dyn BeforeReady>>,
-    after: Option<Arc<dyn AfterReady>>,
-    gate: BeforeReadyGate,
+pub struct NodeHooks {
+    before: Option<Arc<dyn PreNodeReady>>,
+    after: Option<Arc<dyn OnNodeReady>>,
+    gate: PreNodeReadyGate,
 }
 
-impl BeforeReadyHook {
+impl NodeHooks {
     /// No hook: the node passes at once and runs no attempt.
     pub fn none() -> Self {
         Self::default()
     }
 
     /// This hook before Ready.
-    pub fn new(hook: Arc<dyn BeforeReady>) -> Self {
+    pub fn new(hook: Arc<dyn PreNodeReady>) -> Self {
         Self { before: Some(hook), ..Self::default() }
     }
 
     /// Also run `after` once the node is Ready.
-    pub fn with_after_ready(mut self, after: Arc<dyn AfterReady>) -> Self {
+    pub fn with_on_node_ready(mut self, after: Arc<dyn OnNodeReady>) -> Self {
         self.after = Some(after);
         self
     }
 
     /// The gate RDM opens when the hook passes. The app clones it into its own server-side ops
     /// (`ServerBuilder::serve_gated`) before RDM starts.
-    pub fn gate(&self) -> BeforeReadyGate {
+    pub fn gate(&self) -> PreNodeReadyGate {
         self.gate.clone()
     }
 
@@ -342,7 +342,7 @@ impl Events {
 
 /// Where one birth's hook stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BeforeReadyState {
+pub enum PreNodeReadyState {
     /// An attempt is running.
     Running {
         /// Which attempt.
@@ -365,15 +365,15 @@ pub enum BeforeReadyState {
     Cancelled,
 }
 
-impl BeforeReadyState {
+impl PreNodeReadyState {
     /// The blocker in words, `None` once passed. This is what the Ready check names.
     pub fn blocker(&self, me: &PathName) -> Option<String> {
         match self {
             Self::Passed => None,
-            Self::Running { attempt } => Some(format!("{me}: before_ready is running (attempt {attempt})")),
-            Self::Blocked { attempt, reason, retry_on } => Some(format!("{me}: before_ready is blocked (attempt {attempt}): {reason}; it runs again on {}", retry_on.name())),
-            Self::Failed(why) => Some(format!("{me}: before_ready failed: {why}")),
-            Self::Cancelled => Some(format!("{me}: cancelled before before_ready passed")),
+            Self::Running { attempt } => Some(format!("{me}: pre_node_ready is running (attempt {attempt})")),
+            Self::Blocked { attempt, reason, retry_on } => Some(format!("{me}: pre_node_ready is blocked (attempt {attempt}): {reason}; it runs again on {}", retry_on.name())),
+            Self::Failed(why) => Some(format!("{me}: pre_node_ready failed: {why}")),
+            Self::Cancelled => Some(format!("{me}: cancelled before pre_node_ready passed")),
         }
     }
 
@@ -391,22 +391,22 @@ impl BeforeReadyState {
 
 /// A read-only view of a birth's hook state.
 #[derive(Clone)]
-pub struct BeforeReadyHandle {
-    rx: tokio::sync::watch::Receiver<BeforeReadyState>,
+pub struct PreNodeReadyHandle {
+    rx: tokio::sync::watch::Receiver<PreNodeReadyState>,
 }
 
-impl BeforeReadyHandle {
+impl PreNodeReadyHandle {
     /// The state now.
-    pub fn state(&self) -> BeforeReadyState {
+    pub fn state(&self) -> PreNodeReadyState {
         self.rx.borrow().clone()
     }
 
     /// Resolves with the reason once the hook failed; never resolves otherwise. A process selects
     /// on it beside its stop signal and ends by name.
     pub async fn failed(&self) -> String {
-        match self.rx.clone().wait_for(|s| matches!(s, BeforeReadyState::Failed(_))).await {
+        match self.rx.clone().wait_for(|s| matches!(s, PreNodeReadyState::Failed(_))).await {
             Ok(s) => match &*s {
-                BeforeReadyState::Failed(why) => why.clone(),
+                PreNodeReadyState::Failed(why) => why.clone(),
                 _ => unreachable!("waited for Failed"),
             },
             Err(_) => std::future::pending().await,
@@ -414,8 +414,8 @@ impl BeforeReadyHandle {
     }
 
     /// Resolves once the hook passed or the birth ended without passing.
-    pub async fn settled(&self) -> BeforeReadyState {
-        match self.rx.clone().wait_for(|s| !matches!(s, BeforeReadyState::Running { .. } | BeforeReadyState::Blocked { .. })).await {
+    pub async fn settled(&self) -> PreNodeReadyState {
+        match self.rx.clone().wait_for(|s| !matches!(s, PreNodeReadyState::Running { .. } | PreNodeReadyState::Blocked { .. })).await {
             Ok(s) => s.clone(),
             Err(_) => self.state(),
         }
@@ -454,33 +454,33 @@ pub enum End {
 
 /// Runs one birth's hook: the attempts, the waits between them, and the state the Ready check reads.
 pub struct HookDriver {
-    hook: Arc<dyn BeforeReady>,
-    after: Option<Arc<dyn AfterReady>>,
-    ctx: BeforeReadyCtx,
+    hook: Arc<dyn PreNodeReady>,
+    after: Option<Arc<dyn OnNodeReady>>,
+    ctx: NodeReadyCtx,
     events: Events,
-    gate: BeforeReadyGate,
-    state: tokio::sync::watch::Sender<BeforeReadyState>,
+    gate: PreNodeReadyGate,
+    state: tokio::sync::watch::Sender<PreNodeReadyState>,
     boot: tracing::Span,
     attempts: AtomicU32,
 }
 
-impl BeforeReadyHook {
+impl NodeHooks {
     /// The driver for this birth, `None` when no hook is registered. The gate is opened for a node
     /// with no hook, so an app op registered without a hook is never refused.
-    pub fn driver(&self, ctx: BeforeReadyCtx, events: Events, boot: tracing::Span) -> Option<Arc<HookDriver>> {
+    pub fn driver(&self, ctx: NodeReadyCtx, events: Events, boot: tracing::Span) -> Option<Arc<HookDriver>> {
         let Some(hook) = self.before.clone() else {
             self.gate.open();
             return None;
         };
-        let (state, _) = tokio::sync::watch::channel(BeforeReadyState::Running { attempt: 0 });
+        let (state, _) = tokio::sync::watch::channel(PreNodeReadyState::Running { attempt: 0 });
         Some(Arc::new(HookDriver { hook, after: self.after.clone(), ctx, events, gate: self.gate.clone(), state, boot, attempts: AtomicU32::new(0) }))
     }
 }
 
 impl HookDriver {
     /// A view of this hook's state.
-    pub fn handle(&self) -> BeforeReadyHandle {
-        BeforeReadyHandle { rx: self.state.subscribe() }
+    pub fn handle(&self) -> PreNodeReadyHandle {
+        PreNodeReadyHandle { rx: self.state.subscribe() }
     }
 
     /// One attempt: one span under the boot span carrying the outcome and the blocker or reason.
@@ -489,10 +489,10 @@ impl HookDriver {
     pub async fn attempt(&self) -> Step {
         let n = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
         let mark = self.events.mark(&self.ctx.authority);
-        self.state.send_replace(BeforeReadyState::Running { attempt: n });
+        self.state.send_replace(PreNodeReadyState::Running { attempt: n });
         let span = tracing::info_span!(
             parent: &self.boot,
-            "rdm.mesh.node.update.via-before-ready-attempt",
+            "rdm.mesh.node.update.via-pre-node-ready-attempt",
             node = %self.ctx.birth.name,
             node_id = %self.ctx.birth.node_id,
             incarnation_id = %self.ctx.birth.incarnation.as_str(),
@@ -503,13 +503,13 @@ impl HookDriver {
             retry_on = tracing::field::Empty,
             reason = tracing::field::Empty,
         );
-        let ctx = BeforeReadyCtx { attempt: n, ..self.ctx.clone() };
+        let ctx = NodeReadyCtx { attempt: n, ..self.ctx.clone() };
         let cancel = self.ctx.cancel.clone();
         let out = async {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => None,
-                o = self.hook.before_ready(&ctx) => Some(o),
+                o = self.hook.pre_node_ready(&ctx) => Some(o),
             }
         }
         .instrument(span.clone())
@@ -518,8 +518,8 @@ impl HookDriver {
             Some(HookOutcome::Ok) => {
                 self.gate.open();
                 span.record("outcome", "ok");
-                span.in_scope(|| tracing::info!("before_ready returned Ok"));
-                self.state.send_replace(BeforeReadyState::Passed);
+                span.in_scope(|| tracing::info!("pre_node_ready returned Ok"));
+                self.state.send_replace(PreNodeReadyState::Passed);
                 Step::Passed
             }
             Some(HookOutcome::Blocked { reason, retry_on }) => {
@@ -530,46 +530,46 @@ impl HookDriver {
                     let why = format!("the hook returned Blocked with no reason, asking to run again on {}: a blocker it does not name cannot be answered to the executor", retry_on.name());
                     span.record("outcome", "failed");
                     span.record("reason", why.as_str());
-                    span.in_scope(|| tracing::info!("before_ready returned Blocked with no reason"));
-                    self.state.send_replace(BeforeReadyState::Failed(why.clone()));
+                    span.in_scope(|| tracing::info!("pre_node_ready returned Blocked with no reason"));
+                    self.state.send_replace(PreNodeReadyState::Failed(why.clone()));
                     return Step::Failed(why);
                 }
                 if self.ctx.authority.accepted().is_none() && !matches!(retry_on, RetryOn::TargetReachable { .. }) {
                     let why = format!("the hook asked to wait for {} but this birth has no authority ({}): {reason}", retry_on.name(), match &self.ctx.authority { Authority::None(w) => w.reason(), Authority::Accepted(_) => "" });
                     span.record("outcome", "failed");
                     span.record("reason", why.as_str());
-                    span.in_scope(|| tracing::info!("before_ready asked to wait on an authority this birth does not have"));
-                    self.state.send_replace(BeforeReadyState::Failed(why.clone()));
+                    span.in_scope(|| tracing::info!("pre_node_ready asked to wait on an authority this birth does not have"));
+                    self.state.send_replace(PreNodeReadyState::Failed(why.clone()));
                     return Step::Failed(why);
                 }
                 span.record("outcome", "blocked");
                 span.record("retry_on", retry_on.name());
                 span.record("reason", reason.as_str());
-                span.in_scope(|| tracing::info!("before_ready is blocked"));
+                span.in_scope(|| tracing::info!("pre_node_ready is blocked"));
                 let blocked = tracing::info_span!(
                     parent: &self.boot,
-                    "rdm.mesh.node.reject.via-before-ready-blocked",
+                    "rdm.mesh.node.reject.via-pre-node-ready-blocked",
                     node = %self.ctx.birth.name,
                     attempt = n,
                     blocker = %reason,
                     retry_on = retry_on.name(),
                     cleared_by = tracing::field::Empty,
                 );
-                blocked.in_scope(|| tracing::info!("not ready: before_ready is blocked"));
-                self.state.send_replace(BeforeReadyState::Blocked { attempt: n, reason, retry_on: retry_on.clone() });
+                blocked.in_scope(|| tracing::info!("not ready: pre_node_ready is blocked"));
+                self.state.send_replace(PreNodeReadyState::Blocked { attempt: n, reason, retry_on: retry_on.clone() });
                 Step::Blocked(Pending { retry_on, mark, span: blocked })
             }
             Some(HookOutcome::Failed { reason }) => {
                 span.record("outcome", "failed");
                 span.record("reason", reason.as_str());
-                span.in_scope(|| tracing::info!("before_ready failed"));
-                self.state.send_replace(BeforeReadyState::Failed(reason.clone()));
+                span.in_scope(|| tracing::info!("pre_node_ready failed"));
+                self.state.send_replace(PreNodeReadyState::Failed(reason.clone()));
                 Step::Failed(reason)
             }
             None => {
                 span.record("outcome", "cancelled");
-                span.in_scope(|| tracing::info!("before_ready was cancelled: the hook and its pull ended"));
-                self.state.send_replace(BeforeReadyState::Cancelled);
+                span.in_scope(|| tracing::info!("pre_node_ready was cancelled: the hook and its pull ended"));
+                self.state.send_replace(PreNodeReadyState::Cancelled);
                 Step::Cancelled
             }
         }
@@ -587,13 +587,13 @@ impl HookDriver {
                     match self.events.wait(&pending.retry_on, self.ctx.authority.accepted(), &pending.mark, &self.ctx.cancel).await {
                         Waited::Fired(event) => {
                             pending.span.record("cleared_by", event);
-                            pending.span.in_scope(|| tracing::info!(event, "the blocker's event happened: before_ready runs again"));
+                            pending.span.in_scope(|| tracing::info!(event, "the blocker's event happened: pre_node_ready runs again"));
                             drop(pending);
                             step = self.attempt().await;
                         }
                         Waited::Cancelled => {
                             pending.span.record("cleared_by", "cancelled");
-                            self.state.send_replace(BeforeReadyState::Cancelled);
+                            self.state.send_replace(PreNodeReadyState::Cancelled);
                             return End::Cancelled;
                         }
                     }
@@ -603,15 +603,15 @@ impl HookDriver {
     }
 
     /// Run the optional after-Ready hook, once, as a task that ends with the birth.
-    pub fn spawn_after_ready(self: &Arc<Self>) {
+    pub fn spawn_on_node_ready(self: &Arc<Self>) {
         let Some(after) = self.after.clone() else { return };
         let me = self.clone();
         tokio::spawn(async move {
-            let span = tracing::info_span!(parent: &me.boot, "rdm.mesh.node.update.via-after-ready", node = %me.ctx.birth.name);
+            let span = tracing::info_span!(parent: &me.boot, "rdm.mesh.node.update.via-on-node-ready", node = %me.ctx.birth.name);
             let ctx = me.ctx.clone();
             let cancel = me.ctx.cancel.clone();
             tokio::select! {
-                () = after.after_ready(&ctx).instrument(span) => {}
+                () = after.on_node_ready(&ctx).instrument(span) => {}
                 () = cancel.cancelled() => {}
             }
         });
@@ -628,12 +628,12 @@ mod tests {
     /// attempt counter in the blocker, which would frame a new `Blocked` on every rerun.
     #[test]
     fn a_rerun_blocked_for_the_same_reason_answers_the_same_probe_blocker() {
-        let blocked = |attempt, reason: &str| BeforeReadyState::Blocked { attempt, reason: reason.into(), retry_on: RetryOn::PrimaryAddressed };
+        let blocked = |attempt, reason: &str| PreNodeReadyState::Blocked { attempt, reason: reason.into(), retry_on: RetryOn::PrimaryAddressed };
         let first = blocked(1, "rows not yet published").probe_blocker().expect("blocked answers its blocker");
         assert_eq!(first, ("rows not yet published".to_string(), RetryOn::PrimaryAddressed), "the hook's own reason and event");
         assert_eq!(Some(first.clone()), blocked(7, "rows not yet published").probe_blocker(), "the attempt is not part of the blocker");
         assert_ne!(Some(first), blocked(8, "the authority is draining").probe_blocker(), "a changed reason is a new blocker");
-        for other in [BeforeReadyState::Running { attempt: 2 }, BeforeReadyState::Passed, BeforeReadyState::Failed("x".into()), BeforeReadyState::Cancelled] {
+        for other in [PreNodeReadyState::Running { attempt: 2 }, PreNodeReadyState::Passed, PreNodeReadyState::Failed("x".into()), PreNodeReadyState::Cancelled] {
             assert_eq!(other.probe_blocker(), None, "only Blocked answers Blocked: {other:?}");
         }
     }

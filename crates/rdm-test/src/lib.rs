@@ -7,12 +7,12 @@
 pub use rdm_core::launch;
 pub mod node;
 pub(crate) use rdm_node::taskdump;
-/// The app's `before_ready` hook and everything it is handed.
-pub use rdm_node::before_ready;
+/// The app's `pre_node_ready` hook and everything it is handed.
+pub use rdm_node::node_hooks;
 pub use rdm_node::{executable_name, launch_for, read_launch, Role};
 pub use rdm_node::node_rpc;
 pub mod declare_probe;
-pub mod before_ready_probe;
+pub mod pre_node_ready_probe;
 pub mod proof_store;
 pub mod families;
 pub use rdm_node::held_name;
@@ -83,20 +83,20 @@ pub fn skew_os_clock_from_root(root: &std::path::Path, name: &str) -> Option<i64
     Some(ms)
 }
 
-/// The directory under an estate's data root where a scenario records a `before_ready` knob
-/// for one node: while the file `<root>/before-ready-knob/<path.name>` exists when the node starts, the
-/// node registers [`before_ready_probe::KnobBeforeReady`], whose hook is Blocked with the file's text as its
+/// The directory under an estate's data root where a scenario records a `pre_node_ready` knob
+/// for one node: while the file `<root>/pre-node-ready-knob/<path.name>` exists when the node starts, the
+/// node registers [`pre_node_ready_probe::KnobPreNodeReady`], whose hook is Blocked with the file's text as its
 /// reason until the text is `pass`.
-pub fn before_ready_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
-    root.join("before-ready-knob")
+pub fn pre_node_ready_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("pre-node-ready-knob")
 }
 
-/// Record `text` as node `name`'s `before_ready` knob under `root` ([`before_ready_knob_dir`]).
+/// Record `text` as node `name`'s `pre_node_ready` knob under `root` ([`pre_node_ready_knob_dir`]).
 /// The node's hook reads the knob on every attempt, while the scenario rewrites it, so the text is
 /// written to `<path.name>.staged` beside the knob and renamed over it: a read opens the old file or
 /// the new one, each whole, and never a knob truncated before its new text is written.
-pub fn write_before_ready_knob(root: &std::path::Path, name: &str, text: &str) -> std::io::Result<()> {
-    let dir = before_ready_knob_dir(root);
+pub fn write_pre_node_ready_knob(root: &std::path::Path, name: &str, text: &str) -> std::io::Result<()> {
+    let dir = pre_node_ready_knob_dir(root);
     std::fs::create_dir_all(&dir)?;
     let staged = dir.join(format!("{name}.staged"));
     std::fs::write(&staged, text)?;
@@ -136,23 +136,23 @@ mod tests {
     use super::*;
     use std::io::Read;
 
-    /// CONTRACT: a rewrite of a node's `before_ready` knob never touches the file a reader
+    /// CONTRACT: a rewrite of a node's `pre_node_ready` knob never touches the file a reader
     /// already opened: the reader holding the knob reads the text it opened, whole, and the next
-    /// open reads the new text. The knob's hook (`before_ready_probe::KnobBeforeReady`) reads the file on
+    /// open reads the new text. The knob's hook (`pre_node_ready_probe::KnobPreNodeReady`) reads the file on
     /// every attempt while a scenario rewrites it. What must NOT happen: a rewrite in place, which
     /// truncates the very file a reader holds and writes after it, so a read between the two
     /// sees the knob empty and the hook answers `Blocked` with no reason.
     #[test]
     fn a_knob_rewrite_never_touches_the_file_a_reader_holds_open() {
-        let root = std::env::temp_dir().join(format!("before-ready-knob-rewrite-{}", rdm_core::NodeId::mint()));
+        let root = std::env::temp_dir().join(format!("pre-node-ready-knob-rewrite-{}", rdm_core::NodeId::mint()));
         let (a, b) = ("the rows of orders are not yet published", "the authority of orders is draining");
-        write_before_ready_knob(&root, "mesh1.rpc.2", a).unwrap();
-        let mut held = std::fs::File::open(before_ready_knob_dir(&root).join("mesh1.rpc.2")).unwrap();
-        write_before_ready_knob(&root, "mesh1.rpc.2", b).unwrap();
+        write_pre_node_ready_knob(&root, "mesh1.rpc.2", a).unwrap();
+        let mut held = std::fs::File::open(pre_node_ready_knob_dir(&root).join("mesh1.rpc.2")).unwrap();
+        write_pre_node_ready_knob(&root, "mesh1.rpc.2", b).unwrap();
         let mut read = String::new();
         held.read_to_string(&mut read).unwrap();
         assert_eq!(read, a, "the reader that opened the knob before the rewrite reads the text it opened, whole");
-        assert_eq!(std::fs::read_to_string(before_ready_knob_dir(&root).join("mesh1.rpc.2")).unwrap(), b, "the next open reads the new text");
+        assert_eq!(std::fs::read_to_string(pre_node_ready_knob_dir(&root).join("mesh1.rpc.2")).unwrap(), b, "the next open reads the new text");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -250,13 +250,13 @@ pub async fn run_proof_launched() -> anyhow::Result<()> {
 
 /// Run a proof role process to completion with testkit seams and oracles.
 pub async fn run_proof(role: Role) -> anyhow::Result<()> {
-    run_proof_with(role, crate::before_ready::BeforeReadyHook::none(), |b| b).await
+    run_proof_with(role, crate::node_hooks::NodeHooks::none(), |b| b).await
 }
 
-/// [`run_proof`] for a proof role with a `before_ready` hook.
+/// [`run_proof`] for a proof role with a `pre_node_ready` hook.
 pub async fn run_proof_with(
     role: Role,
-    before_ready: crate::before_ready::BeforeReadyHook,
+    node_hooks: crate::node_hooks::NodeHooks,
     serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder,
 ) -> anyhow::Result<()> {
     crate::node::listen_for_stop();
@@ -277,7 +277,7 @@ pub async fn run_proof_with(
     let oracles = Oracles::open(&launch)?;
     let running = {
         use tracing::Instrument;
-        let started = crate::node::start_before_ready(&launch, before_ready, |b, seams| {
+        let started = crate::node::start_pre_node_ready(&launch, node_hooks, |b, seams| {
             serve_app(oracles.serve(
                 compose(role, &launch.node_id.to_string(), b, seams.client),
                 &launch,
@@ -307,12 +307,12 @@ pub async fn run_proof_with(
     println!("RDM_NODE_READY {}", launch.node_id);
     let ended = tokio::select! {
         () = crate::node::wait_for_signal(&executable) => None,
-        why = running.before_ready_failed() => Some(why),
+        why = running.pre_node_ready_failed() => Some(why),
     };
     if let Some(why) = ended {
-        tracing::info_span!("rdm.mesh.node.delete.via-before-ready-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("before_ready failed; this node ends"));
+        tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("pre_node_ready failed; this node ends"));
         running.stop().await;
-        return Err(anyhow::anyhow!("{} failed before_ready: {why}", launch.name));
+        return Err(anyhow::anyhow!("{} failed pre_node_ready: {why}", launch.name));
     }
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
     running.stop().await;

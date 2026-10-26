@@ -33,11 +33,9 @@ pub struct LifecycleOp {
     pub event_at_rafka_ms: u64,
 }
 
-/// One fabric state hook on one exact birth (gossip.md, "Fabric state gossip hooks"): the fields
-/// `TrafficOpening` and `TrafficOpened` carry. The subject is the
-/// commanded or reporting birth; `publisher` is the author at that hop (a `path.name`). Identity is
-/// `(kind, fabric_id, build_id, attempt, operation, node_id, incarnation)`; neither timestamp nor a
-/// forwarded receipt supplies liveness or operation authority.
+/// The fields the reserved gossip positions `Reserved15` to `Reserved18` keep (gossip.md, "Reserved
+/// lifecycle frame positions"): the state hooks of the removed state-commit (Q171) and open-traffic
+/// (Q174) checklists. None is sent; a receiver refuses each by name before it decodes the fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateHook {
     /// The fabric the checklist belongs to.
@@ -50,19 +48,12 @@ pub struct StateHook {
     pub build_id: String,
     /// The Build attempt that holds the checklist.
     pub attempt: u32,
-    /// The operation: `open-traffic:<fabric_id>`.
+    /// The operation.
     pub operation: String,
     /// The author at this hop, by `path.name`.
     pub publisher: String,
     /// When the event happened, in Rafka-time; evidence only.
     pub event_at_rafka_ms: u64,
-}
-
-impl StateHook {
-    /// The mesh of the author: the first segment of its `path.name`.
-    pub fn publisher_mesh(&self) -> &str {
-        self.publisher.split('.').next().unwrap_or_default()
-    }
 }
 
 impl LifecycleOp {

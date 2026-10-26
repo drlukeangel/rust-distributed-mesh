@@ -5,13 +5,13 @@
 //! operation and is never resumed. Operations already admitted at an executor finish or fail within
 //! their bounds, their launch evidence retained; a checklist the fabric-primary drives itself ends at the
 //! acceptance; when every open attempt of the interrupted Build has ended its run receives `Failed`
-//! naming the delete, and the teardown runs mesh by mesh. Before the initial fabric first reaches
-//! ready-for-traffic, fabric.delete is admitted during the Day-0 Build, while a standalone mesh.delete or
-//! node.delete is refused build-in-progress (lifecycles/fabric-delete.md "Precondition").
+//! naming the delete, and the teardown runs mesh by mesh. While a Build is in progress fabric.delete is
+//! admitted, while a standalone mesh.delete or node.delete is refused build-in-progress
+//! (lifecycles/fabric-delete.md "Precondition").
 //!
 //! Every estate runs the testkit's faulted node-admin (`faults::binding_set`), so a cell holds an
-//! executor at a cut through its fault door; the testkit application (`RDM_TEST_APP=hold`) holds the
-//! fabric-primary's open-traffic action when a cell needs a fabric that never reaches ready-for-traffic.
+//! executor at a cut through its fault door; a cell that needs a fabric that never reaches
+//! ready-for-traffic holds a planned node's `pre_node_ready` (`rdm_test::write_pre_node_ready_knob`).
 
 use crate::build_log;
 use rdm_client::{BuildFrame, BuildId, BuildStream, CallEnd, Change, LaunchKind as NodeKind, MeshDesired, PathName, ScopeStatus};
@@ -44,26 +44,23 @@ fn start(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
 
-/// An estate of the faulted node-admin whose testkit application is `app` (`hold`: the fabric-primary's
-/// open-traffic action is held, so the fabric never reaches ready-for-traffic).
-async fn estate_with(test: &str, app: Option<&str>) -> Estate {
+/// An estate of the faulted node-admin.
+async fn estate_with(test: &str) -> Estate {
     let sha = candidate_sha();
-    let env: Vec<(&str, &str)> = app.map(|a| ("RDM_TEST_APP", a)).into_iter().collect();
-    Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &env).await.expect("the faulted-admin binding set is accepted")
+    Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted")
 }
 
 /// A fabric at `shape` that reached ready-for-traffic.
 async fn ready_fabric(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
-    let estate = estate_with(test, None).await;
+    let estate = estate_with(test).await;
     estate.reconcile_shape("fabric1", shape).await;
     estate.settles_to(shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     estate
 }
 
-/// The fabric is held pending under `build`: the fabric-primary's open-traffic action is held at its door.
+/// The fabric is held pending under `build`.
 async fn held_pending(estate: &Estate, build: &str) {
-    Door::at(estate, "mesh1.admin.1").await.wait_held(rdm_test::test_app::OPEN_TRAFFIC_CUT).await;
     estate
         .fabrics_obj()
         .await
@@ -184,21 +181,23 @@ fn torn_down(receipts: &rdm_client::BuildReceipts, meshes: usize) {
 }
 
 /// CONTRACT (build.md §1: "The one exception is fabric.delete, which may interrupt the Build in progress";
-/// "a checklist the fabric-primary drives itself ends at the acceptance"; fabric-delete.md "Receipts"):
-/// the initial fabric, the Day-0 Build's (its one mesh, mesh1, and that mesh's one node-admin, the
-/// fabric-primary: fabric-create.md step 3), whose fabric-primary's open-traffic action is held, stays
-/// pending. A standalone mesh.delete of mesh1 and node.delete of mesh1.admin.1 are refused
-/// build-in-progress; fabric.delete is admitted during the Day-0 Build, and a second fabric.delete answers
-/// the same Build. The Day-0 Build reads `Failed` naming the delete; the teardown deletes mesh1, reports
-/// fabric.deleted, and leaves no runtime the fabric launched running; no open-traffic checklist is opened
-/// after the acceptance. What must NOT happen: the stalled fabric left undeletable, a checklist opened for
-/// the delete, or a runtime left running.
+/// fabric-delete.md "Receipts"; fabric-node-hooks.md "A node never reaches ReadyForTraffic while its hook
+/// has not returned `Ok`"): a Build adding mesh1.rpc.1, whose `pre_node_ready` never passes, puts the
+/// fabric back to pending and keeps it there. A standalone mesh.delete of mesh1 and node.delete of
+/// mesh1.admin.1 are refused build-in-progress naming that Build; fabric.delete is admitted, and a second
+/// fabric.delete answers the same Build. The held Build reads `Failed` naming the delete; the teardown
+/// deletes mesh1, the held node with it, reports fabric.deleted, and leaves no runtime the fabric
+/// launched running; the fabric is never made ready-for-traffic after the acceptance. What must NOT
+/// happen: the stalled fabric left undeletable, the fabric made ready for the delete, or a runtime left
+/// running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_held_pending_by_its_held_open_traffic_action_is_deleted_with_every_receipt() {
-    let mut estate = estate_with("a_fabric_held_pending_by_its_held_open_traffic_action_is_deleted_with_every_receipt", Some("hold")).await;
-    // The Day-0 Build is Complete only once the fabric's ready-for-traffic state is set (Q154), which the
-    // held action never lets happen; no other Build is accepted before it.
-    let first = estate.accepted_build_id().await;
+async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_deleted_with_every_receipt() {
+    let mut estate = estate_with("a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_deleted_with_every_receipt").await;
+    // mesh1.rpc.1's hook is Blocked from its first attempt and never passes: its mesh, and the fabric, stay pending.
+    rdm_test::write_pre_node_ready_knob(&estate.root, "mesh1.rpc.1", "held by the cell").unwrap();
+    let held = estate.carrier().await.create(estate.shape_change(&rdm_client::FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])] }).await).await.unwrap_or_else(|end| panic!("the fabric-primary accepts the growth: {end}"));
+    let first = held.build_id().to_string();
+    drop(held);
     held_pending(&estate, &first).await;
 
     let carrier = estate.carrier().await;
@@ -208,7 +207,7 @@ async fn a_fabric_held_pending_by_its_held_open_traffic_action_is_deleted_with_e
     ];
     for (workflow, end) in standalone {
         match end {
-            Err(CallEnd::BuildInProgress { current }) => assert_eq!(current.as_str(), first.as_str(), "{workflow} is refused naming the Day-0 Build"),
+            Err(CallEnd::BuildInProgress { current }) => assert_eq!(current.as_str(), first.as_str(), "{workflow} is refused naming the held Build"),
             other => panic!("the standalone {workflow} was not refused build-in-progress: {other:?}"),
         }
     }
@@ -229,8 +228,8 @@ async fn a_fabric_held_pending_by_its_held_open_traffic_action_is_deleted_with_e
     estate.stop().await;
 
     let spans = estate.spans();
-    let opened: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-checklist-opened").into_iter().filter(|sp| start(sp) >= accepted_ns).collect();
-    assert!(opened.is_empty(), "no checklist is opened after the delete's acceptance: {opened:?}");
+    let ready: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-every-mesh-ready").into_iter().filter(|sp| start(sp) >= accepted_ns).collect();
+    assert!(ready.is_empty(), "the fabric is never made ready-for-traffic after the delete's acceptance: {ready:?}");
 }
 
 /// CONTRACT (build.md §1: "Operations already admitted at an executor finish or fail within their
@@ -244,7 +243,7 @@ async fn a_fabric_held_pending_by_its_held_open_traffic_action_is_deleted_with_e
 /// What must NOT happen: a launch opened after the acceptance, the growth resumed, or its runtime left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after() {
-    let mut estate = estate_with("a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after", None).await;
+    let mut estate = estate_with("a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after").await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
     door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create:mesh1.rpc.1"})).await;
     let grown = [MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2)])];

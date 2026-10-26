@@ -14,16 +14,16 @@
 //!
 //! A cell that stops the birth runs in its own process (the process-wide stop flag).
 
-use crate::common::{admin_side_serving, admin_side_serving_as};
+use crate::common::admin_side_serving;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rdm_admin::node_commands::CommandKey;
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
-use rdm_admin::before_ready::{HookOutcome, BeforeReadyHook};
-use rdm_test::before_ready_probe::{BeforeReadyPull, Mode, PullRequest, PullServer, TestBeforeReady};
+use rdm_core::status::{ConnectionsReceipt, Status, StatusReply, StatusRequest};
+use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
+use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, Mode, PullRequest, PullServer, TestPreNodeReady};
 use rdm_test::node;
 use std::time::Duration;
 
@@ -47,9 +47,9 @@ impl Birth {
         Self::launched(cell, None, rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
     }
 
-    /// [`Self::up`], its `before_ready` hook when one is given.
-    async fn up_before_ready(cell: &str, before_ready: Option<std::sync::Arc<TestBeforeReady>>) -> Self {
-        Self::launched(cell, before_ready, rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
+    /// [`Self::up`], its `pre_node_ready` hook when one is given.
+    async fn up_pre_node_ready(cell: &str, pre_node_ready: Option<std::sync::Arc<TestPreNodeReady>>) -> Self {
+        Self::launched(cell, pre_node_ready, rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
     }
 
     /// [`Self::up`], launched with `deadline` as its `node.connections.delete { All }` bound.
@@ -57,7 +57,7 @@ impl Birth {
         Self::launched(cell, None, deadline).await
     }
 
-    async fn launched(cell: &str, before_ready: Option<std::sync::Arc<TestBeforeReady>>, deadline: Duration) -> Self {
+    async fn launched(cell: &str, pre_node_ready: Option<std::sync::Arc<TestPreNodeReady>>, deadline: Duration) -> Self {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("{cell}-{}", NodeId::mint()));
@@ -86,13 +86,13 @@ impl Birth {
         admin.deployed(&launch, &key);
         let pull = PullServer::new(vec![]);
         pull.gate.open();
-        let running = match before_ready {
+        let running = match pre_node_ready {
             None => node::start(&launch, {
                 let pull = pull.clone();
                 move |b, _| pull.serve(b)
             })
             .await,
-            Some(h) => node::start_before_ready(&launch, BeforeReadyHook::new(h), {
+            Some(h) => node::start_pre_node_ready(&launch, NodeHooks::new(h), {
                 let pull = pull.clone();
                 move |b, _| pull.serve(b)
             })
@@ -159,7 +159,7 @@ impl Birth {
         self.pull.hold();
         let me = self.clone();
         let held = tokio::spawn(async move {
-            let out = me.admin.observer.client.call::<BeforeReadyPull>(&me.target, &PullRequest::Pull, &Self::opts()).await.0;
+            let out = me.admin.observer.client.call::<PreNodeReadyPull>(&me.target, &PullRequest::Pull, &Self::opts()).await.0;
             assert!(matches!(out, RpcOutcome::Reply(_)), "the held call answers once released: {out:?}");
         });
         self.pull.entered(1).await;
@@ -197,14 +197,14 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
         if crate::own_process::delegated(module_path!(), cell) {
             return;
         }
-        let before_ready = TestBeforeReady::new(Mode::Fixed(HookOutcome::Ok));
-        let birth = std::sync::Arc::new(Birth::up_before_ready("start-natural-key", Some(before_ready.clone())).await);
+        let pre_node_ready = TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok));
+        let birth = std::sync::Arc::new(Birth::up_pre_node_ready("start-natural-key", Some(pre_node_ready.clone())).await);
         let stopped = birth.call(&birth.stop(1)).await;
         assert!(matches!(stopped, StatusReply::Stopped { .. }), "{stopped:?}");
 
         // Attempt 2's start runs until its hook, which holds until the cell lets it go.
         let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
-        before_ready.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
+        pre_node_ready.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
         birth.admin.deployed(&birth.launch, &birth.key);
         let first = {
             let birth = birth.clone();
@@ -220,7 +220,7 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
         tokio::time::timeout(Duration::from_secs(20), spans.recorded("rdm.node_admin.status.update.via-start-node", |f| f.get("joined").map(String::as_str) == Some("true")))
             .await
             .expect("attempt 3's StartNode joins the start under way instead of running one of its own");
-        before_ready.set_mode(Mode::Fixed(HookOutcome::Ok));
+        pre_node_ready.set_mode(Mode::Fixed(HookOutcome::Ok));
         resume.notify_one();
 
         assert_eq!(first.await.unwrap(), StatusReply::Started, "attempt 2's start completes");
@@ -228,252 +228,6 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
         birth.status_heard(MemberStatus::ReadyForTraffic).await;
         let rejoins = spans_named(&spans, "rdm.mesh.node.update.via-start");
         assert_eq!(rejoins.len(), 1, "one rejoin of the birth: {rejoins:?}");
-        let _ = std::fs::remove_dir_all(&birth.dir);
-    })
-}
-
-/// A state action that holds until the cell opens its gate, counting every run.
-struct HeldActions {
-    entered: tokio::sync::Notify,
-    gate: tokio::sync::watch::Sender<bool>,
-    runs: std::sync::atomic::AtomicUsize,
-}
-
-impl HeldActions {
-    fn new() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self { entered: tokio::sync::Notify::new(), gate: tokio::sync::watch::Sender::new(false), runs: std::sync::atomic::AtomicUsize::new(0) })
-    }
-    async fn run(&self) -> Result<(), String> {
-        self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.entered.notify_one();
-        let mut open = self.gate.subscribe();
-        let _ = open.wait_for(|o| *o).await;
-        Ok(())
-    }
-    fn runs(&self) -> usize {
-        self.runs.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-#[async_trait::async_trait]
-impl rdm_admin::fabric_status::StateActions for HeldActions {
-    async fn open_traffic(&self, _node: &rdm_core::PathName) -> Result<(), String> {
-        self.run().await
-    }
-}
-
-impl Birth {
-    /// `admin` records itself `mesh1`'s mesh-primary at `revision`, which its next digest carries;
-    /// resolves once this birth holds that record.
-    async fn record_mesh_primary(&self, admin: &crate::common::AdminSide, revision: u64) {
-        let holder = rdm_core::seat::Primary { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), revision };
-        admin.observer.topology_view.primaries().take(rdm_core::seat::Seat::MeshPrimary, &holder);
-        let seats = self.running.topology_view.primaries();
-        let mut changed = seats.subscribe();
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while seats.mesh("mesh1").as_ref() != Some(&holder) {
-                changed.changed().await.unwrap();
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("{NODE} never held {} as mesh1's primary at revision {revision}", admin.launcher.name));
-    }
-
-    /// The state command `kind` of `attempt` from `admin`, the birth resolved by it.
-    async fn state_from(&self, admin: &crate::common::AdminSide, kind: rdm_admin::fabric_state::StateCommand, attempt: u32) -> StatusReply {
-        let key = rdm_admin::fabric_state::StateKey { kind, fabric_id: self.launch.fabric_id.clone(), build_id: BUILD.into(), attempt };
-        let req = kind.down(&key, self.launch.node_id.clone(), self.launch.incarnation.clone());
-        match admin.observer.client.call::<Status>(&self.target, &req, &Self::opts()).await.0 {
-            RpcOutcome::Reply(r) => r.into_value(),
-            other => panic!("{} from {} did not end in a reply: {other:?}", req.op(), admin.launcher.name),
-        }
-    }
-}
-
-impl Birth {
-    /// Another node-admin of mesh1, `name`, on the same gossip mesh, resolving the birth; resolves once
-    /// the birth hears its digest.
-    async fn other_admin(&self, name: &str) -> crate::common::AdminSide {
-        let admin = admin_side_serving_as("127.0.0.1".parse().unwrap(), &self.launch.fabric_id, name, MemberStatus::ReadyForTraffic, |b| b).await;
-        let admin1_addr = iroh::EndpointAddr::new(self.admin.seed.0.parse::<iroh::PublicKey>().unwrap()).with_ip_addr(self.admin.seed.1);
-        admin.observer.topology_view.join_peers(vec![admin1_addr]).await.expect("the admin joins admin1's mesh channel");
-        let (d, _) = self.admin.observer.topology_view.digest_view.get(self.launch.node_id.as_str()).unwrap();
-        admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let digest_view = &self.running.topology_view.digest_view;
-        let (mut heard, mut digests) = (digest_view.heard_changes(), digest_view.digest_changes());
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while digest_view.get(admin.launcher.node_id.as_str()).is_none() {
-                tokio::select! {
-                    r = heard.changed() => r.unwrap(),
-                    r = digests.changed() => r.unwrap(),
-                }
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("the birth hears {name}'s digest"));
-        admin
-    }
-}
-
-/// Resolves once `admin` has taken a check-in named `completion` of `attempt` from the birth and
-/// the birth's completion call has received its reply.
-async fn checked_in(admin: &crate::common::AdminSide, spans: &crate::common::Spans, completion: &str, attempt: u32) {
-    let mut held = admin.observer.check_ins.subscribe();
-    tokio::time::timeout(Duration::from_secs(20), held.wait_for(|reqs| reqs.iter().any(|r| r.op() == completion && rdm_admin::fabric_state::StateOp::of(r).is_some_and(|o| o.attempt == attempt))))
-        .await
-        .unwrap_or_else(|_| panic!("{} never took a {completion} check-in of attempt {attempt}", admin.launcher.name))
-        .expect("the check-ins are held by the admin side");
-    let attempt_str = attempt.to_string();
-    let commander = admin.launcher.node_id.as_str();
-    tokio::time::timeout(
-        Duration::from_secs(20),
-        spans.recorded("rdm.node_admin.status.update.via-completion-call", |c| {
-            c.get("completion").map(String::as_str) == Some(completion)
-                && c.get("attempt").map(String::as_str) == Some(attempt_str.as_str())
-                && c.get("commander").map(String::as_str) == Some(commander)
-                && c.get("answer").map(String::as_str) == Some("applied")
-        }),
-    )
-    .await
-    .unwrap_or_else(|_| panic!("the birth's {completion} check-in call to {} never completed", admin.launcher.name));
-}
-
-/// CONTRACT: a fabric checklist is scoped to the accepted Build and attempt, never to the node-admin
-/// that commands it (node-rpc-envelope.md, "Fabric status command pairs": "The state's command is scoped to the
-/// accepted Build, attempt and planned exact births"; "Idempotency is the natural key"). When the
-/// mesh's primary seat moves and the new holder sends the same checklist, the birth answers it
-/// `AlreadyApplied` and its action is not run again: while the action runs the new holder is owed
-/// the check-in once it is stored, and after it is stored the check-in is made to the new holder at
-/// once (serve_state's contract: that is how a new primary's checklist rebuilds itself). What must
-/// NOT happen: `Applied` to the new holder and a second run of the checklist's action.
-#[test]
-fn a_state_command_sent_again_by_the_new_primary_is_the_same_state_key_and_its_action_runs_once() {
-    let cell = "a_state_command_sent_again_by_the_new_primary_is_the_same_state_key_and_its_action_runs_once";
-    let cap = crate::common::capture(cell);
-    let spans = cap.spans.clone();
-    cap.run(crate::common::Threads::Workers(4), async move {
-        use rdm_admin::fabric_state::StateCommand;
-        let birth = Birth::up("state-new-commander").await;
-        let actions = HeldActions::new();
-        birth.running.own.set_state_actions(actions.clone());
-
-        // A second node-admin of mesh1 on the same gossip mesh, resolving the birth too.
-        let admin2 = admin_side_serving_as("127.0.0.1".parse().unwrap(), &birth.launch.fabric_id, "mesh1.admin.2", MemberStatus::ReadyForTraffic, |b| b).await;
-        let admin1_addr = iroh::EndpointAddr::new(birth.admin.seed.0.parse::<iroh::PublicKey>().unwrap()).with_ip_addr(birth.admin.seed.1);
-        admin2.observer.topology_view.join_peers(vec![admin1_addr]).await.expect("admin2 joins admin1's mesh channel");
-        let (d, _) = birth.admin.observer.topology_view.digest_view.get(birth.launch.node_id.as_str()).unwrap();
-        admin2.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let digest_view = &birth.running.topology_view.digest_view;
-        let (mut heard, mut digests) = (digest_view.heard_changes(), digest_view.digest_changes());
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while digest_view.get(admin2.launcher.node_id.as_str()).is_none() {
-                tokio::select! {
-                    r = heard.changed() => r.unwrap(),
-                    r = digests.changed() => r.unwrap(),
-                }
-            }
-        })
-        .await
-        .expect("the birth hears admin2's digest");
-
-        // Attempt 1's checklist: admin1 commands it and the action runs, held.
-        birth.record_mesh_primary(&birth.admin, 1).await;
-        assert_eq!(birth.state_from(&birth.admin, StateCommand::OpenTraffic, 1).await, StatusReply::Applied, "the checklist's first command is admitted");
-        actions.entered.notified().await;
-        // The seat moves; the new holder sends the same checklist while the action runs.
-        birth.record_mesh_primary(&admin2, 2).await;
-        assert_eq!(birth.state_from(&admin2, StateCommand::OpenTraffic, 1).await, StatusReply::AlreadyApplied, "the same checklist from the new seat holder is the checklist already taken");
-        actions.gate.send_replace(true);
-        checked_in(&birth.admin, &spans, "traffic-opened", 1).await;
-        checked_in(&admin2, &spans, "traffic-opened", 1).await;
-        assert_eq!(actions.runs(), 1, "the open-traffic action runs once for the checklist, whoever commands it");
-
-        // Attempt 2's checklist: the action is stored before the seat moves; the new holder is checked in at once.
-        birth.record_mesh_primary(&birth.admin, 3).await;
-        assert_eq!(birth.state_from(&birth.admin, StateCommand::OpenTraffic, 2).await, StatusReply::Applied);
-        checked_in(&birth.admin, &spans, "traffic-opened", 2).await;
-        birth.record_mesh_primary(&admin2, 4).await;
-        assert_eq!(birth.state_from(&admin2, StateCommand::OpenTraffic, 2).await, StatusReply::AlreadyApplied, "a stored checklist from the new seat holder is the checklist already taken");
-        checked_in(&admin2, &spans, "traffic-opened", 2).await;
-        assert_eq!(actions.runs(), 2, "one action per checklist: once for each attempt");
-        for attempt in ["1", "2"] {
-            let acted = |a: &str| spans_named(&spans, "rdm.node_admin.fabric.update.via-member-check-in").into_iter().filter(|f| f.get("attempt").map(String::as_str) == Some(attempt) && f.get("acted").map(String::as_str) == Some(a)).count();
-            assert_eq!((acted("true"), acted("false")), (1, 1), "attempt {attempt}: one acted checklist for the first holder and one check-in without acting for the new holder");
-        }
-        let _ = std::fs::remove_dir_all(&birth.dir);
-    })
-}
-
-/// CONTRACT: a member checks in with the primary that commanded it (fabric-ready-for-traffic.md, checklist
-/// sequence: "M->>N: open-traffic (exact planned birth)" then "N->>M: traffic-opened"; states.md,
-/// "The check-in checklist": "A new primary, through election or recovery, re-sends the current state's command.
-/// Members already done check in again, and the checklist rebuilds itself"). The seat moved to
-/// admin2, which commands the birth at once; the birth has not yet heard the seat move, so its seat
-/// view still names admin1. The command is admitted and the birth's check-in goes to admin2, the
-/// commander the call came from. What must NOT happen: the check-in addressed to the holder the
-/// birth's primary view names, which no longer holds the checklist, refuses it `RejectedNotPrimary` and
-/// never asks again: admin2's command was answered `Applied`, so it never re-sends and its
-/// checklist never completes (gate red, tree b24a4303, mesh_elections__sticky_seat trace
-/// 6bd35dbd: mesh1.rpc.1/2/3 checked in at the old holder 625kzaz0h98j, rejected-not-primary).
-#[test]
-fn a_state_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_checked_in_to_that_commander() {
-    let cell = "a_state_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_checked_in_to_that_commander";
-    let cap = crate::common::capture(cell);
-    let spans = cap.spans.clone();
-    cap.run(crate::common::Threads::Workers(4), async move {
-        use rdm_admin::fabric_state::StateCommand;
-        let birth = Birth::up("state-unheard-commander").await;
-        let actions = HeldActions::new();
-        actions.gate.send_replace(true);
-        birth.running.own.set_state_actions(actions.clone());
-
-        // A second node-admin of mesh1 on the same gossip mesh, resolving the birth, and carried in
-        // admin1's member projection, so the birth names a call from it by its endpoint.
-        let admin2 = admin_side_serving_as("127.0.0.1".parse().unwrap(), &birth.launch.fabric_id, "mesh1.admin.2", MemberStatus::ReadyForTraffic, |b| b).await;
-        let admin1_addr = iroh::EndpointAddr::new(birth.admin.seed.0.parse::<iroh::PublicKey>().unwrap()).with_ip_addr(birth.admin.seed.1);
-        admin2.observer.topology_view.join_peers(vec![admin1_addr]).await.expect("admin2 joins admin1's mesh channel");
-        let (d, _) = birth.admin.observer.topology_view.digest_view.get(birth.launch.node_id.as_str()).unwrap();
-        admin2.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let _carried = birth.admin.carry_in_projection(&admin2);
-        // The new primary has been a member all along: the birth hears its digest (its resolver dials it).
-        let digest_view = &birth.running.topology_view.digest_view;
-        let (mut heard, mut digests) = (digest_view.heard_changes(), digest_view.digest_changes());
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while digest_view.get(admin2.launcher.node_id.as_str()).is_none() {
-                tokio::select! {
-                    r = heard.changed() => r.unwrap(),
-                    r = digests.changed() => r.unwrap(),
-                }
-            }
-        })
-        .await
-        .expect("the birth hears admin2's digest");
-        let admin2_endpoint = admin2.own_digest().node.endpoint_id.0.clone();
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while birth.running.topology_view.projected_member_at(&admin2_endpoint).is_none() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the birth's member projection names admin2 at its endpoint");
-
-        // The birth's primary view names admin1; admin2, which took the seat, commands the checklist.
-        birth.record_mesh_primary(&birth.admin, 1).await;
-        assert_eq!(birth.state_from(&admin2, StateCommand::OpenTraffic, 1).await, StatusReply::Applied, "the checklist's first command is admitted, whoever sends it");
-        checked_in(&admin2, &spans, "traffic-opened", 1).await;
-        let at_admin1 = birth.admin.observer.check_ins.borrow().iter().filter(|r| r.op() == "traffic-opened").count();
-        assert_eq!(at_admin1, 0, "the check-in went to the commander, never to the holder the birth's primary view names");
-        // The completion call's span closes once its reply is back at the birth, after admin2 took it.
-        let admin2_id = admin2.launcher.node_id.to_string();
-        let named_admin2 = || spans_named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().any(|c| c.get("commander") == Some(&admin2_id) && c.get("answer").map(String::as_str) == Some("applied"));
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while !named_admin2() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("the completion call names admin2 as its commander and was applied: {:?}", spans_named(&spans, "rdm.node_admin.status.update.via-completion-call")));
-        assert_eq!(actions.runs(), 1, "the action ran once");
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }
@@ -536,14 +290,14 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopp
         if crate::own_process::delegated(module_path!(), cell) {
             return;
         }
-        let before_ready = TestBeforeReady::new(Mode::Fixed(HookOutcome::Ok));
-        let birth = std::sync::Arc::new(Birth::up_before_ready("stop-during-start", Some(before_ready.clone())).await);
+        let pre_node_ready = TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok));
+        let birth = std::sync::Arc::new(Birth::up_pre_node_ready("stop-during-start", Some(pre_node_ready.clone())).await);
         let stopped = birth.call(&birth.stop(1)).await;
         assert!(matches!(stopped, StatusReply::Stopped { .. }), "{stopped:?}");
 
         // The start runs until its hook, which holds until the cell lets it go.
         let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
-        before_ready.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
+        pre_node_ready.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
         birth.admin.deployed(&birth.launch, &birth.key);
         let start = {
             let birth = birth.clone();
@@ -558,7 +312,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopp
             "a StopNode while the start is under way is refused naming the start, never answered with the stopped cycle's receipt: {during:?}"
         );
 
-        before_ready.set_mode(Mode::Fixed(HookOutcome::Ok));
+        pre_node_ready.set_mode(Mode::Fixed(HookOutcome::Ok));
         resume.notify_one();
         assert_eq!(start.await.unwrap(), StatusReply::Started);
         birth.status_heard(MemberStatus::ReadyForTraffic).await;
@@ -613,86 +367,3 @@ fn the_node_answers_a_connections_delete_on_its_command_stream_in_order_for_both
     })
 }
 
-/// CONTRACT (i146 Q44, Q39; node-rpc.md §43 and its outcome table, "receiving birth proven exited or
-/// removed ... UNAVAILABLE"): a member's check-in owed to a primary that is removed ends receiver-gone,
-/// `UNAVAILABLE`, and is owed again to the holder the seat names next; the action runs once. The birth
-/// takes admin2's open-traffic command, its action held; admin2 goes away (its endpoint closed), the
-/// action is released and the check-in is owed to admin2 and resent; admin2's removal reaches the
-/// birth's resolver and ends the call `UNAVAILABLE`; the seat then moves to admin3, and the check-in is
-/// made there. Must NOT happen: the call ending while admin2 was only unreachable, a second completion
-/// call to admin2 (a check-in loop of the birth's own), the check-in sent to admin3 before the seat
-/// names it, the action run twice.
-#[test]
-fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_primary() {
-    let cell = "a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_primary";
-    let cap = crate::common::capture(cell);
-    let spans = cap.spans.clone();
-    cap.run(crate::common::Threads::Workers(4), async move {
-        use rdm_admin::fabric_state::StateCommand;
-        let birth = Birth::up("state-removed-commander").await;
-        let actions = HeldActions::new();
-        birth.running.own.set_state_actions(actions.clone());
-        let admin2 = birth.other_admin("mesh1.admin.2").await;
-        let admin3 = birth.other_admin("mesh1.admin.3").await;
-        let (gone_id, gone_inc, gone_name) = (admin2.launcher.node_id.clone(), admin2.launcher.incarnation.clone(), admin2.launcher.name.clone());
-        let next_id = admin3.launcher.node_id.to_string();
-
-        // admin1 holds the seat at revision 1 from its boot.
-        birth.record_mesh_primary(&admin2, 2).await;
-        assert_eq!(birth.state_from(&admin2, StateCommand::OpenTraffic, 1).await, StatusReply::Applied, "the checklist's command is admitted");
-        actions.entered.notified().await;
-        // admin2 goes away; the check-in is owed to it and resent. Dropping admin2 does not wait for it to
-        // stop serving, so the action is released only once the birth's own call to admin2 (the
-        // connection the check-in rides) is answered by no one: the check-in then meets an admin2 that
-        // is gone, never one still closing (which answers `applied`). admin2 serves no Ping: its
-        // `Unserved` is an answer, so alive.
-        let gone = NodeTarget::ExactNode(gone_id.clone());
-        let probe = rdm_core::ping::PingRequest::Ping { payload: b"gone?".to_vec() };
-        let opts = CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_millis(500)), ..CallOptions::default() };
-        let answers = || async { matches!(birth.running.node_rpc.client.call::<rdm_core::ping::Ping>(&gone, &probe, &opts).await.0, RpcOutcome::Reply(_) | RpcOutcome::Unserved(_)) };
-        assert!(answers().await, "admin2 answers the birth while it lives");
-        drop(admin2);
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while answers().await {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("admin2 stops answering the birth once it is dropped");
-        let delivery = birth.running.node_rpc.client.delivery().clone();
-        let resent_before = rdm_transport::DeliveryStats::get(&delivery.stats().resends);
-        actions.gate.send_replace(true);
-        let completion = |commander: &str| spans_named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|c| c.get("commander").map(String::as_str) == Some(commander)).collect::<Vec<_>>();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while rdm_transport::DeliveryStats::get(&delivery.stats().resends) < resent_before + 3 {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the check-in owed to the unreachable admin2 is resent");
-        assert!(completion(gone_id.as_str()).is_empty(), "silence ends nothing: the check-in is still owed");
-        // admin2's removal reaches the birth's resolver: the owed call ends UNAVAILABLE.
-        birth.running.node_rpc.resolver.depart(&gone_id, &gone_inc, &gone_name);
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while completion(gone_id.as_str()).is_empty() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the removal ended the owed call");
-        let ended = completion(gone_id.as_str());
-        assert_eq!(ended.len(), 1, "one completion call to admin2 carried every resend: the birth runs no check-in loop of its own: {ended:?}");
-        assert!(ended[0].get("answer").is_some_and(|a| a.ends_with(": UNAVAILABLE")), "ended receiver-gone, UNAVAILABLE: {ended:?}");
-        assert!(admin3.observer.check_ins.borrow().is_empty(), "nothing is sent to admin3 before the seat names it");
-        // The seat names admin3: the check-in is owed to it and made there.
-        birth.record_mesh_primary(&admin3, 3).await;
-        checked_in(&admin3, &spans, "traffic-opened", 1).await;
-        let retargeted = spans_named(&spans, "rdm.node_admin.status.update.via-completion-retargeted");
-        assert!(
-            retargeted.iter().any(|r| r.get("from").map(String::as_str) == Some(gone_id.as_str()) && r.get("to") == Some(&next_id) && r.get("why").is_some_and(|w| w.ends_with(": UNAVAILABLE"))),
-            "the completion was owed again to admin3 because admin2 is gone: {retargeted:?}"
-        );
-        assert_eq!(actions.runs(), 1, "the action ran once");
-        let _ = std::fs::remove_dir_all(&birth.dir);
-    })
-}

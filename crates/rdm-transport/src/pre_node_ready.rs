@@ -1,4 +1,4 @@
-//! The server half of born-full (`before_ready`): the gate an app's own ops sit behind
+//! The server half of born-full (`pre_node_ready`): the gate an app's own ops sit behind
 //! until the app's hook on this node returned `Ok`, and the cancellation token a birth's retirement
 //! ends its hook with.
 //!
@@ -13,16 +13,16 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Whether this node's `before_ready` returned `Ok`. Closed at birth; RDM opens it when the
+/// Whether this node's `pre_node_ready` returned `Ok`. Closed at birth; RDM opens it when the
 /// hook passes, and closes it when the birth is stopped (a stop), so a stopped node answers no app op
 /// until its start's hook has passed again. Cloned into every handler that must not answer before
 /// then.
 #[derive(Clone, Debug, Default)]
-pub struct BeforeReadyGate {
+pub struct PreNodeReadyGate {
     passed: Arc<AtomicBool>,
 }
 
-impl BeforeReadyGate {
+impl PreNodeReadyGate {
     /// A closed gate.
     pub fn new() -> Self {
         Self::default()
@@ -45,7 +45,7 @@ impl BeforeReadyGate {
 
     /// The reason a closed gate gives, `None` once it is open.
     pub fn refusal(&self) -> Option<String> {
-        (!self.is_open()).then(|| "this node's before_ready hook has not returned Ok".to_string())
+        (!self.is_open()).then(|| "this node's pre_node_ready hook has not returned Ok".to_string())
     }
 }
 
@@ -88,9 +88,9 @@ impl CancelToken {
 impl ServerBuilder {
     /// [`ServerBuilder::serve`] for an app op that must not answer before its hook returned `Ok`: until
     /// `gate` is open the handler does not run and the caller gets the protocol's typed `NotReady`
-    /// (`rdm.node_rpc.request.reject.via-before-ready-not-passed`). A lifecycle op is RDM's, not the
+    /// (`rdm.node_rpc.request.reject.via-pre-node-ready-not-passed`). A lifecycle op is RDM's, not the
     /// app's, and is never served through this door.
-    pub fn serve_gated<P, F, Fut>(self, owner: OpOwner, gate: BeforeReadyGate, f: F) -> Self
+    pub fn serve_gated<P, F, Fut>(self, owner: OpOwner, gate: PreNodeReadyGate, f: F) -> Self
     where
         P: NodeProtocol,
         F: Fn(PeerContext, P::Request) -> Fut + Send + Sync + 'static,
@@ -104,8 +104,8 @@ impl ServerBuilder {
                     Some(fut) => fut.await,
                     None => {
                         let reason = gate.refusal().unwrap_or_default();
-                        tracing::info_span!("rdm.node_rpc.request.reject.via-before-ready-not-passed", protocol = P::NAME, op = P::OP, reason = %reason)
-                            .in_scope(|| tracing::info!("an app op reached a node whose before_ready has not passed: typed NotReady"));
+                        tracing::info_span!("rdm.node_rpc.request.reject.via-pre-node-ready-not-passed", protocol = P::NAME, op = P::OP, reason = %reason)
+                            .in_scope(|| tracing::info!("an app op reached a node whose pre_node_ready has not passed: typed NotReady"));
                         Ok(P::not_ready(reason))
                     }
                 }

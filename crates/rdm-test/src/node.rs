@@ -13,17 +13,17 @@ pub use rdm_node::node::{
     RunningNode,
 };
 
-/// [`start_with_seams`] for an app with a hook before Ready: `before_ready` carries its
-/// `before_ready` hook (and the gate its own server-side ops sit behind).
-pub async fn start_before_ready(
+/// [`start_with_seams`] for an app with a hook before Ready: `pre_node_ready` carries its
+/// `pre_node_ready` hook (and the gate its own server-side ops sit behind).
+pub async fn start_pre_node_ready(
     launch: &Launch,
-    before_ready: rdm_node::before_ready::BeforeReadyHook,
+    node_hooks: rdm_node::node_hooks::NodeHooks,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<RunningNode> {
-    start_with_rafka_time_before_ready(
+    start_with_rafka_time_pre_node_ready(
         launch,
         rdm_transport::clock::RafkaTime::unadopted(),
-        before_ready,
+        node_hooks,
         register,
     )
     .await
@@ -57,10 +57,10 @@ pub async fn start_with_seams(
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<RunningNode> {
     let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
-    start_with_rafka_time_before_ready(
+    start_with_rafka_time_pre_node_ready(
         launch,
         rafka_time,
-        rdm_node::before_ready::BeforeReadyHook::none(),
+        rdm_node::node_hooks::NodeHooks::none(),
         register,
     )
     .await
@@ -112,17 +112,17 @@ pub fn echo_streams(mut acceptor: rdm_transport::connections::Acceptor, own: Str
     })
 }
 
-/// [`start_before_ready`], also registering one data-plane `alpn`: its dial half handed to the
+/// [`start_pre_node_ready`], also registering one data-plane `alpn`: its dial half handed to the
 /// originate door (`OriginateRequest::Stream`), its accept half returned.
-pub async fn start_before_ready_with_alpn(
+pub async fn start_pre_node_ready_with_alpn(
     launch: &Launch,
-    before_ready: rdm_node::before_ready::BeforeReadyHook,
+    node_hooks: rdm_node::node_hooks::NodeHooks,
     alpn: rdm_transport::connections::Alpn,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<(RunningNode, rdm_transport::connections::Acceptor)> {
     let name = alpn.name.clone();
     let dialer = Arc::new(std::sync::OnceLock::new());
-    let running = start_with_rafka_time_before_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), before_ready, register, &[alpn], dialer.clone()).await?;
+    let running = start_with_rafka_time_pre_node_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, register, &[alpn], dialer.clone()).await?;
     let (d, acceptor) = running.connections(&name).map_err(|e| anyhow::anyhow!("taking the {:?} handle: {e:?}", String::from_utf8_lossy(&name)))?.split();
     let _ = dialer.set(d);
     Ok((running, acceptor))
@@ -138,25 +138,25 @@ pub async fn start_with_seams_and_alpn(
 ) -> Result<(RunningNode, rdm_transport::connections::Acceptor)> {
     let name = alpn.name.clone();
     let dialer = Arc::new(std::sync::OnceLock::new());
-    let running = start_with_rafka_time_before_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::before_ready::BeforeReadyHook::none(), register, &[alpn], dialer.clone()).await?;
+    let running = start_with_rafka_time_pre_node_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), register, &[alpn], dialer.clone()).await?;
     let (d, acceptor) = running.connections(&name).map_err(|e| anyhow::anyhow!("taking the {:?} handle: {e:?}", String::from_utf8_lossy(&name)))?.split();
     let _ = dialer.set(d);
     Ok((running, acceptor))
 }
 
-async fn start_with_rafka_time_before_ready(
+async fn start_with_rafka_time_pre_node_ready(
     launch: &Launch,
     rafka_time: rdm_transport::clock::RafkaTime,
-    before_ready: rdm_node::before_ready::BeforeReadyHook,
+    node_hooks: rdm_node::node_hooks::NodeHooks,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<RunningNode> {
-    start_with_rafka_time_before_ready_alpns(launch, rafka_time, before_ready, register, &[], Arc::new(std::sync::OnceLock::new())).await
+    start_with_rafka_time_pre_node_ready_alpns(launch, rafka_time, node_hooks, register, &[], Arc::new(std::sync::OnceLock::new())).await
 }
 
-async fn start_with_rafka_time_before_ready_alpns(
+async fn start_with_rafka_time_pre_node_ready_alpns(
     launch: &Launch,
     rafka_time: rdm_transport::clock::RafkaTime,
-    before_ready: rdm_node::before_ready::BeforeReadyHook,
+    node_hooks: rdm_node::node_hooks::NodeHooks,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
     alpns: &[rdm_transport::connections::Alpn],
     data_plane: Arc<std::sync::OnceLock<rdm_transport::connections::Dialer>>,
@@ -168,7 +168,7 @@ async fn start_with_rafka_time_before_ready_alpns(
         launch,
         node_backend(),
         rafka_time,
-        before_ready,
+        node_hooks,
         move |base| Arc::new(crate::faults::FaultedConnectionsStorage::new(base, fault_for_storage)),
         Some(knob_fn),
         move |b, ns| {

@@ -29,9 +29,9 @@ use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
 use rdm_core::views::{ConnectionView, ConnectionsView};
 use rdm_core::{LifecycleOp, MemberStatus, MeshDigest};
 use rdm_transport::topology::TopologyView;
-use rdm_transport::{NodeRpcClient, NodeRpcServer, NodeTarget};
+use rdm_transport::{NodeRpcClient, NodeRpcServer};
 use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
-use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest, WhichMesh};
+use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NodeState, StatusReply, StatusRequest, WhichMesh};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -114,7 +114,7 @@ pub const CONNECTIONS_DELETE: &str = "node.connections.delete";
 /// Why a start stopped, and at which step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartFailed {
-    /// `node.join`, `node.before-ready`, `node.topology` or `node.rafka-time`.
+    /// `node.join`, `node.pre-node-ready`, `node.topology` or `node.rafka-time`.
     pub step: &'static str,
     /// Why.
     pub reason: String,
@@ -161,7 +161,7 @@ pub trait Session: Send + Sync {
     /// are in flight and answered on their connections). The endpoint stays bound.
     async fn cut(&self, spare: &[iroh::PublicKey]) -> CutReport;
     /// Rejoin as the same birth: join the authority, rejoin the mesh channel, take the topology and
-    /// run the `before_ready` hook with `AfterStop` in its context under `retire`, the new cycle's token.
+    /// run the `pre_node_ready` hook with `AfterStop` in its context under `retire`, the new cycle's token.
     /// `commander` holds the endpoint key of the call that commanded the start last: each join
     /// attempt goes back over that call ([`crate::workflows::node_start::JoinTo::Commander`]), and
     /// the admin that answers is the hook's accepting authority. `rows` is the start's hold on this
@@ -213,23 +213,6 @@ pub struct SignalStopped {
 /// The operation `op` names, as a declaration carries it (i146 Q36).
 pub(crate) fn declared(op: &LifecycleOp) -> rdm_core::status::DeclaredOperation {
     rdm_core::status::DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() }
-}
-
-/// How far this birth took a state command, keyed by the state key alone: its kind in its fabric for the
-/// accepted Build and attempt (node-rpc-envelope.md, "Fabric status command pairs"), never the node-admin
-/// that commanded it.
-enum CheckInProgress {
-    /// The action is running for `first`, the commander whose command started it: every other
-    /// commander that sent the checklist meanwhile (a new holder of the mesh's primary seat), with the
-    /// serve span of its command, is owed the check-in once the action is stored.
-    Acting {
-        /// The commander whose command started the action.
-        first: NodeId,
-        /// The commanders owed the check-in when it is stored.
-        joined: Vec<(NodeId, tracing::Span)>,
-    },
-    /// The action is stored: a commander that sends the checklist is checked in at once.
-    Acted,
 }
 
 /// Where a birth stands between a stop and a start.
@@ -285,7 +268,7 @@ pub struct NodeSelf {
     /// a surface whose declarations are made elsewhere (a node-admin).
     pub declare: Option<Declare>,
     /// Cancelled when `node.connections.delete { All }` or `stop-node` is admitted: the birth is
-    /// retired, so its `before_ready` hook and any pull it has in flight end.
+    /// retired, so its `pre_node_ready` hook and any pull it has in flight end.
     pub retire: Option<rdm_transport::Retirement>,
     /// The backbone, for a node-admin: its state hooks go out on its mesh channel and the backbone.
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
@@ -311,12 +294,6 @@ pub struct NodeSelf {
     /// The process's data-plane `ConnectionsRegistry`: `node.connections.delete` closes active
     /// `Connection`s by their row id and blocks new connections under `All`.
     data_connections: Mutex<Option<rdm_transport::connections::ConnectionsRegistry>>,
-    /// What this birth completes before it checks in to an open-traffic checklist.
-    state_actions: Mutex<Arc<dyn crate::fabric_states::StateActions>>,
-    /// The state commands this birth took, by state key, and how far it took each.
-    states_seen: Mutex<std::collections::HashMap<crate::fabric_states::StateKey, CheckInProgress>>,
-    /// The state keys this node's action ran for, in any role (`fabric_states::ActedRecord`).
-    acted: Arc<crate::fabric_states::ActedRecord>,
 }
 
 impl NodeSelf {
@@ -336,7 +313,7 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         topology_view.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), state_actions: Mutex::new(Arc::new(crate::fabric_states::NoAction)), states_seen: Mutex::new(std::collections::HashMap::new()), acted: Arc::default() }
+        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -500,7 +477,7 @@ impl NodeSelf {
         // `All` is graceful node-wide closure (node-connections-delete.md step 3): admission of new
         // application work is blocked, and the eligible work in flight (every dispatched handler but
         // this call's own) is let finish, bounded by the birth's `connections_delete_deadline`.
-        // The birth is retired at the admission of `All`: its `before_ready` hook and any pull
+        // The birth is retired at the admission of `All`: its `pre_node_ready` hook and any pull
         // it has in flight end; it returns to service only through a stop and a start.
         let in_flight = match scope {
             ConnectionScope::All => {
@@ -717,195 +694,6 @@ impl NodeSelf {
         !matches!(*self.cycle.lock().unwrap(), Cycle::Live(_))
     }
 
-    /// This surface, completing `actions` before it checks in to a checklist.
-    pub fn with_state_actions(self, actions: Arc<dyn crate::fabric_states::StateActions>) -> Self {
-        self.set_state_actions(actions);
-        self
-    }
-
-    /// This surface, with the record of the state keys this node's action ran for shared with the
-    /// admin's checklist driver: one action per state key whichever role runs it.
-    pub fn with_acted(mut self, acted: Arc<crate::fabric_states::ActedRecord>) -> Self {
-        self.acted = acted;
-        self
-    }
-
-    /// Complete `actions` before checking in, from the next state command this birth takes.
-    pub fn set_state_actions(&self, actions: Arc<dyn crate::fabric_states::StateActions>) {
-        *self.state_actions.lock().unwrap() = actions;
-    }
-
-    /// Serve `open-traffic` from `commander`, the primary of this birth's mesh
-    /// (the caller resolved it). The command is admitted at once; the birth then completes its
-    /// action and calls the matching completion at `commander`. A checklist this birth already took,
-    /// whichever commander sends it, is answered `AlreadyApplied` and its action is not run again:
-    /// the check-in is made to the commander that sends it, at once when the action is stored and
-    /// otherwise once it is. That is how a new primary's checklist rebuilds itself.
-    fn serve_state(self: &Arc<Self>, commander: &NodeId, req: &StatusRequest) -> StatusReply {
-        let op = crate::fabric_states::StateOp::of(req).expect("a state op");
-        // Answered by the birth the call reached (R-RX5: no receiver refuses a downward call for the
-        // node id it names); the exact birth it names is checked, so a call that reached another
-        // birth is refused naming the one held.
-        if *op.incarnation != self.incarnation {
-            return rdm_core::reply::stale(self.incarnation.clone());
-        }
-        let want = op.kind.operation(op.fabric_id);
-        if op.operation != want {
-            return rdm_core::reply::status::not_ready(format!("{}: {} names operation {}, the checklist's is {want}", self.held_name(), req.op(), op.operation));
-        }
-        let key = op.key();
-        let parent = tracing::Span::current();
-        enum Admit {
-            Act,
-            Joined,
-            CheckIn,
-        }
-        let admit = {
-            let mut seen = self.states_seen.lock().unwrap();
-            match seen.get_mut(&key) {
-                // This node's action for the checklist ran in another role (its mesh checklist as the primary):
-                // the command is checked in from the record, the action is not run again.
-                None if self.acted.acted(&key) => {
-                    seen.insert(key.clone(), CheckInProgress::Acted);
-                    Admit::CheckIn
-                }
-                None => {
-                    seen.insert(key.clone(), CheckInProgress::Acting { first: commander.clone(), joined: Vec::new() });
-                    Admit::Act
-                }
-                Some(CheckInProgress::Acting { first, joined }) => {
-                    if first != commander && !joined.iter().any(|(c, _)| c == commander) {
-                        joined.push((commander.clone(), parent.clone()));
-                    }
-                    Admit::Joined
-                }
-                Some(CheckInProgress::Acted) => Admit::CheckIn,
-            }
-        };
-        let (me, commander) = (self.clone(), commander.clone());
-        match admit {
-            Admit::Act => {
-                tokio::spawn(async move { me.run_state(commander, key, parent).await });
-                rdm_core::reply::applied()
-            }
-            Admit::CheckIn => {
-                tokio::spawn(async move { me.check_in_again(commander, key, parent).await });
-                rdm_core::reply::already_applied()
-            }
-            Admit::Joined => rdm_core::reply::already_applied(),
-        }
-    }
-
-    /// The checklist of this birth: its action (once per checklist), then the completion call at its
-    /// commander and at every commander that sent the checklist while the action ran.
-    async fn run_state(self: Arc<Self>, commander: NodeId, key: crate::fabric_states::StateKey, parent: tracing::Span) {
-        use tracing::Instrument;
-        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-check-in", node = %self.held_name(), command = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = true, "otel.kind" = "internal");
-        async {
-            let actions = self.state_actions.lock().unwrap().clone();
-            if let Err(e) = crate::fabric_states::run_action(&*actions, &self.held_name(), key.kind).await {
-                tracing::info_span!("rdm.node_admin.fabric.update.via-state-action-failed", node = %self.held_name(), command = key.kind.command(), error = %e, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("this birth's action failed: it owes no check-in"));
-                // Nobody is owed a check-in; the next command of the checklist runs the action afresh.
-                self.states_seen.lock().unwrap().remove(&key);
-                return;
-            }
-            self.acted.record(&key);
-            let joined = match self.states_seen.lock().unwrap().insert(key.clone(), CheckInProgress::Acted) {
-                Some(CheckInProgress::Acting { joined, .. }) => joined,
-                _ => Vec::new(),
-            };
-            // Each commander owed is checked in on its own: one that cannot be reached holds up no other.
-            for (joiner, parent) in joined {
-                let (me, key) = (self.clone(), key.clone());
-                tokio::spawn(async move { me.check_in_again(joiner, key, parent).await });
-            }
-            self.check_in(&commander, &key).await;
-        }
-        .instrument(span)
-        .await
-    }
-
-    /// The check-in of a checklist whose action this birth already stored, made to `commander`: the
-    /// action is not run again.
-    async fn check_in_again(self: Arc<Self>, commander: NodeId, key: crate::fabric_states::StateKey, parent: tracing::Span) {
-        use tracing::Instrument;
-        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-check-in", node = %self.held_name(), command = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = false, "otel.kind" = "internal");
-        self.check_in(&commander, &key).instrument(span).await
-    }
-
-    /// The check-in hook, then the completion owed at `commander`, naming `key`'s checklist (node-rpc.md
-    /// §43, i146 Q44): one Owed call, ended by its answer, by the runtime's proof that its receiver is
-    /// gone, or by the primary seat of this birth's mesh moving to another node, which is its one
-    /// retargeting (Q39): the call to the old holder is dropped and the completion is owed to the new
-    /// one. A completion whose receiver was proven gone is owed to the next node the seat names. The
-    /// hook runs once, however often the completion is sent.
-    async fn check_in(&self, commander: &NodeId, key: &crate::fabric_states::StateKey) {
-        let req = key.kind.up(key, self.node_id.clone(), self.incarnation.clone());
-        // The check-in hook runs in the path of the completion call, before it goes out. What became
-        // of it is named on the call's span: handed to gossip, or why not.
-        let hook = match crate::fabric_states::publish_hook(&self.held_name(), key, true, &self.node_id, &self.incarnation, &self.topology_view, self.backbone.as_ref()).await {
-            Ok(()) => "published".to_string(),
-            Err(e) => format!("not-published: {e}"),
-        };
-        let owed = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, ..rdm_transport::CallOptions::default() };
-        let holder = || self.topology_view.primaries().mesh(&self.name.mesh).map(|h| (h.node_id, h.incarnation));
-        let mut seats = self.topology_view.primaries().subscribe();
-        let mut to = commander.clone();
-        loop {
-            seats.borrow_and_update();
-            let from = holder();
-            let called = to.clone();
-            // The seat moving to a node other than the one called: the call is dropped and retargeted.
-            let moved = async {
-                loop {
-                    if seats.changed().await.is_err() {
-                        std::future::pending::<()>().await;
-                    }
-                    if let Some((next, _)) = holder().filter(|h| Some(h) != from.as_ref() && h.0 != called) {
-                        return next;
-                    }
-                }
-            };
-            let target = NodeTarget::ExactNode(to.clone());
-            let out = tokio::select! {
-                (out, _) = self.client.call::<Status>(&target, &req, &owed) => out,
-                next = moved => {
-                    self.retargeted(key, &to, &next, "seat-moved");
-                    to = next;
-                    continue;
-                }
-            };
-            let answer = match &out {
-                rdm_core::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
-                other => format!("{}: {}", other.name(), other.code().name()),
-            };
-            tracing::info_span!("rdm.node_admin.status.update.via-completion-call", node = %self.held_name(), completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, commander = %to, hook = %hook, answer = %answer, "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the completion call was made to the commanding primary"));
-            if out.reply().is_some() {
-                return;
-            }
-            // No answer, and nothing but the receiver's end or its owner ends an Owed call: the
-            // completion is owed to the next node the seat names.
-            let next = loop {
-                if let Some((next, _)) = holder().filter(|h| h.0 != to) {
-                    break next;
-                }
-                if seats.changed().await.is_err() {
-                    return;
-                }
-            };
-            self.retargeted(key, &to, &next, &answer);
-            to = next;
-        }
-    }
-
-    /// `key`'s completion, owed at `from`, is owed at `to` from now on, because of `why`.
-    fn retargeted(&self, key: &crate::fabric_states::StateKey, from: &NodeId, to: &NodeId, why: &str) {
-        tracing::info_span!("rdm.node_admin.status.update.via-completion-retargeted", node = %self.held_name(), completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, from = %from, to = %to, why, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the completion is owed to the holder of this birth's mesh's primary seat"));
-    }
-
     /// Serve `StopNode` or `StartNode` on the exact birth it names (`node.connections.delete` reaches a
     /// birth on the node command op 0x22, [`Self::serve_node_command`]); `Reserved6`
     /// and `Reserved7` are reserved positions, refused by name, whoever calls
@@ -914,13 +702,7 @@ impl NodeSelf {
     /// call's own connection. A state command is served for `commander`, the primary of this birth's
     /// mesh, which its check-in goes to. `None` for any other request.
     pub async fn serve(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &StatusRequest) -> Option<StatusReply> {
-        if matches!(req, StatusRequest::OpenTraffic { .. }) {
-            return Some(match commander {
-                Some(commander) => self.serve_state(commander, req),
-                None => rdm_core::reply::status::not_ready(format!("{}: no primary of its mesh is known to check {} in to", self.held_name(), req.op())),
-            });
-        }
-        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. }) {
+        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. }) {
             return Some(refuse_reserved(&self.held_name().to_string(), &named(commander), req));
         }
         if let StatusRequest::LeaveMesh { incarnation, operation, .. } = req {
@@ -1500,12 +1282,12 @@ pub async fn wait_for_own_record(dir: &std::path::Path, within: std::time::Durat
 pub const NODE_LEFT_IS_NEVER_A_CALL: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
 
 /// What a reserved Status position is refused with: none is ever a call (R-CR4).
-pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8 (StopNode), and 16 (StartNode) are reserved, never executed; lifecycle commands use NodeCommand 0x22";
+pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8 (StopNode), 12 to 15, and 16 (StartNode) are reserved, never executed; lifecycle commands use NodeCommand 0x22";
 
 /// A reserved Status position at `receiver` (node-rpc-envelope.md "Node stop command
 /// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
 pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
-    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved12 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, attempt, operation, .. }) = req else {
+    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved12 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved14 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved15 { node_id, incarnation, build_id, attempt, operation, .. }) = req else {
         unreachable!("refuse_reserved is called for the reserved positions only")
     };
     let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());

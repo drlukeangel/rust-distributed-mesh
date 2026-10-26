@@ -90,12 +90,12 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 15 | **`Reserved16`** |  |  | Reserved position (Q171): never sent; a receiver refuses it by name. |
 | 15.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | Never read. |
 | 15.1 | `forwarded_by` | `Option<String>` |  | Never read. |
-| 16 | **`TrafficOpening`** |  |  | The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook` |
-| 16.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | The state key, the subject birth and the author. |
-| 16.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
-| 17 | **`TrafficOpened`** |  |  | The exact birth in `hook` sent its `traffic-opened` check-in: a check-in, never a node or mesh |
-| 17.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | The state key, the subject birth and the author. |
-| 17.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
+| 16 | **`Reserved17`** |  |  | Reserved position (Q174): never sent; a receiver refuses it by name. |
+| 16.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | Never read. |
+| 16.1 | `forwarded_by` | `Option<String>` |  | Never read. |
+| 17 | **`Reserved18`** |  |  | Reserved position (Q174): never sent; a receiver refuses it by name. |
+| 17.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | Never read. |
+| 17.1 | `forwarded_by` | `Option<String>` |  | Never read. |
 | 18 | **`NodeStopped`** |  |  | The mesh executor holding `op` (`node.stop:<path>`) received the exact birth's `left` on the |
 | 18.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The stop being executed. |
 | 18.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
@@ -234,7 +234,7 @@ A primary seat. The discriminants are the wire positions.
 
 `crates/rdm-core/src/lifecycle.rs` · struct · 8 fields · rdm-core
 
-One fabric state hook on one exact birth (gossip.md, "Fabric state gossip hooks"): the fields
+The fields the reserved gossip positions `Reserved15` to `Reserved18` keep (gossip.md, "Reserved
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
@@ -243,7 +243,7 @@ One fabric state hook on one exact birth (gossip.md, "Fabric state gossip hooks"
 | 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of that birth. |
 | 3 | `build_id` | `String` |  | The Build the checklist belongs to. |
 | 4 | `attempt` | `u32` |  | The Build attempt that holds the checklist. |
-| 5 | `operation` | `String` |  | The operation: `open-traffic:<fabric_id>`. |
+| 5 | `operation` | `String` |  | The operation. |
 | 6 | `publisher` | `String` |  | The author at this hop, by `path.name`. |
 | 7 | `event_at_rafka_ms` | `u64` |  | When the event happened, in Rafka-time; evidence only. |
 

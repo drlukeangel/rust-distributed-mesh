@@ -140,7 +140,7 @@ async fn member(by: &Running, store: &Path, name: &str) -> RunningNode {
     let dir = cell_dir(name);
     let launch = launch_by(by, store, &dir, name);
     deployed(by, &launch);
-    rdm_node::node::start_with_rafka_time_before_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::before_ready::BeforeReadyHook::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
+    rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
         .await
         .unwrap_or_else(|e| panic!("{name} starts: {e}"))
 }

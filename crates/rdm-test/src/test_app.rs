@@ -1,15 +1,8 @@
-//! The testkit's application: it takes the fabric's one notice the way an embedding does, and a
-//! scenario can hold the fabric short of ready-for-traffic.
+//! The testkit's application: it takes the fabric's notices the way an embedding does.
 //!
-//! `RDM_TEST_APP` (unset is `answer`):
-//!
-//! - `answer`: nothing is held; the fabric opens traffic once every mesh is ready-for-traffic.
-//! - `hold`: arms the admin's fault cut `open-traffic` at boot, so the fabric-primary's open-traffic
-//!   action holds until the fault door releases it and the fabric stays pending: Day 0's Build is
-//!   Blocked on its fabric change. A scenario that holds a later Build's change arms the same cut
-//!   through the fault door instead.
-//!
-//! `traffic_opened` is the one notice after the open-traffic checklist; it only records a span.
+//! `on_mesh_ready` and `on_fabric_ready` (Q175) each only record a span. A scenario that holds a fabric
+//! short of ready-for-traffic holds a node's `pre_node_ready` (`crate::write_pre_node_ready_knob`), as an
+//! application holds its own node.
 //!
 //! It declares one secret (Q150), [`DECLARED_SECRET`], set on the broker and the gateway only: a
 //! scenario sets its value in the bootstrap admin's environment and reads which processes hold it.
@@ -17,8 +10,7 @@
 //! It declares three listeners (Q151), [`LISTENERS`], on the gateway: a gateway binds them from its
 //! launch, reports them at its join and its row publishes them.
 
-use crate::admin_faults::{AdminFaults, CutSpec};
-use rdm_admin::wiring::{FabricHooks, TrafficOpened};
+use rdm_admin::wiring::{FabricHooks, FabricReadyCtx, MeshReadyCtx};
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -46,39 +38,15 @@ pub fn declared() -> Vec<rdm_core::launch::DeclaredSecret> {
     vec![rdm_core::launch::DeclaredSecret { name: DECLARED_SECRET.into(), kinds: DECLARED_KINDS.to_vec() }]
 }
 
-/// What the application holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    /// Nothing is held.
-    Answer,
-    /// The fabric-primary's open-traffic action is held at the fault cut [`OPEN_TRAFFIC_CUT`] until the
-    /// door releases it.
-    Hold,
-}
-
-/// The fault cut a `hold` application holds the open-traffic action at.
-pub const OPEN_TRAFFIC_CUT: &str = "open-traffic";
-
-impl Mode {
-    /// The mode `RDM_TEST_APP` names (unset: `answer`), refused by name when malformed.
-    pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
-        match get("RDM_TEST_APP").as_deref().map(str::trim) {
-            None | Some("") | Some("answer") => Ok(Self::Answer),
-            Some("hold") => Ok(Self::Hold),
-            Some(v) => Err(format!("RDM_TEST_APP `{v}` is not answer or hold")),
-        }
-    }
-}
-
-/// The hooks of this application in `mode`, held at the cuts of `faults` (the admin's own). A `hold`
-/// application arms its cut here, at boot, before any checklist can reach it.
-pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String> {
-    if mode == Mode::Hold {
-        faults.arm(OPEN_TRAFFIC_CUT, CutSpec::StateAction { node: None, command: Some("open-traffic".into()) })?;
-    }
-    let traffic_opened: rdm_admin::wiring::TrafficOpenedNotice = std::sync::Arc::new(|opened: TrafficOpened| {
-        let span = tracing::info_span!("rdm.testkit.app.update.via-traffic-opened", fabric_id = %opened.fabric_id, build_id = %opened.build_id, attempt = opened.attempt, operation = %opened.operation, "otel.kind" = "internal");
+/// The hooks of this application: each notice records a span.
+pub fn hooks() -> FabricHooks {
+    let on_mesh_ready: rdm_admin::wiring::MeshReadyNotice = Arc::new(|ready: MeshReadyCtx| {
+        let span = tracing::info_span!("rdm.testkit.app.update.via-on-mesh-ready", fabric_id = %ready.fabric_id, mesh = %ready.mesh, mesh_id = %ready.mesh_id, "otel.kind" = "internal");
+        Box::pin(async move { tracing::info!("the application was told the mesh is ready-for-traffic") }.instrument(span))
+    });
+    let on_fabric_ready: rdm_admin::wiring::FabricReadyNotice = Arc::new(|ready: FabricReadyCtx| {
+        let span = tracing::info_span!("rdm.testkit.app.update.via-on-fabric-ready", fabric_id = %ready.fabric_id, build_id = %ready.build_id, attempt = ready.attempt, "otel.kind" = "internal");
         Box::pin(async move { tracing::info!("the application opens client traffic") }.instrument(span))
     });
-    Ok(FabricHooks { traffic_opened: Some(traffic_opened) })
+    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready) }
 }

@@ -45,7 +45,7 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    the mesh's first state, `ApplyMeshState(Pending)`, within 20 s of the launch
    ([States](states.md), the mesh Pending row).
 6. The rest of the node-admin's [start](node-start.md#end-to-end-sequence) runs: the
-   `before_ready` hook, the topology read on its maker, the Build floor, rafka-time last,
+   `pre_node_ready` hook, the topology read on its maker, the Build floor, rafka-time last,
    `node.started`. The fabric-primary, as writer of a mesh with no primary, sets the node-admin's
    ReadyForTraffic.
 7. The [election](../fabric-node-lifecycle-elections.md#42-mesh-primary) names the node-admin

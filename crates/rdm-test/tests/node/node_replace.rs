@@ -2454,7 +2454,7 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_t
 /// (`rdm.node_admin.node.update.via-data-dir-lost`), and runs `node.delete -> node.create` over a
 /// newly allocated `data_dir`. The recovered birth has a NEW `node.id`, a NEW endpoint key
 /// (`endpoint_id != old_endpoint_id`), a NEW `data_dir != old_data_dir`, and reaches
-/// `ReadyForTraffic` with `rdm.mesh.node.update.via-before-ready-attempt` (`inherited = false`).
+/// `ReadyForTraffic` with `rdm.mesh.node.update.via-pre-node-ready-attempt` (`inherited = false`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_whose_data_dir_is_removed_after_exit_recovers_over_a_fresh_dir_with_a_new_key_after_two_floors() {
     let (estate, _build) = fabric_of(
@@ -2492,18 +2492,18 @@ async fn a_member_whose_data_dir_is_removed_after_exit_recovers_over_a_fresh_dir
     assert_eq!(s(&after["data_dir_lost"]["path"]), old_dir, "node.get surfaces the data-dir-lost fact: {after}");
     assert!(after["data_dir_lost"]["since"].as_u64().unwrap_or(0) > 0, "data-dir-lost carries since timestamp: {after}");
 
-    let attempt = wait_for("rdm.mesh.node.update.via-before-ready-attempt for recovered birth", crate::node_recovery_due(), || async {
-        named(&estate.spans(), "rdm.mesh.node.update.via-before-ready-attempt")
+    let attempt = wait_for("rdm.mesh.node.update.via-pre-node-ready-attempt for recovered birth", crate::node_recovery_due(), || async {
+        named(&estate.spans(), "rdm.mesh.node.update.via-pre-node-ready-attempt")
             .into_iter()
             .find(|sp| sp["attributes"]["node_id"] == after["node_id"])
             .cloned()
     })
     .await;
-    assert_eq!(s(&attempt["attributes"]["inherited"]), "false", "fresh recovery birth runs its before_ready hook with inherited = false: {attempt}");
+    assert_eq!(s(&attempt["attributes"]["inherited"]), "false", "fresh recovery birth runs its pre_node_ready hook with inherited = false: {attempt}");
 
     let submit = recovery_span(&estate, NODE, &before["node_id"]).await;
     eprintln!(
-        "s87 cell 1 (gone): {NODE} old ({old_node_id}, {old_incarnation}, dir {old_dir}, key {old_endpoint}) -> new ({}, {}, dir {new_dir}, key {}) | via-data-dir-lost trace {} span {} | submit trace {} | before_ready trace {} inherited={}",
+        "s87 cell 1 (gone): {NODE} old ({old_node_id}, {old_incarnation}, dir {old_dir}, key {old_endpoint}) -> new ({}, {}, dir {new_dir}, key {}) | via-data-dir-lost trace {} span {} | submit trace {} | pre_node_ready trace {} inherited={}",
         s(&after["node_id"]),
         s(&after["incarnation_id"]),
         s(&after["endpoint_id"]),
@@ -2645,17 +2645,17 @@ async fn a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_ret
     assert_eq!(estate.data_dir(NODE).await, old_dir, "recovered over the same data_dir: {after}");
     assert!(after["data_dir_unreadable"].is_null(), "data_dir_unreadable cleared on node.get: {after}");
 
-    let attempt = wait_for("rdm.mesh.node.update.via-before-ready-attempt for repaired birth", crate::node_recovery_due(), || async {
-        named(&estate.spans(), "rdm.mesh.node.update.via-before-ready-attempt")
+    let attempt = wait_for("rdm.mesh.node.update.via-pre-node-ready-attempt for repaired birth", crate::node_recovery_due(), || async {
+        named(&estate.spans(), "rdm.mesh.node.update.via-pre-node-ready-attempt")
             .into_iter()
             .find(|sp| sp["attributes"]["node_id"] == after["node_id"])
             .cloned()
     })
     .await;
-    assert_eq!(s(&attempt["attributes"]["inherited"]), "true", "repaired recovery birth runs its before_ready hook with inherited = true: {attempt}");
+    assert_eq!(s(&attempt["attributes"]["inherited"]), "true", "repaired recovery birth runs its pre_node_ready hook with inherited = true: {attempt}");
 
     eprintln!(
-        "s87 cell 3 (repaired): {NODE} old ({old_node_id}, {old_incarnation}) -> new ({}, {}) over same dir {old_dir} with retained key {old_endpoint} | reject trace {} | repaired trace {} span {} | before_ready trace {} inherited={}",
+        "s87 cell 3 (repaired): {NODE} old ({old_node_id}, {old_incarnation}) -> new ({}, {}) over same dir {old_dir} with retained key {old_endpoint} | reject trace {} | repaired trace {} span {} | pre_node_ready trace {} inherited={}",
         s(&after["node_id"]),
         s(&after["incarnation_id"]),
         s(&reject_span["trace_id"]),

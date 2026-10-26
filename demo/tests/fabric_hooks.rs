@@ -1,16 +1,16 @@
 //! The fabric hook a consumer registers, on public RDM surfaces only (fabric-node-hooks.md
-//! `traffic_opened`; Q171). Its `traffic_opened` notice, after the fabric is ready-for-traffic, drives
+//! `on_fabric_ready`; Q175). Its `on_fabric_ready` notice, after the fabric is ready-for-traffic, drives
 //! work on another node: Rafka's day 0, its own work, starts there and asks the gateway to perform the
 //! system-org creations.
 //!
-//! The work is the testkit's op `0x74` (`BeforeReadyPull`), which stands in for a product's own op: the
+//! The work is the testkit's op `0x74` (`PreNodeReadyPull`), which stands in for a product's own op: the
 //! gateway counts each call it serves and answers with the count.
 use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::wiring::{FabricHooks, TrafficOpened, TrafficOpenedNotice, Wiring};
+use rdm_admin::wiring::{FabricHooks, FabricReadyCtx, FabricReadyNotice, Wiring};
 use rdm_core::catalog::OpOwner;
 use rdm_core::{IncarnationId, NodeId};
-use rdm_node::before_ready::{BeforeReady, BeforeReadyCtx, BeforeReadyHook, HookOutcome};
-use rdm_test::before_ready_probe::{BeforeReadyPull, PullReply, PullRequest, Row};
+use rdm_node::node_hooks::{PreNodeReady, NodeReadyCtx, NodeHooks, HookOutcome};
+use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, PullReply, PullRequest, Row};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,7 +37,7 @@ type Gateway = tokio::sync::watch::Receiver<Option<(Arc<NodeRpcClient>, NodeId)>
 async fn work(gateway: &mut Gateway, what: &str) -> u64 {
     let (client, node) = gateway.wait_for(Option::is_some).await.expect("the test hands the gateway over").clone().expect("present");
     loop {
-        let (out, _) = client.call::<BeforeReadyPull>(&NodeTarget::ExactNode(node.clone()), &PullRequest::Pull, &CallOptions::default()).await;
+        let (out, _) = client.call::<PreNodeReadyPull>(&NodeTarget::ExactNode(node.clone()), &PullRequest::Pull, &CallOptions::default()).await;
         match out.reply().map(|r| r.value().clone()) {
             Some(PullReply::Rows { rows }) => {
                 let served = rows.first().map(|r| r.version).unwrap_or(0);
@@ -51,11 +51,11 @@ async fn work(gateway: &mut Gateway, what: &str) -> u64 {
     }
 }
 
-/// The gateway's `before_ready`: nothing to pull.
+/// The gateway's `pre_node_ready`: nothing to pull.
 struct Ready;
 #[async_trait::async_trait]
-impl BeforeReady for Ready {
-    async fn before_ready(&self, _ctx: &BeforeReadyCtx) -> HookOutcome {
+impl PreNodeReady for Ready {
+    async fn pre_node_ready(&self, _ctx: &NodeReadyCtx) -> HookOutcome {
         HookOutcome::Ok
     }
 }
@@ -98,14 +98,14 @@ async fn gateway(root: &Running, dir: &std::path::Path, shared: &std::path::Path
         held: false,
     });
     let node_id = launch.node_id.clone();
-    let running = rdm_node::node::start_with_rafka_time_before_ready_and(
+    let running = rdm_node::node::start_with_rafka_time_pre_node_ready_and(
         &launch,
         rdm_transport::clock::RafkaTime::unadopted(),
-        BeforeReadyHook::new(Arc::new(Ready)),
+        NodeHooks::new(Arc::new(Ready)),
         |s| s,
         None,
         move |b, _| {
-            b.serve::<BeforeReadyPull, _, _>(OpOwner::Testkit, move |_, _| {
+            b.serve::<PreNodeReadyPull, _, _>(OpOwner::Testkit, move |_, _| {
                 let n = served.fetch_add(1, Ordering::SeqCst) + 1;
                 async move { Ok(PullReply::Rows { rows: vec![Row { version: n, value: "work".into() }] }) }
             })
@@ -117,21 +117,21 @@ async fn gateway(root: &Running, dir: &std::path::Path, shared: &std::path::Path
     (running, node_id)
 }
 
-/// CONTRACT (fabric-node-hooks.md `traffic_opened`: "After the ready-for-traffic state is set, the
-/// fabric-primary sends the application one `traffic_opened` notice"; Q171): the fabric-primary's one
+/// CONTRACT (fabric-node-hooks.md `on_fabric_ready`: "After the ready-for-traffic state is set, the
+/// fabric-primary sends the application one `on_fabric_ready` notice"; Q175): the fabric-primary's one
 /// notice, sent once the Day-0 fabric is ready-for-traffic, asks the gateway, another node, for the work;
 /// the gateway serves it once. Must NOT happen: a second notice, or the notice before ready-for-traffic.
 #[test]
-fn traffic_opened_drives_work_on_the_gateway() {
+fn on_fabric_ready_drives_work_on_the_gateway() {
     let dir = std::env::temp_dir().join(format!("demo-hooks-{}", NodeId::mint()));
     let capture = rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-fabric-hooks").unwrap();
     capture.run(4, async {
         let (hand, gateway_rx) = tokio::sync::watch::channel(None);
         // What the notice saw the gateway answer.
         let answered: Arc<Mutex<Vec<(&'static str, u64)>>> = Default::default();
-        let traffic_opened: TrafficOpenedNotice = {
+        let on_fabric_ready: FabricReadyNotice = {
             let (gateway_rx, answered) = (gateway_rx.clone(), answered.clone());
-            Arc::new(move |_opened: TrafficOpened| {
+            Arc::new(move |_ready: FabricReadyCtx| {
                 let (mut gateway_rx, answered) = (gateway_rx.clone(), answered.clone());
                 Box::pin(async move {
                     let served = work(&mut gateway_rx, "day-0").await;
@@ -140,7 +140,7 @@ fn traffic_opened_drives_work_on_the_gateway() {
             })
         };
         let root_dir = dir.join("admin");
-        let root = start_with(config(&root_dir), Wiring { fabric_hooks: FabricHooks { traffic_opened: Some(traffic_opened) }, ..Wiring::no_certs() }).await.unwrap();
+        let root = start_with(config(&root_dir), Wiring { fabric_hooks: FabricHooks { on_fabric_ready: Some(on_fabric_ready), ..FabricHooks::no_app_work() }, ..Wiring::no_certs() }).await.unwrap();
         // The Day-0 change reaches ready-for-traffic, and the notice waits for the gateway. Then this admin
         // reconciles nothing more: the gateway below is launched by hand, so no drift pass takes it for surplus.
         tokio::time::timeout(BOUND, async {
@@ -168,7 +168,7 @@ fn traffic_opened_drives_work_on_the_gateway() {
 
         let spans = capture.spans().unwrap();
         let named = |name: &str| spans.iter().filter(|s| s["name"] == name).count();
-        assert_eq!(named("rdm.node_admin.fabric.update.via-traffic-opened-hook"), 1, "traffic_opened is told once");
+        assert_eq!(named("rdm.node_admin.fabric.update.via-on-fabric-ready"), 1, "on_fabric_ready is told once");
         g.stop().await;
     });
     let _ = std::fs::remove_dir_all(&dir);

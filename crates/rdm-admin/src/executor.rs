@@ -500,7 +500,7 @@ impl BuildExecutor {
             // before ended within its bound and its receipts stand, and nothing further is opened. The run
             // hands back to the fabric-primary, which writes the Build's terminal naming the delete.
             if let Ok(Some(delete)) = crate::build_state::interrupted_by(builds, &build).await {
-                return self.interrupted(builds, &build, attempt, operations[..i].to_vec(), op, &delete.build_id, span).await;
+                return self.interrupted(builds, &build, attempt, operations[..i].to_vec(), op, None, &delete.build_id, span).await;
             }
             // After the first operation the view can name another executor for the rest: the run
             // seated a mesh's first admin, which executes that mesh's members from then on. The
@@ -515,7 +515,15 @@ impl BuildExecutor {
             }
             match self.runner.run(&build.build_id, lane, attempt, op).await {
                 Ok(()) => {}
-                Err(RunEnd::Failed { reason, code }) => return self.finish(builds, &build, attempt, Err((op.key(), reason, code))).await,
+                Err(RunEnd::Failed { reason, code }) => {
+                    // An operation admitted before a fabric.delete accepted after this Build fails within its
+                    // bound (build.md §1): its failure stands in its receipts and the run hands back, so the
+                    // Build's `Failed` names the delete.
+                    if let Ok(Some(delete)) = crate::build_state::interrupted_by(builds, &build).await {
+                        return self.interrupted(builds, &build, attempt, operations[..i].to_vec(), op, Some(&reason), &delete.build_id, span).await;
+                    }
+                    return self.finish(builds, &build, attempt, Err((op.key(), reason, code))).await;
+                }
                 Err(RunEnd::Incomplete(reason)) => return self.hand_back(builds, &build, attempt, operations[..i].to_vec(), op, reason, span).await,
             }
         }
@@ -555,17 +563,21 @@ impl BuildExecutor {
         self.hand_off(builds, build, attempt, ran, to).await
     }
 
-    /// The run stops before `next` because the fabric.delete `delete` interrupts its Build (build.md §1):
-    /// what it ran stands, `next` is never opened, and the attempt is handed to the fabric-primary of the
-    /// view the run ends with, which ends the Build `Failed` naming the delete once its attempts ended.
+    /// The run stops at `next` because the fabric.delete `delete` interrupts its Build (build.md §1): what
+    /// it ran stands, and `next` is either never opened (`failed` is `None`) or ended within its bound by
+    /// failing (`failed` names why, its receipts standing). The attempt is handed to the fabric-primary of
+    /// the view the run ends with, which ends the Build `Failed` naming the delete once its attempts ended.
     #[allow(clippy::too_many_arguments)]
-    async fn interrupted(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, next: &BuildOperation, delete: &BuildId, span: &tracing::Span) -> Reconciled {
+    async fn interrupted(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, next: &BuildOperation, failed: Option<&str>, delete: &BuildId, span: &tracing::Span) -> Reconciled {
         let reason = crate::build_state::interrupted_reason(&build.build_id, delete);
         span.record("incomplete", reason.as_str());
         let me = self.held_name().await;
         let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or(me);
-        tracing::info_span!("rdm.node_admin.build.update.via-interrupted", build_id = %build.build_id.log(), attempt, delete_build_id = %delete.log(), operation = %next.key(), to = %to)
-            .in_scope(|| tracing::info!("a fabric.delete accepted after this Build interrupts it: the next operation is not opened and the attempt is handed to the fabric-primary"));
+        tracing::info_span!("rdm.node_admin.build.update.via-interrupted", build_id = %build.build_id.log(), attempt, delete_build_id = %delete.log(), operation = %next.key(), failed = failed.unwrap_or(""), to = %to)
+            .in_scope(|| match failed {
+                None => tracing::info!("a fabric.delete accepted after this Build interrupts it: the next operation is not opened and the attempt is handed to the fabric-primary"),
+                Some(_) => tracing::info!("a fabric.delete accepted after this Build interrupts it: the operation admitted before it failed within its bound, and the attempt is handed to the fabric-primary"),
+            });
         builds.note_blocked(&build.build_id, None, attempt, &next.key(), "interrupted", &reason).await;
         self.hand_off(builds, build, attempt, ran, to).await
     }

@@ -79,9 +79,9 @@ count against the config cap.
 
 | Hook | Where |
 |---|---|
-| before a node is ready (`before_ready`; `inherited` says whether the data dir was carried) | [fabric-node-hooks.md, before_ready](../architecture/fabric-node-hooks.md#before_ready) |
-| after it is ready | [after_ready](../architecture/fabric-node-hooks.md#after_ready) |
-| traffic opening (and my Day-0 work, which is my own) | [traffic_opened](../architecture/fabric-node-hooks.md#traffic_opened) |
+| before a node is ready (`pre_node_ready`; `inherited` says whether the data dir was carried) | [fabric-node-hooks.md, pre_node_ready](../architecture/fabric-node-hooks.md#pre_node_ready) |
+| after it is ready | [on_node_ready](../architecture/fabric-node-hooks.md#on_node_ready) |
+| traffic opening (and my Day-0 work, which is my own) | [on_fabric_ready](../architecture/fabric-node-hooks.md#on_fabric_ready) |
 | the clock | [rafka-time](../architecture/fabric-node-hooks.md#rafka-time) |
 
 ## Talking between nodes

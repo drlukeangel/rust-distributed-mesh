@@ -2779,12 +2779,11 @@ mod tests {
             fabric_states: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
-            before_ready: Default::default(),
+            pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
-            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let _ = Declared::default();

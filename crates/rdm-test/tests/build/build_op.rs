@@ -637,14 +637,14 @@ fn birth_blocked(frame: &BuildFrame) -> bool {
     matches!(frame, BuildFrame::Blocked { step, .. } if step != "fabric-change")
 }
 
-/// How many attempts of `node`'s knob hook (`rdm_test::before_ready_probe::KnobBeforeReady`)
+/// How many attempts of `node`'s knob hook (`rdm_test::pre_node_ready_probe::KnobPreNodeReady`)
 /// ended blocked for `reason`.
 fn knob_attempts(knob: &std::path::Path, node: &str, reason: &str) -> usize {
     std::fs::read_to_string(knob.join(format!("{node}.attempts"))).unwrap_or_default().lines().filter(|l| *l == format!("blocked {reason}")).count()
 }
 
 /// CONTRACT (node-start.md step 3; node-rpc-envelope.md frame table, Blocked "emitted on a new
-/// blocker or reason change, never on a timer"): a birth whose `before_ready` is Blocked
+/// blocker or reason change, never on a timer"): a birth whose `pre_node_ready` is Blocked
 /// answers its executor's `ProbeNodeState` with Status `Blocked { node_id, incarnation, reason,
 /// retry_on }`, and the Build stream carries `Blocked { WaitForNodeReady, reason }` once per reason. The hook here runs again
 /// every time its authority addresses it, so it is blocked again for the same reason many times;
@@ -668,8 +668,8 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     assert!(!shape_frames.iter().any(birth_blocked), "births with no hook are plain Pending until Ready and frame no Blocked: {shape_frames:?}");
 
     // The next birth's hook is blocked for A from its first attempt.
-    let knob = rdm_test::before_ready_knob_dir(&estate.root);
-    rdm_test::write_before_ready_knob(&estate.root, BLOCKED, A).unwrap();
+    let knob = rdm_test::pre_node_ready_knob_dir(&estate.root);
+    rdm_test::write_pre_node_ready_knob(&estate.root, BLOCKED, A).unwrap();
     let grown = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts the grown shape");
     let (before_a, (step, reason)) = next_blocked(&mut stream).await;
@@ -680,14 +680,14 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     // Reruns blocked for the same reason: the executor's probes address the birth, so its hook runs
     // again on each; wait until it has been blocked for A three more times.
     wait_for("three more attempts blocked for A", Duration::from_secs(60), || async { (knob_attempts(&knob, BLOCKED, A) >= 4).then_some(()) }).await;
-    rdm_test::write_before_ready_knob(&estate.root, BLOCKED, B).unwrap();
+    rdm_test::write_pre_node_ready_knob(&estate.root, BLOCKED, B).unwrap();
     let (before_b, (step_b, reason_b)) = next_blocked(&mut stream).await;
     assert_eq!(step_b, "WaitForNodeReady");
     assert!(reason_b.contains(B) && !reason_b.contains(A), "the next Blocked frame is the changed reason, never A again: {reason_b}");
     assert!(!before_b.iter().any(|f| matches!(f, BuildFrame::Step { step, .. } if step == "WaitForNodeReady")), "the step is still in flight: {before_b:?}");
 
     wait_for("an attempt blocked for B", Duration::from_secs(60), || async { (knob_attempts(&knob, BLOCKED, B) >= 2).then_some(()) }).await;
-    rdm_test::write_before_ready_knob(&estate.root, BLOCKED, "pass").unwrap();
+    rdm_test::write_pre_node_ready_knob(&estate.root, BLOCKED, "pass").unwrap();
     let rest = until_complete(&mut stream).await;
     assert!(!rest.iter().any(birth_blocked), "nothing of the birth is framed Blocked once the hook passed: {rest:?}");
     assert!(rest.iter().any(|f| matches!(f, BuildFrame::Step { step, .. } if step == "WaitForNodeReady")), "WaitForNodeReady completed: {rest:?}");

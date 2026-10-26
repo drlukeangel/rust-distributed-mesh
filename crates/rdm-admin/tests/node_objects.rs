@@ -588,7 +588,7 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
 }
 
 /// CONTRACT: a create whose node has joined but is not ready (its Ready check names a blocker, as an
-/// application's `before_ready` does) streams one `Blocked { operation, step, reason }` frame
+/// application's `pre_node_ready` does) streams one `Blocked { operation, step, reason }` frame
 /// naming the step in flight and the check's own reason, however many times the check is polled with
 /// that reason; the blocker is live progress, so the stream goes on, and when the node is ready it
 /// emits `node.created` and `Complete`.
@@ -597,7 +597,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
     let cap = capture();
     let (blocked, after) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let why = "mesh1.rpc.3: before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready";
+        let why = "mesh1.rpc.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready";
         *rig.topology_view.not_ready.lock().unwrap() = Some(why.to_string());
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
@@ -627,7 +627,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         Frame::Blocked {
             operation: "node.create:mesh1.rpc.3".into(),
             step: "WaitForNodeReady".into(),
-            reason: "mesh1.rpc.3: before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready".into()
+            reason: "mesh1.rpc.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready".into()
         }
     );
     assert_eq!(after, [Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "a repeated blocker makes no second frame, and the ready node ends the stream: {after:?}");

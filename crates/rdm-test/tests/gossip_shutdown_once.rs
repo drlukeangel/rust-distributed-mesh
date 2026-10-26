@@ -14,8 +14,8 @@ use crate::common::{admin_side, AdminSide};
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rdm_admin::before_ready::{HookOutcome, BeforeReadyHook};
-use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
+use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
+use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
 use rdm_test::node;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -133,17 +133,17 @@ async fn a_stopped_node_shutting_down_shuts_its_gossip_down_once_through_its_rou
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a node whose `before_ready` hook fails ends at start by name, and its gossip
+/// CONTRACT: a node whose `pre_node_ready` hook fails ends at start by name, and its gossip
 /// is shut down once, through its router.
 #[tokio::test]
 async fn a_node_whose_hook_fails_shuts_its_gossip_down_once_through_its_router() {
     let events = GossipEvents::default();
     let _sub = events.install();
     let (dir, _admin, launch) = admitted("gossip-once-hook-failed").await;
-    let before_ready = TestBeforeReady::new(Mode::Fixed(HookOutcome::Failed { reason: "the cell's hook fails".into() }));
-    let started = tokio::time::timeout(Duration::from_secs(10), node::start_before_ready(&launch, BeforeReadyHook::new(before_ready), |b, _| b)).await.expect("the start ends");
+    let pre_node_ready = TestPreNodeReady::new(Mode::Fixed(HookOutcome::Failed { reason: "the cell's hook fails".into() }));
+    let started = tokio::time::timeout(Duration::from_secs(10), node::start_pre_node_ready(&launch, NodeHooks::new(pre_node_ready), |b, _| b)).await.expect("the start ends");
     let why = started.err().expect("a failed hook ends the node").to_string();
-    assert!(why.contains("failed before_ready") && why.contains("the cell's hook fails"), "{why}");
+    assert!(why.contains("failed pre_node_ready") && why.contains("the cell's hook fails"), "{why}");
     assert_shut_down_once(&events, "close");
     let _ = std::fs::remove_dir_all(&dir);
 }

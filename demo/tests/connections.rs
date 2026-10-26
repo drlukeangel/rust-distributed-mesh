@@ -160,10 +160,10 @@ async fn spawn_member_with_time(
         last_accepted_name: None,
         held: false,
     });
-    rdm_node::node::start_with_rafka_time_before_ready_alpns_and(
+    rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(
         &launch,
         time,
-        rdm_node::before_ready::BeforeReadyHook::none(),
+        rdm_node::node_hooks::NodeHooks::none(),
         |s| s,
         None,
         |b, _| b,

@@ -14,9 +14,8 @@ lives on its own page; op fields and enums live only in the
 - **Node row silence marks:** a node row may carry the observer-inferred marks `PendingReconnect` and `Dead` (TRUE OFFLINE), written by the node's mesh-primary. They are never themselves a reason to act ([node recovery](node-recovery.md)).
 
 A mesh is ready-for-traffic when every planned exact member birth for the accepted
-Build is ready. When every planned mesh is ready-for-traffic the fabric-primary runs the
-open-traffic check-ins, and the fabric is ready-for-traffic once they complete. The
-fabric-primary declares fabric state through the completed check-ins.
+Build is ready. When every planned mesh is ready-for-traffic the fabric-primary sets the fabric
+ready-for-traffic (Q174); no node is commanded to open traffic and none checks in.
 Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 
 ## Who sets each state
@@ -36,7 +35,7 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 | mesh ReadyForTraffic | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144) | its mesh-primary's report that every planned birth is ready |
 | mesh deleting | the mesh-primary | the fabric-primary's DeleteMesh admission (mesh.deleting) |
 | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete receipts; never an op |
-| fabric ready-for-traffic | the fabric-primary | the completed check-ins below it |
+| fabric ready-for-traffic | the fabric-primary | every mesh the accepted Build names ready-for-traffic, its attempt claimed |
 
 The internal report and apply that move a node's status are [node status](node-status.md).
 Which frame carries each state to peers, and who publishes it, is the
@@ -44,16 +43,17 @@ Which frame carries each state to peers, and who publishes it, is the
 
 ## Setting a state
 
-Fabric status changes are carried down and answered by member check-ins. A
-successful admission reply does not set a state: the matching upward completions
-and planned-birth checklist do. Required writes finish before their completion check-ins.
+A mesh's deleting is carried down and answered by member check-ins; a mesh's ready-for-traffic is
+reported up by its mesh-primary once every planned birth is ready. A successful admission reply does
+not set a state: the matching upward completions and the planned-birth checklist do. Required writes
+finish before their completion check-ins.
 Gossip disseminates the resulting states and overlays for peer topology and routing; it never
 sets a state, and neither caller progress nor setting a state waits for peers to receive
 gossip. Every writer writes its records straight to the store from Day 0: the Fabric record, each Mesh record and each Node record, on which a declared state acknowledged as Applied is durable before the reply; a successor acquires that fact without creating a new lifecycle transition.
 
 | state | carried down | checked in | between |
 |---|---|---|---|
-| ready-for-traffic | ready-for-traffic status | member check-in | internal; one notice to Rafka |
+| ready-for-traffic (fabric) | none | none | every mesh ready-for-traffic; one `on_fabric_ready` notice to Rafka |
 | deleting (mesh) | mesh.delete | mesh.deleting | [mesh.delete](mesh-delete.md) |
 | deleted (mesh) | none | mesh.deleted | [mesh.delete](mesh-delete.md) |
 
@@ -145,12 +145,11 @@ are separate facts.
   when the primary changes; never ended by a timer. The primary counts a check-in once per
   (state, birth) and answers a repeat `AlreadyApplied`.
 - A primary counts only check-ins that arrive after it receives this state's command.
-- A node's or mesh's traffic-opened reply is a check-in, not a node or mesh state.
 
 ## Resize and executable replacement
 
 A Build that changes only a node's `config`, `tags`, `storage` or `placement` is neither: it applies them as [build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine) states, and the fabric stays ready-for-traffic.
 
-A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; a state's check-in that reports failure fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth checks in; the open-traffic check-ins then run.
+A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth is ready-for-traffic.
 
 See [Fabric ready-for-traffic](fabric-ready-for-traffic.md) and [mesh.delete](mesh-delete.md).

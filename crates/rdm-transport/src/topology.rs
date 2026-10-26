@@ -498,24 +498,18 @@ pub enum Frame {
         /// Never read.
         forwarded_by: Option<String>,
     },
-    /// The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook`
-    /// (gossip.md, "Fabric state gossip hooks"): command intent, never completion. A node-admin
-    /// author publishes it on its own mesh channel and the backbone; a peer mesh's primary forwards
-    /// it onto its own channel (`forwarded_by`), the authored fields unchanged.
-    TrafficOpening {
-        /// The state key, the subject birth and the author.
+    /// Reserved position (Q174): never sent; a receiver refuses it by name.
+    Reserved17 {
+        /// Never read.
         hook: StateHook,
-        /// The primary that forwards the frame onto its own channel.
+        /// Never read.
         forwarded_by: Option<String>,
     },
-    /// The exact birth in `hook` sent its `traffic-opened` check-in: a check-in, never a node or mesh
-    /// lifecycle state. A node-admin publishes it on its own mesh channel and the backbone; an
-    /// ordinary node on its own mesh channel, and its mesh-admin carries it onto the backbone naming
-    /// itself in `forwarded_by`.
-    TrafficOpened {
-        /// The state key, the subject birth and the author.
+    /// Reserved position (Q174): never sent; a receiver refuses it by name.
+    Reserved18 {
+        /// Never read.
         hook: StateHook,
-        /// The admin or primary that forwards the frame.
+        /// Never read.
         forwarded_by: Option<String>,
     },
     /// The mesh executor holding `op` (`node.stop:<path>`) received the exact birth's `left` on the
@@ -1145,8 +1139,6 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeStopped { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
         Frame::NodeConnectionsDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeConnectionsDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me.to_string()) }),
-        Frame::TrafficOpening { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::TrafficOpening { hook, forwarded_by: Some(me.to_string()) }),
-        Frame::TrafficOpened { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::TrafficOpened { hook, forwarded_by: Some(me.to_string()) }),
         Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
             Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
         }
@@ -1861,8 +1853,6 @@ struct View {
     /// This node's path name, for the spans it emits.
     node: String,
     digest_view: DigestView,
-    /// Hook receipt identities shared by local apply, mesh and backbone.
-    hook_receipts: Arc<Mutex<crate::receive_order::HookReceipts>>,
     /// Whether this node is its mesh's primary now: only a primary replays the statuses it holds.
     primary: Arc<AtomicBool>,
     via: Arc<Mutex<HashMap<String, &'static str>>>,
@@ -1877,43 +1867,9 @@ struct View {
     forwarder: Arc<Mutex<Forwarder>>,
     /// Wakes the top-up when a source of the Mesh channel desynchronizes.
     desync: Arc<tokio::sync::Notify>,
-    /// What a node-admin does with a `node-connections-deleted` or `node-left` it hears on its mesh channel
-    /// from the node itself: carry it onto the backbone when it holds the command (set by the admin).
-    completion_carrier: Arc<Mutex<Option<CompletionCarrier>>>,
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12), shared with its
     /// the topology view; `None` while the birth holds its launch name (`node`).
     held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
-}
-
-/// What a node-admin does with a node's own completion frame heard on its mesh channel.
-pub type CompletionCarrier = Arc<dyn Fn(&Frame) -> CompletionCarry + Send + Sync>;
-
-/// What the existing command/checklist holder decided about carrying a completion onto the backbone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompletionCarry {
-    /// The completion was handed to the backbone publication task.
-    Carried,
-    /// The mesh-admin's view no longer holds this checklist open.
-    ClosedChecklist,
-    /// A node-admin author publishes on the backbone itself.
-    NodeAdmin,
-    /// The publisher path does not identify an ordinary node author.
-    NotOrdinary,
-    /// No applicable lifecycle command is held.
-    NotHeld,
-}
-
-impl CompletionCarry {
-    /// The named outcome on the hook's ordinary receive span.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Carried => "carried",
-            Self::ClosedChecklist => "closed-checklist",
-            Self::NodeAdmin => "node-admin",
-            Self::NotOrdinary => "not-ordinary",
-            Self::NotHeld => "not-held",
-        }
-    }
 }
 
 impl View {
@@ -2023,9 +1979,6 @@ impl View {
 
     fn take_other(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
         if crate::receive_order::refuse_reserved(f, &self.current_name(), via) { return Vec::new(); }
-        if !self.hook_receipts.lock().unwrap().admit(f) {
-            return Vec::new();
-        }
         match f.data() {
             Frame::NodeDeleting { op, publisher, topology_version, .. } | Frame::NodeRestarting { op, publisher, topology_version, .. } | Frame::NodeStopped { op, publisher, topology_version, .. } => {
                 let kind = match f.data() {
@@ -2054,43 +2007,6 @@ impl View {
                 );
                 let _in = span.enter();
                 span.record("applied", self.digest_view.depart(op.clone()));
-                Vec::new()
-            }
-            Frame::TrafficOpening { hook, forwarded_by } | Frame::TrafficOpened { hook, forwarded_by } => {
-                let kind = match f.data() {
-                    Frame::TrafficOpening { .. } => "traffic-opening",
-                    _ => "traffic-opened",
-                };
-                let span = tracing::info_span!(
-                    "rdm.mesh.topology.update.via-state-frame",
-                    node = %self.current_name(),
-                    kind,
-                    subject_id = %hook.node_id,
-                    incarnation_id = %hook.incarnation.as_str(),
-                    fabric_id = %hook.fabric_id,
-                    build_id = %hook.build_id,
-                    attempt = hook.attempt,
-                    operation = %hook.operation,
-                    publisher = %hook.publisher,
-                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
-                    via,
-                    carried = tracing::field::Empty,
-                );
-                let _in = span.enter();
-                // Forwarding metadata never changes the fact's identity or its eligibility. The
-                // admin's carrier alone consults its open-checklist view; passive receipt needs no
-                // check-in evidence and drives no checklist (Q21: x).
-                let carried = if matches!(f.data(), Frame::TrafficOpened { .. }) {
-                    if via == "mesh-channel" {
-                        self.completion_carrier.lock().unwrap().clone().map(|carry| carry(f).as_str()).unwrap_or("no-carrier")
-                    } else {
-                        "backbone"
-                    }
-                } else {
-                    "not-a-check-in"
-                };
-                span.record("carried", carried);
-                tracing::info!("a fabric state hook was heard: evidence of the accepted command or check-in, never liveness, completion or a lifecycle state");
                 Vec::new()
             }
             Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {
@@ -2969,12 +2885,6 @@ impl TopologyView {
         d
     }
 
-    /// Install what this node-admin does with a node's own `node-connections-deleted` / `node-left` heard on
-    /// the mesh channel.
-    pub fn set_completion_carrier(&self, carrier: CompletionCarrier) {
-        *self.view.completion_carrier.lock().unwrap() = Some(carrier);
-    }
-
     /// Broadcast a frame onto this mesh's channel (a forward).
     pub async fn forward(&self, f: &Frame) -> Result<()> {
         self.mesh.broadcast(f).await
@@ -3801,35 +3711,6 @@ impl Backbone {
             tracing::info!(error = %e, frame = kind.name(), "the status event was not sent on the mesh channel");
         }
         (publisher, version)
-    }
-
-    /// Publish a fabric state hook this admin authored: the backbone,
-    /// its own mesh channel and its own view, once. The accepted command's hook, never a separately
-    /// coordinated publication. An error names each channel the frame was not handed to, and why.
-    pub async fn publish_command_hook(&self, f: &Frame) -> Result<()> {
-        let backbone = self.channel.broadcast(f).await;
-        let mesh = self.topology_view.forward(f).await;
-        self.topology_view.view.take(f, &self.fabric, "mesh-channel");
-        let failed: Vec<String> = [("backbone", backbone), ("mesh channel", mesh)].into_iter().filter_map(|(channel, r)| r.err().map(|e| format!("{channel}: {e}"))).collect();
-        if failed.is_empty() {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("{} not handed to {}", self.current_name(), failed.join("; ")))
-        }
-    }
-
-    /// Carry a node's own completion frame (`node-connections-deleted`, `node-left`) onto the backbone,
-    /// preserving `op` and naming this admin in `forwarded_by`.
-    pub async fn carry_completion(&self, frame: Frame) {
-        let me_name = self.current_name();
-        let context = frame.context().cloned();
-        let carried = match frame.into_data() {
-            Frame::NodeConnectionsDeleted { op, .. } => Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me_name) },
-            Frame::TrafficOpened { hook, .. } => Frame::TrafficOpened { hook, forwarded_by: Some(me_name) },
-            _ => return,
-        };
-        let carried = context.map(|context| Frame::Authored { context, frame: Box::new(carried.clone()) }).unwrap_or(carried);
-        let _ = self.channel.broadcast(&carried).await;
     }
 
     /// This admin was elected primary, or, as its mesh's primary, recorded another node type's

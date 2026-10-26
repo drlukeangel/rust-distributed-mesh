@@ -1,5 +1,5 @@
 //! A birth heard again (Q87, Luke 2026-10-20): every node coming to ready-for-traffic from any other
-//! state connects to its node-admin for its cert, its time and its cache, and the `before_ready`
+//! state connects to its node-admin for its cert, its time and its cache, and the `pre_node_ready`
 //! hook is where it does that; node-admins included, the Day-0 fabric-primary excepted. When the
 //! tickle reaches a birth its authority holds off its mesh (node-recovery.md step 2, node-tickle.md
 //! "What follows"), the authority begins the birth's next cycle and commands `node.mesh.join` to it,

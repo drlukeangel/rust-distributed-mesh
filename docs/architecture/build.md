@@ -493,7 +493,7 @@ Application work enters a lifecycle only through [Fabric and node hooks](fabric-
 
 SN/MN/MM are minimum proof rungs, not caps. Lifecycle eligibility should usually derive from the accepted Build rather than hard-coded `if shape == MM` branches.
 
-The Fabric leaves `pending` when every Mesh the accepted Build names is ready-for-traffic (every planned member ready) and the open-traffic check-ins complete: it reaches `ready-for-traffic` only through them ([States](lifecycles/states.md#states)). A Build that put the fabric back to pending completes when its ready-for-traffic state is set, not with its last step; a failed state check-in fails the Build ([States](lifecycles/states.md#resize-and-executable-replacement)).
+The Fabric leaves `pending` when every Mesh the accepted Build names is ready-for-traffic (every planned member ready), and only then ([States](lifecycles/states.md#states), Q174). A Build that put the fabric back to pending completes when its ready-for-traffic state is set, not with its last step ([States](lifecycles/states.md#resize-and-executable-replacement)).
 
 For a node-admin's `Pending -> ReadyForTraffic` transition, required generic hydration includes:
 
@@ -531,7 +531,7 @@ For SN/MN, the accepted Build names one mesh. For MM it names two. The same gate
 
 ## 11. Rafka's Day-0 work is Rafka's
 
-RDM carries no system-org bootstrap logic and no state for it (Q171). Rafka's Day-0 work (its system org and its system topics) is its own; it opens client traffic on the [`traffic_opened`](fabric-node-hooks.md#traffic_opened) notice, which gates nothing in RDM.
+RDM carries no system-org bootstrap logic and no state for it (Q171). Rafka's Day-0 work (its system org and its system topics) is its own; it opens client traffic on the [`on_fabric_ready`](fabric-node-hooks.md#on_fabric_ready) notice, which gates nothing in RDM.
 
 ---
 

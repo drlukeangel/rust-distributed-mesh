@@ -1,8 +1,8 @@
 //! Q87 (Luke, 2026-10-20): every node coming to ready-for-traffic from any other state connects to
 //! its node-admin for its cert, its time and its cache, and a ready node may do the same; the
-//! `before_ready` hook is where it does that; the one exception is the Day-0 fabric-primary, with no
+//! `pre_node_ready` hook is where it does that; the one exception is the Day-0 fabric-primary, with no
 //! other node to connect to. The pages: node-recovery.md step 1 ("A birth heard again runs its
-//! `before_ready` hook again before it is ready-for-traffic"), node-tickle.md ("on `reached` for a node
+//! `pre_node_ready` hook again before it is ready-for-traffic"), node-tickle.md ("on `reached` for a node
 //! that is off its channel it commands node.mesh.join"), node-mesh-join.md step 10 (the commanded join
 //! continues into node.start steps 3 to 5), fabric-node-hooks.md "Where it runs".
 //!
@@ -32,7 +32,7 @@ use std::time::Duration;
 const STEPS: [&str; 7] = [
     "rdm.mesh.node.update.via-join-admitted",
     "rdm.mesh.node.update.via-topology-joined",
-    "rdm.mesh.node.update.via-before-ready-attempt",
+    "rdm.mesh.node.update.via-pre-node-ready-attempt",
     "rdm.mesh.node.update.via-topology-taken",
     "rdm.mesh.node.update.via-build-floor",
     "rdm.mesh.node.update.via-rafka-time-refreshed",

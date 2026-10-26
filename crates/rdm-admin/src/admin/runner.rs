@@ -545,7 +545,7 @@ impl AdminRunner {
     /// the path's entry in the accepted Build as builds.storage records it ([`Self::entry_executable`];
     /// proposal executable-bindings-at-create.md rules 1-2: the Build topic carries none, rule 7, so this
     /// admin's own copy of the Build may name none), else the row's ([`Self::create_template`]).
-    pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, before_ready: Option<crate::deployment::pipeline::BeforeReady>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
+    pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, pre_node_ready: Option<crate::deployment::pipeline::PreNodeReady>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
         let stored = match executable {
             Some(_) => None,
             None => self.entry_executable(build_id, node).await?,
@@ -578,9 +578,9 @@ impl AdminRunner {
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: None, held_runtimes };
         let created = match claim_for {
-            crate::node_rows::ClaimFor::Recovery => self.pipeline(&template).create_recovery_with(&req, before_ready, None).await,
-            crate::node_rows::ClaimFor::Successor => self.pipeline(&template).create_successor_with(&req, before_ready).await,
-            crate::node_rows::ClaimFor::Create => self.pipeline(&template).create_with(&req, before_ready, None).await,
+            crate::node_rows::ClaimFor::Recovery => self.pipeline(&template).create_recovery_with(&req, pre_node_ready, None).await,
+            crate::node_rows::ClaimFor::Successor => self.pipeline(&template).create_successor_with(&req, pre_node_ready).await,
+            crate::node_rows::ClaimFor::Create => self.pipeline(&template).create_with(&req, pre_node_ready, None).await,
             crate::node_rows::ClaimFor::Arrival => unreachable!("a node.create claims its name; an arrival's row is the writer's, never a create's"),
         }
         .map_err(crate::executor::RunEnd::from)?;
@@ -605,7 +605,7 @@ impl AdminRunner {
     /// `AlreadyApplied` succeed; any other outcome fails the step typed (a stale-birth answer, a
     /// backward move, an unreachable target, a lost reply), and the rectifier is the retry, so
     /// `Build(shape)` never starts under an assumed state.
-    pub(crate) fn mesh_state_hook(&self, admin: &PathName, state: rdm_core::status::MeshState) -> Result<crate::deployment::pipeline::BeforeReady, String> {
+    pub(crate) fn mesh_state_hook(&self, admin: &PathName, state: rdm_core::status::MeshState) -> Result<crate::deployment::pipeline::PreNodeReady, String> {
         let node_rpc = &self.node_rpc;
         let (client, resolver, me, digest_view, me_id, topology, mesh, records, mesh_rows) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.digest_view.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone(), self.mesh_storage.clone());
         Ok(Arc::new(move |target: Node| {
@@ -785,7 +785,7 @@ impl AdminRunner {
             let t = self.topology.read().await;
             t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
         };
-        let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
+        let pre_node_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
         // A recovery's create names no executable: the launch runs the one the exited birth's row records,
         // on both arms (node-recovery.md "Retained": never the recovering admin's): the new node's config
         // and executable are seeded from that Deleted row by the create's name claim (`NodeRows::claim`),
@@ -816,7 +816,7 @@ impl AdminRunner {
         let exited = self.delete_read_exited(builds, build_id, attempt, node, from).await?;
         let created = if lost || !exited {
             let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: None, held_runtimes };
-            pipeline.create_recovery_with(&req, before_ready, Some(Box::pin(self.revise_exited(&fenced)))).await.map_err(crate::executor::RunEnd::from)?
+            pipeline.create_recovery_with(&req, pre_node_ready, Some(Box::pin(self.revise_exited(&fenced)))).await.map_err(crate::executor::RunEnd::from)?
         } else {
             if let Err(crate::deployment::pipeline::InheritedDirError::Broken(ref cause)) = crate::deployment::pipeline::inspect_transport_key(&data_dir) {
                 if let Some(fold) = self.records.status.get() {
@@ -836,7 +836,7 @@ impl AdminRunner {
                 .in_scope(|| tracing::info!("inherited data dir is broken; holding recovery until repaired"));
             }
             let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
-            pipeline.create_with(&req, before_ready, Some(Box::pin(self.revise_exited(&fenced)))).await.map_err(crate::executor::RunEnd::from)?
+            pipeline.create_with(&req, pre_node_ready, Some(Box::pin(self.revise_exited(&fenced)))).await.map_err(crate::executor::RunEnd::from)?
         };
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
@@ -886,7 +886,7 @@ impl AdminRunner {
             let t = self.topology.read().await;
             t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
         };
-        let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
+        let pre_node_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
         let mut template = self.create_template(node, Some(executable)).await?;
         if node.kind == NodeKind::NodeAdmin {
             template = self.with_issuing_material(template, &node.mesh).await?;
@@ -908,7 +908,7 @@ impl AdminRunner {
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir, held_runtimes };
         // The claim seeds config and tags from the Deleted row on both arms (node-replace.md "Inherited").
-        let created = pipeline.create_recovery_with(&req, before_ready, Some(Box::pin(self.revise_exited(&predecessor)))).await.map_err(crate::executor::RunEnd::from)?;
+        let created = pipeline.create_recovery_with(&req, pre_node_ready, Some(Box::pin(self.revise_exited(&predecessor)))).await.map_err(crate::executor::RunEnd::from)?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
@@ -1418,8 +1418,8 @@ impl AdminRunner {
             // joined its mesh, the fabric primary applies MeshStatus::Pending at that exact birth,
             // before it is asked to be Ready; only with that certainty does the shape proceed (e4.s11).
             let first_admin = self.topology.read().await.first_admin_of(node);
-            let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
-            self.create(build_id, attempt, node, executable, before_ready, claim_for).await
+            let pre_node_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
+            self.create(build_id, attempt, node, executable, pre_node_ready, claim_for).await
         }
         .instrument(span)
         .await

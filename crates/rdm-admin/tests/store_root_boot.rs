@@ -163,62 +163,22 @@ impl Day0 {
         self.store.join(&dirs[0])
     }
 
-    /// The ready-for-traffic row of the fabric, in the status rows of mesh1: the file the fabric event is put as.
-    fn ready_rows(&self) -> Vec<std::path::PathBuf> {
-        ready_event_on(&self.fabric().join(rdm_admin::store_root::FABRIC_FILE))
-    }
-
-    /// Day 0 to the end of the fabric's first change: the Fabric row written at Day 0, the admin saying it
-    /// reached ready-for-traffic, and, when `row` is set, the fabric event's row put on the root. Returns the
-    /// running admin.
-    fn day0_until_ready(&self, row: bool) -> Running {
+    /// Day 0 to the end of the fabric's first change: the Fabric row written at Day 0 and the
+    /// fabric-primary entered ready-for-traffic. Returns the running admin.
+    fn day0_until_ready(&self) -> Running {
         let running = self.run();
         let until = Instant::now() + Duration::from_secs(30);
         loop {
             let published = fabric_dirs(&self.store).first().is_some_and(|f| rdm_admin::store_log::read_record(&self.store.join(f).join(rdm_admin::store_root::FABRIC_FILE), "fabric-record", None).is_some());
-            let said: Vec<String> = first_ready_reasons(&spans_of(&self.dir, running.pid));
-            if published && said == ["ready-for-traffic"] && (!row || !self.ready_rows().is_empty()) {
+            let ready = spans_of(&self.dir, running.pid).iter().any(|s| s["name"] == "rdm.node_admin.fabric.update.via-state-entered" && s["attributes"]["to"] == "ready-for-traffic");
+            if published && ready {
                 return running;
             }
-            assert!(
-                Instant::now() < until,
-                "the Day-0 admin did not finish its first change in 30 s: the Fabric row published {published}, it said {said:?}, the ready-for-traffic rows on the root {:?}",
-                self.ready_rows()
-            );
+            assert!(Instant::now() < until, "the Day-0 admin did not finish its first change in 30 s: the Fabric row published {published}, ready-for-traffic entered {ready}");
             std::thread::sleep(Duration::from_millis(50));
         }
     }
 }
-
-/// Why each `rdm.node_admin.fabric.update.via-first-ready` span in `spans` says the admin knows the fabric
-/// first reached ready-for-traffic.
-fn first_ready_reasons(spans: &[serde_json::Value]) -> Vec<String> {
-    spans.iter().filter(|s| s["name"] == "rdm.node_admin.fabric.update.via-first-ready").map(|s| s["attributes"]["reason"].as_str().unwrap_or_default().to_string()).collect()
-}
-
-/// CONTRACT (fabric-ready-for-traffic.md: once the checklist's check-ins are in, "the fabric is
-/// ready-for-traffic"; wire.md `ApplyFabricEvent`: "the fabric-primary applies a Fabric event at a mesh
-/// primary"; states.md, "Who sets each state": the fabric-primary sets the fabric's
-/// ready-for-traffic): the fabric-primary puts the ready-for-traffic fabric event on the fabric and
-/// applies it at every mesh primary, its own mesh's included. On a one-mesh fabric the Day-0 admin is
-/// that primary: the event stands on the Fabric record, its line in `fabric.jsonl`, on the root once the
-/// fabric first reaches ready-for-traffic. What must NOT happen: the fact that the fabric first reached ready-for-traffic
-/// written on every mesh but the fabric-primary's, so that no row says it on a fabric of one mesh.
-#[test]
-fn the_fabric_primary_puts_the_ready_for_traffic_row_on_its_own_mesh() {
-    let day0 = Day0::at("the_fabric_primary_puts_the_ready_for_traffic_row_on_its_own_mesh");
-    let running = day0.day0_until_ready(true);
-    let spans = day0.stop(running);
-    let rows = day0.ready_rows();
-    assert_eq!(rows.len(), 1, "one ready-for-traffic row on the root: {rows:?}");
-    let fabric = fabric_dirs(&day0.store).remove(0);
-    let record = rdm_admin::store_log::read_record(&rows[0], "fabric-record", None).expect("the Fabric record's line");
-    assert_eq!(record["record"]["fabric_id"].as_str(), Some(fabric.as_str()), "the event stands on the fabric's own record: {record}");
-    let put = spans.iter().find(|s| s["name"] == "rdm.node_admin.status.update.via-declare" && format!("{}", s["attributes"]["key"]).contains("FabricEventAt")).unwrap_or_else(|| panic!("the fabric-primary declared no fabric event: {:?}", spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()));
-    assert_eq!(put["attributes"]["via"].as_str(), Some("self"), "the Day-0 admin is its own mesh's primary: {put}");
-    println!("trace_id={}", put["trace_id"].as_str().unwrap_or(""));
-}
-
 /// The durable writes of a Day-0 birth, by the span that names each: the Fabric row, mesh1's row, the
 /// accepted root Build, and a node row put at an arrival.
 const DAY0_WRITES: [&str; 3] = ["rdm.node_admin.fabric.create.via-fabric-row", "rdm.node_admin.mesh.create.via-mesh-row", "rdm.node_admin.build.create.via-accepted"];
@@ -237,7 +197,7 @@ const DAY0_WRITES: [&str; 3] = ["rdm.node_admin.fabric.create.via-fabric-row", "
 #[test]
 fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_before_ready() {
     let day0 = Day0::at("the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth");
-    let running = day0.day0_until_ready(true);
+    let running = day0.day0_until_ready();
     let spans = day0.stop(running);
     let attr = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or_default().to_string();
     let start = |s: &serde_json::Value| s["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
@@ -280,20 +240,10 @@ fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_befor
 const INHERITED_CONFIG: [(&str, &str); 1] = [("zone", "a")];
 const INHERITED_TAGS: [&str; 1] = ["edge"];
 
-/// What a prepared root holds beside the fabric's own record and the accepted topology: a fabric that
-/// has never been ready-for-traffic (its Fabric row, no ready-for-traffic row), or one that first
-/// reached ready-for-traffic (the ready-for-traffic fabric event's row among its mesh's status rows).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum History {
-    NeverReady,
-    ReadyForTraffic,
-}
-
 /// A fabric's durable store root and the data dir of its one node-admin, prepared through the storage
 /// adapters with no previous process (R-SB1): the Fabric row and the fabric's name claim, mesh1's row,
 /// the admin's own row (fabric1, mesh1, `mesh1.admin.1`, its node key), the accepted Build of the root
-/// topology in the Build journal on the shared store root (R-BI6) and, for [`History::ReadyForTraffic`], the
-/// ready-for-traffic row, each written straight to the root. The store names no node but the admin
+/// topology in the Build journal on the shared store root (R-BI6), each written straight to the root. The store names no node but the admin
 /// itself: nothing is alive.
 struct Prepared {
     dir: std::path::PathBuf,
@@ -308,7 +258,7 @@ struct Prepared {
 }
 
 impl Prepared {
-    fn at(name: &str, history: History) -> Self {
+    fn at(name: &str) -> Self {
         use rdm_admin::fabric_storage::FabricStorage as _;
         use rdm_admin::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId};
         use rdm_admin::storage::NodesStorage as _;
@@ -375,9 +325,6 @@ impl Prepared {
                 placement: None,
             };
             nodes.write_record(&row).await.unwrap();
-            if history == History::ReadyForTraffic {
-                { let mut r = fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric_id.clone(), name: "fabric1".into(), events: Vec::new(), provider: None }); r.events.push("ready-for-traffic".into()); fabric.put_fabric(&r).await.unwrap(); }
-            }
             let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &data_dir, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
             let accepted = rdm_admin::build_state::BuildAccepted {
                 build_id: build_id.clone(),
@@ -392,16 +339,11 @@ impl Prepared {
         assert!(rdm_admin::store_log::read_record(&prepared.fabric_row(), "fabric-record", None).is_some(), "the Fabric row stands on the root");
         assert!(rdm_admin::store_log::read_record(&prepared.store.join(prepared.fabric_id.to_string()).join(rdm_admin::store_root::BUILDS_FILE), "build-record", Some(&format!("{}/accepted", prepared.build_id))).is_some(), "the accepted Build stands on the shared store root as its own record");
         assert!(!prepared.data_dir.join("fabric").exists(), "no per-admin Build journal in data_dir");
-        assert_eq!(prepared.ready_rows().len(), usize::from(history == History::ReadyForTraffic), "{history:?}: the ready-for-traffic rows on the root");
         prepared
     }
 
     fn fabric_row(&self) -> std::path::PathBuf {
         self.store.join(self.fabric_id.to_string()).join(rdm_admin::store_root::FABRIC_FILE)
-    }
-
-    fn ready_rows(&self) -> Vec<std::path::PathBuf> {
-        ready_event_on(&self.fabric_row())
     }
 
     /// The own row the admin wrote: its incarnation, fabric id and mesh id.
@@ -530,7 +472,7 @@ const BOOTS_WITHIN: Duration = Duration::from_secs(10);
 /// is not there, or the name refused as held by the inherited birth.
 #[test]
 fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_fabric_and_mesh_ids() {
-    let root = Prepared::at("an_admin_started_on_a_prepared_root_boots_as_a_new_node", History::NeverReady);
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_boots_as_a_new_node");
     let mut running = root.start();
     let spans = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
     let adopted = assert_zero_contact_recovery(&spans);
@@ -598,53 +540,6 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (R-SB1: "a root holding ready-for-traffic history (the first-ready latch is set at boot)";
-/// states.md "The initial fabric before ready-for-traffic": "Once the fabric is ready-for-traffic these
-/// are admitted as usual"): the durable fact that the fabric first reached ready-for-traffic is the
-/// ready-for-traffic fabric event's row among its mesh's status rows. An admin started on a prepared root
-/// holding that row knows it at boot, before any status is heard, and says why once
-/// (`rdm.node_admin.fabric.update.via-first-ready`, `ready-for-traffic-row-on-store-root`), on the
-/// zero-contact recovery path. What must NOT happen: the admin refusing a caller's workflow
-/// `fabric-not-ready` because it heard pending, or learning the fact from anything but the row.
-#[test]
-fn an_admin_started_on_a_prepared_root_holding_the_ready_for_traffic_row_knows_at_boot_the_fabric_first_reached_it() {
-    let root = Prepared::at("an_admin_started_on_a_prepared_root_holding_the_ready_for_traffic_row", History::ReadyForTraffic);
-    let mut running = root.start();
-    let spans = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
-    assert_zero_contact_recovery(&spans);
-    let reasons = first_ready_reasons(&spans);
-    assert_eq!(reasons, ["ready-for-traffic-row-on-store-root"], "the admin knows from the row, at boot, once");
-    let said = spans.iter().find(|s| s["name"] == "rdm.node_admin.fabric.update.via-first-ready").unwrap();
-    let reloaded = spans.iter().find(|s| s["name"] == BUILD_RELOADED).unwrap();
-    assert!(said["start_unix_nano"].as_u64() <= reloaded["start_unix_nano"].as_u64(), "known before the boot reloads its Build: {said} {reloaded}");
-    root.end(running);
-    println!("trace_id={}", said["trace_id"].as_str().unwrap_or(""));
-}
-
-/// CONTRACT (R-SB1: "a root whose fabric has no prior ready-for-traffic (the latch is not set)"): a
-/// prepared root holding the Fabric row and no ready-for-traffic row is a fabric that has not first
-/// reached ready-for-traffic. An admin started on it, on the zero-contact recovery path, does not know at
-/// boot that the fabric reached it: by the time it reloads its Build it has said no first-ready from the
-/// store, and every first-ready it ever says is its own change's (`ready-for-traffic`). What must NOT
-/// happen: the Fabric row taken as the signal.
-#[test]
-fn an_admin_started_on_a_prepared_root_whose_fabric_was_never_ready_does_not_know_it_reached_ready_for_traffic() {
-    let root = Prepared::at("an_admin_started_on_a_prepared_root_whose_fabric_was_never_ready", History::NeverReady);
-    let mut running = root.start();
-    let spans = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
-    assert_zero_contact_recovery(&spans);
-    // By the time it reloads its Build it has said no first-ready: an ordering, read from the spans'
-    // starts (its own change may say `ready-for-traffic` soon after, before this read sees the reload).
-    let reloaded_at = spans.iter().find(|s| s["name"] == BUILD_RELOADED).and_then(|s| s["start_unix_nano"].as_u64()).unwrap();
-    let before: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.fabric.update.via-first-ready" && s["start_unix_nano"].as_u64().is_some_and(|t| t <= reloaded_at)).collect();
-    assert!(before.is_empty(), "the admin knew at boot: {before:?}");
-    let spans = root.end(running);
-    let reasons = first_ready_reasons(&spans);
-    assert!(reasons.iter().all(|r| r == "ready-for-traffic"), "the admin knew from something other than the fabric reaching ready-for-traffic: {reasons:?}");
-    let reloaded = spans.iter().find(|s| s["name"] == BUILD_RELOADED).unwrap();
-    println!("trace_id={}", reloaded["trace_id"].as_str().unwrap_or(""));
-}
-
 /// CONTRACT (R-MN1: "a mesh created again under the same name is a new mesh with a new id"; R-ML2: "a
 /// dead mesh's path.name used again is mesh.create of a new mesh with a new MeshId", "a dead mesh is
 /// never restarted"; states.md: a mesh id is never reissued; R-SB1: the cell starts an admin on a root
@@ -656,7 +551,7 @@ fn an_admin_started_on_a_prepared_root_whose_fabric_was_never_ready_does_not_kno
 /// joining it.
 #[test]
 fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_never_joins_a_mesh_created_again_under_its_name() {
-    let root = Prepared::at("an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id", History::NeverReady);
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id");
     let fabric_root = root.store.join(root.fabric_id.to_string());
     let meshes = fabric_root.join(rdm_admin::store_root::MESHES_FILE);
     let name_claim = fabric_root.join("locks").join("name").join("mesh1");
@@ -702,13 +597,6 @@ fn append_record(file: &std::path::Path, format: &str, key: &str, record: serde_
     let op = rdm_admin::store_log::Op { node_id: rdm_admin::model::NodeId::mint().to_string(), incarnation_id: rdm_admin::model::IncarnationId::mint().to_string(), seq: 1 };
     let line = rdm_admin::store_log::encode_line(&op, format, key, &serde_json::to_vec(&record).unwrap());
     std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(file).unwrap(), &line).unwrap();
-}
-
-/// The Fabric record at `file` when it holds the ready-for-traffic event: the fact the fabric first
-/// reached it, as a list of the one record that holds it (empty while it holds none).
-fn ready_event_on(file: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let held = rdm_admin::store_log::read_record(file, "fabric-record", None).is_some_and(|v| v["record"]["events"].as_array().is_some_and(|e| e.iter().any(|x| x == "ready-for-traffic")));
-    if held { vec![file.to_path_buf()] } else { Vec::new() }
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -812,7 +700,7 @@ impl Prepared {
     /// [`Prepared::at`] as a fabric whose one admin, the fabric-primary, is lost: its birth's row records
     /// it its mesh's primary and the fabric-primary, and the Fabric record names its provider, `process`.
     fn adoptable(name: &str) -> Self {
-        let root = Self::at(name, History::NeverReady);
+        let root = Self::at(name);
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let store = rdm_admin::store_root::StoreRoot::open(&root.store, &root.fabric_id).unwrap();
             let writer = rdm_admin::model::IncarnationId::mint();
@@ -979,7 +867,7 @@ fn two_adoption_launches_claim_one_attempt_one_wins_and_the_other_is_refused_by_
 #[test]
 fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_and_nothing_is_deleted() {
     let d = Day0::at("an_admin_answering_before_the_adopters_first_mutation");
-    let mut live = d.day0_until_ready(false);
+    let mut live = d.day0_until_ready();
     let fabric_id = fabric_dirs(&d.store).first().cloned().expect("the Day-0 fabric");
     let live_id: String = {
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(d.data_dir.join("nodes").join("self.json")).unwrap()).unwrap();
@@ -1138,7 +1026,7 @@ fn member_cert_installed(dir: &std::path::Path, pid: u32, node: &str, within: Du
 /// re-created admin installing no cert (its app-protocol dials refused `no-credential`).
 #[test]
 fn an_admin_re_created_at_its_path_over_its_inherited_data_dir_holds_a_member_cert() {
-    let root = Prepared::at("an_admin_re_created_at_its_path_holds_a_member_cert", History::NeverReady);
+    let root = Prepared::at("an_admin_re_created_at_its_path_holds_a_member_cert");
     let mut running = root.start();
     let _ = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
     let installed = member_cert_installed(&root.dir, running.pid, "mesh1.admin.1", Duration::from_secs(20));

@@ -21,7 +21,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
     let cap = crate::common::capture("node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let dir = std::env::temp_dir().join(format!("join-before-ready-{}", NodeId::mint()));
+        let dir = std::env::temp_dir().join(format!("join-pre-node-ready-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let fabric = FabricId::mint();
@@ -71,7 +71,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
 fn node_launched_with_no_launcher_is_refused_at_start_by_name() {
     let cap = crate::common::capture("node_launched_with_no_launcher_is_refused_at_start_by_name");
     cap.run(crate::common::Threads::Current, async move {
-        let dir = std::env::temp_dir().join(format!("join-before-ready-{}", NodeId::mint()));
+        let dir = std::env::temp_dir().join(format!("join-pre-node-ready-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let launch = Launch {

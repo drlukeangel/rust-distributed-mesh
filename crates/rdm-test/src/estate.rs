@@ -662,8 +662,8 @@ impl Estate {
         Self::bootstrap_on_with_env(owner, fabric, mesh, set, candidate_sha, required, &[]).await
     }
 
-    /// [`Estate::bootstrap_on`], the first node-admin also given `extra_env` (what an embedding's
-    /// application reads, such as the testkit application's `RDM_TEST_APP`).
+    /// [`Estate::bootstrap_on`], the first node-admin also given `extra_env` (a setting the fabric's
+    /// admins read, such as `RDM_GOSSIP_INTERVAL_MS`).
     pub async fn bootstrap_on_with_env(owner: Owner, fabric: &str, mesh: &str, set: &BindingSet, candidate_sha: &str, required: &[&str], extra_env: &[(&str, &str)]) -> Result<Self, BindingError> {
         let validated = Self::validated(&owner, set, candidate_sha, required)?;
         Ok(Self::born(owner, fabric, mesh, Some((validated, candidate_sha.to_string())), extra_env).await)
@@ -747,14 +747,10 @@ impl Estate {
         })
         .await;
         estate.fabric_id = fabric_id;
-        // The estate started the Day-0 Build by starting its admin, so it follows that Build until its
-        // work is done before a cell submits anything: a cell's first build.create is never refused
-        // for a Build in progress it did not start. The Day-0 Build is Complete only from its own
-        // ready-for-traffic (states.md "Resize and executable replacement": "as fabric.create's is"): an
-        // application that holds nothing (`RDM_TEST_APP` unset or `answer`) is followed to that Complete;
-        // one that holds the open-traffic action (`hold`) to the Blocked frame naming the fabric's change,
-        // its attempt handed back with nothing left and nothing of it in flight.
-        let answers = extra_env.iter().find(|(k, _)| *k == "RDM_TEST_APP").is_none_or(|(_, v)| v.trim() != "hold");
+        // The estate started the Day-0 Build by starting its admin, so it follows that Build to its
+        // Complete before a cell submits anything: a cell's first build.create is never refused for a
+        // Build in progress it did not start. The Day-0 Build is Complete only from its own
+        // ready-for-traffic (states.md "Resize and executable replacement": "as fabric.create's is").
         let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
         let id = rdm_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
         let mut stream = estate.carrier().await.resubmit(&id, 1).await.unwrap_or_else(|e| panic!("the bootstrap admin does not stream its Day-0 Build {id}: {e}"));
@@ -762,12 +758,11 @@ impl Estate {
         loop {
             let frame = match stream.next().await {
                 Some(frame) => frame.unwrap_or_else(|e| panic!("the stream of the Day-0 Build {id} broke before its work was done: {e}")),
-                None => panic!("the stream of the Day-0 Build {id} ended without its Complete or its Blocked fabric-change frame: {frames:?}"),
+                None => panic!("the stream of the Day-0 Build {id} ended without its Complete: {frames:?}"),
             };
             frames.push(frame.clone());
             match frame {
                 rdm_client::BuildFrame::Complete { .. } => break,
-                rdm_client::BuildFrame::Blocked { step, .. } if !answers && step == "fabric-change" => break,
                 rdm_client::BuildFrame::Failed { attempt, operation, step, reason, .. } => panic!("the Day-0 Build {id} attempt {attempt} failed at {operation} {step}: {reason}"),
                 rdm_client::BuildFrame::FabricPrimaryMoved { fabric_primary } => panic!("the fabric-primary seat moved ({fabric_primary:?}) while the Day-0 Build {id} ran"),
                 _ => {}

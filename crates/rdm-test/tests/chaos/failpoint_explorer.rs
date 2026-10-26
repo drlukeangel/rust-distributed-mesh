@@ -457,8 +457,8 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // lowest NodeId holds the fabric seat and would execute its own retire, which is not what this cut
     // explores.) `WaitForNodeReady` holds no receipt until it completes, so a Build waiting on a held
     // admin holds a receipt for every step before it.
-    let before_ready = index_of(&create_order, CreateStep::WaitForNodeReady.name());
-    joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", "mesh1.admin.3", before_ready, "refusing to act on its locator").await;
+    let pre_node_ready = index_of(&create_order, CreateStep::WaitForNodeReady.name());
+    joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", "mesh1.admin.3", pre_node_ready, "refusing to act on its locator").await;
 
     finish(run, &dir, &create_order, &retire_order).await;
 }

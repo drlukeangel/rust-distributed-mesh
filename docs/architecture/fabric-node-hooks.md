@@ -2,8 +2,8 @@
 
 [Lifecycle index](fabric-mesh-node-lifecycles.md) · [States](lifecycles/states.md) · [Op contracts](node-rpc-envelope.md#the-op-ledger)
 
-This page owns where application work enters an RDM lifecycle: the hooks, `BeforeReadyCtx`, each
-hook's outcomes and the rafka-time handle.
+This page owns where application work enters an RDM lifecycle: the hooks, their contexts
+(`NodeReadyCtx`, `MeshReadyCtx`, `FabricReadyCtx`), each hook's outcomes and the rafka-time handle.
 
 RDM owns the lifecycle and its gates. The embedding application (Rafka) supplies the work
 behind a gate through a hook. A hook is the only place application work enters an RDM
@@ -12,19 +12,24 @@ never decides an RDM transition.
 
 | Hook | Called by | When | Gates |
 |---|---|---|---|
-| [`before_ready`](#before_ready) | every node start | after accepted join and mesh-channel join; before topology installation | the node's ReadyForTraffic |
-| [`after_ready`](#after_ready) | every node | after ReadyForTraffic | nothing |
-| [`traffic_opened`](#traffic_opened) | fabric-primary | after the ready-for-traffic state is set | nothing; it is a notice |
+| [`pre_node_ready`](#pre_node_ready) | every node start | after accepted join and mesh-channel join; before topology installation | the node's ReadyForTraffic |
+| [`on_node_ready`](#on_node_ready) | every node | after its ReadyForTraffic | nothing; it is a notice |
+| [`on_mesh_ready`](#on_mesh_ready) | each mesh-primary | after its mesh's ready-for-traffic is on its Mesh record | nothing; it is a notice |
+| [`on_fabric_ready`](#on_fabric_ready) | fabric-primary | after the ready-for-traffic state is set | nothing; it is a notice |
+
+`pre_` names the one hook the application is asked before the act and holds until it answers; `on_`
+names a notice of what happened, fire and forget. Each notice is called once each time its scope
+enters ready-for-traffic, by the one that set it; a successor that adopts the state calls nothing.
 
 RDM also exposes [rafka-time](#rafka-time) to the application as a read handle. That is not
 a hook.
 
-## before_ready
+## pre_node_ready
 
 The app registers one async function before RDM starts:
 
 ```rust
-async fn before_ready(ctx: BeforeReadyCtx) -> HookOutcome;
+async fn pre_node_ready(ctx: NodeReadyCtx) -> HookOutcome;
 
 enum HookOutcome {
     Ok,
@@ -95,7 +100,7 @@ defines.
 
 ### The server side gates too
 
-An admin answers that node.topology.get only once its own `before_ready` has returned
+An admin answers that node.topology.get only once its own `pre_node_ready` has returned
 `Ok`. Until then it answers a typed `NotReady`, which the caller maps to
 `Blocked { retry_on: PrimaryReady }`. A mesh's first node therefore never pulls from an
 admin that holds nothing yet.
@@ -107,16 +112,25 @@ terminate. The hook and any pull it has in flight end, and no call is left behin
 start is Blocked, node.connections.delete, node.stop and Status stay admissible, so a birth that never
 becomes ready can still be removed.
 
-## after_ready
+## on_node_ready
 
-This hook is for optional work that does not gate readiness. Nothing required may run here,
-and it is not a second path for projections.
+After the node reports node.started, RDM calls `on_node_ready` once, with the node's `NodeReadyCtx`,
+on a task of its own. It is for optional work that does not gate readiness. Nothing required may run
+here, and it is not a second path for projections.
 
-## traffic_opened
+## on_mesh_ready
+
+Once its mesh's ready-for-traffic is on its Mesh record ([states](lifecycles/states.md#who-sets-each-state),
+Q144), the mesh-primary calls `on_mesh_ready` once, with `MeshReadyCtx { fabric_id, mesh_id, mesh }`,
+on a task of its own. The notice gates nothing in RDM.
+
+## on_fabric_ready
 
 After the ready-for-traffic state is set, the fabric-primary sends the application one
-`traffic_opened` notice ([ready-for-traffic](lifecycles/fabric-ready-for-traffic.md)). Rafka
-opens client traffic on that notice. The notice gates nothing in RDM.
+`on_fabric_ready` notice ([ready-for-traffic](lifecycles/fabric-ready-for-traffic.md)), with
+`FabricReadyCtx { fabric_id, build_id, attempt, context }`: the accepted Build and attempt whose change
+made the fabric ready-for-traffic and that attempt's observability context. Rafka opens client traffic
+on that notice. The notice gates nothing in RDM.
 
 ## rafka-time
 
@@ -125,11 +139,11 @@ is [origin-ordering.md §rafka-time](/home/admin/rafka-v2/docs/architecture/orig
 
 RDM exposes it to the application through one public, cloneable `RafkaTime` handle with
 `now_ms()`. The app gets the handle from the running node returned by RDM's start, and from
-`BeforeReadyCtx`. It is the same instance every RDM stamp reads; there is no second clock.
+`NodeReadyCtx`. It is the same instance every RDM stamp reads; there is no second clock.
 Rafka stamps its OrderKey `writer_timestamp_ms` from it.
 
 ## Observability
 
-Each hook call is one span under the node's boot span, or under the fabric's change span for
-`traffic_opened`. The span carries the outcome and the blocker or reason. `via-ready` follows the
-successful `before_ready`. A cancelled hook names the cancellation.
+Each hook call is one span under the node's boot span, under the fabric's change span for
+`on_fabric_ready`, or of its own for `on_mesh_ready` (`rdm.node_admin.mesh.update.via-on-mesh-ready`). The span carries the outcome and the blocker or reason. `via-ready` follows the
+successful `pre_node_ready`. A cancelled hook names the cancellation.

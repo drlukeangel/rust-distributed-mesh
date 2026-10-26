@@ -2,17 +2,17 @@
 //! choice; the Day-0 root makes no JoinNode and, its mesh's first node-admin and its own maker,
 //! holds the member cert its own issuer issued for exactly its birth, which a node admitting on the
 //! fabric's root admits on an app ALPN; and an admin launched by another admin holds the member cert
-//! that admin issued for exactly its birth, verifying to the root, in its before_ready context and
+//! that admin issued for exactly its birth, verifying to the root, in its pre_node_ready context and
 //! on its running handle.
 
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_admin::admin::{start_with, AdminConfig};
-use rdm_admin::before_ready::{BeforeReadyHook, BeforeReadyState};
+use rdm_admin::node_hooks::{NodeHooks, PreNodeReadyState};
 use rdm_admin::certs::CertChoice;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
+use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
 use rdm_core::certs;
 use rdm_test::test_certs::{root_choice, test_root_public};
 use rdm_transport::connections::{Alpn, Birth, ConnectionsRegistry, MemoryConnectionsSink};
@@ -63,12 +63,12 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
     cap.run(crate::common::Threads::Current, async move {
         let root_dir = std::env::temp_dir().join(format!("member-cert-root-{}", NodeId::mint()));
         let joiner_dir = std::env::temp_dir().join(format!("member-cert-joiner-{}", NodeId::mint()));
-        let root_before_ready = TestBeforeReady::new(Mode::Local);
+        let root_pre_node_ready = TestPreNodeReady::new(Mode::Local);
         let root_cfg = day0_config(&root_dir);
         let (fabric, fabric_id) = (root_cfg.fabric.clone(), root_cfg.fabric_id.clone());
-        let root = start_with(root_cfg, Wiring { before_ready: BeforeReadyHook::new(root_before_ready.clone()), certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
+        let root = start_with(root_cfg, Wiring { node_hooks: NodeHooks::new(root_pre_node_ready.clone()), certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
-        tokio::time::timeout(WRONG, root.before_ready().unwrap().settled()).await.expect("the root's hook returns");
+        tokio::time::timeout(WRONG, root.pre_node_ready().unwrap().settled()).await.expect("the root's hook returns");
         let own = root.member_cert.clone().expect("the Day-0 root, its own maker, holds a member cert of its own");
         let own_signed = certs::cert_from_bytes(&own).expect("the root's own issuer signed it");
         let me = root.birth();
@@ -78,7 +78,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             "issued for exactly the Day-0 root's birth"
         );
         assert_eq!(certs::verify(&own_signed, &[test_root_public()], root.rafka_time.now_ms(), 0), Ok(()), "member to issuer, issuer to CA, CA to the root");
-        assert_eq!(root_before_ready.member_certs.lock().unwrap().clone(), vec![None], "its context: it made no JoinNode");
+        assert_eq!(root_pre_node_ready.member_certs.lock().unwrap().clone(), vec![None], "its context: it made no JoinNode");
 
         let (root_digest, root_mesh_id) = {
             let d = root.digest.lock().unwrap().clone();
@@ -121,11 +121,11 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         });
         let env = launch.to_env();
         let joiner_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let joiner_before_ready = TestBeforeReady::new(Mode::Local);
+        let joiner_pre_node_ready = TestPreNodeReady::new(Mode::Local);
         let before = root.rafka_time.now_ms();
-        let joiner = start_with(joiner_cfg, Wiring { before_ready: BeforeReadyHook::new(joiner_before_ready.clone()), certs: CertChoice::NoCerts, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the launched admin comes up");
+        let joiner = start_with(joiner_cfg, Wiring { node_hooks: NodeHooks::new(joiner_pre_node_ready.clone()), certs: CertChoice::NoCerts, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the launched admin comes up");
         let after = root.rafka_time.now_ms();
-        assert_eq!(tokio::time::timeout(WRONG, joiner.before_ready().unwrap().settled()).await.expect("the hook returns"), BeforeReadyState::Passed);
+        assert_eq!(tokio::time::timeout(WRONG, joiner.pre_node_ready().unwrap().settled()).await.expect("the hook returns"), PreNodeReadyState::Passed);
 
         let bytes = joiner.member_cert.clone().expect("a launched admin joined, so it holds the cert its launcher issued");
         let signed = certs::cert_from_bytes(&bytes).expect("the root issued a signed member cert");
@@ -138,7 +138,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         let life = certs::MEMBER_CERT_TTL_SECS * 1000;
         assert!((before + life..=after + life).contains(&cert.expiry_ms), "issued on the root's rafka-time: {before} <= {} <= {after}", cert.expiry_ms - life);
         assert_eq!(certs::verify(&signed, &[test_root_public()], after, 0), Ok(()), "verifies to its issuer, the issuer to the CA and the CA to the root");
-        assert_eq!(joiner_before_ready.member_certs.lock().unwrap().clone(), vec![Some(bytes)], "the hook's context carries the handle's bytes");
+        assert_eq!(joiner_pre_node_ready.member_certs.lock().unwrap().clone(), vec![Some(bytes)], "the hook's context carries the handle's bytes");
 
         joiner.leave().await;
         root.leave().await;

@@ -228,7 +228,7 @@ sees only the catalog.
 | `0x71` | resolve-probe | testkit | live | canonical | `Resolve` |
 | `0x72` | declare-probe | testkit | live | canonical | `Declare` |
 | `0x73` | originate | testkit | live | canonical | `Call`, `ArmFault`, `ReleaseFault`, `Snapshot`, `RecordProxy`, `Dial`, `StopTransport` |
-| `0x74` | before-ready-pull | testkit | live | canonical | `Pull` |
+| `0x74` | pre-node-ready-pull | testkit | live | canonical | `Pull` |
 | `0x75` | fault-door | testkit | live | canonical | `Arm`, `Release`, `State` |
 
 The ledger state says whether an op may be served at all: `live` or `retired`. The serving
@@ -394,7 +394,7 @@ The router refuses every op, Ping included, with typed NotReady until the Node R
 is ready. A node-admin waits until its primary is filled and its view holds it;
 an rpc node waits until it joins its mesh. The rejection span is
 `rdm.node_rpc.request.reject.via-not-ready`. This door is the generic serving gate, not a
-fabric traffic-opening declaration. Source:
+fabric ready-for-traffic declaration. Source:
 `crates/rdm-transport/src/server.rs::with_ready_gate`.
 
 NotReady, on every op and from every handler, means one thing: the door or the handler cannot
@@ -402,7 +402,7 @@ serve this call yet, and the reason says which. It is never a lifecycle fact abo
 A caller that receives NotReady learns nothing about the subject's hook, frames no Build
 `Blocked`, and waits or retries. The subject's readiness blocker is a served answer, Status
 [`Blocked`](#status-op-0x1b-rdm): a probe that reached the exact birth and found its
-`before_ready` hook Blocked. The two must never share a variant.
+`pre_node_ready` hook Blocked. The two must never share a variant.
 
 # Schemas
 
@@ -702,12 +702,12 @@ Direction: upward for declarations; downward for applies and probes. An ordinary
 The request and reply ceilings and the request and reply variants, in their positional order, are on the generated wire page ([wire.md](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md)). Forwardable. Nested enum order is part of the wire schema. Typed stale, not-the-primary (`RejectedNotPrimary`), not-handled (`RequestNotHandled`) and invalid-transition refusals are separate from runtime refusals. Caller/server emit the runtime spans above; status handling emits `rdm.node_admin.status.update.via-declaration` or `rdm.node_admin.status.update.via-probe` for the corresponding effects. Stop command/completion evidence follows the separate pair below.
 
 Fabric and mesh lifecycle semantics are owned by [States](lifecycles/states.md#states).
-The [node stop pair](#node-stop-command-pair), the
-[fabric status command pairs](#fabric-status-command-pairs) and the
-[mesh delete pair](#mesh-delete-command-pair) specify the lifecycle calls.
+The [node stop pair](#node-stop-command-pair) and the
+[mesh delete pair](#mesh-delete-command-pair) specify the lifecycle calls; the fabric's ready-for-traffic
+has none ([fabric ready-for-traffic](lifecycles/fabric-ready-for-traffic.md), Q174).
 The lifecycle op pairs in States are carried by 0x1B as separate down (command) and up (completion) variants; enum definitions live only here. Dead is never sent.
 
-Status remains admissible while connections-deleting. The generic guard MUST NOT reject it before variant-specific direction, authorization, exact-birth and transition checks. `node.connections.delete { scope: All }` is the sole path into connections-deleting. Lifecycle callers MUST NOT use ApplyNodeState(ConnectionsDeleting); ApplyNodeState carries the permitted transitions other than connections-deleting. ProbeNodeState answers Current, or Blocked { node_id, incarnation, reason, retry_on } while the subject's [before_ready](fabric-node-hooks.md#outcomes-and-the-gate) hook is Blocked: the probe served the exact birth and found an active readiness blocker, answered before any republish so a polled blocked birth republishes nothing. Its `reason` is the hook's own text and `retry_on` the event the hook runs again on. Running and Passed hooks answer Current. NotReady is the [readiness gate's](#node-rpc-readiness-gate) answer and never a hook blocker; the executor's WaitForNodeReady frames `Blocked { WaitForNodeReady, reason }` only from Status Blocked. Declarations and mesh/fabric applies answer Applied or AlreadyApplied. ApplyNodeName, sent down by the node's mesh-primary after it wrote the renamed row ([node.name.update](lifecycles/node-name-update.md)), answers Applied once the node holds and publishes the name, AlreadyApplied for the name it already holds, and `BusyHoldingConnections { connections }` naming each connection it still holds. ConnectionsDeleting is a refusal, never the success of node.connections.delete. Idempotency is the natural key `(node_id, incarnation, state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name.
+Status remains admissible while connections-deleting. The generic guard MUST NOT reject it before variant-specific direction, authorization, exact-birth and transition checks. `node.connections.delete { scope: All }` is the sole path into connections-deleting. Lifecycle callers MUST NOT use ApplyNodeState(ConnectionsDeleting); ApplyNodeState carries the permitted transitions other than connections-deleting. ProbeNodeState answers Current, or Blocked { node_id, incarnation, reason, retry_on } while the subject's [pre_node_ready](fabric-node-hooks.md#outcomes-and-the-gate) hook is Blocked: the probe served the exact birth and found an active readiness blocker, answered before any republish so a polled blocked birth republishes nothing. Its `reason` is the hook's own text and `retry_on` the event the hook runs again on. Running and Passed hooks answer Current. NotReady is the [readiness gate's](#node-rpc-readiness-gate) answer and never a hook blocker; the executor's WaitForNodeReady frames `Blocked { WaitForNodeReady, reason }` only from Status Blocked. Declarations and mesh/fabric applies answer Applied or AlreadyApplied. ApplyNodeName, sent down by the node's mesh-primary after it wrote the renamed row ([node.name.update](lifecycles/node-name-update.md)), answers Applied once the node holds and publishes the name, AlreadyApplied for the name it already holds, and `BusyHoldingConnections { connections }` naming each connection it still holds. ConnectionsDeleting is a refusal, never the success of node.connections.delete. Idempotency is the natural key `(node_id, incarnation, state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name.
 
 Nothing inside the mesh checks who sent a frame or call. `RejectedNotPrimary` says the receiver is not the primary for the call: `ReceiverNotPrimary { needed }` when the receiver is not the primary the declaration needs, and `SubjectUnknown` when the receiver does not hold the subject at all. `RequestNotHandled { request }` means the receiver's Status door has no handler for the named request. It is decided by dispatch alone, without checking node kind, primary or sender, and performs no operation. The receiver emits `rdm.node.status.reject.via-request-not-handled` with `request` and `node`. A handler that exists may still return its defined result, including a genuine writer redirect. `SenderNotSubject` and `Unauthorized` keep their codec positions and a mesh receiver never sends them; a caller-side `PeerUnresolved` likewise.
 
@@ -760,8 +760,8 @@ pub enum StatusRequest {
     },
     Reserved12 { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 12, reserved (Q171): refused by name, never executed
     Reserved13 { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 13, reserved (Q171): refused by name, never executed
-    OpenTraffic { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
-    TrafficOpened { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
+    Reserved14 { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 14, reserved (Q174): refused by name, never executed
+    Reserved15 { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 15, reserved (Q174): refused by name, never executed
     StartNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 16, reserved: refused by name, never executed
     UpdateNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
     ApplyNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
@@ -873,7 +873,7 @@ pub enum StatusReply {
     RequestNotHandled { request: String },
 }
 
-// The event a Blocked before_ready hook runs again on (fabric-node-hooks.md,
+// The event a Blocked pre_node_ready hook runs again on (fabric-node-hooks.md,
 // "Outcomes and the gate"). Positional order is part of the wire schema.
 pub enum RetryOn {
     PrimaryChanged,
@@ -885,33 +885,6 @@ pub enum RetryOn {
 
 `ConfigOverCap` is `crates/rdm-core/src/digest.rs::ConfigOverCap`.
 
-<a id="fabric-status-command-pairs"></a>
-
-### Fabric status command pairs
-
-The fabric status ready-for-traffic is carried down on op 0x1B: OpenTraffic carries the status
-down, TrafficOpened is the check-in. The two bodies are [StatusRequest](#status-op-0x1b-rdm)
-positions 14 and 15; positions 12 and 13 are reserved (Q171).
-Who commands whom, when a check-in is owed and when a primary may report upward are the
-[check-in checklist](lifecycles/states.md#the-check-in-checklist). The payload's node_id/incarnation
-names the commanded or reporting subject; the target names the receiver of that particular
-directed call.
-
-OpenTraffic/TrafficOpened use operation `open-traffic:<fabric_id>`. The state's command is scoped to the
-accepted Build, attempt and planned exact births. A successful admission reply is Applied or
-AlreadyApplied; completion is a separate upward call with its own target and trace context,
-also acknowledged Applied or AlreadyApplied. Status refusals are typed; an unmatched check-in is
-`RejectedUnmatchedCompletion` naming the field, the value held and the value reported. No missing reply is a completed check-in.
-
-These calls are forwardable and served while connections-deleting under Status's rules. Carried service
-emits `rdm.node_rpc.request.serve.via-carried-inner`. Upward completion preserves the command's
-trace id, with a new caller span. Subject action/checklist evidence is required in addition to
-generic RPC success.
-
-Command and completion hooks use the [state gossip frames](gossip.md#fabric-state-gossip-hooks).
-Who declares the fabric state is [States](lifecycles/states.md#who-sets-each-state); Rafka
-receives one outer traffic-opened integration notice after the completed check-ins.
-
 ### Node stop command pair
 
 The caller contract is [node.stop / node.delete](#typed-object-contract). The mesh-primary's
@@ -919,8 +892,8 @@ exact-node stop and start hops use [NodeCommand 0x22](#nodecommand-op-0x22-rdm);
 the Build carrier are unchanged. StatusRequest positions 8 `StopNode` and 16 `StartNode` are reserved:
 a receiver refuses each by name and executes nothing. Reply positions 17 `Stopped`, 18 `Started`
 and 19 `StartFailed` stand. Reserved6, Reserved7 and NodeLeft retain positions 6, 7 and 9 and are
-refused by name; Reserved12 and Reserved13 retain positions 12 and 13 and are refused by name
-(Q171); Reserved2 and Reserved44 retain StatusReply positions 2 and 44. No position is reordered or
+refused by name; Reserved12 and Reserved13 retain positions 12 and 13 (Q171), Reserved14 and
+Reserved15 positions 14 and 15 (Q174), and each is refused by name; Reserved2 and Reserved44 retain StatusReply positions 2 and 44. No position is reordered or
 reused.
 
 Stop's whole `node.connections.delete { scope: All }` reports its `ConnectionsReceipt` in
@@ -1047,7 +1020,7 @@ birth whose deployment ended before its join arrived; this is not NotPrimary.
 JoinMismatch names the differing field and its deployed and reported values;
 NotPrimary names the required primary. These are typed replies, not transport faults.
 JoinNode is only a join. It does not re-read topology for an already-held member.
-After acceptance and its `before_ready` hook, the caller reads topology with [GetTopology](#topology-op-0x1e-rdm), in the order [node.start](lifecycles/node-start.md) sets.
+After acceptance and its `pre_node_ready` hook, the caller reads topology with [GetTopology](#topology-op-0x1e-rdm), in the order [node.start](lifecycles/node-start.md) sets.
 A fabric-primary recovered with durable topology follows [fabric recovery](lifecycles/fabric-recovery.md#fabric-recovery) without maker calls; its first topology read targets a node from that map.
 
 MeshDigest is the full gossip Digest, not an address-only report. Its MeshNode carries the

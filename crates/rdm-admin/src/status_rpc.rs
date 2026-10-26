@@ -504,8 +504,7 @@ pub struct StatusAuthority {
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
     /// Wakes this admin's declarer: a view this authority changed, and a down op's receipt.
     pub wake: Arc<crate::status_declare::DeclareWake>,
-    /// This admin's checklists (open-traffic); filled once the admin holds the handles
-    /// they act through.
+    /// This admin's fabric states; filled once the admin holds the handles they act through.
     pub fabric_states: Arc<OnceLock<Arc<crate::fabric_status::FabricStates>>>,
     /// Fabric recovery in a view (Q122): while this admin runs it and the target mesh has no mesh-primary,
     /// it takes the declarations of the node re-created at the target's path.name, which its own node.create
@@ -521,9 +520,9 @@ pub struct StatusAuthority {
     /// This admin as the subject of `ApplyNodeConfig`: it holds the config and publishes its digest
     /// carrying it; filled once its digest exists.
     pub configure: Configure,
-    /// Where this admin's own `before_ready` stands (the cell its start writes): while it is
+    /// Where this admin's own `pre_node_ready` stands (the cell its start writes): while it is
     /// Blocked, a probe naming this admin is answered `Blocked` carrying its blocker.
-    pub before_ready: BeforeReadyCell,
+    pub pre_node_ready: PreNodeReadyCell,
     /// This admin as the subject of `ApplyNodeName`: it takes the name holding no connection (R-CR1)
     /// and publishes its digest carrying it; filled once its digest exists.
     pub rename: Rename,
@@ -538,9 +537,6 @@ pub struct StatusAuthority {
     /// [`set_member_status`], from the frame or declaration that caused it. `None` only where no admin
     /// owns a digest view.
     pub digest_view: Option<rdm_transport::topology::DigestView>,
-    /// Whether the initial fabric has first reached ready-for-traffic, set as the fabric-primary's
-    /// ready-for-traffic row is put.
-    pub first_ready: crate::fabric_state::FirstReady,
     /// This admin's builds store: `fabric.get` answers the current Build from it, read last in, first
     /// out (build.md §4; R-BI3: "Each accepted Build is its own entity in the builds store, written
     /// once"; "The Fabric row carries no pointer to the newest Build").
@@ -645,7 +641,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } => {
+        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } => {
             (crate::node_self::request_not_handled(&me_name.to_string(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -898,11 +894,8 @@ impl StatusAuthority {
         }
         let view = self.topology.read().await.clone();
         let me_name = self.held_name_in(&view);
-        if let (Some(from), Some(fabric_states)) = (sender.as_ref(), self.fabric_states.get()) {
-            fabric_states.heard_from(&from.node_id);
-        }
         match req {
-            StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return crate::node_commands::refuse_reserved(&me_name.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
+            StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return crate::node_commands::refuse_reserved(&me_name.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
             StatusRequest::NodeLeft { node_id, .. } => {
                 let name = view.births().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_default();
                 return crate::node_commands::refuse_node_left(&me_name.to_string(), &name, &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req);
@@ -917,12 +910,6 @@ impl StatusAuthority {
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me_name, op = req.op(), sender = %sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a mesh-deleted call naming this admin was decided"));
                 return reply;
-            }
-            StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
-                return match self.fabric_states.get() {
-                    Some(fabric_states) => fabric_states.serve(&view, sender.as_ref(), peer, req, self.own.get()).await,
-                    None => rdm_core::reply::status::not_ready(format!("{me_name} has not yet built its checklists; {} is refused", req.op())),
-                };
             }
             StatusRequest::UpdateName { .. } => return self.update_name(req).await,
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
@@ -988,7 +975,7 @@ impl StatusAuthority {
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
         if let Some(me) = view.own(&self.node_id) {
-            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.republish, &self.configure, &self.rename, &self.before_ready, &self.wake).await {
+            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.republish, &self.configure, &self.rename, &self.pre_node_ready, &self.wake).await {
                 return reply;
             }
         }
@@ -1641,11 +1628,6 @@ impl StatusAuthority {
             } else {
                 hold_written_fabric_event(&*self.fabric_storage, &self.declared, fabric_id, event).await
             };
-            // The row of the ready-for-traffic event is the durable fact that the fabric first reached
-            // ready-for-traffic: the admin that put it knows it from that moment (`FirstReady`).
-            if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) && *event == event_key(&FabricEvent::ReadyForTraffic) {
-                self.first_ready.reach("ready-for-traffic-row-put");
-            }
             return reply;
         }
         let put = match &effect {
@@ -1745,8 +1727,8 @@ impl StatusAuthority {
 /// Serve `Status` on this admin. `authority` is filled once the admin holds a view; until then a
 /// declaration is `NotReady` by name.
 
-/// Where a node's own `before_ready` stands: `None` until its start registered a hook.
-pub type BeforeReadyCell = Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>;
+/// Where a node's own `pre_node_ready` stands: `None` until its start registered a hook.
+pub type PreNodeReadyCell = Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>>;
 
 /// A node's re-publish of its presence (its digest published on the channel it is on), filled once it has joined its mesh.
 pub type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
@@ -1778,10 +1760,10 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence and answers its current state; no transition. While its
-/// `before_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
+/// `pre_node_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
 /// re-publishes nothing. `ApplyNodeState` is not served: a node's connections are deleted by `node.connections.delete` and a stop is `stop-node`.
 #[allow(clippy::too_many_arguments)]
-async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, before_ready: &BeforeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
+async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, pre_node_ready: &PreNodeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let incarnation = match req {
         StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } => incarnation,
         _ => return None,
@@ -1799,7 +1781,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
         StatusRequest::ProbeNodeState { .. } => {
             // The hook's blocker as it stood when the probe arrived, before the probe addresses
             // this admin (a hook blocked on its authority's word runs again on it).
-            let blocker = before_ready.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
+            let blocker = pre_node_ready.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             // The authority addressed this admin (R-S3's down op): its endpoint is counted for a hook
             // blocked on its word, whether or not a record names it, and every declaration owed to it
             // is sent again, whatever its last outcome.
@@ -2196,12 +2178,11 @@ mod tests {
             caches: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
-            before_ready: Default::default(),
+            pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
-            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         crate::offline::put_silence_status(&*status, &authority.caches.nodes, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
@@ -2263,12 +2244,11 @@ mod tests {
             caches: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
-            before_ready: Default::default(),
+            pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
-            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let published: Arc<Mutex<Vec<(NodeId, String, u32)>>> = Arc::default();
@@ -2340,12 +2320,11 @@ mod tests {
             caches: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
-            before_ready: Default::default(),
+            pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
-            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         }
     }
@@ -2636,12 +2615,11 @@ mod tests {
             caches: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
-            before_ready: Default::default(),
+            pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
-            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let birth = rpc.incarnation_id.clone().unwrap();
@@ -2677,11 +2655,11 @@ mod tests {
         let (node_id, incarnation) = (admin.node_id.clone(), admin.incarnation_id.clone().unwrap());
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         for sender in [Some(&carrier), Some(&admin), None] {
-            let answered = self_subject(&admin, sender, None, &probe, &Republish::default(), &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
+            let answered = self_subject(&admin, sender, None, &probe, &Republish::default(), &Configure::default(), &Rename::default(), &PreNodeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
             assert!(matches!(answered, Some(R::Current { .. })), "from {:?}: {answered:?}", sender.map(|n| n.name.to_string()));
         }
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::ConnectionsDeleting };
-        let answered = self_subject(&admin, Some(&carrier), None, &apply, &Republish::default(), &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
+        let answered = self_subject(&admin, Some(&carrier), None, &apply, &Republish::default(), &Configure::default(), &Rename::default(), &PreNodeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::RejectedInvalidNodeTransition { .. })), "the subject answers the apply by its own rule: {answered:?}");
     }
 
@@ -2713,12 +2691,11 @@ mod tests {
             fabric_states: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
-            before_ready: Default::default(),
+            pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
-            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         }
     }
@@ -3077,12 +3054,11 @@ mod tests {
             caches: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
-            before_ready: Default::default(),
+            pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
-            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         for n in [&restarted, &deleted, &standing] {
@@ -3177,12 +3153,11 @@ mod tests {
             caches: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
-            before_ready: Default::default(),
+            pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
-            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };

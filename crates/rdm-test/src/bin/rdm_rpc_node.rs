@@ -48,10 +48,10 @@ async fn main() {
     // span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        // A scenario's `before_ready` knob for this node (passing immediately when no knob file exists).
-        let before_ready = match launch.data_dir.parent().map(|root| rdm_test::before_ready_probe::KnobBeforeReady::always(root, &launch.name.to_string())) {
-            Some(hook) => rdm_test::before_ready::BeforeReadyHook::new(hook),
-            None => rdm_test::before_ready::BeforeReadyHook::none(),
+        // A scenario's `pre_node_ready` knob for this node (passing immediately when no knob file exists).
+        let pre_node_ready = match launch.data_dir.parent().map(|root| rdm_test::pre_node_ready_probe::KnobPreNodeReady::always(root, &launch.name.to_string())) {
+            Some(hook) => rdm_test::node_hooks::NodeHooks::new(hook),
+            None => rdm_test::node_hooks::NodeHooks::none(),
         };
         let register = |b, seams: rdm_test::originate::Seams| {
             let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch, &seams.name), seams.resolver.clone(), &launch, &seams.name), declare_client.clone(), &launch);
@@ -61,11 +61,11 @@ async fn main() {
         // connection's streams are echoed, and the originate door's `Stream` dials on it.
         let started = async {
             if node::app_protocol_knob(&launch) {
-                let (running, acceptor) = node::start_before_ready_with_alpn(&launch, before_ready, node::app_protocol(), register).await?;
+                let (running, acceptor) = node::start_pre_node_ready_with_alpn(&launch, pre_node_ready, node::app_protocol(), register).await?;
                 node::echo_streams(acceptor, launch.name.to_string());
                 Ok(running)
             } else {
-                node::start_before_ready(&launch, before_ready, register).await
+                node::start_pre_node_ready(&launch, pre_node_ready, register).await
             }
         }
         .instrument(tracing::Span::none());

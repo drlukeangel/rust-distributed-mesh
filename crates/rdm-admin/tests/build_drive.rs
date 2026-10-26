@@ -2412,7 +2412,7 @@ impl Gate for FabricChange {
 /// ready-for-traffic again from this Build's own change ... while the fabric changes, the Build reports
 /// Blocked naming the change, never Complete"; build.md §1: every accepted Build is reconciled, "Every
 /// execution attempt re-reads the accepted topology and current realized/observed state and computes
-/// remaining work"; fabric-ready-for-traffic.md: the open-traffic checklist names the accepted Build's `attempt`):
+/// remaining work"; fabric-ready-for-traffic.md: the fabric's change names the accepted Build's `attempt`):
 /// a Build whose topology put the fabric back to pending and whose work the view already holds (nothing
 /// left to execute) claims its first attempt, which hands back with nothing run, so the fabric's change
 /// has the attempt to name; it reports Blocked `fabric-change`, never Complete, while the fabric changes,
@@ -2723,7 +2723,7 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready_for_traffic
     );
     assert!(frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "the Day-0 Build reports Blocked naming the fabric's change: {frames:?}");
     assert!(!frames.iter().any(|f| matches!(f, Read::Terminal(_) | Read::Frame(BuildReply::Complete { .. } | BuildReply::Failed { .. }))), "never Complete while the fabric changes: {frames:?}");
-    // The fabric's open-traffic check-ins completed: it is ready-for-traffic.
+    // Every mesh is ready: the fabric is ready-for-traffic.
     *ledger.state.lock().unwrap() = "ready-for-traffic";
     gate.ready.store(true, Ordering::SeqCst);
     assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("the drive ends once the fabric is ready-for-traffic"), DriveEnd::Terminal);

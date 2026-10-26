@@ -40,7 +40,6 @@ mod heartbeat_spans;
 mod lifecycle_frames_wire;
 mod digest_frames_wire;
 mod seat_frames_wire;
-mod state_hook_frames_wire;
 mod publication_wake;
 mod forward_role;
 mod no_acting_publication;

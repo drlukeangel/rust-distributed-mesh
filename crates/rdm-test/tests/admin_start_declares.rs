@@ -14,11 +14,11 @@ use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId, PathName};
 use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::before_ready::{HookOutcome, BeforeReadyHook};
+use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
 use rdm_admin::join::Deployed;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::status::{StatusReply, StatusRequest};
-use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
+use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -130,7 +130,7 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         std::fs::create_dir_all(&root_dir).unwrap();
         // The mesh's primary: a Day-0 node-admin that does not reconcile (it would retire the admin this
         // cell launches in its own process).
-        let root = start_with(day0_config(&root_dir), Wiring { before_ready: BeforeReadyHook::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(WRONG, async {
@@ -146,8 +146,8 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         let _ = root.runner.joins.expect(deployed(&launch, None));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let passing = BeforeReadyHook::new(TestBeforeReady::new(Mode::Fixed(HookOutcome::Ok)));
-        let admin = start_with(admin_cfg, Wiring { before_ready: passing, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+        let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
+        let admin = start_with(admin_cfg, Wiring { node_hooks: passing, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
         until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
         let first = tokio::time::timeout(DECLARED, async {
             loop {

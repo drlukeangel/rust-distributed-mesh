@@ -69,7 +69,7 @@ a member recovered over a fresh dir still lists the loss it was recovered over.
 member at the same `path.name`:
 - over a newly allocated `data_dir` beside the old path;
 - with a newly minted endpoint key (the old key is never minted again);
-- with `before_ready` told `inherited = false`.
+- with `pre_node_ready` told `inherited = false`.
 
 For a lost mesh's node-admin, the fabric-primary runs this arm itself, without the wait.
 

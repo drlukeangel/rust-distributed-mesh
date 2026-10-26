@@ -11,7 +11,6 @@ pub fn authored(f: &Frame) -> Frame {
         Frame::Digest { digest } => Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() },
         Frame::NodeDeleting { publisher, .. } | Frame::NodeRestarting { publisher, .. } | Frame::NodeStopped { publisher, .. } => Birth::publisher(&author().fabric, publisher),
         Frame::FabricStatus { fabric, .. } => Birth { fabric: fabric.clone(), ..author() },
-        Frame::TrafficOpening { hook, .. } | Frame::TrafficOpened { hook, .. } => Birth { fabric: hook.fabric_id.clone(), ..author() },
         _ => author(),
     };
     f.clone().authored(&author, 2, 1)
@@ -63,11 +62,6 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
         Frame::FabricStatus { fabric, changed_at_rafka_ms: t, .. } => {
             source = format!("rdm://{}/{}/{}", fabric, a.node, a.incarnation);
             ms = *t; seq = Some(format!("00000000000000000002.{t:020}")); (format!("fabric/{fabric}/status"), vec![fabric.to_string(), "2".into(), t.to_string()])
-        }
-        Frame::TrafficOpening { hook: h, .. } | Frame::TrafficOpened { hook: h, .. } => {
-            source = format!("rdm://{}/{}/{}", h.fabric_id, a.node, a.incarnation);
-            ms = h.event_at_rafka_ms;
-            (format!("state/{}/{}/{}/{}/birth/{}/{}", h.fabric_id, esc(&h.build_id), h.attempt, esc(&h.operation), h.node_id, h.incarnation), vec![h.fabric_id.to_string(), h.build_id.clone(), h.attempt.to_string(), h.operation.clone(), h.node_id.to_string(), h.incarnation.to_string()])
         }
         Frame::NodeDeleting { op: o, .. } | Frame::NodeDeleted { op: o, .. } | Frame::NodeRestarting { op: o, .. } | Frame::NodeStopped { op: o, .. } | Frame::NodeConnectionsDeleting { op: o, .. } | Frame::NodeConnectionsDeleted { op: o, .. } | Frame::NodeLeaving { op: o, .. } | Frame::NodeLeft { op: o, .. } => {
             ms = o.event_at_rafka_ms;

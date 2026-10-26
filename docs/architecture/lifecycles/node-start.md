@@ -13,7 +13,7 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
 | Entry | A just-created process or a live process in stopped |
 | Stopped reachability | Fresh Node RPC dial to its still-bound endpoint ([stopped nodes](states.md#stopped-nodes)) |
 | Context | `start_kind = FirstStart` or `AfterStop`; the spec says whether the data dir is inherited |
-| Hook | `before_ready`, with joined channel, cert and current rafka-time; topology follows the hook |
+| Hook | `pre_node_ready`, with joined channel, cert and current rafka-time; topology follows the hook |
 | Completion | Hook Ok, complete topology, current time, required Build floor, `node.started`, and the mesh-primary's ReadyForTraffic on it |
 
 ## End-to-end sequence
@@ -27,7 +27,7 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
    `NodeJoined` (Data) only after the accepted join and channel join; the mesh-primary records
    pending from that frame. node.start clears NodeStopped at NodeJoined. No state is written
    before `CommandAccepted`; starting remains the executor's overlay.
-3. Run [before_ready](../fabric-node-hooks.md#before_ready) with the
+3. Run [pre_node_ready](../fabric-node-hooks.md#pre_node_ready) with the
    start kind and inherited-data-dir indication. The app subscribes its kind topics
    through the joined channel and reads no topology snapshot as a prerequisite.
    Ready waits for the hook; its Ok, Blocked and Failed outcomes, the Blocked probe
@@ -61,7 +61,7 @@ are unchanged:
 StartNode { node_id, incarnation, build_id, attempt, operation }
   ← CommandAccepted (Started; admission, no lifecycle state)
   ← NodeJoined (Data; mesh-primary records pending)
-  [before_ready]
+  [pre_node_ready]
   [node.topology.get, missing Build floor, rafka-time last]
   ← NodeStarted (Terminal; mesh-primary records ReadyForTraffic)
   [outer Build Complete only after the ReadyForTraffic record]
@@ -89,7 +89,7 @@ sequenceDiagram
     N->>M: join
     M-->>N: cert and rafka-time
     N-->>M: node.joined
-    Note over N: before_ready
+    Note over N: pre_node_ready
     N->>M: node.topology.get
     M-->>N: topology, required Build facts, rafka-time last
     N-->>M: node.started

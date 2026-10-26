@@ -66,8 +66,6 @@ mod cert_renewal;
 mod seeded;
 #[path = "fabric/fabric_states.rs"]
 mod fabric_states;
-#[path = "fabric/owed_check_ins.rs"]
-mod owed_check_ins;
 #[path = "fabric/declared_secrets.rs"]
 mod declared_secrets;
 #[path = "fabric/named_listeners.rs"]
@@ -218,10 +216,10 @@ mod rshape_burn_in;
 // ── Testkit functional cells ──
 mod common;
 mod container_pipeline;
-mod before_ready;
-mod before_ready_admin;
+mod pre_node_ready;
+mod pre_node_ready_admin;
 mod proof_store;
-mod join_before_ready;
+mod join_pre_node_ready;
 mod member_cert;
 mod member_cert_admin;
 mod app_protocol_estate;

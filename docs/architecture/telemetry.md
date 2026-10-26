@@ -44,7 +44,7 @@ namespace ([Runtime spans](node-rpc-envelope.md#runtime-spans)).
 | Gossip frame | the envelope's `traceparent` and `tracestate` (the CloudEvents Distributed Tracing extension, [gossip.md §3.4](gossip.md#34-the-envelope)) | the span the publisher is in when it publishes | the receive span is a child of the publishing span; a frame published from a timer carries that timer's span, which is a root of its own |
 | Launch of a node | `TRACEPARENT` (and `TRACESTATE`) in the launch environment | the pipeline's `DeployRuntime` step | the node's boot span `rdm.mesh.node.create.via-deployment` is that step's child. The launcher's own `TRACEPARENT` and `TRACESTATE` never reach the child ([deployment-provider.md](deployment-provider.md)) |
 | Data-plane connection (Direct or Proxy, on an app protocol) | the connection's present frame | the opener's span around `open` | a carrier's tunnel span `rdm.node.connections.create.via-tunnel` is its child and passes its own context on to the destination; stream bytes carry no context, and an application's own spans on a stream are its own |
-| `before_ready` and the `traffic_opened` notice | the hook's context, and the span RDM calls it in (`rdm.mesh.node.update.via-before-ready-attempt`, `rdm.node_admin.fabric.update.via-traffic-opened-hook`) | the start step or the fabric change that calls it | the application's spans in the hook are children of that span |
+| `pre_node_ready` and the `on_node_ready`, `on_mesh_ready` and `on_fabric_ready` notices | the hook's context, and the span RDM calls it in (`rdm.mesh.node.update.via-pre-node-ready-attempt`, `rdm.mesh.node.update.via-on-node-ready`, `rdm.node_admin.mesh.update.via-on-mesh-ready`, `rdm.node_admin.fabric.update.via-on-fabric-ready`) | the start step, the mesh's record write or the fabric change that calls it | the application's spans in the hook are children of that span |
 
 ## 4. Where a trace starts
 
@@ -55,8 +55,8 @@ These start a root of their own today:
 - **A Day-0 or person-started node-admin.** Its boot span takes `TRACEPARENT` when it is given,
   and is a root otherwise.
 - **The fabric's change.** Each change from ready-for-traffic (or an adopted one) opens
-  `rdm.node_admin.fabric.update.via-change` as a root. Its state entries, the open-traffic
-  checklist, its down calls, the check-ins and the `traffic_opened` notice are its children. It carries `build_id`. It is not a child of the Build's `build.create`: the Build that
+  `rdm.node_admin.fabric.update.via-change` as a root. Its state entries and the
+  `on_fabric_ready` notice are its children. It carries `build_id`. It is not a child of the Build's `build.create`: the Build that
   caused it and the change are two traces, joined by `build_id`.
 - **Loops on a timer.** Each pass of the Build drive (`rdm.node_admin.build.update.via-drive`),
   the status turn (`rdm.mesh.fabric.update.via-status-send`), the heartbeat
@@ -72,7 +72,7 @@ These start a root of their own today:
 | A call and what it did on the target | one trace: the caller's call span, the target's serve span and its handler's spans |
 | A Build from request to Complete | the `build.create` trace for acceptance; the drive passes and the attempt's calls by `build_id` and `attempt`; each step's span and receipt by `operation` and `step` |
 | The fabric's change a Build caused | the `via-change` root whose `build_id` is the Build's |
-| A node's birth | the `DeployRuntime` step's trace, through the node's boot span, to its join and `before_ready` |
+| A node's birth | the `DeployRuntime` step's trace, through the node's boot span, to its join and `pre_node_ready` |
 | A gossip fact | the receive span's parent (the publishing span), and the frame's `publisher`, `topology_version`, `snapshot_id` and identity fields |
 | A connection | `rdm.node_admin.connection.update.via-observed` by `entry`, `source`, `destination` and `alpn`; a Proxy's tunnel span under the opener's trace |
 

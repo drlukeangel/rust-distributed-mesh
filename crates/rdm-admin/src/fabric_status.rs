@@ -1,119 +1,29 @@
-//! The fabric states and their checklist, run by the admins of a fabric (states.md;
-//! lifecycles/fabric-ready-for-traffic.md).
+//! The fabric's states, run by the fabric-primary (states.md; lifecycles/fabric-ready-for-traffic.md).
 //!
-//! - The fabric-primary alone moves the fabric: `pending` → `ready-for-traffic` (every mesh is
-//!   ready-for-traffic, then the open-traffic checklist completed; Q171). The FabricStatus frame
-//!   carrying each state is authored by it only, by the status loop that reads the state it holds.
-//! - A checklist is a command pair down and a completion pair up: fabric-primary → mesh-primary →
-//!   member. A primary reports upward only after its own action and every planned member's
-//!   check-in; a check-in counts only as the planned exact birth, after the primary received this
-//!   checklist's down op. Nothing leaves a checklist by a timer.
-//! - The application gets one notice, `traffic_opened`, gating nothing. What a node does before it
-//!   checks in is behind [`StateActions`].
-//! - A new primary, through election or recovery, re-sends the current state's command before it republishes
-//!   the status it adopted (states.md, "The check-in checklist"; R-S3): members already done check in
-//!   again, and the checklist rebuilds itself from the check-ins heard after the checklist began. Its
-//!   down op is the read `ProbeNodeState` (Q87) ([`FabricStates::adopted_step`]).
+//! - The fabric-primary alone moves the fabric: `pending` → `ready-for-traffic` once every mesh the
+//!   accepted Build names is ready-for-traffic (Q174). The FabricStatus frame carrying each state is
+//!   authored by it only, by the status loop that reads the state it holds.
+//! - The application gets one notice, `on_fabric_ready`, gating nothing (Q175).
+//! - A new primary, through election or recovery, republishes the status it adopted only after the
+//!   checklist of that adopted status (states.md, "The check-in checklist"; R-S3): its down op is the
+//!   read `ProbeNodeState` (Q87) ([`FabricStates::adopted_step`]).
 
 use crate::accepted::FabricTopology;
 use crate::admin::Records;
 use crate::build_claim::AttemptContexts;
 use crate::build_state::BuildStateAdapter;
-use crate::fabric_state::{Expected, FabricState, Checklists, StateKey, StateCommand, StateOp};
+use crate::fabric_state::FabricState;
 use crate::model::{FabricId, IncarnationId, Node, NodeId, NodeKind, PathName};
 use crate::checklist::{fabric_missing, missing_members, reports_of, Missing};
-use crate::status_declare::{Authority, DeclareWake, Declarer, Key};
 use crate::topology::Topology;
-use crate::wiring::{FabricHooks, TrafficOpened};
+use crate::wiring::{FabricHooks, FabricReadyCtx};
 use rdm_transport::topology::{Announced, DigestView};
-use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
-use rdm_core::outcome::RpcOutcome;
-use rdm_core::status::{NotPrimary, Status, StatusReply, StatusRequest};
-use rdm_core::MemberStatus;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::Instrument;
-
-pub use rdm_node::fabric_states::{run_action, NoAction, StateActions};
-
-/// The reason the Build this admin holds accepted, `accepted`, supersedes the checklist `key`, or `None`
-/// while the checklist is current (node-rpc-envelope.md, "Fabric status command pairs": "The state's command is scoped to
-/// the accepted Build, attempt and planned exact births"; states.md, The check-in checklist: the checklist
-/// "names the accepted Build's PLANNED births"). `key_build` is the checklist's own Build as this admin's
-/// log holds it, read only when it is another Build than the accepted one.
-pub(crate) fn superseded_by(key: &StateKey, accepted: &crate::build_state::BuildProjection, key_build: Option<&crate::build_state::BuildProjection>) -> Option<String> {
-    if accepted.build_id.as_str() == key.build_id {
-        return (accepted.attempt > key.attempt).then(|| format!("the accepted Build {} is at attempt {}, past this checklist's attempt {}", key.build_id, accepted.attempt, key.attempt));
-    }
-    // Another Build: superseded only by one accepted after the checklist's own. A checklist of a Build this
-    // admin's log has not learned, or of one accepted after the Build it holds, came ahead of this admin's log.
-    let own = key_build?;
-    (own.submitted_at_ms < accepted.submitted_at_ms).then(|| format!("Build {} (accepted at {} ms) was accepted after this checklist's Build {} (accepted at {} ms)", accepted.build_id.as_str(), accepted.submitted_at_ms, key.build_id, own.submitted_at_ms))
-}
-
-/// Withdraw from `declarer` every state completion `accepted` (the Build this admin holds accepted)
-/// has moved past, by the [`superseded_by`] rule: the completion of a superseded checklist is not owed
-/// and is never sent. `builds` is read for the Build of a checklist that is not the accepted one.
-pub(crate) async fn withdraw_superseded_completions(declarer: &Declarer, me: &PathName, accepted: &crate::build_state::BuildProjection, builds: &dyn BuildStateAdapter) {
-    for (key, state_key) in declarer.state_completions() {
-        if let Some(why) = state_superseded_by(&state_key, accepted, builds, &me.to_string()).await {
-            declarer.withdraw_completion(me, &key, &why);
-        }
-    }
-}
-
-/// [`superseded_by`] for `checklist`, reading the checklist's own Build from `builds` when it is another than
-/// the accepted one. A Build this admin's log holds no fact of is a checklist that came ahead of the
-/// pointer (the same answer [`superseded_by`] gives it). A Build that cannot be read leaves the
-/// question open, and says so by name: it is neither superseded nor known to be current.
-async fn state_superseded_by(state_key: &StateKey, accepted: &crate::build_state::BuildProjection, builds: &dyn BuildStateAdapter, node: &str) -> Option<String> {
-    if accepted.build_id.as_str() == state_key.build_id {
-        return superseded_by(state_key, accepted, None);
-    }
-    let read = match crate::build::BuildId::parse(&state_key.build_id) {
-        Err(e) => Err(format!("the checklist names Build {:?}, which is not a Crockford id: {e}", state_key.build_id)),
-        Ok(id) => match builds.read_build(&id).await {
-            Ok(own) => Ok(Some(own)),
-            Err(crate::build_state::BuildStateError::UnknownBuild(_)) => Ok(None),
-            Err(e) => Err(e.to_string()),
-        },
-    };
-    let own = match read {
-        Ok(own) => own,
-        Err(error) => {
-            tracing::info_span!("rdm.node_admin.fabric.reject.via-state-build-unreadable", node, command = state_key.kind.command(), build_id = %state_key.build_id, attempt = state_key.attempt, accepted_build_id = %accepted.build_id, error = %error)
-                .in_scope(|| tracing::info!("the checklist's Build cannot be read: whether the accepted Build moved past the checklist is not known"));
-            None
-        }
-    };
-    superseded_by(state_key, accepted, own.as_ref())
-}
-
-/// How a call to a state peer ended.
-enum Delivery {
-    /// The peer admitted the op (`Applied` or `AlreadyApplied`): it is never sent again.
-    Answered(StatusReply),
-    /// The peer replied with a refusal or that it is not ready (`typed: true`; a refusal rests on the
-    /// peer's own view, which heals), or a command's Owed call ended without a reply (`typed: false`:
-    /// the peer's exit or removal is proven): the same op is sent again on an eligible event only
-    /// (`Checklists::take_due`).
-    Undelivered { why: String, typed: bool },
-}
-
-fn delivery(out: &RpcOutcome<StatusReply>) -> Delivery {
-    delivery_of(out.reply().map(|r| r.value()), out.name())
-}
-
-/// `reply` is the typed reply the call got, when it got one; `outcome` names how a call without one ended.
-fn delivery_of(reply: Option<&StatusReply>, outcome: &str) -> Delivery {
-    match reply {
-        Some(r @ (StatusReply::Applied | StatusReply::AlreadyApplied)) => Delivery::Answered(r.clone()),
-        Some(other) => Delivery::Undelivered { why: format!("{other:?}"), typed: true },
-        None => Delivery::Undelivered { why: outcome.to_string(), typed: false },
-    }
-}
 
 /// The current Build as one status turn read it ([`BuildStateAdapter::current`]).
 pub type TurnRead = Result<Option<crate::build_state::BuildProjection>, crate::build_state::BuildStateError>;
@@ -131,14 +41,12 @@ pub struct ChangeInputs<'a> {
     pub current: &'a TurnRead,
 }
 
-/// The shared handles one admin's checklists read and act through.
+/// The shared handles one admin's fabric states read and act through.
 pub(crate) struct StatesEnv {
     /// This admin's `path.name`.
     pub me: PathName,
     /// This admin's node id.
     pub node_id: NodeId,
-    /// This admin's incarnation.
-    pub incarnation: IncarnationId,
     /// The fabric.
     pub fabric_id: FabricId,
     /// This admin's view.
@@ -149,19 +57,10 @@ pub(crate) struct StatesEnv {
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The attempts' observability contexts.
     pub contexts: Arc<AttemptContexts>,
-    /// What this admin owes its authorities: a mesh primary's completion is owed through it.
-    pub declarer: Arc<Declarer>,
-    /// Wakes the declarer.
-    pub wake: Arc<DeclareWake>,
     /// The records whose fabric state the projection reads.
     pub records: Arc<Records>,
     /// The application hooks.
     pub hooks: FabricHooks,
-    /// The action this admin completes before its own check-in.
-    pub actions: Arc<dyn StateActions>,
-    /// The state keys this node's action ran for, in any role (`rdm_node::fabric_states::ActedRecord`),
-    /// shared with the node's member path: once per state key (states.md "The check-in checklist").
-    pub acted: Arc<rdm_node::fabric_states::ActedRecord>,
 }
 
 /// Which checklists of an adopted status are complete now.
@@ -222,8 +121,6 @@ struct Adopted {
 struct Change {
     adopted: bool,
     root: Option<tracing::Span>,
-    /// The open-traffic checklist the change runs, once every mesh is ready-for-traffic.
-    key: Option<StateKey>,
     notified: bool,
     /// The accepted topology the fabric changes under: a Build that changes it (a resize or an executable
     /// replacement) puts the fabric back to pending (states.md, "Resize and executable replacement").
@@ -236,39 +133,21 @@ struct Change {
     named: Option<String>,
 }
 
-/// The gossip a checklist's hooks go out on: this admin's mesh channel and the backbone.
-struct HookGossip {
-    backbone: rdm_transport::topology::Backbone,
-    topology_view: rdm_transport::topology::TopologyView,
-}
-
-/// One admin's checklists: as the fabric-primary the change, as a mesh primary the commands to its
-/// members and its completion up, as a member the check-in.
+/// One admin's fabric states: as the fabric-primary the change, as a new primary the checklists of the
+/// statuses it adopted.
 pub struct FabricStates {
     env: StatesEnv,
-    /// The check-ins of the members of this admin's mesh, as its mesh primary.
-    pub mesh_checklists: Checklists,
-    /// The check-ins of the mesh primaries, as the fabric-primary.
-    pub fabric_checklists: Checklists,
-    /// The mesh checklists a driver runs, each with the opening of its checklist the driver drives.
-    drivers: Mutex<HashMap<StateKey, u64>>,
-    /// The checklists whose own action this admin stored, as its mesh's primary: a checklist run again
-    /// (a re-opened checklist after a cut-off, a re-sent command) checks in from this record and never
-    /// runs the action twice.
-    acted: Mutex<HashSet<StateKey>>,
-    /// Where the state hooks are published; set once the admin has joined the backbone.
-    gossip: std::sync::OnceLock<HookGossip>,
     change: tokio::sync::Mutex<Change>,
-    /// Poked when a check-in, the application's answer or this admin's own mesh checklist arrives.
+    /// Poked when the change's next turn is due.
     change_wake: tokio::sync::Notify,
     /// The checklists of the statuses this admin adopted as a new primary.
     adopted: Mutex<Adopted>,
 }
 
 impl FabricStates {
-    /// The checklists of the admin `env` describes.
+    /// The fabric states of the admin `env` describes.
     pub(crate) fn new(env: StatesEnv) -> Arc<Self> {
-        Arc::new(Self { env, mesh_checklists: Checklists::default(), fabric_checklists: Checklists::default(), drivers: Mutex::new(HashMap::new()), acted: Mutex::new(HashSet::new()), gossip: std::sync::OnceLock::new(), change: tokio::sync::Mutex::new(Change::default()), change_wake: tokio::sync::Notify::new(), adopted: Mutex::new(Adopted::default()) })
+        Arc::new(Self { env, change: tokio::sync::Mutex::new(Change::default()), change_wake: tokio::sync::Notify::new(), adopted: Mutex::new(Adopted::default()) })
     }
 
     /// The paths the current Build plans in each mesh (`node.get` names a birth its view no longer
@@ -302,28 +181,10 @@ impl FabricStates {
             .unwrap_or_else(|| self.env.me.clone())
     }
 
-    /// Where this admin's state hooks are published, once it has joined the backbone.
-    pub fn set_gossip(&self, backbone: rdm_transport::topology::Backbone, topology_view: rdm_transport::topology::TopologyView) {
-        let _ = self.gossip.set(HookGossip { backbone, topology_view });
-    }
-
-    /// Publish the state hook this admin authors (gossip.md, "Fabric state gossip hooks"): on its own
-    /// mesh channel and the backbone, in the path of the call it runs with. A command hook names the
-    /// commanded birth; a completion hook names this admin's own birth.
-    async fn publish_hook(&self, key: &StateKey, up: bool, node_id: &NodeId, incarnation: &IncarnationId) {
-        let me = self.held_name().await;
-        let Some(gossip) = self.gossip.get() else {
-            tracing::info_span!("rdm.node_admin.fabric.update.via-state-hook", node = %me, command = key.kind.command(), bound = false, "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("no gossip is bound to this admin's checklists: the hook is not published"));
-            return;
-        };
-        let _ = rdm_node::fabric_states::publish_hook(&me, key, up, node_id, incarnation, &gossip.topology_view, Some(&gossip.backbone)).await;
-    }
-
     // ------------------------------------------------------------------ the fabric-primary
 
-    /// One turn of the fabric-primary's change. Cheap and never blocking: long work (the hook, a
-    /// checklist's commands) runs on its own tasks and the turn reads where they have got to.
+    /// One turn of the fabric-primary's change. Cheap and never blocking: the application's notice
+    /// runs on its own task.
     pub async fn change_step(self: &Arc<Self>, inputs: ChangeInputs<'_>) {
         let mut change = self.change.lock().await;
         let heard_state = inputs.heard.and_then(|h| FabricState::parse(h).or_else(|| (h == "degraded").then_some(FabricState::ReadyForTraffic)));
@@ -331,30 +192,26 @@ impl FabricStates {
             // A non-holder serves the state the holder published and runs nothing.
             *change = Change::default();
             self.env.records.set_fabric_state(heard_state.unwrap_or(FabricState::Pending));
-            self.fabric_checklists_reset();
             return;
         }
         let me = self.held_name_in(inputs.view);
         if !change.adopted {
             // The seat was taken: the state the previous holder published is adopted, not re-decided.
-            // A state with a checklist in flight runs that checklist again, and members already done check in again.
             change.adopted = true;
             let adopted = heard_state.unwrap_or(FabricState::Pending);
             self.env.records.set_fabric_state(adopted);
             tracing::info_span!("rdm.node_admin.fabric.update.via-state-adopted", node = %me, state = adopted.as_str(), heard = inputs.heard.unwrap_or("none"), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the fabric-primary seat was taken: the published state is adopted"));
         }
-        // A step that moved the fabric (or its checklist) is followed by the next at once: the change
-        // waits on its checklists and the application, never on the loop that carries it. Every step is
-        // decided on the turn's one read of the current Build.
-        for _ in 0..8 {
-            let before = (self.env.records.fabric_state(), change.key.is_some());
-            match before.0 {
-                FabricState::Pending if change.key.is_some() => self.step_open_traffic(&mut change, inputs.view, inputs.current).await,
+        // A step that moved the fabric is followed by the next at once. Every step is decided on the
+        // turn's one read of the current Build.
+        for _ in 0..4 {
+            let before = self.env.records.fabric_state();
+            match before {
                 FabricState::Pending => self.step_pending(&mut change, inputs.view, inputs.current).await,
                 FabricState::ReadyForTraffic => self.step_ready(&mut change, inputs.current).await,
             }
-            if before == (self.env.records.fabric_state(), change.key.is_some()) {
+            if before == self.env.records.fabric_state() {
                 break;
             }
         }
@@ -376,8 +233,8 @@ impl FabricStates {
     }
 
     /// A resize or an executable replacement puts the fabric back to pending: the accepted Build's topology is no longer
-    /// the one the fabric changes under, so its planned births must check in again and the checklists
-    /// run again. A new attempt of the same Build changes no topology and moves nothing here.
+    /// the one the fabric changes under, so the fabric is ready again only when every mesh of the new
+    /// topology is. A new attempt of the same Build changes no topology and moves nothing here.
     /// A Build whose request names, for a path, the executable that path's row already records, or changes
     /// only a held path's storage, placement or tags, is neither: its paths, and each path's executable
     /// resolved against the rows ([`crate::accepted::same_on_the_rows`]), are the ones the fabric changes
@@ -412,22 +269,12 @@ impl FabricStates {
                 change.tracked = None;
                 change.tracked_build = None;
                 change.notified = false;
-                change.key = None;
                 change.root = None;
-                self.fabric_checklists.clear();
                 self.enter(change, FabricState::Pending, me);
                 true
             }
             Some(_) => false,
         }
-    }
-
-    /// Whether this step acts on nothing of `build`: the accepted topology is not the one the fabric
-    /// changes under. Either [`Self::resized`] put the fabric back to pending, or the move waits until
-    /// the state it leaves went out, and until then no checklist of the new Build runs inside the old
-    /// one's change (fabric-ready-for-traffic.md: the checklist follows every mesh ready).
-    async fn topology_moved(&self, change: &mut Change, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
-        self.resized(change, build, me).await || (change.tracked.as_ref().is_some_and(|held| *held != build.topology) && change.tracked_build.as_ref() != Some(&build.build_id))
     }
 
     /// A Build this fabric-primary has just accepted (states.md, Resize and executable replacement: "A resize or an executable replacement puts
@@ -482,22 +329,6 @@ impl FabricStates {
         }
     }
 
-    fn fabric_checklists_reset(&self) {
-        // A checklist belongs to the tenure that opened it: a new holder opens its own. The
-        // tenure's own mesh checklists go with it (i146 Q45): a checklist it opens again re-runs this admin's
-        // own mesh checklist, whose members check in again from their record.
-        let ended = self.fabric_checklists.keys();
-        if ended.is_empty() {
-            return;
-        }
-        for key in &ended {
-            self.mesh_checklists.close(key);
-        }
-        self.fabric_checklists.clear();
-        tracing::info_span!("rdm.node_admin.fabric.remove.via-tenure-ended", node = %self.env.me, checklists = ended.len(), "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("this admin holds the fabric-primary role no more: the checklists it opened and its own mesh's checklists are closed"));
-    }
-
     fn enter(&self, change: &mut Change, next: FabricState, me: &PathName) {
         let from = self.env.records.fabric_state();
         self.env.records.set_fabric_state(next);
@@ -506,7 +337,7 @@ impl FabricStates {
         let parent = change.root.clone().unwrap_or_else(tracing::Span::none);
         tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-state-entered", node = %me, fabric_id = %self.env.fabric_id, from = from.as_str(), to = next.as_str(), "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the fabric-primary entered a fabric state"));
-        self.env.wake.poke();
+        self.env.records.wake.poke();
     }
 
     /// A blocker standing in a state: one span while it stands, another when it changes.
@@ -522,14 +353,13 @@ impl FabricStates {
         }
     }
 
-    /// Whether the current Build `build` is a fabric.delete: the fabric changes no more, a checklist this
-    /// fabric-primary drives ends at the delete's acceptance with its hook's future dropped, and no checklist
-    /// is opened for the delete (build.md §1). The blocker names the delete.
+    /// Whether the current Build `build` is a fabric.delete: the fabric changes no more and is never made
+    /// ready for the delete (build.md §1). The blocker names the delete.
     fn deleting(&self, change: &mut Change, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
         if !build.deletes_fabric() {
             return false;
         }
-        self.block(change, &[Missing { who: "build".into(), why: "fabric-delete" }], &format!("fabric.delete Build {} is the current Build: no checklist is opened", build.build_id), me);
+        self.block(change, &[Missing { who: "build".into(), why: "fabric-delete" }], &format!("fabric.delete Build {} is the current Build: the fabric is not made ready", build.build_id), me);
         true
     }
 
@@ -537,7 +367,7 @@ impl FabricStates {
         let me = self.held_name_in(view);
         let accepted = match current {
             Ok(b) => b.as_ref(),
-            Err(e) => return self.block(change, &[unreadable(e)], "the open-traffic checklist names the current Build", &me),
+            Err(e) => return self.block(change, &[unreadable(e)], "ready-for-traffic names the current Build", &me),
         };
         if accepted.is_some_and(|b| self.deleting(change, b, &me)) {
             return;
@@ -557,29 +387,35 @@ impl FabricStates {
             }
         }
         if !blockers.is_empty() {
-            self.block(change, &blockers, "the open-traffic checklist waits for every mesh to be ready-for-traffic", &me);
+            self.block(change, &blockers, "ready-for-traffic waits for every mesh to be ready-for-traffic", &me);
             return;
         }
         let Some(build) = accepted else {
-            self.block(change, &[Missing { who: "build".into(), why: "no-accepted-build" }], "the open-traffic checklist names the accepted Build", &me);
+            self.block(change, &[Missing { who: "build".into(), why: "no-accepted-build" }], "ready-for-traffic names the accepted Build", &me);
             return;
         };
-        // The checklist names the accepted Build's attempt: a Build whose first attempt no executor has
-        // claimed yet has none, and the checklist names the attempt that exists.
+        // The change names the accepted Build's attempt: a Build whose first attempt no executor has
+        // claimed yet has none, and the change names the attempt that exists.
         if build.attempt == 0 {
-            self.block(change, &[Missing { who: "build".into(), why: "no-attempt-claimed" }], "the open-traffic checklist names the accepted Build's attempt", &me);
+            self.block(change, &[Missing { who: "build".into(), why: "no-attempt-claimed" }], "ready-for-traffic names the accepted Build's attempt", &me);
             return;
         }
         if !self.may_advance() {
             return;
         }
-        change.root = Some(tracing::info_span!(parent: None, "rdm.node_admin.fabric.update.via-change", node = %me, fabric_id = %self.env.fabric_id, build_id = %build.build_id.log(), adopted = false));
+        let root = tracing::info_span!(parent: None, "rdm.node_admin.fabric.update.via-change", node = %me, fabric_id = %self.env.fabric_id, build_id = %build.build_id.log(), adopted = false);
         change.tracked = Some(build.topology.clone());
         change.tracked_build = Some(build.build_id.clone());
         change.named = None;
-        change.key = Some(StateKey { kind: StateCommand::OpenTraffic, fabric_id: self.env.fabric_id.clone(), build_id: build.build_id.to_string(), attempt: build.attempt });
-        tracing::info_span!(parent: change.root.as_ref().unwrap_or(&tracing::Span::none()), "rdm.node_admin.fabric.update.via-every-mesh-ready", node = %me, build_id = %build.build_id.log(), attempt = build.attempt, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("every mesh is ready-for-traffic: the open-traffic checklist begins"));
+        tracing::info_span!(parent: &root, "rdm.node_admin.fabric.update.via-every-mesh-ready", node = %me, build_id = %build.build_id.log(), attempt = build.attempt, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("every mesh is ready-for-traffic: the fabric is ready-for-traffic"));
+        change.root = Some(root.clone());
+        self.enter(change, FabricState::ReadyForTraffic, &me);
+        if !change.notified {
+            change.notified = true;
+            self.notify_fabric_ready(build, root, me);
+        }
+        change.root = None;
     }
 
     /// The meshes not ready-for-traffic and the mesh primaries that have not reported, named. Empty:
@@ -602,326 +438,25 @@ impl FabricStates {
         out
     }
 
-    async fn step_open_traffic(self: &Arc<Self>, change: &mut Change, view: &Topology, current: &TurnRead) {
-        let me = self.held_name_in(view);
-        let build = match current {
-            Ok(Some(build)) => build,
-            Ok(None) => return self.block(change, &[Missing { who: "build".into(), why: "no-accepted-build" }], "open-traffic names the accepted Build", &me),
-            Err(e) => return self.block(change, &[unreadable(e)], "open-traffic names the current Build", &me),
-        };
-        if self.topology_moved(change, build, &me).await || self.deleting(change, build, &me) {
-            return;
-        }
-        // The accepted attempt moved: the checklist is scoped to the current one, and its planned births check in again.
-        if let Some(k) = change.key.as_ref().filter(|k| k.build_id != build.build_id.to_string() || k.attempt != build.attempt) {
-            change.key = Some(StateKey { kind: k.kind, fabric_id: k.fabric_id.clone(), build_id: build.build_id.to_string(), attempt: build.attempt });
-            self.fabric_checklists.clear();
-        }
-        let Some(key) = change.key.clone() else { return };
-        let parent = change.root.clone().unwrap_or_else(tracing::Span::none);
-        let missing = self.fabric_checklist(&key, view, &parent, build).await;
-        if !missing.is_empty() {
-            self.block(change, &missing, &format!("{} waits for the check-in checklist", key.kind.command()), &me);
-            return;
-        }
-        if !self.may_advance() {
-            return;
-        }
-        change.named = None;
-        tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-checklist-complete", node = %me, command = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the check-in checklist is complete"));
-        // The fact is durable before anything acts on it: the fabric-primary's own mesh's
-        // ready-for-traffic row first, then the state, which latches the fact; the declarer applies
-        // the event at every other mesh primary after.
-        if let Err(why) = self.put_ready_row(&parent, &me).await {
-            let missing = [Missing { who: me.mesh.clone(), why: "ready-row-unwritten" }];
-            self.block(change, &missing, &format!("ready-for-traffic puts the fabric-primary's ready-for-traffic row on the store root first ({why})"), &me);
-            return;
-        }
-        self.enter(change, FabricState::ReadyForTraffic, &me);
-        if !change.notified {
-            change.notified = true;
-            self.notify_traffic_opened(&key, parent.clone(), me);
-        }
-        change.root = None;
-        change.key = None;
-    }
-
-    /// The fabric-primary's own ready-for-traffic row, put among its mesh's status rows on the store root
-    /// before it enters ready-for-traffic (`Records::put_ready_row`), under one span in the change. `Err`
-    /// names what refused it: the fabric stays where it is and nothing is latched.
-    async fn put_ready_row(&self, parent: &tracing::Span, me: &PathName) -> Result<(), String> {
-        let span = tracing::info_span!(parent: parent, "rdm.node_admin.fabric.update.via-ready-row-put", node = %me, fabric_id = %self.env.fabric_id, mesh = %me.mesh, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
-        let put = self.env.records.put_ready_row(&self.env.fabric_id).instrument(span.clone()).await;
-        match &put {
-            Ok(reply) => {
-                span.record("outcome", reply.name());
-                span.in_scope(|| tracing::info!("the fabric-primary's ready-for-traffic row is on the store root: the fabric may enter ready-for-traffic"));
-            }
-            Err(why) => {
-                span.record("outcome", "refused").record("detail", why.as_str());
-                span.in_scope(|| tracing::info!("the fabric-primary's ready-for-traffic row could not be put: the fabric does not enter ready-for-traffic"));
-            }
-        }
-        put.map(|_| ())
-    }
-
-    /// One turn of a fabric-level checklist of `build`, the current Build as the turn read it: open it,
-    /// command the mesh primaries not yet commanded as their exact birth, run this admin's own mesh as
-    /// its mesh primary. The planned births not checked in, named; empty is complete.
-    async fn fabric_checklist(self: &Arc<Self>, key: &StateKey, view: &Topology, parent: &tracing::Span, build: &crate::build_state::BuildProjection) -> Vec<Missing> {
-        let me = self.held_name_in(view);
-        if self.fabric_checklists.open(key) {
-            tracing::info_span!(parent: parent, "rdm.node_admin.fabric.update.via-checklist-opened", node = %me, command = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the fabric-primary opened a checklist"));
-        }
-        let meshes: Vec<String> = build.topology.meshes.keys().cloned().collect();
-        let mut planned = BTreeMap::new();
-        let mut unresolved = Vec::new();
-        for mesh in &meshes {
-            match view.node_type_primary(mesh, NodeKind::NodeAdmin) {
-                Some(p) if p.incarnation_id.is_some() => {
-                    planned.insert(p.node_id.clone(), Expected { incarnation: p.incarnation_id.clone().expect("checked"), name: p.name.to_string() });
-                }
-                _ => unresolved.push(Missing { who: mesh.clone(), why: "no-primary" }),
-            }
-        }
-        self.fabric_checklists.expect(key, planned, unresolved);
-        // This admin's own mesh: it is the mesh primary of it, so it runs that mesh's checklist itself.
-        if !self.mesh_checklists.is_open(key) {
-            self.mesh_checklists.open(key);
-            self.spawn_mesh_driver(key.clone(), false, parent.clone());
-        }
-        for (node_id, expected, event) in self.fabric_checklists.take_due(key, view) {
-            if node_id == self.env.node_id {
-                continue;
-            }
-            self.spawn_command(key.clone(), true, node_id, expected, event, parent.clone());
-        }
-        self.fabric_checklists.missing(key)
-    }
-
-    /// The one notice to the application: after the open-traffic checklist completed and the fabric
-    /// is ready-for-traffic. It gates nothing.
-    fn notify_traffic_opened(&self, key: &StateKey, parent: tracing::Span, me: PathName) {
-        let (hook, contexts) = (self.env.hooks.traffic_opened.clone(), self.env.contexts.clone());
-        let state_key = (key.fabric_id.clone(), key.build_id.clone(), key.attempt);
+    /// The one notice to the application: the fabric is ready-for-traffic (Q175, `on_fabric_ready`). It is
+    /// fire and forget and gates nothing.
+    fn notify_fabric_ready(&self, build: &crate::build_state::BuildProjection, parent: tracing::Span, me: PathName) {
+        let (hook, contexts) = (self.env.hooks.on_fabric_ready.clone(), self.env.contexts.clone());
+        let (fabric_id, build_id, attempt) = (self.env.fabric_id.clone(), build.build_id.clone(), build.attempt);
         tokio::spawn(async move {
-            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-traffic-opened-hook", node = %me, build_id = %state_key.1, attempt = state_key.2, bound = hook.is_some(), "otel.kind" = "internal");
+            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-on-fabric-ready", node = %me, build_id = %build_id.log(), attempt, bound = hook.is_some(), "otel.kind" = "internal");
             async {
                 let Some(hook) = hook else {
-                    tracing::info!("no traffic_opened notice is registered");
+                    tracing::info!("no on_fabric_ready hook is registered");
                     return;
                 };
-                let context = match crate::build::BuildId::parse(&state_key.1) {
-                    Ok(build) => contexts.get(&build, state_key.2).await.ok().flatten().unwrap_or_default(),
-                    Err(e) => {
-                        tracing::info!(build_id = %state_key.1, error = %e, "the checklist's Build id is not a Crockford id: no call context is held for it");
-                        Default::default()
-                    }
-                };
-                hook(TrafficOpened { fabric_id: state_key.0.clone(), build_id: state_key.1.clone(), attempt: state_key.2, operation: StateCommand::OpenTraffic.operation(&state_key.0), context }).await;
-                tracing::info!("the application was told the fabric opened traffic");
+                let context = contexts.get(&build_id, attempt).await.ok().flatten().unwrap_or_default();
+                hook(FabricReadyCtx { fabric_id, build_id: build_id.to_string(), attempt, context }).await;
+                tracing::info!("the application was told the fabric is ready-for-traffic");
             }
             .instrument(span)
             .await
         });
-    }
-
-    // ------------------------------------------------------------ commands down, one hop
-
-    /// Send the down op of `key` to the planned birth `to`, on its own task, as one Owed call
-    /// (node-rpc.md §43, i146 e3): the delivery layer resends it until the birth answers, and the call
-    /// ends only on that answer, on the birth's proven exit or removal, or when the checklist closes (this
-    /// owner's cancellation). The view it was taken from commands it once per exact birth; an op the
-    /// peer refused waits for an eligible event.
-    fn spawn_command(self: &Arc<Self>, key: StateKey, fabric_level: bool, to: NodeId, expected: Expected, event: &'static str, parent: tracing::Span) {
-        let this = self.clone();
-        tokio::spawn(async move {
-            let me = this.held_name().await;
-            let checklists = if fabric_level { &this.fabric_checklists } else { &this.mesh_checklists };
-            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-state-command", node = %me, command = key.kind.command(), to = %expected.name, event, outcome = tracing::field::Empty, "otel.kind" = "internal");
-            let req = key.kind.down(&key, to.clone(), expected.incarnation.clone());
-            // The command hook runs in the path of the command it announces, before the call goes out.
-            this.publish_hook(&key, false, &to, &expected.incarnation).instrument(span.clone()).await;
-            // Armed before the checklist is read: a close during the read is seen by the wait.
-            let mut closed = checklists.subscribe();
-            closed.borrow_and_update();
-            let owed = CallOptions { budget: Budget::Owed, ..CallOptions::default() };
-            let target = NodeTarget::ExactNode(to.clone());
-            let call = this.env.client.call::<Status>(&target, &req, &owed).instrument(span.clone());
-            tokio::pin!(call);
-            let out = loop {
-                if !checklists.is_open(&key) {
-                    break None;
-                }
-                tokio::select! {
-                    (out, _) = &mut call => break Some(out),
-                    changed = closed.changed() => {
-                        if changed.is_err() {
-                            break None;
-                        }
-                    }
-                }
-            };
-            let Some(out) = out else {
-                // Dropping the call ends its owed request: the checklist it commands is closed.
-                span.record("outcome", "cancelled: the checklist closed");
-                return;
-            };
-            match delivery(&out) {
-                Delivery::Answered(r) => {
-                    span.record("outcome", r.name());
-                    checklists.answered(&key, &to, &expected.incarnation);
-                }
-                Delivery::Undelivered { why, typed } => {
-                    span.record("outcome", why.as_str());
-                    // Wake the checklist waiter so the current view is checked against what was sent while the call was out.
-                    if checklists.undelivered(&key, &to, &expected.incarnation, typed) && fabric_level {
-                        this.change_wake.notify_one();
-                    }
-                }
-            }
-        });
-    }
-
-    // ----------------------------------------------------------------- the mesh primary
-
-    /// Drive `key` as this mesh's primary: command every planned member of this mesh, run this
-    /// admin's own action, and when the checklist is complete report upward. `owes_upward`: the
-    /// checklist came down from the fabric-primary, which the completion is owed to; `false` when this
-    /// admin is the fabric-primary and the mesh checklist is its own. A driver drives one opening of the
-    /// checklist: a checklist closed and opened again (a tenure that ended and a change that opens it again)
-    /// gets a driver of its own, and the driver of the closed opening ends.
-    fn spawn_mesh_driver(self: &Arc<Self>, key: StateKey, owes_upward: bool, parent: tracing::Span) {
-        let Some(opening) = self.mesh_checklists.opening(&key) else { return };
-        {
-            let mut drivers = self.drivers.lock().unwrap();
-            if drivers.get(&key) == Some(&opening) {
-                return;
-            }
-            drivers.insert(key.clone(), opening);
-        }
-        let this = self.clone();
-        tokio::spawn(async move {
-            let me = this.held_name().await;
-            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-mesh-checklist", node = %me, command = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, superseded_by = tracing::field::Empty, own_action = tracing::field::Empty, "otel.kind" = "internal");
-            this.drive_mesh(&key, owes_upward, opening).instrument(span.clone()).await;
-            let mut drivers = this.drivers.lock().unwrap();
-            if drivers.get(&key) == Some(&opening) {
-                drivers.remove(&key);
-            }
-        });
-    }
-
-    async fn drive_mesh(self: &Arc<Self>, key: &StateKey, owes_upward: bool, opening: u64) {
-        let mesh = self.env.me.mesh.clone();
-        let mut own_done = self.acted.lock().unwrap().contains(key) || self.env.acted.acted(key);
-        if own_done {
-            // A checklist run again: this admin's own action is stored, and its check-in is made from that.
-            tracing::Span::current().record("own_action", "from-record");
-        }
-        let checklist_span = tracing::Span::current();
-        // The wait is armed before the read: a checklist change, a view change or a birth addressing
-        // this primary that happens during the read is seen by the wait, never lost, and nothing
-        // here runs on a timer.
-        let (mut checklists_tick, mut view_tick) = (self.mesh_checklists.subscribe(), self.env.records.subscribe_view());
-        loop {
-            checklists_tick.borrow_and_update();
-            view_tick.borrow_and_update();
-            if self.mesh_checklists.opening(key) != Some(opening) {
-                tracing::info!("the opening of the checklist this driver drives is closed: an opening of it again has a driver of its own");
-                return;
-            }
-            let view = self.env.topology.read().await.clone();
-            let me = self.held_name_in(&view);
-            if !view.node_type_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == self.env.node_id) {
-                tracing::info!("this admin no longer holds its mesh's primary seat: the checklist is the next primary's");
-                self.mesh_checklists.close_opening(key, opening);
-                return;
-            }
-            // A builds store that cannot be read plans nothing this turn, named: the planned births
-            // are never taken from the view in its place.
-            let accepted = match self.env.builds.current().await {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::info_span!("rdm.node_admin.fabric.reject.via-build-store-unreadable", node = %me, command = key.kind.command(), mesh = %mesh, error = %e, "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the current Build could not be read: this mesh checklist plans nothing until it can"));
-                    tokio::select! {
-                        _ = checklists_tick.changed() => {}
-                        _ = view_tick.changed() => {}
-                    }
-                    continue;
-                }
-            };
-            // A checklist the current Build moved past commands nothing more and owes no completion: the
-            // checklist of the current Build and attempt is the one its primaries run now.
-            if let Some(b) = &accepted {
-                if let Some(why) = state_superseded_by(key, b, &*self.env.builds, &me.to_string()).await {
-                    checklist_span.record("superseded_by", why.as_str());
-                    tracing::info!(superseded_by = %why, "the current Build moved past this checklist: it commands nothing more and owes no completion");
-                    self.mesh_checklists.close_opening(key, opening);
-                    return;
-                }
-            }
-            let paths: Vec<PathName> = match &accepted {
-                Some(b) => crate::checklist::planned(&b.topology, &mesh),
-                None => view.members().filter(|n| n.mesh == mesh).map(|n| n.name.clone()).collect(),
-            };
-            let mut planned = BTreeMap::new();
-            let mut unresolved = Vec::new();
-            for path in paths.iter().filter(|p| **p != me) {
-                match view.members().find(|n| &n.name == path) {
-                    Some(n) if n.incarnation_id.is_some() => {
-                        planned.insert(n.node_id.clone(), Expected { incarnation: n.incarnation_id.clone().expect("checked"), name: n.name.to_string() });
-                    }
-                    _ => unresolved.push(Missing { who: path.to_string(), why: "no-birth-heard" }),
-                }
-            }
-            self.mesh_checklists.expect(key, planned, unresolved);
-            for (node_id, expected, event) in self.mesh_checklists.take_due(key, &view) {
-                self.spawn_command(key.clone(), false, node_id, expected, event, checklist_span.clone());
-            }
-            if !own_done {
-                match run_action(&*self.env.actions, &me, key.kind).await {
-                    Ok(()) => {
-                        own_done = true;
-                        self.acted.lock().unwrap().insert(key.clone());
-                        self.env.acted.record(key);
-                        checklist_span.record("own_action", "run");
-                    }
-                    Err(e) => {
-                        tracing::info_span!("rdm.node_admin.fabric.update.via-state-action-failed", node = %me, command = key.kind.command(), error = %e, "otel.kind" = "internal")
-                            .in_scope(|| tracing::info!("this admin's own action failed: it owes no check-in"));
-                        self.mesh_checklists.close_opening(key, opening);
-                        return;
-                    }
-                }
-            }
-            if own_done && self.mesh_checklists.complete(key) {
-                break;
-            }
-            tokio::select! {
-                _ = checklists_tick.changed() => {}
-                _ = view_tick.changed() => {}
-            }
-        }
-        match owes_upward {
-            true => {
-                // The completion is owed to the fabric-primary as the view names it now, sent on every
-                // eligible event, and owed again to a successor (R-S2).
-                let req = key.kind.up(key, self.env.node_id.clone(), self.env.incarnation.clone());
-                // The check-in hook runs when the completion becomes owed: once per checklist, however often it is sent.
-                self.publish_hook(key, true, &self.env.node_id, &self.env.incarnation).await;
-                self.env.declarer.owe_in(Key::completion(key), Authority::FabricPrimary, req, crate::build_claim::current_context().traceparent);
-                self.env.wake.poke();
-            }
-            false => {
-                self.fabric_checklists.check_in_local(key, &self.env.node_id, &self.env.incarnation);
-                self.change_wake.notify_one();
-                tracing::info!("this admin's own mesh checklist is complete");
-            }
-        }
     }
 
     // ------------------------------------------------- the checklist of an adopted status (R-S3)
@@ -1058,134 +593,25 @@ impl FabricStates {
         }
         out
     }
+}
 
-    // ----------------------------------------------------------------- served by an admin
-
-    /// The completions this admin owes for a checklist the accepted Build has moved past are withdrawn,
-    /// before the declarer sends anything: a superseded checklist's completion is never sent.
-    pub async fn withdraw_superseded(&self) {
-        if self.env.declarer.state_completions().is_empty() {
-            return;
-        }
-        let me = self.held_name().await;
-        let accepted = match self.env.builds.current().await {
-            Ok(Some(b)) => b,
-            Ok(None) => return,
-            Err(e) => {
-                tracing::info_span!("rdm.node_admin.fabric.reject.via-build-store-unreadable", node = %me, error = %e, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("the current Build could not be read: no completion is withdrawn this tick"));
+/// The notice to the application that a mesh is ready-for-traffic (Q175, `on_mesh_ready`): called by
+/// the mesh-primary once its mesh's ready-for-traffic is on its Mesh record (Q144), on its own task. It
+/// is fire and forget and gates nothing.
+pub(crate) fn notify_mesh_ready(hook: Option<crate::wiring::MeshReadyNotice>, ctx: crate::wiring::MeshReadyCtx) {
+    tokio::spawn(async move {
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-on-mesh-ready", mesh = %ctx.mesh, mesh_id = %ctx.mesh_id, bound = hook.is_some(), "otel.kind" = "internal");
+        async {
+            let Some(hook) = hook else {
+                tracing::info!("no on_mesh_ready hook is registered");
                 return;
-            }
-        };
-        withdraw_superseded_completions(&self.env.declarer, &me, &accepted, &*self.env.builds).await;
-    }
-
-    /// `node_id` sent this admin a Status call: an undelivered state command to it is eligible again.
-    pub fn heard_from(&self, node_id: &NodeId) {
-        self.mesh_checklists.heard_from(node_id);
-        self.fabric_checklists.heard_from(node_id);
-        self.change_wake.notify_one();
-    }
-
-    /// A state op addressed to this admin, decided from `view`. `own` answers it as a plain member.
-    pub async fn serve(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
-        let Some(op) = StateOp::of(req) else { return rdm_core::reply::status::not_ready(format!("{} is not a state op", req.op())) };
-        let me = self.held_name_in(view).to_string();
-        let reply = if op.is_down { self.serve_down(view, sender, peer, req, &op, own).await } else { self.serve_up(view, req, &op) };
-        tracing::info_span!(
-            "rdm.node_admin.status.update.via-state-op",
-            node = %me,
-            op = req.op(),
-            command = op.kind.command(),
-            sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(),
-            build_id = %op.build_id,
-            attempt = op.attempt,
-            outcome = reply.name(),
-            "otel.kind" = "internal"
-        )
-        .in_scope(|| tracing::info!("a state op was decided"));
-        reply
-    }
-
-    /// A state command naming this admin, served by what this admin is in its own view, whoever
-    /// calls (node-rpc.md §14): a mesh-primary runs its mesh's checklist and reports it to the
-    /// fabric-primary; any other admin takes it as a member and checks in with its mesh's primary
-    /// (fabric-ready-for-traffic.md: "Once every member has checked in under the check-in
-    /// checklist"). The fabric-primary carries checklists down and is not a receiver of one.
-    #[allow(clippy::too_many_arguments)]
-    async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, op: &StateOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
-        let Some(me) = view.own(&self.env.node_id) else {
-            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "a view holding this admin".into() });
-        };
-        let me_name = self.held_name_in(view);
-        // Answered by the admin the call reached (R-RX5: no receiver refuses a downward call for the
-        // node id it names); the exact birth it names is checked, so a call that reached another
-        // birth is refused naming the one held.
-        if let Some(held) = me.incarnation_id.as_ref().filter(|h| *h != op.incarnation) {
-            return rdm_core::reply::stale(held.clone());
+            };
+            hook(ctx).await;
+            tracing::info!("the application was told the mesh is ready-for-traffic");
         }
-        if *op.fabric_id != self.env.fabric_id {
-            return rdm_core::reply::status::rejected_stale_fabric(self.env.fabric_id.clone());
-        }
-        let want = op.kind.operation(op.fabric_id);
-        if op.operation != want {
-            return rdm_core::reply::status::not_ready(format!("{me_name}: {} names operation {}, the checklist's is {want}", req.op(), op.operation));
-        }
-        if me.is_fabric_primary {
-            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("a mesh-primary the fabric-primary commands, or a member of a mesh: {me_name} holds the fabric seat and carries {} down", req.op()) });
-        }
-        if me.is_primary {
-            // This admin is a mesh primary: it runs its mesh's checklist and reports to the fabric-primary.
-            let key = op.key();
-            self.env.wake.addressed_by(sender.map(|n| &n.node_id), peer);
-            if self.mesh_checklists.open(&key) {
-                self.spawn_mesh_driver(key, true, tracing::Span::current());
-                rdm_core::reply::applied()
-            } else {
-                // The checklist is held. A fabric-primary asking again holds another tenure's checklist (a
-                // successor, or the holder healed from a cut-off, i146 Q45): a completion this admin
-                // already made is owed again from its record, and the checklist rebuilds.
-                self.env.declarer.owe_again(&me_name, &crate::status_declare::Key::completion(&key));
-                self.env.wake.poke();
-                rdm_core::reply::already_applied()
-            }
-        } else {
-            // A member: it checks in with the primary that commanded it (fabric-ready-for-traffic.md, checklist
-            // sequence: "M->>N: open-traffic", "N->>M: traffic-opened"): the caller, which a new
-            // primary is before this admin's view names it. Only a caller the view does not hold is
-            // checked in at the mesh's primary as the view names it.
-            let commander = sender.filter(|s| s.node_id != me.node_id).map(|s| s.node_id.clone()).or_else(|| view.node_type_primary(&me.mesh, NodeKind::NodeAdmin).filter(|p| p.node_id != me.node_id).map(|p| p.node_id.clone()));
-            match (own, commander) {
-                (Some(own), Some(commander)) => own.serve(Some(&commander), None, req).await.expect("a state op"),
-                (None, _) => rdm_core::reply::status::not_ready(format!("{me_name} has not yet joined its mesh; {} is refused", req.op())),
-                (Some(_), None) => rdm_core::reply::status::not_ready(format!("{me_name}: its view holds no caller and names no primary of {} to check {} in to", me.mesh, req.op())),
-            }
-        }
-    }
-
-    /// A check-in, decided for the subject it names as this admin's view holds it, whoever calls
-    /// (node-rpc.md §14): a mesh-primary's for its mesh counts at the fabric-primary, a member's at
-    /// its mesh's primary.
-    fn serve_up(&self, view: &Topology, req: &StatusRequest, op: &StateOp<'_>) -> StatusReply {
-        let Some(me) = view.own(&self.env.node_id) else {
-            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "a view holding this admin".into() });
-        };
-        let me_name = self.held_name_in(view).to_string();
-        let Some(subject) = view.births().find(|n| n.node_id == *op.node_id) else {
-            return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
-        };
-        let held = Some((subject.incarnation_id.as_ref(), subject.name.to_string()));
-        let held = held.as_ref().map(|(i, n)| (*i, n.as_str()));
-        if me.is_fabric_primary && subject.kind == NodeKind::NodeAdmin && subject.is_primary && subject.mesh != me.mesh {
-            let reply = self.fabric_checklists.check_in(&me_name, held, req);
-            self.change_wake.notify_one();
-            reply
-        } else if me.is_primary && subject.mesh == me.mesh && subject.node_id != me.node_id {
-            self.mesh_checklists.check_in(&me_name, held, req)
-        } else {
-            rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("the fabric-primary, or the mesh-primary of {}", subject.mesh) })
-        }
-    }
+        .instrument(span)
+        .await
+    });
 }
 
 /// The adopted status checklist's down op to each target, once, on its own task: the answer is named in
@@ -1251,6 +677,7 @@ fn unreadable(e: &crate::build_state::BuildStateError) -> Missing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rdm_core::MemberStatus;
     use crate::model::{Fabric, Mesh, NodeStatus, ProviderKind, ScopeStatus};
 
     fn node(name: &str, status: NodeStatus, primary: bool) -> Node {
@@ -1271,164 +698,26 @@ mod tests {
         t
     }
 
-    /// CONTRACT (node-rpc-envelope.md, "Fabric status command pairs": "The state's command is scoped to the accepted
-    /// Build, attempt and planned exact births"; states.md, The check-in checklist: it "names the accepted
-    /// Build's PLANNED births"): a mesh checklist is superseded, named, once the accepted Build moved past
-    /// it: a later attempt of the same Build, or a Build accepted after the checklist's own. A checklist of the
-    /// accepted Build and attempt is current, and so is a checklist ahead of what this admin holds (an
-    /// attempt it has not seen claimed, a Build accepted after the one it holds, or one its log has not
-    /// learned): the command that opened it came ahead of this admin's log. Must NOT happen: a superseded
-    /// checklist still commanding (gate red, tree b24a4303, fabric_states__rounds: bld-9abb attempt 1's
-    /// mesh checklist, trace 95adb727, sent its command to mesh1.admin.2 at 816848 after the two-mesh
-    /// Build bld-7c91 attempt 2 was accepted and its own checklist's command was applied at 816816,
-    /// trace a04036d1).
-    #[tokio::test]
-    async fn a_state_key_the_current_build_moved_past_is_superseded_and_one_ahead_of_this_admins_log_is_not() {
-        use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
-        let builds = MemoryBuildStateAdapter::new();
-        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
-        let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
-        for (b, at) in [(&one, 1_000), (&two, 2_000)] {
-            builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
-        }
-        let (b1, b2) = (builds.read_build(&one).await.unwrap(), builds.read_build(&two).await.unwrap());
-        let fabric = FabricId::mint();
-        let key = |b: &crate::build::BuildId, attempt: u32| StateKey { kind: StateCommand::OpenTraffic, fabric_id: fabric.clone(), build_id: b.to_string(), attempt };
-        let (one_at_1, one_at_2, two_at_1) = (BuildProjection { attempt: 1, ..b1.clone() }, BuildProjection { attempt: 2, ..b1.clone() }, BuildProjection { attempt: 1, ..b2.clone() });
-        assert_eq!(superseded_by(&key(&one, 1), &one_at_1, None), None, "the accepted Build and attempt: current");
-        assert!(superseded_by(&key(&one, 1), &one_at_2, None).is_some(), "a later attempt of the same Build supersedes the checklist");
-        assert_eq!(superseded_by(&key(&one, 3), &one_at_2, None), None, "an attempt ahead of the one this admin holds: its command came first");
-        assert!(superseded_by(&key(&one, 1), &two_at_1, Some(&one_at_1)).is_some(), "a Build accepted after the checklist's own supersedes it");
-        assert_eq!(superseded_by(&key(&two, 1), &one_at_1, Some(&two_at_1)), None, "a checklist of a Build accepted after the one this admin holds: its log lags");
-        assert_eq!(superseded_by(&key(&crate::build::BuildId::parse("wvwg5gsy0868").unwrap(), 1), &two_at_1, None), None, "a checklist of a Build this admin's log has not learned: its command came ahead");
-    }
-
-    /// CONTRACT (node-rpc-envelope.md, "Fabric status command pairs": "The state's command is scoped to the accepted
-    /// Build, attempt and planned exact births"): a mesh primary's owed completion of a checklist the
-    /// accepted Build moved past is withdrawn when the checklist is superseded, by the same rule that stops
-    /// the checklist commanding ([`superseded_by`]): a later attempt of the accepted Build, or a Build
-    /// accepted after the checklist's own. The completion of the accepted Build's current attempt, of an
-    /// attempt ahead of what this admin holds, and of a Build this admin's log has not learned stays
-    /// owed. Must NOT happen: a superseded checklist's completion kept owed until a seat moves (gate red
-    /// b24a4303, mesh_elections__sticky_seat: mesh2.admin.1 declared Round(.../2) and was answered
-    /// NotReady "round holds 3, reported 2", then sent it again on every eligible event).
-    #[tokio::test]
-    async fn an_owed_completion_of_a_state_key_the_accepted_build_moved_past_is_withdrawn_when_it_is_superseded() {
-        use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
-        let builds = MemoryBuildStateAdapter::new();
-        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
-        let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
-        for (b, at) in [(&one, 1_000), (&two, 2_000)] {
-            builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
-        }
-        let accepted = BuildProjection { attempt: 2, ..builds.read_build(&two).await.unwrap() };
-        let me: PathName = "mesh2.admin.1".parse().unwrap();
-        let fabric = FabricId::mint();
-        let declarer = Declarer::new();
-        let owe = |build: &str, attempt: u32| {
-            let state_key = StateKey { kind: StateCommand::OpenTraffic, fabric_id: fabric.clone(), build_id: build.to_string(), attempt };
-            declarer.owe_in(Key::completion(&state_key), Authority::FabricPrimary, state_key.kind.up(&state_key, NodeId::mint(), IncarnationId::parse(&rdm_core::fixture_crockford60("inc")).unwrap()), None);
-            Key::completion(&state_key)
-        };
-        let (earlier_attempt, earlier_build) = (owe("amrrv6tggykq", 1), owe("vm0khprh5mtj", 2));
-        let (current, ahead, unlearned) = (owe("amrrv6tggykq", 2), owe("amrrv6tggykq", 3), owe("wvwg5gsy0868", 1));
-        assert_eq!(declarer.owed(), 5);
-
-        let capture = crate::span_capture::Capture::new("i143-s42-state-superseded");
-        let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        withdraw_superseded_completions(&declarer, &me, &accepted, &builds).await;
-        let mut owed = declarer.owed_keys();
-        owed.sort();
-        let mut kept = vec![current, ahead, unlearned];
-        kept.sort();
-        assert_eq!(owed, kept, "the completions of an earlier attempt ({earlier_attempt:?}) and of an earlier Build ({earlier_build:?}) are withdrawn; a current, an ahead and an unlearned checklist's stay owed");
-        // Each withdrawal is one span naming the completion and why the checklist is superseded.
-        let spans = capture.named("rdm.node_admin.status.remove.via-completion-superseded");
-        assert_eq!(spans.len(), 2, "one span per withdrawn completion: {spans:?}");
-        for (key, why) in [(&earlier_attempt, "is at attempt 2, past this checklist's attempt 1"), (&earlier_build, "was accepted after this checklist's Build vm0khprh5mtj")] {
-            let span = spans.iter().find(|s| s.attributes.get("key") == Some(&format!("{key:?}"))).unwrap_or_else(|| panic!("no span names {key:?}: {spans:?}"));
-            assert!(span.attributes.get("superseded_by").is_some_and(|a| a.contains(why)), "{key:?} is withdrawn because {why}: {span:?}");
-            eprintln!("span {} trace_id={} {:?}", span.name, span.trace_id, span.attributes);
-        }
-    }
-
-    /// CONTRACT (fabric-ready-for-traffic.md: the checklist follows every mesh ready; states.md, Resize
-    /// and executable replacement: "A resize or an executable replacement puts the fabric back to
-    /// pending"): a Build that changes the accepted topology while the open-traffic checklist of the
-    /// previous one runs ends that checklist, and none of the new Build opens inside the old change.
-    /// Must NOT happen: an open-traffic checklist of the two-mesh Build at attempt 0 inside the one-mesh
-    /// Build's change.
-    #[tokio::test]
-    async fn a_topology_accepted_while_the_open_traffic_checklist_runs_ends_it_and_opens_none_of_the_new_build() {
-        use crate::accepted::MeshTopology;
-        use crate::build::MeshDesired;
-        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
-        let builds = Arc::new(MemoryBuildStateAdapter::new());
-        let mesh = |m: &str| (m.to_string(), MeshTopology::of(&MeshDesired::of(m, [(NodeKind::NodeAdmin, 1)])));
-        let one_mesh = FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1")].into() };
-        let mut two_meshes = one_mesh.clone();
-        two_meshes.meshes.extend([mesh("mesh2")]);
-        let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
-        builds.publish_accepted(&BuildAccepted { build_id: one.clone(), topology: one_mesh.clone(), submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: two.clone(), topology: two_meshes.clone(), submitted_change: None, submitted_at_ms: 2_000 }).await.unwrap();
-        let current = builds.current().await.unwrap().expect("a current Build");
-        assert_eq!((&current.build_id, current.attempt), (&two, 0), "the two-mesh Build is accepted and no attempt of it is claimed yet");
-        let records = Arc::new(Records::default());
-        let fp = node("mesh1.admin.1", NodeStatus::ReadyForTraffic, true);
-        let fabric_states = states_of(&fp, projected(Vec::new()), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoAction)).await;
-        // The one-mesh Build's change runs its open-traffic checklist; pending went out.
-        records.set_published_fabric_state(Some(FabricState::Pending));
-        records.set_fabric_state(FabricState::Pending);
-        let mut change = fabric_states.change.lock().await;
-        change.tracked = Some(one_mesh.clone());
-        change.tracked_build = Some(one.clone());
-        change.key = Some(StateKey { kind: StateCommand::OpenTraffic, fabric_id: fabric_states.env.fabric_id.clone(), build_id: one.to_string(), attempt: 1 });
-        fabric_states.step_open_traffic(&mut change, &projected(Vec::new()), &fabric_states.env.builds.current().await).await;
-        assert!(change.key.is_none(), "the changed topology ends the one-mesh Build's checklist: {:?}", change.key);
-        assert_eq!(records.fabric_state(), FabricState::Pending);
-        assert!(fabric_states.fabric_checklists.keys().is_empty(), "no checklist of the two-mesh Build opened inside the old change");
-    }
-
-    /// The checklists of the admin `me`, as `view` holds it, over `builds` and `records`: a client on an
-    /// endpoint of its own whose resolver names nobody, and `actions` for its own checklist work.
-    async fn states_of(me: &Node, view: Topology, builds: Arc<dyn BuildStateAdapter>, records: Arc<Records>, fabric_id: FabricId, actions: Arc<dyn StateActions>) -> Arc<FabricStates> {
-        states_resolving(me, view, builds, records, fabric_id, actions, Arc::new(rdm_transport::StaticResolver::new())).await
+    /// The fabric states of the admin `me`, as `view` holds it, over `builds` and `records`: a client on
+    /// an endpoint of its own whose resolver names nobody.
+    async fn states_of(me: &Node, view: Topology, builds: Arc<dyn BuildStateAdapter>, records: Arc<Records>, fabric_id: FabricId) -> Arc<FabricStates> {
+        states_resolving(me, view, builds, records, fabric_id, Arc::new(rdm_transport::StaticResolver::new())).await
     }
 
     /// [`states_of`] whose client resolves through `resolver`.
-    async fn states_resolving(me: &Node, view: Topology, builds: Arc<dyn BuildStateAdapter>, records: Arc<Records>, fabric_id: FabricId, actions: Arc<dyn StateActions>, resolver: Arc<rdm_transport::StaticResolver>) -> Arc<FabricStates> {
+    async fn states_resolving(me: &Node, view: Topology, builds: Arc<dyn BuildStateAdapter>, records: Arc<Records>, fabric_id: FabricId, resolver: Arc<rdm_transport::StaticResolver>) -> Arc<FabricStates> {
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         FabricStates::new(StatesEnv {
             me: me.name.clone(),
             node_id: me.node_id.clone(),
-            incarnation: me.incarnation_id.clone().expect("a birth"),
             fabric_id,
             topology: Arc::new(RwLock::new(view)),
             client: Arc::new(NodeRpcClient::new(ep, resolver)),
             builds,
             contexts: Arc::new(AttemptContexts::in_memory()),
-            declarer: Declarer::new(),
-            wake: records.wake.clone(),
             records,
             hooks: FabricHooks::no_app_work(),
-            actions,
-            acted: Arc::default(),
         })
-    }
-
-    /// The two-mesh fabric's accepted Build, with attempts 1 to `attempts` claimed.
-    async fn two_mesh_build(attempts: u32) -> (Arc<crate::build_state::MemoryBuildStateAdapter>, crate::build::BuildId) {
-        use crate::accepted::MeshTopology;
-        use crate::build::MeshDesired;
-        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
-        let builds = Arc::new(MemoryBuildStateAdapter::new());
-        let mesh = |m: &str| (m.to_string(), MeshTopology::of(&MeshDesired::of(m, [(NodeKind::NodeAdmin, 1)])));
-        let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1"), mesh("mesh2")].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
-        for attempt in 1..=attempts {
-            claim(&builds, &id, attempt).await;
-        }
-        (builds, id)
     }
 
     /// Open (after the first) and claim `attempt` of `id`.
@@ -1455,146 +744,6 @@ mod tests {
             records.declared.lock().unwrap().record_report("mesh2", crate::status_rpc::Reporter::Birth(m2.incarnation_id.clone().unwrap()), Instant::now());
         }
         records.set_published_fabric_state(Some(FabricState::Pending));
-    }
-
-    /// The state command spans this capture holds toward `to`, by the event that made each due.
-    fn commands_to(capture: &crate::span_capture::Capture, to: &str) -> Vec<String> {
-        capture.named("rdm.node_admin.fabric.update.via-state-command").into_iter().filter(|s| s.attributes.get("to").map(String::as_str) == Some(to)).map(|s| s.attributes.get("event").cloned().unwrap_or_default()).collect()
-    }
-
-    /// [`commands_to`] once `n` command spans toward `to` have ended, or what ended within 10 s: a
-    /// command's span ends with its task, which runs beside the cell.
-    async fn commands_ended_to(capture: &crate::span_capture::Capture, to: &str, n: usize) -> Vec<String> {
-        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let ended = commands_to(capture, to);
-            if ended.len() >= n || tokio::time::Instant::now() >= until {
-                return ended;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    }
-
-    /// CONTRACT (i146 R7, the state commands' owner; states.md, The check-in checklist: "A new primary,
-    /// through election or recovery, re-sends the current state's command. Members already done check in again,
-    /// and the checklist rebuilds itself"; node-rpc.md §43: "Each owner defines how its pending
-    /// commands, check-ins and responses are reconstructed from durable evidence with their operation
-    /// identity"): a fabric-primary that holds no checklist view (a restart) and hears its fabric pending,
-    /// every mesh ready, reconstructs its pending commands from the published state and the accepted Build.
-    /// It opens the checklist of the accepted Build's current attempt and commands mesh2's primary under
-    /// that checklist's key. Must NOT happen: a checklist of another attempt, or a planned primary left
-    /// uncommanded because the view that commanded it before is gone.
-    #[tokio::test]
-    async fn a_fabric_primary_with_no_checklists_reconstructs_its_state_commands_from_the_published_state_and_the_accepted_build() {
-        let capture = crate::span_capture::Capture::new("i146-e3-state-commands-reconstructed");
-        let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let (builds, id) = two_mesh_build(2).await;
-        let (fp, m2) = fabric_primary_and_mesh2();
-        let view = projected(vec![fp.clone(), m2.clone()]);
-        let records = Arc::new(Records::default());
-        every_mesh_ready(&records, Some(&m2));
-        let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoAction)).await;
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("pending"), view: &view, current: &fabric_states.env.builds.current().await }).await;
-        assert_eq!(records.fabric_state(), FabricState::Pending, "the published state is adopted");
-        tokio::task::yield_now().await;
-        fabric_states.fabric_checklists_reset();
-        tokio::task::yield_now().await;
-        let opened = capture.named("rdm.node_admin.fabric.update.via-checklist-opened");
-        assert!(opened.iter().any(|s| s.attributes.get("command").map(String::as_str) == Some("open-traffic") && s.attributes.get("build_id") == Some(&id.to_string()) && s.attributes.get("attempt").map(String::as_str) == Some("2")), "the checklist of the accepted Build's attempt 2 is opened: {opened:?}");
-        assert_eq!(commands_ended_to(&capture, "mesh2.admin.1", 1).await, ["first"], "mesh2's primary is commanded once, under the reconstructed checklist");
-    }
-
-    /// CONTRACT (i146 R7; node-rpc-envelope.md, Fabric status command pairs: "The state's command is scoped to the
-    /// accepted Build, attempt and planned exact births"): a lifecycle operation on a primary runs as an
-    /// attempt of the accepted Build, and a new attempt re-keys the checklist: every planned primary is
-    /// commanded again under the new attempt, one whose command the old attempt's checklist had answered
-    /// among them. Must NOT happen: a primary left uncommanded because the old attempt's checklist answered it.
-    #[tokio::test]
-    async fn a_new_attempt_of_the_accepted_build_commands_every_planned_primary_again_under_its_own_state_key() {
-        let capture = crate::span_capture::Capture::new("i146-e3-state-commands-new-attempt");
-        let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let (builds, id) = two_mesh_build(1).await;
-        let (fp, m2) = fabric_primary_and_mesh2();
-        let view = projected(vec![fp.clone(), m2.clone()]);
-        let fabric_id = FabricId::mint();
-        let records = Arc::new(Records::default());
-        every_mesh_ready(&records, Some(&m2));
-        let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), fabric_id.clone(), Arc::new(NoAction)).await;
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("pending"), view: &view, current: &fabric_states.env.builds.current().await }).await;
-        let first = StateKey { kind: StateCommand::OpenTraffic, fabric_id, build_id: id.to_string(), attempt: 1 };
-        fabric_states.fabric_checklists.answered(&first, &m2.node_id, m2.incarnation_id.as_ref().unwrap());
-        claim(&builds, &id, 2).await;
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("pending"), view: &view, current: &fabric_states.env.builds.current().await }).await;
-        tokio::task::yield_now().await;
-        fabric_states.fabric_checklists_reset();
-        tokio::task::yield_now().await;
-        let attempts: Vec<String> = capture.named("rdm.node_admin.fabric.update.via-checklist-opened").into_iter().filter_map(|s| s.attributes.get("attempt").cloned()).collect();
-        assert_eq!(attempts, ["1", "2"], "a checklist per attempt");
-        assert_eq!(commands_ended_to(&capture, "mesh2.admin.1", 2).await, ["first", "first"], "mesh2's primary is commanded again under attempt 2's checklist");
-    }
-
-    /// CONTROL (i146 e3, R8; node-rpc.md §43: "Retry stops on the ack, on the receiver's proven exit or
-    /// accepted removal, or on explicit cancellation or retargeting by the owning workflow; never on a
-    /// timer, never on absence from a view"): a state command is one Owed call the delivery layer
-    /// resends until the commanded primary answers. mesh2's primary is planned and never answers (its
-    /// endpoint answers nothing); the one call is resent after the 10 s a bounded call ends on,
-    /// the target reads unreachable and then reachable again in the view, and the checklist view sends
-    /// nothing beside the call: one command hook, no `reachable-again`. Closing the checklist cancels the
-    /// call. Must NOT happen: the call ending on its own deadline and the view commanding the
-    /// primary again when its route returns (the per-protocol retry loop this owner had).
-    #[tokio::test]
-    async fn a_state_command_is_one_owed_call_and_a_returned_route_sends_nothing_beside_it() {
-        let capture = crate::span_capture::Capture::new("i146-e3-state-command-control");
-        let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let (builds, _) = two_mesh_build(1).await;
-        let (fp, m2) = fabric_primary_and_mesh2();
-        let ready = projected(vec![fp.clone(), m2.clone()]);
-        let gone = projected(vec![fp.clone(), Node { status: NodeStatus::PendingReconnect, ..m2.clone() }]);
-        // mesh2's primary resolves to an endpoint nobody holds, at a port nobody listens on.
-        let resolver = Arc::new(rdm_transport::StaticResolver::new());
-        let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        resolver.insert(rdm_transport::ResolvedNode { node_id: m2.node_id.clone(), name: m2.name.clone(), endpoint_id: iroh::SecretKey::generate().public(), transport_addr: silent.local_addr().unwrap(), incarnation: m2.incarnation_id.clone().unwrap() });
-        let records = Arc::new(Records::default());
-        every_mesh_ready(&records, Some(&m2));
-        let fabric_states = states_resolving(&fp, ready.clone(), builds, records, FabricId::mint(), Arc::new(NoAction), resolver).await;
-        let commanded = tokio::time::Instant::now();
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("pending"), view: &ready, current: &fabric_states.env.builds.current().await }).await;
-        let resends = || rdm_transport::DeliveryStats::get(&fabric_states.env.client.delivery().stats().resends);
-        // A bounded call ends 10 s in (`CallOptions::default`). The Owed call is resent after that mark,
-        // whatever the cadence: one attempt is bounded by the staleness floor, and its backoff is capped there.
-        tokio::time::sleep_until(commanded + std::time::Duration::from_secs(10)).await;
-        let at_mark = resends();
-        let floor = rdm_core::cadence::staleness_floor();
-        tokio::time::timeout(floor * 2 + std::time::Duration::from_secs(10), async {
-            while resends() <= at_mark {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("the command to mesh2's primary is still out past the 10 s a bounded call ends on, and resent ({} resends, {at_mark} at the mark)", resends()));
-        for view in [&gone, &gone, &ready, &ready] {
-            fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("pending"), view, current: &fabric_states.env.builds.current().await }).await;
-            tokio::task::yield_now().await;
-        }
-        let hooks = || capture.named("rdm.node_admin.fabric.update.via-state-hook").into_iter().filter(|s| s.attributes.get("command").map(String::as_str) == Some("open-traffic")).count();
-        assert_eq!(hooks(), 1, "one command was sent to mesh2's primary: the returned route sends nothing beside the call");
-        fabric_states.fabric_checklists_reset();
-        // The command's span ends when its task drops the call: awaited, never assumed after a fixed number of turns.
-        let commands = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                let ended = capture.named("rdm.node_admin.fabric.update.via-state-command");
-                if !ended.is_empty() {
-                    break ended;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("closing the checklist ends the command's call"));
-        assert_eq!(commands.len(), 1, "one command, ended by the checklist's close: {commands:?}");
-        assert!(commands[0].attributes.get("outcome").is_some_and(|o| o.contains("cancelled")), "closing the checklist cancels the owed call: {commands:?}");
-        let calls: std::collections::BTreeSet<String> = capture.named("rdm.node_rpc.delivery.update.via-resend").into_iter().filter_map(|s| s.attributes.get("delivery_id").cloned()).collect();
-        assert_eq!(calls.len(), 1, "every resend is the one call's: {calls:?}");
     }
 
     tokio::task_local! {
@@ -1672,7 +821,7 @@ mod tests {
     /// checklist, the fabric is ready-for-traffic"; the status loop reads the current Build once per turn,
     /// `admin::boot`): one status turn of the fabric-primary reads the current Build once, at its start,
     /// and every step of the fabric's change it takes in that turn is decided on that read, however many
-    /// steps the turn takes: the open-traffic checklist opened and completed. On a Build store whose read
+    /// steps the turn takes: every mesh ready, then ready-for-traffic. On a Build store whose read
     /// costs ~100 ms (an application's own backend), each further read is that much longer between every
     /// mesh ready and ready-for-traffic. Must NOT happen: a step, or the checklist a step
     /// runs, reading the current Build again inside the turn.
@@ -1693,7 +842,7 @@ mod tests {
         let view = projected(vec![fp.clone()]);
         let records = Arc::new(Records::default());
         every_mesh_ready(&records, None);
-        let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoAction)).await;
+        let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint()).await;
         // One status turn: the current Build read once, then the fabric's change stepped on that read.
         let turn = || {
             let (builds, fabric_states, view) = (builds.clone(), fabric_states.clone(), view.clone());
@@ -1704,71 +853,16 @@ mod tests {
                 builds.reads() - before
             })
         };
-        let completed = || capture.named("rdm.node_admin.fabric.update.via-checklist-complete").into_iter().filter_map(|s| s.attributes.get("command").cloned()).collect::<Vec<_>>();
         let mut reads = Vec::new();
         let until = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        // Turns until the checklist completed: its completion puts the ready row, which no fabric store
-        // here holds, so the fabric stays pending, named.
-        while completed().is_empty() && tokio::time::Instant::now() < until {
+        // Turns until the fabric is ready-for-traffic: every mesh is ready, so the change enters it.
+        while records.fabric_state() != FabricState::ReadyForTraffic && tokio::time::Instant::now() < until {
             reads.push(turn().await);
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert_eq!(completed(), ["open-traffic"], "the change ran the open-traffic checklist");
-        assert!(records.fabric_blocker().is_some_and(|b| b.contains("ready-row-unwritten")), "the change reached the ready row: {:?}", records.fabric_blocker());
+        assert_eq!(records.fabric_state(), FabricState::ReadyForTraffic, "the change entered ready-for-traffic: {:?}", records.fabric_blocker());
+        assert_eq!(capture.named("rdm.node_admin.fabric.update.via-every-mesh-ready").len(), 1, "every mesh ready is named once");
         assert!(reads.iter().all(|n| *n == 1), "each status turn reads the current Build once: reads per turn {reads:?}");
-    }
-
-    /// The state actions this cell counts.
-    #[derive(Default)]
-    struct Counted(std::sync::atomic::AtomicUsize);
-
-    #[async_trait::async_trait]
-    impl StateActions for Counted {
-        async fn open_traffic(&self, _node: &PathName) -> Result<(), String> {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
-        }
-    }
-
-    /// CONTRACT (i146 R7: the already-applied answer by operation identity to a resend; node-rpc-envelope.md,
-    /// Fabric status command pairs: a successful admission reply is Applied or AlreadyApplied): a mesh primary
-    /// that holds a checklist answers the same checklist's command again `AlreadyApplied`, by the checklist's key,
-    /// and runs its own action once. A lost reply to the command is regenerated so: the resend is
-    /// answered from the checklist this admin holds. Must NOT happen: `Applied` twice, or the action twice.
-    #[tokio::test]
-    async fn a_mesh_primary_answers_a_state_command_it_holds_already_applied_and_runs_its_action_once() {
-        let (builds, id) = two_mesh_build(1).await;
-        let (fp, m2) = fabric_primary_and_mesh2();
-        let view = projected(vec![fp.clone(), m2.clone()]);
-        let fabric_id = FabricId::mint();
-        let actions = Arc::new(Counted::default());
-        let fabric_states = states_of(&m2, view.clone(), builds, Arc::new(Records::default()), fabric_id.clone(), actions.clone()).await;
-        let key = StateKey { kind: StateCommand::OpenTraffic, fabric_id, build_id: id.to_string(), attempt: 1 };
-        let req = StateCommand::OpenTraffic.down(&key, m2.node_id.clone(), m2.incarnation_id.clone().unwrap());
-        assert_eq!(fabric_states.serve(&view, Some(&fp), None, &req, None).await, StatusReply::Applied, "the checklist's first command is admitted");
-        for _ in 0..50 {
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(fabric_states.serve(&view, Some(&fp), None, &req, None).await, StatusReply::AlreadyApplied, "the same checklist again is the checklist already held");
-        for _ in 0..50 {
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(actions.0.load(std::sync::atomic::Ordering::SeqCst), 1, "the mesh primary's own action runs once for the checklist");
-    }
-
-    /// CONTRACT (R-S2): only an admission ends a state command. A refusal by name rests on the receiver's own view, which
-    /// heals, and a call that got no reply never reached it: both wait for an eligible event. Must NOT happen: a
-    /// refusal that is final, which strands the checklist when a new primary commands members that still name the old one.
-    #[test]
-    fn only_an_admission_ends_a_state_command() {
-        for admitted in [StatusReply::Applied, StatusReply::AlreadyApplied] {
-            assert!(matches!(delivery_of(Some(&admitted), "Reply"), Delivery::Answered(_)), "{admitted:?}");
-        }
-        let refusal = StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "the mesh-primary of mesh1".into() } };
-        assert!(matches!(delivery_of(Some(&refusal), "Reply"), Delivery::Undelivered { typed: true, .. }), "a refusal by name is undelivered, typed");
-        let not_ready = StatusReply::NotReady { reason: "authority not filled".into() };
-        assert!(matches!(delivery_of(Some(&not_ready), "Reply"), Delivery::Undelivered { typed: true, .. }));
-        assert!(matches!(delivery_of(None, "NotSent"), Delivery::Undelivered { typed: false, .. }), "no reply: untyped");
     }
 
     /// CONTRACT (R-RC1): a replace is a delete and a create at the same path.name with a new node
@@ -1786,11 +880,11 @@ mod tests {
         assert_eq!(me.node_id, reborn.node_id, "the reborn admin's own row, not the retired birth's {}", retired.node_id);
     }
 
-    /// CONTRACT (R-H1): the fabric opens traffic only when every mesh is ready-for-traffic, and a
+    /// CONTRACT (R-H1): the fabric is ready-for-traffic only when every mesh is ready-for-traffic, and a
     /// mesh is ready only when every node of it is. A mesh with a primary and one node not ready blocks
     /// entry and names that node; the mesh whose nodes are all ready blocks nothing.
     #[test]
-    fn a_mesh_with_one_node_not_ready_blocks_the_fabric_from_opening_traffic() {
+    fn a_mesh_with_one_node_not_ready_blocks_the_fabric_from_being_ready_for_traffic() {
         let meshes = vec!["mesh1".to_string(), "mesh2".to_string()];
         let planned = std::collections::BTreeMap::new();
         let ready = projected(vec![
@@ -1837,7 +931,7 @@ mod tests {
         let (fp, _) = fabric_primary_and_mesh2();
         let view = projected(vec![fp.clone()]);
         let records = Arc::new(Records::default());
-        let states = states_of(&fp, view, builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoAction)).await;
+        let states = states_of(&fp, view, builds.clone(), records.clone(), FabricId::mint()).await;
         records.set_fabric_state(FabricState::ReadyForTraffic);
         records.set_published_fabric_state(Some(FabricState::ReadyForTraffic));
         {
@@ -1895,7 +989,7 @@ mod tests {
         let view = projected(vec![fp.clone()]);
         let records = Arc::new(Records::default());
         let _ = records.contacts.set(rows.clone());
-        let states = states_of(&fp, view, builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoAction)).await;
+        let states = states_of(&fp, view, builds.clone(), records.clone(), FabricId::mint()).await;
         records.set_fabric_state(FabricState::ReadyForTraffic);
         records.set_published_fabric_state(Some(FabricState::ReadyForTraffic));
         {
@@ -1918,57 +1012,6 @@ mod tests {
         claim(&builds, &c, 1).await;
         assert!(states.accepted().await, "another executable than the row records is a replacement: the fabric is back to pending at its acceptance");
         assert_eq!(records.fabric_state(), FabricState::Pending, "an executable replacement puts the fabric back to pending");
-    }
-
-    /// CONTRACT (i146 Q45; states.md, The check-in checklist: "A new primary, through election or recovery,
-    /// re-sends the current state's command. Members already done check in again"; `fabric_checklists_reset`: "a checklist
-    /// it opens again re-runs this admin's own mesh checklist, whose members check in again from their
-    /// record"): the fabric-primary's own mesh checklist is open, its planned member commanded and not yet
-    /// checked in, when the tenure that opened it ends. Opened again, the checklist is driven again: its own
-    /// action from the record, and the member commanded again under the reopened checklist. Must NOT
-    /// happen: the reopened checklist with no driver, its member never commanded again, so the fabric holds
-    /// on the fabric-primary's own check-in (release run 5 at 7e13f37e, owed_check_ins,
-    /// "mesh1.admin.1(no-check-in)" for 57 s).
-    #[tokio::test]
-    async fn a_fabric_primary_whose_tenure_ended_drives_its_own_mesh_checklist_again_when_it_opens_it_again() {
-        use crate::accepted::MeshTopology;
-        use crate::build::MeshDesired;
-        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
-        let capture = crate::span_capture::Capture::new("i146-e3-reopened-checklist-driven");
-        let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let builds = Arc::new(MemoryBuildStateAdapter::new());
-        let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        let meshes = [
-            ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]))),
-            ("mesh2".to_string(), MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1)]))),
-        ];
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: meshes.into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
-        claim(&builds, &id, 1).await;
-        let (fp, m2) = fabric_primary_and_mesh2();
-        let member = node("mesh1.rpc.1", NodeStatus::ReadyForTraffic, false);
-        let view = projected(vec![fp.clone(), member, m2.clone()]);
-        let records = Arc::new(Records::default());
-        every_mesh_ready(&records, Some(&m2));
-        let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoAction)).await;
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("pending"), view: &view, current: &fabric_states.env.builds.current().await }).await;
-        let settle = || async {
-            for _ in 0..20 {
-                tokio::task::yield_now().await;
-            }
-        };
-        settle().await;
-        // The tenure ends: its checklists and its own mesh's checklists close, and the checklist's driver runs on the
-        // close before the change opens the checklist again.
-        fabric_states.fabric_checklists_reset();
-        settle().await;
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("pending"), view: &view, current: &fabric_states.env.builds.current().await }).await;
-        settle().await;
-        // Closing the reopened checklist ends what it holds open, so every span of the cell is read.
-        fabric_states.fabric_checklists_reset();
-        let ended = commands_ended_to(&capture, "mesh1.rpc.1", 2).await;
-        assert_eq!(ended.len(), 2, "the member is commanded under each opening of the checklist: {ended:?}");
-        let own = mesh_checklists_ended(&capture, 2).await;
-        assert_eq!(own, ["run", "from-record"], "the reopened checklist has a driver of its own, which takes this admin's action from its record");
     }
 
     use crate::model::{MeshId, NodeStatus as NS};
@@ -2023,7 +1066,7 @@ mod tests {
 
     /// The checklists of `me` over `view` and `records`, with a Build log that holds nothing.
     async fn adopted_states_of(me: &Node, view: Topology, records: Arc<Records>) -> Arc<FabricStates> {
-        states_of(me, view, Arc::new(crate::build_state::MemoryBuildStateAdapter::new()), records, FabricId::mint(), Arc::new(NoAction)).await
+        states_of(me, view, Arc::new(crate::build_state::MemoryBuildStateAdapter::new()), records, FabricId::mint()).await
     }
 
     /// The `via-state-down` spans toward `target` once `n` have ended, or what ended within 15 s: a
@@ -2194,19 +1237,6 @@ mod tests {
         assert!(!done.mesh);
     }
 
-    /// The `own_action` of each ended `via-mesh-checklist` span, in end order, once `n` have ended or
-    /// within 10 s.
-    async fn mesh_checklists_ended(capture: &crate::span_capture::Capture, n: usize) -> Vec<String> {
-        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let ended: Vec<String> = capture.named("rdm.node_admin.fabric.update.via-mesh-checklist").into_iter().map(|s| s.attributes.get("own_action").cloned().unwrap_or_default()).collect();
-            if ended.len() >= n || tokio::time::Instant::now() >= until {
-                return ended;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    }
-
     /// What the pages say a Reconcile variant does to a ready-for-traffic fabric at its acceptance.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Back {
@@ -2289,7 +1319,7 @@ mod tests {
             let view = projected(vec![fp.clone()]);
             let records = Arc::new(Records::default());
             let _ = records.contacts.set(store.clone());
-            let states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoAction)).await;
+            let states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint()).await;
             records.set_fabric_state(FabricState::ReadyForTraffic);
             records.set_published_fabric_state(Some(FabricState::ReadyForTraffic));
             {

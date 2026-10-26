@@ -1,8 +1,8 @@
-//! Fabric ready-for-traffic checklist workflow (`docs/architecture/lifecycles/fabric-ready-for-traffic.md`).
+//! Fabric ready-for-traffic workflow (`docs/architecture/lifecycles/fabric-ready-for-traffic.md`).
 //!
-//! The final status checklist of fabric initialization or recovery: every planned member has
-//! checked in, the application is notified via the `traffic_opened` hook, and client traffic is opened.
+//! Once every mesh the accepted Build names is ready-for-traffic the fabric-primary sets the fabric
+//! ready-for-traffic and calls the application's `on_fabric_ready` notice (Q174, Q175).
 
-pub use crate::fabric_status::{ChangeInputs, FabricStates, NoAction, StateActions};
-pub use crate::wiring::{FabricHooks, TrafficOpened, TrafficOpenedNotice};
-pub use crate::fabric_state::{FabricState, FirstReady, StateCommand, StateOp};
+pub use crate::fabric_status::{ChangeInputs, FabricStates};
+pub use crate::wiring::{FabricHooks, FabricReadyCtx, FabricReadyNotice};
+pub use crate::fabric_state::FabricState;

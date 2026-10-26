@@ -222,7 +222,7 @@ Size:
 
 #### Reserved lifecycle frame positions
 
-The eight reserved type names in the receive table retain their historical page positions; their
+The ten reserved type names in the receive table retain their historical page positions; their
 old numeric wire discriminants are not reused. None is published. Each type is refused before data
 decode as via-reserved; an unknown type is refused distinctly. node.connections.delete and node.stop are calls, not gossip: connections-deleting,
 connections-deleted and stopping reach peers as the member's status in its mesh-primary's member
@@ -239,6 +239,8 @@ NodeConnectionsDeleted  { op: LifecycleOp, forwarded_by: Option<String> }, // re
 NewFabricPrimary        { primary: Primary, endpoint_id: String, transport_addr: SocketAddr, admin_api_base: Option<String> }, // reserved (R-G3): never published
 Reserved15              { hook: StateHook, forwarded_by: Option<String> }, // reserved (Q171): never published
 Reserved16              { hook: StateHook, forwarded_by: Option<String> }, // reserved (Q171): never published
+Reserved17              { hook: StateHook, forwarded_by: Option<String> }, // reserved (Q174): never published
+Reserved18              { hook: StateHook, forwarded_by: Option<String> }, // reserved (Q174): never published
 
 LifecycleOp {
     build_id: String,
@@ -288,46 +290,6 @@ the mesh-primary records it on the node's row and its next `Members` projection 
 publication. The election's result is the fact and the row records it; a node that hears a digest
 installs a member fact, never a primary by advertisement. A primary the staleness-floor rule elects is
 announced the same way. Best-effort dissemination: a stop does not wait for it (R-NS2).
-
-#### Fabric state gossip hooks
-
-The fabric's traffic-opening pair runs these hooks in the same accepted command/completion paths
-as its [Status calls](node-rpc-envelope.md#fabric-status-command-pairs):
-
-| directed call | hook frame | author |
-|---|---|---|
-| open-traffic | TrafficOpening | the commanding primary |
-| traffic-opened | TrafficOpened | subject sending its completed check-in |
-
-Each frame carries these fields:
-
-```rust
-fabric_id: FabricId,
-node_id: NodeId,
-incarnation: IncarnationId,
-build_id: String,
-attempt: u32,
-operation: String,
-publisher: String,
-event_at_rafka_ms: u64,
-forwarded_by: Option<String>,
-```
-
-The subject is the exact commanded/reporting birth. Publisher is the author at that
-hop. Node-admin authors publish on their own mesh channel and backbone; ordinary
-node authors publish on their own mesh channel and their mesh-admin carries the same
-record onto the backbone. Peer mesh primaries forward without changing authored
-fields. Identity is `(kind, fabric_id, build_id, attempt, operation, node_id, incarnation)`.
-Neither timestamp nor forwarded receipt supplies liveness or a right to act.
-
-What a check-in is and when a primary may report upward is the
-[check-in checklist](lifecycles/states.md#the-check-in-checklist). Gossip receipt cannot replace
-the authenticated directed completion. Lost events are repaired through the held
-check-in/accepted Build evidence; snapshot installation preserves the accepted check-in facts and
-never infers completion from a count of gossip frames. MeshStatus/FabricStatus frames
-disseminate committed lifecycle/health projections with their original author and timestamp.
-
-RDM implements these frame variants in the topology `Frame` enum with byte fixtures.
 
 #### Mesh delete
 
@@ -515,9 +477,9 @@ P(n) is the 20-digit zero-padded decimal representation of the existing u64 vers
 | `NodeDeleted` (`rdm.node.deleted`) | operation fact, terminal | the author birth / `(build_id, attempt, operation, node_id, incarnation)` | absent; stands after unrelated traffic | kind and the complete operation identity |
 | `MeshStatus`, `FabricStatus` (`rdm.mesh.status`, `rdm.fabric.status`) | replacement state | the author birth / stable mesh or fabric status scope | `P(the primary's revision) + "." + P(changed_at_rafka_ms)`, lexical order; the publisher takes its revision from the Mesh row. A predecessor's later timestamp loses to the successor's higher revision; within one primary its change time orders changes | subject and composite sequence; equal sequence is duplicate with identical content, inconsistent with different content |
 | `Concern` (`rdm.mesh.concern`, position 10) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
-| `TrafficOpening`, `TrafficOpened` (`rdm.fabric.traffic.opening`, `rdm.fabric.traffic.opened`) | operation fact | the original author birth / `(fabric_id, build_id, attempt, operation, node_id, incarnation)` | absent; Q21 stands: no checklist or reopening, ordinary span and the existing open-checklist carrier only; a closed or superseded checklist is carried nowhere | kind and complete state operation identity; a repeat invokes no carrier |
 | `NodeConnectionsDeleting`, `NodeLeaving`, `NodeLeft`, `NodeConnectionsDeleted`, `NewFabricPrimary` (`rdm.node.connections.deleting`, `rdm.node.leaving`, `rdm.node.left`, `rdm.node.connections.deleted`, `rdm.fabric.primary.new`) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
 | `Reserved15`, `Reserved16` (`rdm.fabric.state.committing`, `rdm.fabric.state.committed`, positions 16 and 17, Q171) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
+| `Reserved17`, `Reserved18` (`rdm.fabric.traffic.opening`, `rdm.fabric.traffic.opened`, positions 18 and 19, Q174) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
 
 A publisher change: a delayed predecessor cannot replace the successor's status: the author's
 the primary's revision is the first component of status sequence, before change time. The other
@@ -852,14 +814,14 @@ Message ordering/version rules remain owned by the entity/projection framework, 
 
 **Only projected kinds gossip, and each goes only to the nodes that project it.** A kind is a
 declared type, `rafka.entity.<kind>`: the role declares its types once at boot, beside its
-`before_ready` hook, and its birth carries them in its [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm)
+`pre_node_ready` hook, and its birth carries them in its [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm)
 (`types`: at most 256 types and 8 KiB encoded, refused by name as `TypesOverCap`; a different
 declaration is a restart). No type list rides a digest: 158 kinds today are 4.4 KB of names, more
 than a gossip message. Two sets, both answered by `node.get`: `types`, what the birth declared, immutable
 for its life (a node-admin's through `Wiring`: its embedded app's own kinds); and `held`, the types
 the node has joined, equal to `types` for an ordinary node and, for a node-admin, its own `types`,
 its members' declarations and what it learned from other node-admins, growing as members join and
-never shrinking within a birth. A node-admin joins its own `types` before its `before_ready` hook, as
+never shrinking within a birth. A node-admin joins its own `types` before its `pre_node_ready` hook, as
 every node does. Its mesh's node-admin records the declaration beside the row (a node-admin that
 writes no rows yet, the Day-0 admin before it is Ready, holds the declaration and writes it with its
 first write after it becomes the primary; the join is answered on the held declaration),

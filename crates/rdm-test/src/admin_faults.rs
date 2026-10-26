@@ -132,16 +132,6 @@ pub enum CutSpec {
         /// The state declared, as `NodeState` names it.
         #[serde(default)] state: Option<String>,
     },
-    /// A node-admin's state action (`open-traffic`) is about to run: held until the release, so the
-    /// checklist's command is answered and its check-in not yet owed (i146 e3); held at the
-    /// fabric-primary, the fabric stays pending (`test_app` mode `hold`). `node` narrows the cut to one
-    /// admin, `command` to one command.
-    StateAction {
-        /// The acting admin's `path.name`.
-        #[serde(default)] node: Option<String>,
-        /// The checklist, as its command names it: `open-traffic`.
-        #[serde(default)] command: Option<String>,
-    },
     /// The deployment provider's inspection of the runtimes at `pids` answers `Unknown` while the cut is
     /// armed: no exit proof of them can be read, while every other runtime, a launch of this admin's
     /// included, is inspected as ever. It models a lost mesh whose runtimes no surviving admin can
@@ -254,13 +244,6 @@ pub enum Probe {
         /// The state declared.
         state: String,
     },
-    /// A node-admin's state action about to run.
-    StateAction {
-        /// The acting admin.
-        node: String,
-        /// The checklist, as its command names it.
-        command: &'static str,
-    },
     /// A provider `inspect` about to be made.
     ProviderInspect {
         /// The runtime's pid, when the handle names one.
@@ -291,7 +274,6 @@ impl CutSpec {
             (CutSpec::Announcement { announcement, channel }, Probe::Announcement { announcement: a, channel: c, .. }) => announcement == a && (channel == "any" || channel == c),
             (CutSpec::ProviderTerminate { pid }, Probe::ProviderTerminate { pid: p, .. }) => pid.is_none_or(|w| *p == Some(w)),
             (CutSpec::Declaration { node, state }, Probe::Declaration { node: n, state: s }) => node_is(node, n) && state.as_deref().is_none_or(|w| w == s),
-            (CutSpec::StateAction { node, command }, Probe::StateAction { node: n, command: r }) => node_is(node, n) && command.as_deref().is_none_or(|w| w == *r),
             (CutSpec::ProviderUnproven { pids }, Probe::ProviderInspect { pid }) => pid.is_some_and(|p| pids.contains(&p)),
             (CutSpec::DriftPass { node }, Probe::DriftPass { node: n }) => node_is(node, n),
             _ => false,
@@ -315,7 +297,6 @@ impl Probe {
             Probe::Announcement { node, announcement, channel } => Hit::Announcement { node: node.clone(), announcement: announcement.to_string(), channel: channel.to_string() },
             Probe::ProviderTerminate { pid, deployment_id } => Hit::ProviderTerminate { pid: *pid, deployment_id: deployment_id.clone() },
             Probe::Declaration { node, state } => Hit::Declaration { node: node.clone(), state: state.clone() },
-            Probe::StateAction { node, command } => Hit::StateAction { node: node.clone(), command: command.to_string() },
             Probe::ProviderInspect { pid } => Hit::ProviderInspect { pid: *pid },
             Probe::DriftPass { node } => Hit::DriftPass { node: node.clone() },
         }
@@ -714,19 +695,6 @@ impl rdm_admin::wiring::DeclarationSeam for FaultedDeclaration {
     }
 }
 
-/// The embedding's state action: an armed [`CutSpec::StateAction`] holds the admin's action before it
-/// runs, until the release. The testkit binds no action of its own, so open-traffic names that, as
-/// RDM's does with none bound.
-struct FaultedStateActions(Arc<AdminFaults>);
-
-#[async_trait]
-impl rdm_admin::fabric_status::StateActions for FaultedStateActions {
-    async fn open_traffic(&self, node: &rdm_core::PathName) -> Result<(), String> {
-        self.0.hold(Probe::StateAction { node: node.to_string(), command: "open-traffic" }).await;
-        rdm_admin::fabric_status::StateActions::open_traffic(&rdm_admin::fabric_status::NoAction, node).await
-    }
-}
-
 /// The phases of `Node: Pending -> ReadyForTraffic` the admin runs (`bring_into_traffic`).
 pub(crate) const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition];
 
@@ -768,11 +736,10 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         fabric_storage: None,
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),
         lifecycle_events: Some(Box::new(move |inner| Arc::new(FaultedEvents { inner, faults: f_events }))),
-        before_ready: Default::default(),
+        node_hooks: Default::default(),
         certs: CertChoice::NoCerts,
         serve_app: None,
         fabric_hooks: FabricHooks::no_app_work(),
-        state_actions: Some(Arc::new(FaultedStateActions(faults.clone()))),
         hooks: NODE_READY_PHASES
             .iter()
             .map(|&phase| {

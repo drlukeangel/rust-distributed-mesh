@@ -291,7 +291,7 @@ fn an_ordinary_node_holds_its_joins_member_cert_and_its_app_protocol_dials_are_a
         let dir = temp_dir("app-dials-node");
         let root = day0_root(&dir).await;
         let (launch, node_dir) = launched_by(&root, "mesh1.rpc.1", &dir);
-        let node = rdm_node::node::start_with_rafka_time_before_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::before_ready::BeforeReadyHook::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
+        let node = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
             .await
             .expect("the node starts");
         let end = End::of_node(&node);
@@ -313,7 +313,7 @@ fn the_day0_root_and_an_ordinary_node_it_launched_dial_each_other_on_an_app_prot
         let dir = temp_dir("app-dials-day0-node");
         let root = day0_root(&dir).await;
         let (launch, node_dir) = launched_by(&root, "mesh1.rpc.1", &dir);
-        let node = rdm_node::node::start_with_rafka_time_before_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::before_ready::BeforeReadyHook::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
+        let node = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
             .await
             .expect("the node starts");
         let mut a = End::of_admin(&root);

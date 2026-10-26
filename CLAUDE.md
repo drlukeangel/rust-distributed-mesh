@@ -111,7 +111,7 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RDM_CA_CERT_TTL_SECS` | `31536000` | Fabric policy: RDM's CA TTL (365 days); `fabric.ca.renew` rotates it internally at `RDM_CERT_RENEW_AT` under the same root. The root (the app's anchor) has no policy TTL: it rotates only on `fabric.root.update`. |
 | `RDM_ROOTS` | _(written by the launching admin)_ | A launched node's trusted root set (one or two public keys), so a node born mid-rotation trusts both. |
 | `RDM_CERT_RENEW_AT` | `0.67` | Fabric policy: the fraction of a cert's TTL after which its issuer renews it (`node.cert.renew`, `mesh.issuer.renew`), with a fixed jitter of up to 5 % of the TTL. |
-| `RDM_INHERITED_DATA_DIR` | `0` | Written by `rdm-node-admin` into a launched node's environment (`1` when created over an existing `data_dir`, `0` when created over a newly allocated `data_dir`), surfaced to `before_ready` as `BeforeReadyCtx::inherited` (`R-FM2`). |
+| `RDM_INHERITED_DATA_DIR` | `0` | Written by `rdm-node-admin` into a launched node's environment (`1` when created over an existing `data_dir`, `0` when created over a newly allocated `data_dir`), surfaced to `pre_node_ready` as `NodeReadyCtx::inherited` (`R-FM2`). |
 
 **Infrastructure context (Sprint 01):** The shared OTLP collector receives OTLP/HTTP on `localhost:4318`; the nodes' exporter posts spans and log records there. Jaeger UI: `http://localhost:16686`.
 

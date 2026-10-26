@@ -13,7 +13,7 @@ pub mod entry;
 pub mod join;
 pub mod heard_again;
 pub mod admin;
-pub use rdm_node::before_ready;
+pub use rdm_node::node_hooks;
 pub mod accepted;
 pub mod build;
 pub mod certs;

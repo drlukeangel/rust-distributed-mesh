@@ -1,14 +1,14 @@
 //! Fabric certs (i143.e12.s22, i145 e1): the accepting authority issues a member cert for exactly the
 //! birth whose `JoinNode` it accepts, signed by its mesh's issuing key on its own rafka-time, and the
-//! cert reaches the birth in the join answer, its `before_ready` context and its running handle. The
+//! cert reaches the birth in the join answer, its `pre_node_ready` context and its running handle. The
 //! cells decode it (`rdm_core::certs`) and verify it to the testkit's root.
 
 use crate::common::{admin_side_issuing, AdminSide};
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rdm_admin::before_ready::BeforeReadyHook;
-use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
+use rdm_admin::node_hooks::NodeHooks;
+use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
 use rdm_test::node;
 use rdm_core::certs::{self, CaKey, IssuingKey};
 use rdm_test::test_certs::{root_choice, test_root_public};
@@ -128,11 +128,11 @@ fn a_restarted_node_is_issued_a_fresh_member_cert_for_its_new_incarnation() {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: the member cert is in the `before_ready` context the first attempt runs with,
+/// CONTRACT: the member cert is in the `pre_node_ready` context the first attempt runs with,
 /// the same bytes the running handle returns.
 #[test]
-fn the_member_cert_is_in_the_before_ready_context_and_equals_the_handles() {
-    let cap = crate::common::capture("the_member_cert_is_in_the_before_ready_context_and_equals_the_handles");
+fn the_member_cert_is_in_the_pre_node_ready_context_and_equals_the_handles() {
+    let cap = crate::common::capture("the_member_cert_is_in_the_pre_node_ready_context_and_equals_the_handles");
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = birth_dir("member-cert-ctx");
         let fabric = FabricId::mint();
@@ -140,10 +140,10 @@ fn the_member_cert_is_in_the_before_ready_context_and_equals_the_handles() {
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = launch_in(&dir, &fabric, &admin, IncarnationId::mint(), None, NodeId::mint());
         admin.deployed(&launch, &key);
-        let before_ready = TestBeforeReady::new(Mode::Local);
-        let running = node::start_before_ready(&launch, BeforeReadyHook::new(before_ready.clone()), |b, _| b).await.expect("the node starts");
+        let pre_node_ready = TestPreNodeReady::new(Mode::Local);
+        let running = node::start_pre_node_ready(&launch, NodeHooks::new(pre_node_ready.clone()), |b, _| b).await.expect("the node starts");
 
-        let seen = before_ready.member_certs.lock().unwrap().clone();
+        let seen = pre_node_ready.member_certs.lock().unwrap().clone();
         assert_eq!(seen.len(), 1, "the hook ran once");
         assert_eq!(seen[0].as_deref(), Some(running.member_cert.as_slice()), "the hook's context carries the handle's bytes");
         assert_eq!(certs::cert_from_bytes(&running.member_cert).unwrap().cert.name.to_string(), "mesh1.rpc.1");
@@ -188,7 +188,7 @@ async fn alpn_birth(admin: &AdminSide, fabric: &FabricId, name: &str, roots: Vec
     let key = node::load_or_mint_key(&dir).unwrap();
     let launch = Launch { name: name.parse().unwrap(), roots, ..launch_in(&dir, fabric, admin, IncarnationId::mint(), None, NodeId::mint()) };
     admin.deployed(&launch, &key);
-    let running = rdm_node::node::start_with_rafka_time_before_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::before_ready::BeforeReadyHook::none(), |s| s, None, |b, _| b, &[], std::slice::from_ref(alpn))
+    let running = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], std::slice::from_ref(alpn))
         .await
         .expect("the birth starts");
     (running, dir)

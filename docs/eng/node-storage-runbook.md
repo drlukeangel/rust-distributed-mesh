@@ -2,7 +2,7 @@
 
 A stateful node (Rafka's broker, a node-admin) keeps what must outlive its process in one place:
 its data dir (`RDM_DATA_DIR`). This page answers one question per lifecycle operation: which data
-dir the node runs on afterwards, which endpoint key it holds, and what its `before_ready` hook is
+dir the node runs on afterwards, which endpoint key it holds, and what its `pre_node_ready` hook is
 told about it.
 
 The contract is in these pages; this runbook only gathers them:
@@ -11,7 +11,7 @@ The contract is in these pages; this runbook only gathers them:
 - [node-recovery.md](../architecture/lifecycles/node-recovery.md), with its data-dir rules (`R-FM2`);
 - [node-replace.md](../architecture/lifecycles/node-replace.md) and [build-deployment.md](../architecture/build-deployment.md);
 - [node-delete.md](../architecture/lifecycles/node-delete.md);
-- [fabric-node-hooks.md](../architecture/fabric-node-hooks.md#what-the-context-carries), what `before_ready` is given.
+- [fabric-node-hooks.md](../architecture/fabric-node-hooks.md#what-the-context-carries), what `pre_node_ready` is given.
 
 ## The rules
 
@@ -30,7 +30,7 @@ The contract is in these pages; this runbook only gathers them:
 
 ## By operation
 
-| Operation | node.id, incarnation | Data dir | Endpoint key | `before_ready` |
+| Operation | node.id, incarnation | Data dir | Endpoint key | `pre_node_ready` |
 |---|---|---|---|---|
 | `node.stop` then `node.start` | same | same | same | runs again, `start_kind = AfterStop` |
 | `node.restart` | same; the process never exits | same | same, and the same bound port | runs again, `start_kind = AfterStop` |
@@ -47,7 +47,7 @@ with its own commit boundary (node-replace.md, "Data transfer").
 
 ## What the application reads
 
-- `BeforeReadyCtx::inherited`, also in the node's environment as `RDM_INHERITED_DATA_DIR`
+- `NodeReadyCtx::inherited`, also in the node's environment as `RDM_INHERITED_DATA_DIR`
   (`1` or `0`). `true`: open what the data dir holds. `false`: the data dir is empty; resync from
   the other nodes.
 - `start_kind` alone never says whether storage is inherited (fabric-node-hooks.md): a restart is
@@ -64,7 +64,7 @@ with its own commit boundary (node-replace.md, "Data transfer").
 | Where | What it shows |
 |---|---|
 | `rdm.node_admin.deployment.update.via-step` with `step=PrepareStorage` | the data dir prepared for a create: fresh, or inherited and inspected |
-| `rdm.mesh.node.update.via-before-ready-attempt`, field `inherited` | what the hook was told |
+| `rdm.mesh.node.update.via-pre-node-ready-attempt`, field `inherited` | what the hook was told |
 | `node.get` on the birth | `data-dir-lost` or `data-dir-unreadable` when either stands ([provider runbook](provider-runbook.md)) |
 | the birth's row | a new node.id and incarnation at the same path.name after a re-birth; the same ones after a restart |
 
@@ -75,7 +75,7 @@ with its own commit boundary (node-replace.md, "Data transfer").
 2. For a restart: the process never exited, and the data dir and port are unchanged. If the broker's
    data is missing afterwards, the broker's own stop and start released or rewrote it. RDM did not
    touch the disk.
-3. For a re-birth: read `inherited` on the before-ready span.
+3. For a re-birth: read `inherited` on the pre-node-ready attempt span.
    - `true`: the old data dir is in use, and the broker should open it.
    - `false`: read the recovery's verdict and any `data-dir-lost` fact. The broker started empty and
      must resync.

@@ -15,7 +15,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | [Node RPC envelope](node-rpc-envelope.md) | the op ledger, target and context, every op's request/reply schema and positional order, reserved stream codes, the typed object → wire mapping, the Build carrier `0x20` schema, RPC runtime span names, caller execution and certainty |
 | [Node RPC runtime](node-rpc.md) | how one invocation executes: resolver, pool, dispatch after the target, admission and memory, supervision, HandlerScope/ReplySink, the RpcOutcome algebra, budgets, connections-deleting runtime behaviour, retry guidance |
 | workflow pages under `lifecycles/` (including [fabric.create](lifecycles/fabric-create.md) and [node.name.update](lifecycles/node-name-update.md)) | one workflow each: its sequence, actors, completion proof, failure, diagram and observability table (tables below) |
-| [Fabric and node hooks](fabric-node-hooks.md) | where application work enters a lifecycle (`before_ready`, `after_ready`, `traffic_opened`), BeforeReadyCtx, outcomes, the rafka-time handle |
+| [Fabric and node hooks](fabric-node-hooks.md) | where application work enters a lifecycle (`pre_node_ready`, `on_node_ready`, `on_fabric_ready`), NodeReadyCtx, outcomes, the rafka-time handle |
 | [Fabric certs](fabric-certs.md) | the cert chain, issuance, renewal and verification at a connection; the cert workflows table |
 | [Elections](fabric-node-lifecycle-elections.md) | the leadership election: a heard primary stays, unheard past the staleness floor it is superseded; the Mesh row and the fabric row as its inputs |
 | [Node-admin lifecycle](node-admin-lifecycle.md) | node-admin launch inputs and start modes, who starts a node-admin of an existing mesh, the Rafka recovery copy |

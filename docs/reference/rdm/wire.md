@@ -20,7 +20,7 @@ Every Node RPC op: each `impl NodeProtocol` in RDM's non-test source, sorted by 
 | `0x71` | `resolve-probe` | `ResolveProbe` | [`ResolveRequest`](#t-rdm_test-resolve_probe-ResolveRequest) | [`ResolveReply`](#t-rdm_test-resolve_probe-ResolveReply) |
 | `0x72` | `declare-probe` | `DeclareProbe` | [`DeclareRequest`](#t-rdm_test-declare_probe-DeclareRequest) | [`DeclareReply`](#t-rdm_test-declare_probe-DeclareReply) |
 | `0x73` | `originate` | `Originate` | [`OriginateRequest`](#t-rdm_test-originate-OriginateRequest) | [`OriginateReply`](#t-rdm_test-originate-OriginateReply) |
-| `0x74` | `before-ready-pull` | `BeforeReadyPull` | [`PullRequest`](#t-rdm_test-before_ready_probe-PullRequest) | [`PullReply`](#t-rdm_test-before_ready_probe-PullReply) |
+| `0x74` | `pre-node-ready-pull` | `PreNodeReadyPull` | [`PullRequest`](#t-rdm_test-pre_node_ready_probe-PullRequest) | [`PullReply`](#t-rdm_test-pre_node_ready_probe-PullReply) |
 | `0x75` | `fault-door` | `FaultDoor` | [`FaultRequest`](#t-rdm_test-fault_door-FaultRequest) | [`FaultReply`](#t-rdm_test-fault_door-FaultReply) |
 
 ## 0x01 `ping`
@@ -249,20 +249,20 @@ A Status call.
 | 13.3 | `build_id` | `String` |  |  | The Build. |
 | 13.4 | `attempt` | `u32` |  |  | The Build attempt. |
 | 13.5 | `operation` | `String` |  |  | The operation. |
-| 14 | **`OpenTraffic`** |  |  | `op() = "open-traffic"` | Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; lifecycles/fabric-ready-for-traffic.md). The reply admits the command; completion is `Self::TrafficOpened`. |
-| 14.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belongs to. |
-| 14.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
+| 14 | **`Reserved14`** |  |  | `op() = "reserved-14"` | Reserved position (Q174): never sent; a receiver refuses this by name. |
+| 14.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belonged to. |
+| 14.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth. |
 | 14.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 14.3 | `build_id` | `String` |  |  | The Build the command belongs to. |
-| 14.4 | `attempt` | `u32` |  |  | The Build attempt that holds the command. |
-| 14.5 | `operation` | `String` |  |  | The operation: `open-traffic:<fabric_id>`. |
-| 15 | **`TrafficOpened`** |  |  | `op() = "traffic-opened"` | Upward: the exact birth, or a mesh primary for its mesh, checks in for open-traffic (`traffic-opened`) after it completes traffic opening. |
-| 15.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belongs to. |
-| 15.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
+| 14.3 | `build_id` | `String` |  |  | The Build. |
+| 14.4 | `attempt` | `u32` |  |  | The Build attempt. |
+| 14.5 | `operation` | `String` |  |  | The operation. |
+| 15 | **`Reserved15`** |  |  | `op() = "reserved-15"` | Reserved position (Q174): never sent; a receiver refuses this by name. |
+| 15.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belonged to. |
+| 15.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth. |
 | 15.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 15.3 | `build_id` | `String` |  |  | The Build the command belongs to. |
-| 15.4 | `attempt` | `u32` |  |  | The Build attempt that holds the command. |
-| 15.5 | `operation` | `String` |  |  | The operation: `open-traffic:<fabric_id>`. |
+| 15.3 | `build_id` | `String` |  |  | The Build. |
+| 15.4 | `attempt` | `u32` |  |  | The Build attempt. |
+| 15.5 | `operation` | `String` |  |  | The operation. |
 | 16 | **`StartNode`** |  |  | `op() = "start-node"` | Reserved at position 16: refused by name, never executed. Stop and start use NodeCommand 0x22. |
 | 16.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth commanded. |
 | 16.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
@@ -377,7 +377,7 @@ The typed result of a Status call.
 | 17.0 | `receipt` | `ConnectionsReceipt` → [`ConnectionsReceipt`](#t-rdm_core-status-ConnectionsReceipt) |  |  | What the stop's `node.connections.delete { All }` established. |
 | 18 | **`Started`** |  |  | `name() = "started"` | The reply of a `StartNode` call: the stopped birth rejoined as itself. |
 | 19 | **`StartFailed`** |  |  | `name() = "start-failed"` | The reply of a `StartNode` call whose start stopped at `step`: nothing after that step ran. |
-| 19.0 | `step` | `String` |  |  | The step that failed: `node.join`, `node.topology` or `node.before-ready`. |
+| 19.0 | `step` | `String` |  |  | The step that failed: `node.join`, `node.topology` or `node.pre-node-ready`. |
 | 19.1 | `reason` | `String` |  |  | Why it failed. |
 | 20 | **`CurrentStopped`** |  |  | `name() = "current-stopped"` | The exact birth's own answer to a probe while it is stopped: `Leaving`, its process alive and |
 | 20.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The answering birth's logical node. |
@@ -394,7 +394,7 @@ The typed result of a Status call.
 | 24.0 | `node` | `String` |  |  | The node's `path.name`. |
 | 24.1 | `answered` | `String` |  |  | The birth's reply to `apply-node-config` by name, or the call's end by name. |
 | 24.2 | `reason` | `String` |  |  | Its detail. |
-| 25 | **`Blocked`** |  |  | `name() = "blocked"` | The exact birth's own answer to a probe while its `before_ready` hook is Blocked: the |
+| 25 | **`Blocked`** |  |  | `name() = "blocked"` | The exact birth's own answer to a probe while its `pre_node_ready` hook is Blocked: the |
 | 25.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The answering birth's logical node. |
 | 25.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The answering birth's incarnation. |
 | 25.2 | `reason` | `String` |  |  | The hook's own blocker, in words. |
@@ -1474,14 +1474,14 @@ An originate door answer.
 | 15.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who marked the stop. |
 | 15.1 | `reason` | `String` |  | The reason recorded. |
 
-## 0x74 `before-ready-pull`
+## 0x74 `pre-node-ready-pull`
 
-`impl NodeProtocol for BeforeReadyPull` · `crates/rdm-test/src/before_ready_probe.rs` · rdm-test
+`impl NodeProtocol for PreNodeReadyPull` · `crates/rdm-test/src/pre_node_ready_probe.rs` · rdm-test
 
 | const | value |
 |---|---|
 | `OP` | `0x74` |
-| `NAME` | `"before-ready-pull"` |
+| `NAME` | `"pre-node-ready-pull"` |
 | `FORWARDABLE` | trait default `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | trait default `false` |
 | `REQUEST_VARIANTS` | `1` |
@@ -1489,11 +1489,11 @@ An originate door answer.
 | `MAX_REQUEST_FRAME_BYTES` | `256` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
-<a id="t-rdm_test-before_ready_probe-PullRequest"></a>
+<a id="t-rdm_test-pre_node_ready_probe-PullRequest"></a>
 
 ### `PullRequest`
 
-`crates/rdm-test/src/before_ready_probe.rs` · enum · 1 variants · rdm-test
+`crates/rdm-test/src/pre_node_ready_probe.rs` · enum · 1 variants · rdm-test
 
 A pull.
 
@@ -1501,18 +1501,18 @@ A pull.
 |---|---|---|---|---|
 | 0 | **`Pull`** |  |  | Every row this authority holds. |
 
-<a id="t-rdm_test-before_ready_probe-PullReply"></a>
+<a id="t-rdm_test-pre_node_ready_probe-PullReply"></a>
 
 ### `PullReply`
 
-`crates/rdm-test/src/before_ready_probe.rs` · enum · 7 variants · rdm-test
+`crates/rdm-test/src/pre_node_ready_probe.rs` · enum · 7 variants · rdm-test
 
 A pull's answer.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Rows`** |  |  | The rows, complete. |
-| 0.0 | `rows` | `Vec<Row>` → [`Row`](#t-rdm_test-before_ready_probe-Row) |  | The rows in version order. |
+| 0.0 | `rows` | `Vec<Row>` → [`Row`](#t-rdm_test-pre_node_ready_probe-Row) |  | The rows in version order. |
 | 1 | **`PeerUnresolved`** |  |  | The peer the call needed could not be resolved. |
 | 1.0 | `reason` | `String` |  | Why. |
 | 2 | **`NotReady`** |  |  | The authority's own hook has not passed. |
@@ -2106,7 +2106,7 @@ One birth's view of its own mesh channel, sampled when it publishes its digest.
 
 ### `Hit`
 
-`crates/rdm-test/src/fault_door.rs` · enum · 15 variants · rdm-test
+`crates/rdm-test/src/fault_door.rs` · enum · 14 variants · rdm-test
 
 The call a cut held first, as the decorator offered it.
 
@@ -2155,13 +2155,10 @@ The call a cut held first, as the decorator offered it.
 | 11 | **`Declaration`** |  |  | A node's declaration at the status door, about to be decided. |
 | 11.0 | `node` | `String` |  | The declaring node. |
 | 11.1 | `state` | `String` |  | The state it declares. |
-| 12 | **`StateAction`** |  |  | A node-admin's state action, about to run. |
-| 12.0 | `node` | `String` |  | The acting admin. |
-| 12.1 | `command` | `String` |  | The checklist, as its command names it. |
-| 13 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
-| 13.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
-| 14 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
-| 14.0 | `node` | `String` |  | The admin whose pass it is. |
+| 12 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
+| 12.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
+| 13 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
+| 13.0 | `node` | `String` |  | The admin whose pass it is. |
 
 <a id="t-rdm_core-ids-IncarnationId"></a>
 
@@ -2810,7 +2807,7 @@ Why a resolver gave no node.
 
 `crates/rdm-core/src/status.rs` · enum · 4 variants · rdm-core
 
-The event a Blocked `before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
+The event a Blocked `pre_node_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
@@ -2820,11 +2817,11 @@ The event a Blocked `before_ready` hook runs again on (fabric-node-hooks.md, "Ou
 | 2 | **`PrimaryReady`** |  |  | `name() = "primary-ready"` | The authority published ReadyForTraffic. |
 | 3 | **`PrimaryAddressed`** |  |  | `name() = "primary-addressed"` | The authority addressed this node (it sent a down op). |
 
-<a id="t-rdm_test-before_ready_probe-Row"></a>
+<a id="t-rdm_test-pre_node_ready_probe-Row"></a>
 
 ### `Row`
 
-`crates/rdm-test/src/before_ready_probe.rs` · struct · 2 fields · rdm-test
+`crates/rdm-test/src/pre_node_ready_probe.rs` · struct · 2 fields · rdm-test
 
 One row of the authority's state.
 

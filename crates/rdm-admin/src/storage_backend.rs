@@ -9,7 +9,6 @@
 
 use crate::build_state::LocalBuildLog;
 use crate::fabric_handover::FinishWrites;
-use crate::fabric_status::StateActions;
 use crate::fabric_storage::FabricStorage;
 use crate::model::{FabricId, IncarnationId, PathName, ProviderKind};
 use crate::storage::{ConnectionsStorage, MeshStorage, NodeRecord, NodesStorage};
@@ -46,8 +45,8 @@ impl StorageScope {
 /// A node's own connections rows, opened once its `path.name` is decided.
 pub type OpenConnections = Arc<dyn Fn(PathName) -> BoxFuture<'static, Result<Arc<dyn ConnectionsStorage>, StorageError>> + Send + Sync>;
 
-/// The storage a node-admin runs on, opened by its backend: the five boundaries, the open-traffic
-/// action, and how it finishes the writes it has issued.
+/// The storage a node-admin runs on, opened by its backend: the five boundaries and how it finishes
+/// the writes it has issued.
 pub struct StorageBoundaries {
     /// `fabric.storage`: the Fabric record, its name's claim and its events.
     pub fabric: Arc<dyn FabricStorage>,
@@ -66,8 +65,6 @@ pub struct StorageBoundaries {
     pub connections: OpenConnections,
     /// The Build journal: the Build facts, and each attempt's context.
     pub builds: Arc<dyn LocalBuildLog>,
-    /// The node's open-traffic action: the embedding's, else none.
-    pub state_actions: Arc<dyn StateActions>,
     /// Finishes every write the boundaries have issued: a primary runs it before it calls its successor
     /// (node-primary-update.md step 3).
     pub finish_writes: FinishWrites,
@@ -89,9 +86,8 @@ pub trait StorageBackend: Send + Sync {
     /// restart on this data dir is the same logical node in the same Fabric and Mesh (R-FI1). Its
     /// address and primaries are on its node's record, written by its mesh-primary.
     async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError>;
-    /// Opens the five boundaries of `scope`; `embedding` is the embedding's own state actions, run
-    /// after the backend's.
-    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn StateActions>>) -> Result<StorageBoundaries, String>;
+    /// Opens the five boundaries of `scope`.
+    async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String>;
 }
 
 /// RDM standalone's backend: the boundaries as files, the shared ones on the fabric's store root
@@ -126,11 +122,10 @@ impl StorageBackend for FileBackend {
         crate::storage::FileNodesStorage::put_own_in(data_dir, writer, record).await
     }
 
-    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn StateActions>>) -> Result<StorageBoundaries, String> {
+    async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String> {
         let storage_err = |e: StorageError| e.to_string();
         let root = crate::store_root::StoreRoot::open(&self.store_dir, &scope.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
         let writes_to = "store-root".to_string();
-        let state_actions: Arc<dyn StateActions> = embedding.unwrap_or_else(|| Arc::new(crate::fabric_status::NoAction));
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.log_writer()).await.map_err(storage_err)?);
@@ -155,7 +150,7 @@ impl StorageBackend for FileBackend {
                 Box::pin(async move { Ok(Arc::new(crate::storage::FileConnectionsStorage::open(&root, &name, &writer).await?) as Arc<dyn ConnectionsStorage>) })
             })
         };
-        Ok(StorageBoundaries { fabric, meshes, nodes, root_runtimes, connections, builds, state_actions, finish_writes, writes_to })
+        Ok(StorageBoundaries { fabric, meshes, nodes, root_runtimes, connections, builds, finish_writes, writes_to })
     }
 }
 
@@ -190,7 +185,7 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
-    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn StateActions>>) -> Result<StorageBoundaries, String> {
+    async fn open(&self, _scope: &StorageScope) -> Result<StorageBoundaries, String> {
         let connections: OpenConnections = Arc::new(|_name: PathName| Box::pin(async { Ok(Arc::new(crate::storage::MemoryConnectionsStorage::default()) as Arc<dyn ConnectionsStorage>) }));
         // A memory write is one step under its store's lock: every write issued has finished.
         let finish_writes: FinishWrites = Arc::new(|| Box::pin(async {}));
@@ -201,7 +196,6 @@ impl StorageBackend for MemoryBackend {
             root_runtimes: None,
             connections,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
-            state_actions: embedding.unwrap_or_else(|| Arc::new(crate::fabric_status::NoAction)),
             finish_writes,
             writes_to: "memory".into(),
         })
@@ -229,15 +223,15 @@ mod tests {
         let build = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         let context = rdm_core::context::CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), ..Default::default() };
         {
-            let b = backend.open(first, None).await.unwrap_or_else(|e| panic!("the first birth opens: {e}"));
+            let b = backend.open(first).await.unwrap_or_else(|e| panic!("the first birth opens: {e}"));
             b.nodes.put_runtime(&runtime).await.unwrap();
             b.builds.put_attempt_context(&build, Some("mesh1"), 2, &context).await.unwrap();
         }
-        let b = backend.open(reborn, None).await.unwrap_or_else(|e| panic!("the re-born birth opens over the inherited data dir: {e}"));
+        let b = backend.open(reborn).await.unwrap_or_else(|e| panic!("the re-born birth opens over the inherited data dir: {e}"));
         assert_eq!(b.nodes.runtimes().await.unwrap(), vec![runtime.clone()], "the re-born admin holds its predecessor's runtime rows");
         assert_eq!(b.nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "a point read by the birth finds it");
         assert_eq!(b.builds.attempt_context(&build, Some("mesh1"), 2).await.unwrap(), Some(context.clone()), "and its predecessor's attempt context");
-        let o = backend.open(other, None).await.unwrap_or_else(|e| panic!("another admin opens over its own data dir: {e}"));
+        let o = backend.open(other).await.unwrap_or_else(|e| panic!("another admin opens over its own data dir: {e}"));
         assert_eq!(o.nodes.runtimes().await.unwrap(), vec![runtime.clone()], "the runtime rows are the fabric's, on its store root");
         assert_eq!(o.builds.attempt_context(&build, Some("mesh1"), 2).await.unwrap(), None, "nor the attempt context");
     }
@@ -273,7 +267,7 @@ mod tests {
             assert_eq!(file.own_row(&data_dir, &IncarnationId::mint()).await.unwrap(), Some(own.clone()), "the next process of the data dir reads it back whole");
             assert_eq!(file.own_row(&other, &IncarnationId::mint()).await.unwrap(), None, "another data dir holds none");
             let scope = StorageScope { data_dir: data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() };
-            let opened = file.open(&scope, None).await.unwrap_or_else(|e| panic!("the boundaries open: {e}"));
+            let opened = file.open(&scope).await.unwrap_or_else(|e| panic!("the boundaries open: {e}"));
             assert!(opened.nodes.nodes("mesh1").await.unwrap().is_empty(), "the nodes store holds no copy of the own row");
         }
     }

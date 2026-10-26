@@ -28,7 +28,7 @@ rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev =
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"
-# The node-admin's own `before_ready` (rdm_node::before_ready::BeforeReady) keeps the process's Node RPC
+# The node-admin's own `pre_node_ready` (rdm_node::node_hooks::PreNodeReady) keeps the process's Node RPC
 # client for the state-sync hook's call to the system gateway.
 async-trait = "0.1"
 

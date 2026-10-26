@@ -279,34 +279,34 @@ pub enum StatusRequest {
         /// The operation.
         operation: String,
     },
-    /// Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; lifecycles/fabric-ready-for-traffic.md). The reply admits the command; completion is [`Self::TrafficOpened`].
-    OpenTraffic {
-        /// The fabric the command belongs to.
+    /// Reserved position (Q174): never sent; a receiver refuses this by name.
+    Reserved14 {
+        /// The fabric the command belonged to.
         fabric_id: FabricId,
-        /// The subject: the commanded or reporting birth.
+        /// The birth.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The Build the command belongs to.
+        /// The Build.
         build_id: String,
-        /// The Build attempt that holds the command.
+        /// The Build attempt.
         attempt: u32,
-        /// The operation: `open-traffic:<fabric_id>`.
+        /// The operation.
         operation: String,
     },
-    /// Upward: the exact birth, or a mesh primary for its mesh, checks in for open-traffic (`traffic-opened`) after it completes traffic opening.
-    TrafficOpened {
-        /// The fabric the command belongs to.
+    /// Reserved position (Q174): never sent; a receiver refuses this by name.
+    Reserved15 {
+        /// The fabric the command belonged to.
         fabric_id: FabricId,
-        /// The subject: the commanded or reporting birth.
+        /// The birth.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The Build the command belongs to.
+        /// The Build.
         build_id: String,
-        /// The Build attempt that holds the command.
+        /// The Build attempt.
         attempt: u32,
-        /// The operation: `open-traffic:<fabric_id>`.
+        /// The operation.
         operation: String,
     },
     /// Reserved at position 16: refused by name, never executed. Stop and start use NodeCommand 0x22.
@@ -819,8 +819,8 @@ impl StatusRequest {
             Self::MeshDeleted { .. } => "mesh-deleted",
             Self::Reserved12 { .. } => "reserved-12",
             Self::Reserved13 { .. } => "reserved-13",
-            Self::OpenTraffic { .. } => "open-traffic",
-            Self::TrafficOpened { .. } => "traffic-opened",
+            Self::Reserved14 { .. } => "reserved-14",
+            Self::Reserved15 { .. } => "reserved-15",
             Self::StartNode { .. } => "start-node",
             Self::UpdateNodeConfig { .. } => "update-node-config",
             Self::ApplyNodeConfig { .. } => "apply-node-config",
@@ -1030,7 +1030,7 @@ pub enum StatusReply {
     Started,
     /// The reply of a `StartNode` call whose start stopped at `step`: nothing after that step ran.
     StartFailed {
-        /// The step that failed: `node.join`, `node.topology` or `node.before-ready`.
+        /// The step that failed: `node.join`, `node.topology` or `node.pre-node-ready`.
         step: String,
         /// Why it failed.
         reason: String,
@@ -1074,7 +1074,7 @@ pub enum StatusReply {
         /// Its detail.
         reason: String,
     },
-    /// The exact birth's own answer to a probe while its `before_ready` hook is Blocked: the
+    /// The exact birth's own answer to a probe while its `pre_node_ready` hook is Blocked: the
     /// probe served that birth and found an active readiness blocker. `reason` is the hook's own
     /// text and `retry_on` the event it runs again on. It is never a `NotReady`: a `NotReady` is the
     /// door or the handler not serving yet, and says nothing of the hook.
@@ -1346,7 +1346,7 @@ pub enum StatusReply {
     },
 }
 
-/// The event a Blocked `before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
+/// The event a Blocked `pre_node_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
 /// and the gate"). Positional order is part of the wire schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RetryOn {
@@ -1902,8 +1902,8 @@ mod tests {
             },
             StatusRequest::Reserved12 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
             StatusRequest::Reserved13 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
-            StatusRequest::OpenTraffic { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
-            StatusRequest::TrafficOpened { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
+            StatusRequest::Reserved14 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
+            StatusRequest::Reserved15 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
             StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.start:mesh1.rpc.1".into() },
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },

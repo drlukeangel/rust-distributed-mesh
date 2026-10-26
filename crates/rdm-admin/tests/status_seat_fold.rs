@@ -269,13 +269,12 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                     fabric_states: Default::default(), fabric_recovery: Default::default(),
                     configs: Default::default(),
                     republish: Default::default(), configure: Default::default(),
-                    before_ready: Default::default(),
+                    pre_node_ready: Default::default(),
                     rename: Default::default(),
                     row_moved: Default::default(),
                     loads: None,
                     digest_view: Some(topology_view.digest_view.clone()),
                     builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
-                    first_ready: Default::default(),
                 };
                 let declared = authority.apply(Some(rpc1.clone()), &StatusRequest::DeclareNodeState { node_id: rpc1.node_id.clone(), incarnation: rpc1.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None }).await;
                 let after_declare = status(&rpc1);
@@ -378,9 +377,8 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                     commands: Arc::new(rdm_admin::node_commands::CommandView::default()), own: Default::default(),
                     mesh_deleter: Default::default(), hold_next_reply: Default::default(), wake: Default::default(),
                     fabric_states: Default::default(), fabric_recovery: Default::default(), configs: Default::default(), republish: Default::default(), configure: Default::default(),
-                    before_ready: Default::default(), rename: Default::default(), row_moved: Default::default(),
+                    pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(),
                     loads: None, digest_view: None, builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
-                    first_ready: Default::default(),
                 };
                 let reply = authority.apply(Some(rpc.clone()), &StatusRequest::DeclareNodeState {
                     node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(),

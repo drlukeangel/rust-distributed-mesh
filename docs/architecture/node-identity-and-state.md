@@ -493,12 +493,12 @@ Readiness is the end of [node start](lifecycles/node-start.md), reported by the 
 `node.started` and set by its mesh-primary as ReadyForTraffic on that report.
 
 1. **The gates are the start's.** The join (its cert and rafka-time, the mesh channel joined), the
-   application's [`before_ready` hook](fabric-node-hooks.md) returning Ok, complete topology
+   application's [`pre_node_ready` hook](fabric-node-hooks.md) returning Ok, complete topology
    installed, the required Build floor held, rafka-time refreshed last. Nothing else makes a node
    ready; a partial snapshot or a Blocked hook makes none.
 2. **The application's one contribution is the hook.** Whatever an application must hold before it
    can serve
-   it does inside `before_ready`, which it may answer Ok, Blocked with a retry event, or Failed by
+   it does inside `pre_node_ready`, which it may answer Ok, Blocked with a retry event, or Failed by
    name ([Outcomes and the gate](fabric-node-hooks.md#outcomes-and-the-gate)). A node with nothing to
    hold is trivially ready.
 3. **The node reports `node.started` once every gate holds** — not on listener-bind, not on a

@@ -479,7 +479,7 @@ pub trait NodeObserver: Send + Sync {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication>;
     /// Is the node serving?
     async fn ready(&self, node: &Node) -> Result<(), String>;
-    /// The named blocker the node reports for its Ready (its `before_ready` hook's
+    /// The named blocker the node reports for its Ready (its `pre_node_ready` hook's
     /// `Blocked` outcome, with the event it retries on), or `None`. Its only source is the subject's
     /// Status `Blocked` answer to `ProbeNodeState`. A node that is only still Pending, with no hook
     /// blocker, has none, and neither has a node whose door answers `NotReady`: `ready` fails for it,
@@ -943,7 +943,7 @@ pub struct CreateRequest {
 /// state for the admin created for an existing one). Runs as its own receipted step
 /// (`ApplyMeshPending`), which records the state applied; a failure fails the create, so nothing
 /// downstream starts under an assumed state.
-pub(crate) type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<rdm_core::status::MeshState, String>> + Send>> + Send + Sync>;
+pub(crate) type PreNodeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<rdm_core::status::MeshState, String>> + Send>> + Send + Sync>;
 
 /// Work a create awaits inside its `DeployRuntime` step right before it launches the new runtime,
 /// and only then: a step an earlier attempt receipted (its runtime still runs and is reused) and a
@@ -1404,38 +1404,38 @@ impl DeploymentPipeline<'_> {
         self.create_with(req, None, None).await
     }
 
-    /// `create`, with `before_ready` run as the `ApplyMeshPending` step once the birth has joined
+    /// `create`, with `pre_node_ready` run as the `ApplyMeshPending` step once the birth has joined
     /// its mesh and before it is asked to be Ready, and `before_launch` awaited right before the new
     /// runtime is launched ([`BeforeLaunch`]).
-    pub(crate) async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+    pub(crate) async fn create_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let claim_for = if req.data_dir.is_some() { crate::node_rows::ClaimFor::Recovery } else { crate::node_rows::ClaimFor::Create };
-        self.create_with_claim(req, claim_for, before_ready, before_launch).await
+        self.create_with_claim(req, claim_for, pre_node_ready, before_launch).await
     }
 
     /// `create_with` for a recipe's create of a replace's successor at the name its predecessor
     /// released (`ClaimFor::Successor`, node-replace.md step 3): a fresh data dir, its row inheriting
     /// the predecessor's config and tags.
-    pub(crate) async fn create_successor_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
-        self.create_with_claim(req, crate::node_rows::ClaimFor::Successor, before_ready, None).await
+    pub(crate) async fn create_successor_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>) -> Result<Created, PipelineError> {
+        self.create_with_claim(req, crate::node_rows::ClaimFor::Successor, pre_node_ready, None).await
     }
 
     /// `create_with` for a recovery Build (`ClaimFor::Recovery` even when `req.data_dir` is `None`
     /// after `RDM_DATA_DIR_GONE_FLOORS`, R-FM2).
-    pub(crate) async fn create_recovery_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
-        self.create_with_claim(req, crate::node_rows::ClaimFor::Recovery, before_ready, before_launch).await
+    pub(crate) async fn create_recovery_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+        self.create_with_claim(req, crate::node_rows::ClaimFor::Recovery, pre_node_ready, before_launch).await
     }
 
-    async fn create_with_claim(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+    async fn create_with_claim(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
         // Boxed: the create's steps are one large state machine, and every caller (a recipe step, a
         // recovery, a drive) holds only the box on its worker's stack.
-        Box::pin(self.create_steps(req, claim_for, before_ready, before_launch)).instrument(span).await
+        Box::pin(self.create_steps(req, claim_for, pre_node_ready, before_launch)).instrument(span).await
     }
 
-    async fn create_steps(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+    async fn create_steps(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("node.create:{}", req.node)).await?;
-        let mut created = self.create_to_ready(&mut run, req, claim_for, before_ready, before_launch).await?;
+        let mut created = self.create_to_ready(&mut run, req, claim_for, pre_node_ready, before_launch).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         self.step(&mut run, CreateStep::Complete.name(), async {
             self.sink.publish(created.node.clone());
@@ -1449,12 +1449,12 @@ impl DeploymentPipeline<'_> {
     /// `req.data_dir`: the data dir the spec names (the create over an exited birth's), taken over
     /// whole (node-recovery.md sequence step 4). `before_launch`: awaited right before the new runtime
     /// is launched, and only when it is ([`BeforeLaunch`]).
-    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         // The name this create claimed: a step after the claim that fails withdraws it, so the next
         // attempt's fresh birth is not refused by this one's claim (lifecycles/node-create.md step 1).
         let mut claimed: Option<NodeId> = None;
         let operation = run.operation.clone();
-        let r = self.create_to_ready_claimed(run, req, claim_for, before_ready, before_launch, &mut claimed).await;
+        let r = self.create_to_ready_claimed(run, req, claim_for, pre_node_ready, before_launch, &mut claimed).await;
         if let (Err(e), Some(node_id), Some(rows)) = (&r, &claimed, self.sink.node_rows()) {
             rows.withdraw(&req.node, node_id, &operation, &format!("the create failed at {}: {}", e.step, e.reason)).await;
         }
@@ -1570,7 +1570,7 @@ impl DeploymentPipeline<'_> {
         }
     }
 
-    async fn create_to_ready_claimed(&self, run: &mut Run<'_>, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>, claimed: &mut Option<NodeId>) -> Result<Created, PipelineError> {
+    async fn create_to_ready_claimed(&self, run: &mut Run<'_>, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>, claimed: &mut Option<NodeId>) -> Result<Created, PipelineError> {
         let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
         // A receipt names a runtime; its birth is reused only while that
         // runtime runs. A launch that has since died (its executor's mesh was
@@ -1890,7 +1890,7 @@ impl DeploymentPipeline<'_> {
         let target = node.clone();
         let _: serde_json::Value = self
             .step(run, CreateStep::ApplyMeshPending.name(), async {
-                match &before_ready {
+                match &pre_node_ready {
                     Some(hand_off) => hand_off(target).await.map(|state| serde_json::json!({"applied": format!("{state:?}")})),
                     None => Ok(serde_json::json!({"applied": null, "reason": "no Pending owed: not a new mesh's first admin"})),
                 }

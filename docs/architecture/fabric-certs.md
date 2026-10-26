@@ -87,8 +87,8 @@ is not admitted.
 
 ## Where the app reads it
 
-The member cert is in [`BeforeReadyCtx`](fabric-node-hooks.md#before_ready) before
-`before_ready` runs, and on the running node handle RDM's start returns.
+The member cert is in [`NodeReadyCtx`](fabric-node-hooks.md#pre_node_ready) before
+`pre_node_ready` runs, and on the running node handle RDM's start returns.
 
 ## Time
 

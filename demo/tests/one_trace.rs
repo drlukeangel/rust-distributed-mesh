@@ -4,15 +4,15 @@
 //! traceparent and the gateway's serve span takes it as its parent (node-rpc.md, the call's context).
 //! Rafka's own subscriber reads RDM's spans this way.
 //!
-//! The call is the testkit's op `0x74` (`BeforeReadyPull`), standing in for a product's own op.
+//! The call is the testkit's op `0x74` (`PreNodeReadyPull`), standing in for a product's own op.
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::catalog::OpOwner;
 use rdm_core::{IncarnationId, NodeId};
-use rdm_node::before_ready::{BeforeReady, BeforeReadyCtx, BeforeReadyHook, HookOutcome};
-use rdm_test::before_ready_probe::{BeforeReadyPull, PullReply, PullRequest, Row};
+use rdm_node::node_hooks::{PreNodeReady, NodeReadyCtx, NodeHooks, HookOutcome};
+use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, PullReply, PullRequest, Row};
 use rdm_transport::{CallOptions, NodeTarget};
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,11 +31,11 @@ fn config(dir: &std::path::Path) -> AdminConfig {
     .unwrap()
 }
 
-/// The gateway's `before_ready`: nothing to pull.
+/// The gateway's `pre_node_ready`: nothing to pull.
 struct Ready;
 #[async_trait::async_trait]
-impl BeforeReady for Ready {
-    async fn before_ready(&self, _ctx: &BeforeReadyCtx) -> HookOutcome {
+impl PreNodeReady for Ready {
+    async fn pre_node_ready(&self, _ctx: &NodeReadyCtx) -> HookOutcome {
         HookOutcome::Ok
     }
 }
@@ -78,13 +78,13 @@ async fn gateway(root: &Running, dir: &std::path::Path, shared: &std::path::Path
         held: false,
     });
     let node_id = launch.node_id.clone();
-    let running = rdm_node::node::start_with_rafka_time_before_ready_and(
+    let running = rdm_node::node::start_with_rafka_time_pre_node_ready_and(
         &launch,
         rdm_transport::clock::RafkaTime::unadopted(),
-        BeforeReadyHook::new(Arc::new(Ready)),
+        NodeHooks::new(Arc::new(Ready)),
         |s| s,
         None,
-        |b, _| b.serve::<BeforeReadyPull, _, _>(OpOwner::Testkit, |_, _| async { Ok(PullReply::Rows { rows: vec![Row { version: 1, value: "work".into() }] }) }),
+        |b, _| b.serve::<PreNodeReadyPull, _, _>(OpOwner::Testkit, |_, _| async { Ok(PullReply::Rows { rows: vec![Row { version: 1, value: "work".into() }] }) }),
         &[],
     )
     .await
@@ -108,7 +108,7 @@ async fn a_call_from_the_node_admin_to_the_gateway_is_one_trace_under_the_consum
     let dir = std::env::temp_dir().join(format!("demo-trace-{}", NodeId::mint()));
     let root_dir = dir.join("admin");
     let root = start_with(config(&root_dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.unwrap();
-    // The Day-0 change begins its open-traffic checklist; then this admin reconciles nothing more, so the
+    // The Day-0 change finds every mesh ready; then this admin reconciles nothing more, so the
     // hand-launched gateway is no drift pass's surplus.
     let reached = |name: &str| exporter.get_finished_spans().unwrap().iter().any(|s| s.name == name);
     tokio::time::timeout(BOUND, async {
@@ -117,7 +117,7 @@ async fn a_call_from_the_node_admin_to_the_gateway_is_one_trace_under_the_consum
         }
     })
     .await
-    .expect("the Day-0 change begins its open-traffic checklist");
+    .expect("the Day-0 change finds every mesh ready");
     root.stop_reconciling();
     let (g, gateway_id) = gateway(&root, &dir.join("gateway.1"), &root_dir).await;
 
@@ -127,7 +127,7 @@ async fn a_call_from_the_node_admin_to_the_gateway_is_one_trace_under_the_consum
     async {
         tokio::time::timeout(BOUND, async {
             loop {
-                let (out, _) = client.call::<BeforeReadyPull>(&NodeTarget::ExactNode(gateway_id.clone()), &PullRequest::Pull, &CallOptions::default()).await;
+                let (out, _) = client.call::<PreNodeReadyPull>(&NodeTarget::ExactNode(gateway_id.clone()), &PullRequest::Pull, &CallOptions::default()).await;
                 if matches!(out.reply().map(|r| r.value().clone()), Some(PullReply::Rows { .. })) {
                     break;
                 }
