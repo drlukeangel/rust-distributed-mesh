@@ -3080,3 +3080,13 @@ The tail at de55ea949 (release, export, soaks, manifest) was red; every red was 
   fabric-recovery.md step 3 says; the cell says nothing is replaced from silence).
 
 Remaining: the full tail at the SHA holding this record; Q180 and Q181.
+
+## e12.s95 — 2026-10-26: the fabric's `storage_provider` (proposal, for Luke)
+
+Q171 removed state-sync, state-commit and the scratchpad, and with them, unnamed, the requirement that
+RDM's records reach the application's store established after Day 0; Luke was not told. Luke directed
+the replacement: `storage_provider` is a property of the Fabric, on the Fabric's row and queryable,
+changed live by a Build that carries it fabric-primary → mesh-primary → node, the fabric-primary
+keeping access to previous providers. Proposal:
+[fabric-storage-provider](proposal/fabric-storage-provider.md) (R-SP1 to R-SP14, three fabric-wide
+steps, and the eight mechanisms considered first). Owner: the lead. State: proposed, nothing built.
