@@ -711,7 +711,7 @@ impl NodeSelf {
         let Ok(build_id) = build_id.parse::<rdm_core::BuildId>() else {
             return rdm_core::reply::node_command::not_ready(format!("{}: the storage step names Build {build_id:?}, which is no Build id; nothing is done", self.held_name()));
         };
-        if let Some(refused) = storage.refusal(change_id).await {
+        if let Some(refused) = storage.refusal(&build_id, change_id, step).await {
             return refused;
         }
         if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {

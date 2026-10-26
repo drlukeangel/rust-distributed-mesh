@@ -436,7 +436,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // step 1): the change's `commit` record decides the provider this start opens and whether it holds
     // the block; the provider this admin moved to last otherwise, else its launch's.
     let mut block_record = crate::storage_block::BlockRecord::read(&cfg.data_dir).map_err(|e| format!("refusing to start: {e}"))?;
-    let (writes, holds_block) = crate::storage_change::resolve_at_start(&providers, &cfg.fabric_id, &cfg.data_dir, &mut block_record, &cfg.topology_storage_provider).await?;
+    let (writes, holds_block) = crate::storage_change::resolve_at_start(&providers, &cfg.fabric_id, &cfg.data_dir, &mut block_record, &cfg.topology_storage_provider, cfg.launch.is_some()).await?;
     cfg.topology_storage_provider = writes;
     // Every store this admin reads and writes is reached through its one handle, never a store held
     // from here, so a provider change moves every owner at once ("Each node moves to the new
@@ -1599,6 +1599,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // The drives of the Builds this admin drives (`build_drive`): its executor ends its own
                             // runtime only once its own node.delete's callers read their terminal.
                             let drives = Arc::new(crate::build_drive::Drives::default());
+                            storage_changes.resume_when_seated(control.topology.clone());
                             let runner = Arc::new(AdminRunner {
                                 storage_changes: storage_changes.clone(),
                                 drives: drives.clone(),

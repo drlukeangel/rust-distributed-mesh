@@ -21,6 +21,13 @@ pub struct NodeStorage {
 pub trait NodeStorageBackend: Send + Sync {
     /// Opens the storage of the node `launch` names.
     async fn open(&self, launch: &Launch) -> Result<NodeStorage, String>;
+    /// Whether this provider holds the `commit` record `commit` (storage.md §2 step 4): what a node's
+    /// start that reads a block from its data dir decides by. `Err`: the provider did not answer, and
+    /// the block holds.
+    async fn commit(&self, launch: &Launch, commit: &rdm_core::build::StorageCommit) -> Result<bool, String> {
+        let _ = (launch, commit);
+        Err("this provider answers no commit record (storage.md §2 step 4)".into())
+    }
 }
 
 /// RDM standalone's backend: the node's connection facts, its lines of the fabric's store root's
@@ -51,6 +58,12 @@ impl NodeStorageBackend for FileNodeBackend {
             connections: Arc::new(connections),
             writes_to: "store-root".into(),
         })
+    }
+
+    async fn commit(&self, launch: &Launch, commit: &rdm_core::build::StorageCommit) -> Result<bool, String> {
+        let store_dir = self.store_dir.as_ref().unwrap_or(&launch.store_dir);
+        let locks = crate::store_log::StoreLocks::at(&store_dir.join(launch.fabric_id.to_string()), &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation));
+        locks.read(crate::store_log::LockKind::Commit, &commit.name()).await.map(|held| held.is_some()).map_err(|e| e.to_string())
     }
 }
 

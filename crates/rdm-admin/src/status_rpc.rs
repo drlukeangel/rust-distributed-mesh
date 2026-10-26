@@ -908,12 +908,30 @@ impl StatusAuthority {
             Some(_) => {}
             None => return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown),
         }
-        if let Some(seam) = &self.command_frame_seam {
-            seam.before_storage_step(&subject.name, change_id, step).await;
-        }
         // A step this mesh-primary could not carry, or whose answer it lost, is not the birth's refusal:
         // the fabric-primary sends it again.
         let failed = |reason: String| rdm_core::reply::status::not_ready(format!("{}: {reason}", subject.name));
+        // A decoration holding the command (the testkit's cut): it is carried once released, its answer
+        // dropped, and the caller is told now that the step is not done.
+        if let (Some(release), Some(configs)) = (self.command_frame_seam.as_ref().and_then(|seam| seam.hold_storage_step(&subject.name, change_id, step)), self.configs.get()) {
+            if *node_id != self.node_id {
+                let client = configs.client_arc();
+                let command = NodeCommandRequest::StorageStep { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.to_string(), change_id: change_id.clone(), step: step.clone() };
+                let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
+                tokio::spawn(async move {
+                    release.await;
+                    if let Ok((mut stream, _)) = client.call_stream::<NodeCommand>(&target, &command, &rdm_transport::CallOptions::default()).await {
+                        while let Some(rdm_transport::stream::StreamItem::Frame(_, reply)) = stream.next().await {
+                            stream.accepted().await;
+                            if !matches!(reply, NodeCommandReply::CommandAccepted { .. }) {
+                                break;
+                            }
+                        }
+                    }
+                });
+                return failed(format!("{me_name} holds the storage step until its release"));
+            }
+        }
         let done = if *node_id == self.node_id {
             // This mesh-primary is its own subject: its birth's storage step runs in-process.
             let Some(storage) = self.own.get().and_then(|own| own.storage_block()) else {
@@ -922,7 +940,7 @@ impl StatusAuthority {
             let Ok(build) = build_id.parse::<crate::build::BuildId>() else {
                 return failed(format!("{build_id:?} is no Build id"));
             };
-            if let Some(refused) = storage.refusal(change_id).await {
+            if let Some(refused) = storage.refusal(&build, change_id, step).await {
                 refused
             } else {
                 storage.serve(&build, change_id, step).await

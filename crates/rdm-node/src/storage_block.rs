@@ -160,8 +160,14 @@ impl StorageBlock {
 
     /// The refusal a command of `change_id` meets before the node accepts it: a change older than the
     /// one the node holds.
-    pub async fn refusal(&self, change_id: &ChangeId) -> Option<NodeCommandReply> {
-        Self::older(&*self.record.lock().await, change_id).map(|held| stale(&held))
+    pub async fn refusal(&self, build_id: &BuildId, change_id: &ChangeId, step: &StorageStep) -> Option<NodeCommandReply> {
+        let held = Self::older(&*self.record.lock().await, change_id)?;
+        let span = match step {
+            StorageStep::Block { .. } => tracing::info_span!(BLOCK_SPAN, build_id = %build_id.log(), change_id = %change_id, node_id = %self.node_id, outcome = "rejected-stale-change", held = %held),
+            StorageStep::Unblock { provider } => tracing::info_span!(UNBLOCK_SPAN, build_id = %build_id.log(), change_id = %change_id, node_id = %self.node_id, provider = %provider, outcome = "rejected-stale-change", held = %held),
+        };
+        span.in_scope(|| tracing::info!("a command of a storage change older than the one this node holds is refused by name"));
+        Some(stale(&held))
     }
 
     /// Serve one step of the change `change_id` of Build `build_id`.

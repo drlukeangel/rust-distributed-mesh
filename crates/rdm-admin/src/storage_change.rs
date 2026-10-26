@@ -204,11 +204,13 @@ impl StorageSteps for AdminStorageSteps {
 /// What a node-admin's start makes of a block its data dir records (storage.md §2: "records the block
 /// and both providers in its data dir, which a restart reads before it writes anything"): the provider
 /// it opens and whether it holds the block. The `commit` record decides: found, the admin writes the
-/// new provider; none on a provider that answers, the change is not switched: the change's executor
-/// (the fabric-primary that ran it) lifts its block on the old provider, the change it runs resuming
-/// from its block, and any other node holds its block until its change's unblock; a provider that does
-/// not answer is neither, and the block holds. The record is written back with what was decided.
-pub async fn resolve_at_start(providers: &crate::storage_backend::TopologyStorageProviders, fabric_id: &crate::model::FabricId, data_dir: &std::path::Path, record: &mut BlockRecord, launched_on: &str) -> Result<(String, bool), String> {
+/// new provider; none on a provider that answers, the change is not switched: a launched birth writes
+/// the old provider (its launcher, a mesh-primary, launches nothing while it is blocked, so its change
+/// ended unswitched), as does the change's executor (the fabric-primary that ran it), whose change
+/// resumes from its block; any other start holds its block until its change's unblock. A provider
+/// that does not answer is neither, and the block holds. The record is written back with what was
+/// decided.
+pub async fn resolve_at_start(providers: &crate::storage_backend::TopologyStorageProviders, fabric_id: &crate::model::FabricId, data_dir: &std::path::Path, record: &mut BlockRecord, launched_on: &str, launched: bool) -> Result<(String, bool), String> {
     let Some(held) = record.held_block().cloned() else {
         // The provider this node moved to last, else the one its launch names.
         return Ok((record.latest.as_ref().map(|l| l.provider.clone()).unwrap_or_else(|| launched_on.to_string()), false));
@@ -220,7 +222,9 @@ pub async fn resolve_at_start(providers: &crate::storage_backend::TopologyStorag
     span.in_scope(|| tracing::info!("this admin's start read its block from its data dir and the change's commit record before writing anything"));
     let (provider, hold) = match decision {
         Decision::Switched => (held.to.clone(), false),
-        Decision::NotSwitched if held.executor => (held.from.clone(), false),
+        // A birth a launcher launched was launched by a mesh-primary that had unblocked: none found, the
+        // change ended unswitched.
+        Decision::NotSwitched if held.executor || launched => (held.from.clone(), false),
         Decision::NotSwitched | Decision::NoAnswer(_) => return Ok((held.from.clone(), true)),
     };
     let unblock = tracing::info_span!("rdm.node.build.update.via-storage-unblock", build_id = %held.build_id.log(), change_id = %held.change_id, node_id = tracing::field::Empty, provider = %provider, owed_writes = 0u64, read_from = "data-dir", outcome = if provider == held.to { "unblocked" } else { "not-switched" });
@@ -303,6 +307,31 @@ impl StorageChanges {
         });
     }
 
+    /// While this admin holds the fabric-primary seat, a block it holds of a change it does not run is
+    /// the block of a change it resumes (storage.md §2 step 4: "Whoever resumes the change, a successor
+    /// or the fabric-primary after a lost answer, learns the decision only by reading that record"): it
+    /// reads the `commit` record and moves onto the provider it decided, so it can claim and run the
+    /// change's next attempt; a change not switched resumes from its block, which blocks this admin
+    /// again before its copy. A provider that does not answer is read again: the block holds.
+    pub fn resume_when_seated(self: &Arc<Self>, topology: Arc<RwLock<Topology>>) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let Some(own) = this.own.get().cloned() else { continue };
+                if this.running().is_some() || !topology.read().await.fabric_primary().is_some_and(|fp| fp.node_id == this.node_id) {
+                    continue;
+                }
+                let Some(held) = own.record().await.held_block().cloned() else { continue };
+                let change = StorageChange { change_id: held.change_id.clone(), from: held.from.clone(), to: held.to.clone() };
+                let provider = this.decide(&held.build_id, &change).await;
+                if this.running().is_none() {
+                    let _ = own.serve(&held.build_id, &held.change_id, &StorageStep::Unblock { provider }).await;
+                }
+            }
+        });
+    }
+
     /// Read the `commit` record until its provider answers: the provider the change decided.
     async fn decide(&self, build_id: &BuildId, change: &StorageChange) -> String {
         let mut backoff = Duration::from_millis(500);
@@ -369,9 +398,9 @@ impl StorageChanges {
         };
         // A change resumed after its switch (a lost answer, a successor) learns it from the record alone.
         let resumed = {
-            let span = switch_span(build_id, change);
             let decision = read_commit(&self.providers, &self.fabric_id, &change.to, build_id, &change.change_id).await;
             if decision == Decision::Switched {
+                let span = switch_span(build_id, change);
                 record_read(&span, &decision);
                 span.in_scope(|| tracing::info!("the change is resumed and its commit record is found: it is switched"));
             }
@@ -498,9 +527,9 @@ impl StorageChanges {
     }
 
     /// Send `step` to the birth at `path` through its mesh-primary until it is done: answered by the
-    /// birth (the one the view holds at `path` when each send leaves, a re-created one included), or,
-    /// for a block (`block` set), the birth's exit seen in the view. A birth that refuses the step by
-    /// name ends it refused; silence is retried, never read as either.
+    /// birth the view holds at `path` when each send leaves (a re-created one included: an exited
+    /// birth's successor), or no birth held there. A birth that refuses a block by name (`block` set)
+    /// ends it refused; silence is retried, never read as either.
     #[allow(clippy::too_many_arguments)]
     async fn step_until(&self, client: Option<Arc<rdm_transport::NodeRpcClient>>, authority: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>, build_id: &BuildId, change_id: &ChangeId, path: &PathName, step: &StorageStep, block: Option<()>) -> StepEnd {
         let mut backoff = Duration::from_millis(250);
@@ -508,9 +537,6 @@ impl StorageChanges {
             let view = topology.read().await.clone();
             let Some(birth) = view.node(path).cloned() else { return StepEnd::Done };
             if birth.node_id == self.node_id {
-                return StepEnd::Done;
-            }
-            if block.is_some() && birth.status == crate::model::NodeStatus::Dead {
                 return StepEnd::Done;
             }
             let Some(incarnation) = birth.incarnation_id.clone() else {

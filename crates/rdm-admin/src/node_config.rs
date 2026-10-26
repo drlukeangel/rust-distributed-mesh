@@ -46,6 +46,11 @@ impl NodeConfigs {
         &self.client
     }
 
+    /// [`Self::client`], shared: for a call made after the caller's turn ends.
+    pub fn client_arc(&self) -> Arc<NodeRpcClient> {
+        self.client.clone()
+    }
+
     /// The record this admin's writer of its mesh's rows holds: node.name.update puts its rows through it
     /// as this door does, so each row carries every field the writer knows.
     pub fn written(&self) -> &Arc<crate::node_rows::WrittenRows> {

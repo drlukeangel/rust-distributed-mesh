@@ -483,7 +483,31 @@ async fn start_booted(
     connections.held().lock().unwrap().set_topology_view(resolver.clone());
     // A block of a storage change recorded in this data dir is read before the birth writes anything
     // (storage.md §2 step 1): held from here until its change's unblock.
-    let block_record = crate::storage_block::BlockRecord::read(&launch.data_dir).map_err(|e| anyhow!("refusing to start: {e}"))?;
+    let mut block_record = crate::storage_block::BlockRecord::read(&launch.data_dir).map_err(|e| anyhow!("refusing to start: {e}"))?;
+    // A block this data dir records is decided by its change's `commit` record before anything is
+    // written: found, this birth writes the new provider; none, the change ended unswitched (a birth is
+    // launched only by a mesh-primary that has unblocked), and it writes the old one; no answer, the
+    // block holds until its change's unblock.
+    if let Some(held) = block_record.held_block().cloned() {
+        let commit = rdm_core::build::StorageCommit { build_id: held.build_id.clone(), change_id: held.change_id.clone() };
+        let found = match providers.named(&held.to) {
+            Ok(backend) => backend.commit(launch, &commit).await,
+            Err(e) => Err(e),
+        };
+        let provider = match found {
+            Ok(true) => Some(held.to.clone()),
+            Ok(false) => Some(held.from.clone()),
+            Err(_) => None,
+        };
+        if let Some(provider) = provider {
+            let outcome = if provider == held.to { "unblocked" } else { "not-switched" };
+            let span = tracing::info_span!(parent: boot, "rdm.node.build.update.via-storage-unblock", build_id = %held.build_id.log(), change_id = %held.change_id, node_id = %launch.node_id, provider = %provider, owed_writes = 0u64, read_from = "data-dir", outcome);
+            block_record.latest = Some(crate::storage_block::HeldChange { blocked: false, provider: provider.clone(), ..held });
+            block_record.write(&launch.data_dir).await.map_err(|e| anyhow!("refusing to start: {e}"))?;
+            topology_storage.replace(&provider).await.map_err(|e| anyhow!("refusing to start: {e}"))?;
+            span.in_scope(|| tracing::info!("this birth decided the block its data dir records by its change's commit record before writing anything"));
+        }
+    }
     let storage_block = Arc::new(crate::storage_block::StorageBlock::new(
         launch.data_dir.clone(),
         launch.node_id.clone(),
