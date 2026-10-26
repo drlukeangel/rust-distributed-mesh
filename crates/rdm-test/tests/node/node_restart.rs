@@ -61,6 +61,7 @@ async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_ro
         let path: PathName = name(target).parse().unwrap();
         let mut stream = nodes.stop(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {path}: {e}"));
         Estate::complete(&mut stream).await;
+        estate.until_stopped_at_the_fabric_primary(&path).await;
         let mut stream = nodes.start(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.start of {path}: {e}"));
         Estate::complete(&mut stream).await;
         operations.push(format!("node.stop:{path}"));

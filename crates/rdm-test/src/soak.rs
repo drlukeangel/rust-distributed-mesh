@@ -1376,6 +1376,7 @@ impl Driver {
                 let stop = after_build_in_progress(|| async { self.estate.nodes_obj().await.stop(&path_name(node)).await }).await.map_err(|end| refused(&format!("node.stop {node}"), end))?;
                 entry["accepted"] = accepted_json(stop.accepted());
                 self.await_build(stop).await?;
+                self.estate.until_stopped_at_the_fabric_primary(&path_name(node)).await;
                 let start = after_build_in_progress(|| async { self.estate.nodes_obj().await.start(&path_name(node)).await }).await.map_err(|end| refused(&format!("node.start {node}"), end))?;
                 entry["accepted_start"] = accepted_json(start.accepted());
                 self.await_build(start).await?;

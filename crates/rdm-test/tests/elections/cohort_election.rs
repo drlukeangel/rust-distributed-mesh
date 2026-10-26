@@ -235,6 +235,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let other_rpc: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["is_primary"] == false).map(|n| s(&n["name"])).collect();
     let before = id_of(&nodes, &other_rpc[1]);
     complete(&format!("node.stop of {}", other_rpc[1]), estate.nodes_obj().await.stop(&path(&other_rpc[1])).await).await;
+    estate.until_stopped_at_the_fabric_primary(&path(&other_rpc[1])).await;
     complete(&format!("node.start of {}", other_rpc[1]), estate.nodes_obj().await.start(&path(&other_rpc[1])).await).await;
     // The Build completed on the executor; the asked admin's view holds the reborn node once its
     // Ready has reached it (one gossip interval): wait for the shape, as after the Build above.
@@ -249,6 +250,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let rpc_p_id = id_of(&nodes, &rpc_p);
     let (succ_r, succ_r_id) = next_lowest(&nodes, &rpc, &rpc_p_id);
     complete(&format!("node.stop of {rpc_p}"), estate.nodes_obj().await.stop(&path(&rpc_p)).await).await;
+    estate.until_stopped_at_the_fabric_primary(&path(&rpc_p)).await;
     complete(&format!("node.start of {rpc_p}"), estate.nodes_obj().await.start(&path(&rpc_p)).await).await;
     let nodes = settle(&estate, &admin1, "restart primary").await;
     assert_eq!(id_of(&nodes, &rpc_p), rpc_p_id, "restart keeps the NodeId");

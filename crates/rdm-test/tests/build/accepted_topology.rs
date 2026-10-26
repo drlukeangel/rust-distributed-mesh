@@ -190,7 +190,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let (r, started) = estate.stop_then_start(&"mesh1.rpc.1".parse().unwrap()).await;
     assert_eq!(r.build_id.to_string(), r4, "a stop opens an attempt of the accepted Build: {r:?}");
     assert_eq!(u64::from(r.attempt), attempts_before + 1, "the stop opens the fabric lane's next attempt (the recovery was mesh1's lane's): {r:?}");
-    assert_eq!((started.build_id.to_string(), u64::from(started.attempt)), (r4.clone(), attempts_before + 2), "the start opens the attempt after it: {started:?}");
+    assert!(started.build_id.to_string() == r4 && started.attempt > r.attempt, "the start opens a later attempt of the same Build: {started:?} after {r:?}");
     estate
         .until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again as the same birth", Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");

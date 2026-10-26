@@ -67,6 +67,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(submitted.build_id.to_string(), restart_build, "the Build is visible by id: {submitted:?}");
     assert_eq!(submitted.reason, "stop", "{submitted:?}");
     let stop = Estate::complete(&mut stream).await;
+    estate.until_stopped_at_the_fabric_primary(&node).await;
     let mut stream = nodes.start(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.start {node_name}: {e}"));
     assert_eq!(stream.accepted().build_id.to_string(), birth_build, "a start changes no topology: it is an attempt of the accepted Build");
     let start = Estate::complete(&mut stream).await;

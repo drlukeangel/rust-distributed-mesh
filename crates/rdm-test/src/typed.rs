@@ -754,13 +754,35 @@ impl Estate {
     }
 
     /// `node.stop` of `node`, then `node.start` of it, each awaited to its `Complete` (Q183: callers run
-    /// node.stop then node.start; the same birth, node.id and incarnation, rejoins). The two attempts
-    /// the calls opened, the stop's first; a refusal is a defect of the cell.
+    /// node.stop then node.start; the same birth, node.id and incarnation, rejoins). The start is asked
+    /// once the fabric-primary's own view lists the node stopped: the fabric-primary admits a start of a
+    /// stopped node only (node-start.md "Entry"), and a stop executed in another mesh reaches its view by
+    /// that mesh's projection. The two attempts the calls opened, the stop's first; a refusal is a
+    /// defect of the cell.
     pub async fn stop_then_start(&self, node: &PathName) -> (Accepted, Accepted) {
         let nodes = self.nodes_obj().await;
         let stopped = Self::workflow(&format!("node.stop of {node}"), nodes.stop(node).await).await;
-        let started = Self::workflow(&format!("node.start of {node}"), nodes.start(node).await).await;
+        self.until_stopped_at_the_fabric_primary(node).await;
+        let started = Self::workflow(&format!("node.start of {node}"), self.nodes_obj().await.start(node).await).await;
         (stopped, started)
+    }
+
+    /// Wait, bounded at 60 s, until the fabric-primary's own view lists `node` stopped: what its
+    /// admission of a `node.start` reads (node-start.md "Entry").
+    pub async fn until_stopped_at_the_fabric_primary(&self, node: &PathName) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let fp = self.fabric_view().await.fabric_primary;
+            let held = match &fp {
+                Some(fp) => self.node_views_at(fp).await.is_some_and(|views| views.iter().any(|n| &n.name == node && n.stopped)),
+                None => false,
+            };
+            if held {
+                return;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "{node}: the fabric-primary {fp:?} did not list the node stopped within 60 s of its node.stop's Complete");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 
     /// A workflow call the fabric-primary accepted, awaited to its `Complete`: a refusal is a defect of the
