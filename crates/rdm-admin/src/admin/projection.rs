@@ -146,21 +146,23 @@ impl ViewReads {
 /// name, a live rename reaching it as `ApplyNodeName`). One that does not (stopped, silent past the
 /// staleness floor, held true offline) may have had its row moved while it said
 /// nothing: a stopped node's `node.name.update` (R13: it is told nothing and reads the name at its next
-/// join), the replace recipe's renames included.
+/// join), the replace recipe's renames included. Beside the names: which births' rows released their
+/// name, read for every birth read here and for each birth that publishes a name another birth the
+/// view holds is listed at too (rare: a deleted birth whose deletion this view has not applied), so
+/// the projection lists the current birth at a contested path ([`RowNames::takes_path`]).
 #[derive(Default)]
 pub(crate) struct RowNames {
     /// Each birth read: the name it published, and where its row stands.
     pub(crate) names: HashMap<(NodeId, IncarnationId), (PathName, RowName)>,
+    /// Each birth read whose row released its name (`Deleted` or `Withdrawn`,
+    /// [`crate::node_rows::released_its_name`]).
+    pub(crate) released: HashSet<(NodeId, IncarnationId)>,
 }
 
 /// Where the row of one birth stands.
 pub(crate) enum RowName {
     /// The name of the row the birth holds (the name it published, when it holds no row).
     At(PathName),
-    /// The name of a row that released it (`Deleted` or `Withdrawn`,
-    /// [`crate::node_rows::released_its_name`]): the birth is listed there only while no birth whose
-    /// row does not release it is listed at the name ([`RowNames::place`]).
-    Released(PathName),
     /// Its id index entry could not be read: the birth's name is not known, and the view does not
     /// list it.
     Unreadable,
@@ -168,22 +170,61 @@ pub(crate) enum RowName {
 
 impl RowNames {
     /// The row of every birth of `fabric_id` in `digest_view` that does not publish its own name as of `at`,
-    /// read by the admin `me` from `records`' nodes store (no store: nothing is read).
+    /// and of every birth that publishes a name another birth is listed at too, read by the admin `me`
+    /// from `records`' nodes store (no store: nothing is read).
     pub(crate) async fn read(me: &PathName, digest_view: &DigestView, records: &Records, fabric_id: &FabricId, at: std::time::Instant) -> Self {
         let mut rows = Self::default();
         let Some(store) = records.contacts.get().cloned() else { return rows };
         let mut quiet: Vec<(NodeId, IncarnationId, PathName)> = Vec::new();
+        let mut publishing: Vec<(NodeId, IncarnationId, PathName)> = Vec::new();
         for d in digest_view.all() {
             let Some((_, age)) = digest_view.get_at(d.node.node_id.as_str(), at) else { continue };
-            if &d.fabric_id == fabric_id && !publishes(digest_view, records, &d.node.node_id, &d.node.incarnation, age) {
-                quiet.push((d.node.node_id.clone(), d.node.incarnation.clone(), d.node.name.clone()));
+            if &d.fabric_id != fabric_id {
+                continue;
+            }
+            let birth = (d.node.node_id.clone(), d.node.incarnation.clone(), d.node.name.clone());
+            if publishes(digest_view, records, &d.node.node_id, &d.node.incarnation, age) {
+                publishing.push(birth);
+            } else {
+                quiet.push(birth);
             }
         }
         quiet.extend(digest_view.stopped_digests().into_iter().filter(|d| &d.fabric_id == fabric_id).map(|d| (d.node.node_id, d.node.incarnation, d.node.name)));
         quiet.extend(digest_view.stopped_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
+        // Every name a birth the view holds is listed at, by how many births: a publishing birth's row
+        // is read only where another birth is listed at its name too.
+        let mut listed: HashMap<PathName, usize> = HashMap::new();
+        for (_, _, published) in quiet.iter().chain(publishing.iter()) {
+            *listed.entry(published.clone()).or_default() += 1;
+        }
+        for (d, _) in digest_view.projected_unheard_at(at) {
+            if &d.fabric_id == fabric_id {
+                *listed.entry(d.node.name.clone()).or_default() += 1;
+            }
+        }
         for (node_id, incarnation, published) in quiet {
-            let name = row_name(me, &*store, &node_id, &incarnation, &published).await;
+            let (name, released) = row_name(me, &*store, &node_id, &incarnation, &published).await;
+            if let RowName::At(moved) = &name {
+                if moved != &published {
+                    *listed.entry(moved.clone()).or_default() += 1;
+                }
+            }
+            if released {
+                rows.released.insert((node_id.clone(), incarnation.clone()));
+            }
             rows.names.insert((node_id, incarnation), (published, name));
+        }
+        // A publishing birth is listed at the name it published whatever its row says; its row is read
+        // only for whether it released the name (unreadable: not known to, and the birth keeps today's rule).
+        for (node_id, incarnation, published) in publishing {
+            if listed.get(&published).copied().unwrap_or(0) < 2 {
+                continue;
+            }
+            if let Ok(Some(row)) = store.node(&node_id).await {
+                if row.name.mesh == published.mesh && crate::node_rows::released_its_name(&row) {
+                    rows.released.insert((node_id, incarnation));
+                }
+            }
         }
         rows
     }
@@ -192,7 +233,7 @@ impl RowNames {
     /// `(node id, incarnation, published, row's name)`.
     pub(crate) fn moved(&self) -> impl Iterator<Item = (&NodeId, &IncarnationId, &PathName, &PathName)> {
         self.names.iter().filter_map(|((id, inc), (published, row))| match row {
-            RowName::At(name) | RowName::Released(name) if name != published => Some((id, inc, published, name)),
+            RowName::At(name) if name != published => Some((id, inc, published, name)),
             _ => None,
         })
     }
@@ -202,7 +243,7 @@ impl RowNames {
     /// could not be read, and the birth is not listed.
     pub(crate) fn name_of(&self, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> Option<PathName> {
         match self.names.get(&(node_id.clone(), incarnation.clone())) {
-            Some((_, RowName::At(n) | RowName::Released(n))) => Some(n.clone()),
+            Some((_, RowName::At(n))) => Some(n.clone()),
             Some((_, RowName::Unreadable)) => None,
             None => Some(published.clone()),
         }
@@ -210,7 +251,7 @@ impl RowNames {
 
     /// The row this read covered for `n`'s birth released its name (`Deleted` or `Withdrawn`).
     fn released(&self, n: &Node) -> bool {
-        n.incarnation_id.as_ref().is_some_and(|inc| matches!(self.names.get(&(n.node_id.clone(), inc.clone())), Some((_, RowName::Released(_)))))
+        n.incarnation_id.as_ref().is_some_and(|inc| self.released.contains(&(n.node_id.clone(), inc.clone())))
     }
 
     /// Which of two births listed at one path the records say is current, when they say it: the
@@ -247,19 +288,21 @@ pub(crate) fn publishes(digest_view: &DigestView, records: &Records, node_id: &N
 }
 
 /// Where the row of the birth `(node_id, incarnation)`, which last published `published`, stands, as
-/// the admin `me` reads it: one point read through the row's id index in the birth's mesh (a rename
-/// never changes the mesh). An index entry that cannot be read is one span on every projection that
-/// reads it, until it can be read.
-pub(crate) async fn row_name(me: &PathName, store: &dyn crate::storage::NodesStorage, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> RowName {
+/// the admin `me` reads it, and whether that row released its name ([`crate::node_rows::released_its_name`]):
+/// one point read through the row's id index in the birth's mesh (a rename never changes the mesh). An
+/// index entry that cannot be read is one span on every projection that reads it, until it can be read.
+pub(crate) async fn row_name(me: &PathName, store: &dyn crate::storage::NodesStorage, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> (RowName, bool) {
     match store.node(node_id).await.map(|r| r.filter(|r| r.name.mesh == published.mesh)) {
-        Ok(Some(row)) if crate::node_rows::released_its_name(&row) => RowName::Released(row.name),
-        Ok(Some(row)) => RowName::At(row.name),
+        Ok(Some(row)) => {
+            let released = crate::node_rows::released_its_name(&row);
+            (RowName::At(row.name), released)
+        }
         // The node holds no row: no rename moved it, and the name it published stands.
-        Ok(None) => RowName::At(published.clone()),
+        Ok(None) => (RowName::At(published.clone()), false),
         Err(e) => {
             tracing::info_span!("rdm.node_admin.topology.reject.via-row-unreadable", node = %me, subject = %published, node_id = %node_id, incarnation_id = %incarnation.as_str(), index = "id", detail = %e)
                 .in_scope(|| tracing::info!("the birth's row could not be read through its id index: its name is not known and the view does not list it"));
-            RowName::Unreadable
+            (RowName::Unreadable, false)
         }
     }
 }
