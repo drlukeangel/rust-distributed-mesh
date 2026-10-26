@@ -208,7 +208,7 @@ async fn copy_stores(providers: &crate::storage_backend::TopologyStorageProvider
 
 /// The switch span of one read or insert of the `commit` record.
 fn switch_span(build_id: &BuildId, change: &StorageChange) -> tracing::Span {
-    tracing::info_span!("rdm.node_admin.build.update.via-storage-switch", build_id = %build_id.log(), change_id = %change.change_id, provider = %change.to, commit_found = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty)
+    tracing::info_span!("rdm.node_admin.build.update.via-storage-switch", build_id = %change.commit_build(build_id).log(), change_id = %change.change_id, provider = %change.to, commit_found = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty)
 }
 
 /// Record a read of the `commit` record on `span`.
@@ -260,7 +260,7 @@ impl StorageChanges {
     async fn decide(&self, build_id: &BuildId, change: &StorageChange) -> String {
         let mut backoff = Duration::from_millis(500);
         loop {
-            let decision = read_commit(&self.providers, &self.fabric_id, &change.to, build_id, &change.change_id).await;
+            let decision = read_commit(&self.providers, &self.fabric_id, &change.to, change.commit_build(build_id), &change.change_id).await;
             let span = switch_span(build_id, change);
             record_read(&span, &decision);
             span.in_scope(|| tracing::info!("the change's decision is read from its commit record"));
@@ -376,7 +376,7 @@ impl StorageChanges {
             seam.before_storage_switch(&change.change_id).await;
         }
         let key = switch_operation(&change.change_id);
-        if read_commit(&self.providers, &self.fabric_id, &change.to, build_id, &change.change_id).await == Decision::Switched {
+        if read_commit(&self.providers, &self.fabric_id, &change.to, change.commit_build(build_id), &change.change_id).await == Decision::Switched {
             let span = switch_span(build_id, change);
             record_read(&span, &Decision::Switched);
             span.in_scope(|| tracing::info!("the change is resumed and its commit record is found: it is switched"));
@@ -397,7 +397,7 @@ impl StorageChanges {
             let mut backoff = Duration::from_millis(500);
             loop {
                 let span = switch_span(build_id, change);
-                match insert_commit(&self.providers, &self.fabric_id, &change.to, build_id, &change.change_id).await {
+                match insert_commit(&self.providers, &self.fabric_id, &change.to, change.commit_build(build_id), &change.change_id).await {
                     Ok(true) => {
                         span.record("commit_found", false).record("outcome", "inserted");
                         span.in_scope(|| tracing::info!("the commit record is inserted on the new provider: the change is switched"));
@@ -411,7 +411,7 @@ impl StorageChanges {
                     Err(e) => {
                         span.record("outcome", "no-answer").record("reason", e.as_str());
                         drop(span);
-                        let decision = read_commit(&self.providers, &self.fabric_id, &change.to, build_id, &change.change_id).await;
+                        let decision = read_commit(&self.providers, &self.fabric_id, &change.to, change.commit_build(build_id), &change.change_id).await;
                         if !matches!(decision, Decision::NoAnswer(_)) {
                             record_read(&switch_span(build_id, change), &decision);
                         }

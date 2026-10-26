@@ -489,7 +489,7 @@ impl ControlPlane {
             // minted now and recorded with the accepted Build, before its first command (storage.md §2
             // "Changing it"). Any other Build is none, whatever Build it was compiled against.
             topology.storage_change = match (&change, &current_provider) {
-                (TopologyChange::Reconcile { topology_storage_provider: Some(to), .. }, Some(from)) if to != from => Some(rdm_core::build::StorageChange { change_id: rdm_core::ChangeId::mint(), from: from.clone(), to: to.clone() }),
+                (TopologyChange::Reconcile { topology_storage_provider: Some(to), .. }, Some(from)) if to != from => Some(rdm_core::build::StorageChange { change_id: rdm_core::ChangeId::mint(), from: from.clone(), to: to.clone(), build_id: None }),
                 // A fabric.delete interrupting a storage change carries it: the delete sends each
                 // mesh-primary `mesh.unblock` onto the provider the change's `commit` record decided
                 // before its teardown.
@@ -554,6 +554,10 @@ impl ControlPlane {
             }
             let build_id = BuildId::mint();
             span.record("build_id", build_id.as_str());
+            // A storage change accepted now is keyed by this Build: its `commit` record names it.
+            if let Some(change) = topology.storage_change.as_mut() {
+                change.build_id.get_or_insert_with(|| build_id.clone());
+            }
             span.record("previous_build_id", current.build_id.as_str());
             // The meshes this Build brings into the accepted topology, each under the id `compile`
             // minted for it now, once (node-identity-and-state.md §2.7, "Who mints it"): every run of
