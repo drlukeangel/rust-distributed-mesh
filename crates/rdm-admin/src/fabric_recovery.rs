@@ -403,6 +403,17 @@ impl FabricRecoveryDoor {
                             investigated = false;
                             next_look = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
                         }
+                        // From its own mesh, `running` with no eligible peer of the mesh to tickle through:
+                        // only this executor failed to reach the fabric-primary, so it is unreachable from
+                        // this executor, not lost, and nothing is written; a running fabric-primary its own
+                        // mesh cannot reach, its peers' tickles unanswered too, is re-created below
+                        // (fabric-recovery.md step 3, Q153). The next investigation decides again a
+                        // staleness floor on.
+                        (crate::node_investigation::Finding::Running, _) if fr.own_mesh && crate::offline::eligible_carriers(&view, &node, Some(&self.me_id)).next().is_none() => {
+                            tracing::info!(subject = %node.name, verdict = finding.name(), "the own-mesh arm read the fabric-primary's runtime running and reached it through no peer: unreachable from this executor, not lost; nothing is written");
+                            investigated = false;
+                            next_look = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
+                        }
                         (_, Some(inspected)) => {
                             submitted = true;
                             done = self.submit(&node, &inspected, fr.own_mesh, &mut next_submit, &mut backoff, ceiling).await;

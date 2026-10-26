@@ -508,13 +508,13 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     assert!(terminated.is_empty(), "the running fabric-primary's runtime was not terminated: {terminated:#?}");
     let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == fp_id && attr(sp, "outcome") == "admitted").collect();
     assert!(opened.is_empty(), "no recovery was opened for the running fabric-primary: {opened:#?}");
-    let ran: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at(sp) >= cut_at && attr(sp, "node") == victim).collect();
-    let read_running = |sp: &Value| sp["events"].as_array().is_some_and(|ev| ev.iter().any(|e| s(&e["attributes"]["verdict"]) == "running" && s(&e["attributes"]["subject"]) == fp));
-    assert!(ran.iter().any(|sp| attr(sp, "arm") == "own-mesh" && read_running(sp)), "{victim} ran fabric recovery's own-mesh arm on {fp} and read it running: {ran:#?}");
-    eprintln!("the cut held {held_ms} ms; {victim}'s own-mesh arm: {:?}", ran.iter().map(|sp| (attr(sp, "arm"), read_running(sp), attr(sp, "outcome"))).collect::<Vec<_>>());
-    if let Some(run) = ran.first() {
-        estate.record_trace_url(&s(&run["trace_id"]));
-    }
+    // The isolated admin's ladder went to the provider through no carrier; the fabric-primary's process runs,
+    // so the provider reads it `running` (the arm's own span, which names the verdict, stays open while it
+    // looks again a floor on).
+    let ladders: Vec<&Value> = named(&spans, "rdm.node.tickle.returns-unknown.via-unreached").into_iter().filter(|sp| at(sp) >= cut_at && attr(sp, "caller") == victim && attr(sp, "node_id") == fp_id && attr(sp, "next") == "inspect").collect();
+    assert!(ladders.iter().all(|sp| attr(sp, "carriers").is_empty()), "{victim}'s ladder on {fp} had no carrier: {ladders:#?}");
+    eprintln!("the cut held {held_ms} ms; {victim}'s ladders on {fp}: {}", ladders.len());
+    estate.record_trace_url(&s(&ladders[0]["trace_id"]));
 }
 
 /// CONTRACT (Q156; fabric-recovery.md "Nothing alive": "No node-admin is alive, the fabric's other nodes
