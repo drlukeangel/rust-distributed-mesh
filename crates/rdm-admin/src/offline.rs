@@ -9,10 +9,12 @@
 //! node-tickle.md: direct, then through up to two live peers at once), which this module holds for
 //! every caller of it. Each ladder runs beside the loop, one per exact birth, and the first tick
 //! after it ends folds what it found (node-recovery.md: one loop, on every gossip interval). An
-//! answer is `reachable-silent`: recorded, no action. No path on ladder 1 opens the hold-down at the instant that no path is known, when
-//! ladder 1's probes ended; no path again at least one staleness floor after that instant is TRUE
-//! OFFLINE. A node that leaves the silent set has
-//! returned. The `Dead` status is observer-inferred, never sent, never a reason to restart or delete.
+//! answer is `reachable-silent`: recorded, no action. A ladder nobody answered is the birth held
+//! offline (TRUE OFFLINE) at that fold, and its inspection and recovery follow at once
+//! (node-recovery.md steps 2-3; node-tickle.md "What follows": "recovery runs the inspect on
+//! `unreached`"): nothing holds and nothing is probed again (Q111, Q181). A node that leaves the
+//! silent set has returned. The `Dead` status is observer-inferred, never sent, never itself a reason
+//! to act: the investigation's verdict is.
 //! The admin writes the node's status on its row in nodes.storage and shows it in the view.
 
 use std::collections::{HashMap, HashSet};
@@ -526,8 +528,8 @@ enum LadderEnd {
 /// One ladder of the ladder, running beside the loop: started by one tick, folded by a later one.
 #[derive(Debug)]
 struct LadderRun {
-    /// The clock of the tick that started it, named on the ladder's hold-down span; the hold-down
-    /// itself opens at the ladder's verdict (`LadderEnd::Unreached::verdict_at_ms`).
+    /// The clock of the tick that started it, named on the ladder's TRUE OFFLINE span beside the
+    /// ladder's verdict (`LadderEnd::Unreached::verdict_at_ms`).
     started_at_ms: u64,
     path: String,
     /// The mark (or first sighting) the ladder ran on, named on its spans.
@@ -544,9 +546,6 @@ pub(crate) struct OfflineTickle {
     /// Every node held as silent: node id -> the instant (ms) it was first seen silent. Kept
     /// whether or not this node-admin holds the seat.
     first_seen: HashMap<String, u64>,
-    /// Silent nodes whose ladder 1 returned NoPath, waiting for ladder 2: node id -> no-path-since (ms),
-    /// the instant ladder 1's verdict came back, after its probes spent their budgets.
-    hold_down: HashMap<String, u64>,
     /// Silent nodes whose tickle has settled (answered, or true offline): not tickled again until
     /// they leave and re-enter the silent set.
     settled: HashSet<String>,
@@ -585,11 +584,6 @@ impl OfflineTickle {
         tickle
     }
 
-    #[cfg(test)]
-    pub fn is_in_hold_down(&self, id: &str) -> bool {
-        self.hold_down.contains_key(id)
-    }
-
     /// Is this node held true offline?
     #[cfg(test)]
     pub(crate) fn is_offline(&self, id: &str) -> bool {
@@ -608,9 +602,8 @@ impl OfflineTickle {
     /// name a birth not yet in it (a node that left the silent set is heard again only if it does); `now_ms` is the tick's start instant, and an instant inside the tick
     /// (a verdict that came back after awaited probes) is `now_ms` plus the time the tick has run;
     /// `probe_delay_ms`
-    /// is how long a node stays silent before its one tickle; `staleness_floor_ms` is the minimum
-    /// delay between ladder 1 and ladder 2; `tickle` runs the one ladder ([`tickle`], node-tickle.md)
-    /// over the birth. `observe` reads iroh's local view of a node once for the reachable-silent and
+    /// is how long a node stays silent before its one tickle; `tickle` runs the one ladder ([`tickle`],
+    /// node-tickle.md) over the birth. `observe` reads iroh's local view of a node once for the reachable-silent and
     /// the TRUE OFFLINE span (`rdm_transport::iroh_obs`); it decides nothing.
     ///
     /// A tick waits on no probe (node-recovery.md: one loop, on every gossip interval). Each ladder it
@@ -626,7 +619,6 @@ impl OfflineTickle {
         silent: Vec<SilentNode>,
         in_view: P,
         probe_delay_ms: u64,
-        staleness_floor_ms: u64,
         tickle: T,
         observe: O,
     ) -> OfflineTickReport
@@ -669,10 +661,8 @@ impl OfflineTickle {
             }
         }
         if holds_seat {
-            self.hold_down.retain(|id, _| silent_ids.contains(id));
             self.settled.retain(|id| silent_ids.contains(id));
         } else {
-            self.hold_down.clear();
             self.settled.clear();
         }
         // The window runs from the mark the admin's view holds for the birth (node-recovery.md step 2:
@@ -702,7 +692,6 @@ impl OfflineTickle {
                 LadderEnd::Reached { answer, current, carrier } => {
                     // An answer is reachable-silent: recorded (node-recovery.md step 2). The tickle's own
                     // span carried the answer; this is the mesh-primary's record of it.
-                    self.hold_down.remove(&id);
                     self.offline.remove(&id);
                     self.settled.insert(id.clone());
                     let seen = observe(id.clone()).await;
@@ -727,14 +716,15 @@ impl OfflineTickle {
                 }
                 LadderEnd::NotRun(reason) => {
                     tracing::info_span!("rdm.node_admin.node.reject.via-no-birth", node_id = %id, path = %path, error = %reason, observer = %self.observer, "otel.kind" = "internal")
-                        .in_scope(|| tracing::warn!(node_id = %id, error = %reason, "no ladder ran over the birth: no status change, the hold-down left as it was"));
+                        .in_scope(|| tracing::warn!(node_id = %id, error = %reason, "no ladder ran over the birth: no status change"));
                 }
                 LadderEnd::Unreached { direct: e, asked, verdict_at_ms } => {
-                    if self.offline.contains(&id) {
-                        self.settled.insert(id.clone());
-                    } else if let Some(no_path_since) = self.hold_down.remove(&id) {
-                        self.settled.insert(id.clone());
-                        self.offline.insert(id.clone());
+                    // Nobody reached the birth: the ladder is the investigation's reach, and the birth is
+                    // held offline at this fold, so its inspection and recovery follow on this tick
+                    // (node-recovery.md steps 2-3: "Any other verdict ...: the recovery below, at once.
+                    // Nothing holds, nothing is inspected again"; Q111, Q181). It is not probed again.
+                    self.settled.insert(id.clone());
+                    if self.offline.insert(id.clone()) {
                         let seen = observe(id.clone()).await;
                         tracing::info_span!(
                             "rdm.node_admin.node.update.via-true-offline",
@@ -744,20 +734,14 @@ impl OfflineTickle {
                             asked = %asked,
                             iroh_known_addrs = %seen.known_addrs,
                             iroh_active_addrs = %seen.active_addrs,
-                            ladder = 2i64,
-                            first_no_path_ms = no_path_since as i64,
+                            no_path_at_ms = verdict_at_ms as i64,
+                            ladder_began_ms = started_at_ms as i64,
                             observer = %self.observer,
                             first_seen_ms = seen_at as i64,
                             "otel.kind" = "internal",
                         )
-                        .in_scope(|| tracing::info!(node_id = %id, error = %e, "no path again one floor after the first: TRUE OFFLINE, no restart, no delete"));
+                        .in_scope(|| tracing::info!(node_id = %id, error = %e, "nobody reached the birth on its one ladder: TRUE OFFLINE, its inspection and recovery follow at once"));
                         report.offline.push(id);
-                    } else {
-                        // The hold-down runs from the instant no path was known: the ladder's
-                        // verdict, when its probes ended, never the tick that started it.
-                        self.hold_down.insert(id.clone(), verdict_at_ms);
-                        tracing::info_span!("rdm.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, error = %e, observer = %self.observer, first_seen_ms = seen_at as i64, no_path_at_ms = verdict_at_ms as i64, ladder_began_ms = started_at_ms as i64, "otel.kind" = "internal")
-                            .in_scope(|| tracing::info!(node_id = %id, asked = %asked, "offline hold down opened after ladder 1 no path"));
                     }
                 }
             }
@@ -773,22 +757,10 @@ impl OfflineTickle {
             if self.running.contains_key(&birth) {
                 continue;
             }
-            if let Some(&no_path_since) = self.hold_down.get(&id) {
-                if now_ms < no_path_since + staleness_floor_ms {
-                    continue;
-                }
-            }
             report.tickled.push(id.clone());
-            // What this ladder's `unreached` would be followed by, known at its start (node-tickle.md
-            // "what the caller does next"): the hold-down opens after ladder 1, ladder 2 is TRUE OFFLINE,
-            // and a held TRUE OFFLINE birth probed again goes to the inspect.
-            let next = if self.offline.contains(&id) {
-                "inspect"
-            } else if self.hold_down.contains_key(&id) {
-                "true-offline"
-            } else {
-                "hold-down"
-            };
+            // What this ladder's `unreached` is followed by (node-tickle.md "What follows": "recovery runs
+            // the inspect on `unreached`").
+            let next = "inspect";
             // The ladder: the one ladder over the birth (`tickle`). It takes no lock and waits on
             // nothing of this admin's; a stop cancels it where it stands
             // (`StopGate::until_stopped`), and it never resumes.
@@ -959,7 +931,6 @@ pub(crate) mod tests {
                 set.clone(),
                 |_| true,
                 PROBE_DELAY,
-                FLOOR,
                 |_| {
                     let end = ladder_end(direct, &via);
                     async move { end }
@@ -985,9 +956,10 @@ pub(crate) mod tests {
         report
     }
 
-    /// CONTRACT (A1, diagnostics only): iroh is read exactly once per answered or ladder-2 failed
-    /// event, never on a tick that records neither, and the reports are the tickle's own: the
-    /// answered node is reachable-silent and ladder 2 with no path is TRUE OFFLINE.
+    /// CONTRACT (A1, diagnostics only): iroh is read exactly once per answered or failed ladder event,
+    /// never on a tick that records neither, and the reports are the tickle's own: the answered node
+    /// is reachable-silent and the one ladder nobody answered is TRUE OFFLINE (node-recovery.md step 3,
+    /// Q181).
     #[tokio::test(start_paused = true)]
     async fn iroh_is_read_once_per_answered_or_failed_event_and_decides_nothing() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1003,11 +975,11 @@ pub(crate) mod tests {
         let mut t = OfflineTickle::new();
         tick_observed(&mut t, 0, true, silent("b"), false, no_path(), &reads).await;
         let r1 = tick_observed(&mut t, PROBE_DELAY, true, silent("b"), false, no_path(), &reads).await;
-        assert!(r1.offline.is_empty(), "ladder 1 opens the hold-down");
-        assert_eq!(reads.load(Ordering::SeqCst), 0, "the hold-down opening is not an observed event");
-        let r2 = tick_observed(&mut t, PROBE_DELAY + FLOOR, true, silent("b"), false, no_path(), &reads).await;
-        assert_eq!(r2.offline, vec!["b".to_string()], "ladder 2 is TRUE OFFLINE, as without the read");
+        assert_eq!(r1.offline, vec!["b".to_string()], "the ladder nobody answered is TRUE OFFLINE, as without the read");
         assert_eq!(reads.load(Ordering::SeqCst), 1, "one read for the failed event");
+        let r2 = tick_observed(&mut t, PROBE_DELAY + FLOOR, true, silent("b"), false, no_path(), &reads).await;
+        assert!(r2.tickled.is_empty() && r2.offline.is_empty(), "settled: no second ladder, no second event: {r2:?}");
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "no read on a tick that records nothing");
     }
 
     mod cadence {
@@ -1094,8 +1066,8 @@ pub(crate) mod tests {
         /// CONTRACT (node-recovery.md step 2, per member, and the one loop on every gossip interval):
         /// two members marked at the same instant each get their direct connect half a floor after the
         /// mark, at once, and the pass that starts them waits on neither connect. Their outcomes
-        /// are folded by a later tick: both ladders ended with no path, so both hold-downs open on the
-        /// clock of the tick that started them. Must NOT happen: the second member's connect waiting
+        /// are folded by a later tick: both ladders ended with no path, so both births are held offline
+        /// at that fold. Must NOT happen: the second member's connect waiting
         /// for the first one's to end (3 s late at the gate's cadence, a whole 10 s call budget at
         /// production's), or a pass that lasts as long as the ladders it starts.
         #[tokio::test(start_paused = true)]
@@ -1110,7 +1082,6 @@ pub(crate) mod tests {
                     vec![marked("a"), marked("b")],
                     |_| true,
                     PROBE_DELAY,
-                    FLOOR,
                     |id| {
                         let connects = connects.clone();
                         async move {
@@ -1132,8 +1103,8 @@ pub(crate) mod tests {
             // The next tick on the gossip interval's grid after both ladders ended folds them.
             sleep(INTERVAL).await;
             let folded = tick(&mut t, PROBE_DELAY + (DIAL + INTERVAL).as_millis() as u64).await;
-            assert!(folded.tickled.is_empty(), "a birth whose ladder was folded with no path waits out its hold-down");
-            assert!(t.is_in_hold_down("a") && t.is_in_hold_down("b"), "both ladders ended with no path: both hold-downs are open");
+            assert!(folded.tickled.is_empty(), "a birth whose ladder was folded with no path is not probed again");
+            assert_eq!(folded.offline, vec!["a".to_string(), "b".to_string()], "both ladders ended with no path: both are TRUE OFFLINE at the fold");
         }
 
         /// CONTRACT (node-stop retires the work the loop runs beside it; the lead's decision: "a stop
@@ -1159,7 +1130,6 @@ pub(crate) mod tests {
                     vec![marked("a")],
                     |_| true,
                     PROBE_DELAY,
-                    FLOOR,
                     |_| {
                         let ended = ended.clone();
                         async move {
@@ -1204,7 +1174,7 @@ pub(crate) mod tests {
             assert!(!read.load(Ordering::SeqCst), "the follower never took the view lock: cancelled, not held");
             let again = tick(&mut t, PROBE_DELAY + (DIAL + INTERVAL).as_millis() as u64).await;
             assert_eq!(again.tickled, vec!["a".to_string()], "nothing is folded of the cancelled ladder: a's ladder starts again");
-            assert!(!t.is_in_hold_down("a"), "a cancelled ladder opens no hold-down");
+            assert!(again.offline.is_empty() && !t.is_offline("a"), "a cancelled ladder holds nothing offline");
         }
 
         /// CONTRACT (at most one ladder in flight per exact birth; step 2: an answer "cancels the
@@ -1224,7 +1194,6 @@ pub(crate) mod tests {
                     set,
                     |_| true,
                     PROBE_DELAY,
-                    FLOOR,
                     |_| {
                         let ended = ended.clone();
                         async move {
@@ -1516,10 +1485,10 @@ pub(crate) mod tests {
             let (node, view) = member_and_view(&b);
             let capture = crate::span_capture::Capture::new("node-tickle-spans");
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            // Nobody reaches the birth: the caller says it opens the hold-down next.
+            // Nobody reaches the birth: the caller says the inspection follows (node-tickle.md "What follows").
             let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(Duration::from_secs(1), None)), ("mesh1.rpc.3", probe(Duration::from_secs(1), Some(StatusReply::NotReady { reason: "carrier not ready".into() })))]);
             let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("unreached") };
-            u.next("hold-down");
+            u.next("inspect");
             drop(u);
             let direct = capture.named("rdm.node.tickle.resolve.via-direct");
             assert_eq!(direct.len(), 1, "one direct probe span: {direct:?}");
@@ -1535,7 +1504,7 @@ pub(crate) mod tests {
             let unreached = capture.named("rdm.node.tickle.returns-unknown.via-unreached");
             assert_eq!(unreached.len(), 1, "one unreached span: {unreached:?}");
             let a = &unreached[0].attributes;
-            assert_eq!((a.get("node_id").map(String::as_str), a.get("carriers").map(String::as_str), a.get("next").map(String::as_str)), (Some(b.0.as_str()), Some("mesh1.rpc.2,mesh1.rpc.3"), Some("hold-down")), "{a:?}");
+            assert_eq!((a.get("node_id").map(String::as_str), a.get("carriers").map(String::as_str), a.get("next").map(String::as_str)), (Some(b.0.as_str()), Some("mesh1.rpc.2,mesh1.rpc.3"), Some("inspect")), "{a:?}");
             for sp in direct.iter().chain(&peers).chain(&unreached) {
                 eprintln!("span {} trace_id={} {:?}", sp.name, sp.trace_id, sp.attributes);
             }
@@ -1549,12 +1518,16 @@ pub(crate) mod tests {
             assert_eq!(capture.named("rdm.node.tickle.returns-unknown.via-unreached").len(), 1, "an answered ladder has no unreached span");
         }
 
-        /// CONTRACT (R-SW1 acceptance: the provider check stays mandatory and comes last): TRUE
-        /// OFFLINE, the only tickle outcome that sends the mesh-primary to the provider
-        /// (`recovery_due`), is reached on ladder 2 only after both peer probes of each ladder ended
-        /// unanswered, each ladder costing the direct probe's budget plus one peer budget.
+        /// CONTRACT (R-SW1 acceptance: the provider check stays mandatory and comes last;
+        /// node-recovery.md step 2: "node.tickle direct, the same tickle via up to two eligible live peers
+        /// of the birth's mesh sent at once, then node.runtime.inspect"; step 3: "Nothing holds"; Q181):
+        /// TRUE OFFLINE, the only tickle outcome that sends the mesh-primary to the provider
+        /// (`recovery_due`), is reached at the fold of the one ladder, only after its direct probe and
+        /// both its peer probes ended unanswered, the ladder costing the direct probe's budget plus one
+        /// peer budget. Must NOT happen: the provider owed before every probe of the ladder ended, or a
+        /// second ladder before it.
         #[tokio::test(start_paused = true)]
-        async fn the_provider_is_owed_only_after_both_peer_probes_of_the_second_ladder_ended() {
+        async fn the_provider_is_owed_only_after_both_peer_probes_of_the_ladder_ended() {
             let b = birth();
             let (node, view) = member_and_view(&b);
             let rig = Arc::new(Rig::new(probe(BUDGET, None), vec![("mesh1.rpc.2", probe(BUDGET, None)), ("mesh1.rpc.3", probe(BUDGET, None))]));
@@ -1571,7 +1544,6 @@ pub(crate) mod tests {
                     set(),
                     |_| true,
                     PROBE_DELAY,
-                    FLOOR,
                     |_| {
                         let (rig, node, view, verdict_at) = (rig.clone(), node.clone(), view.clone(), verdict_at.clone());
                         async move {
@@ -1593,19 +1565,10 @@ pub(crate) mod tests {
             sleep(tickle_ladder(BUDGET) + Duration::from_millis(1)).await;
             assert_eq!(verdict_at.lock().unwrap()[0] - start, tickle_ladder(BUDGET), "ladder 1: the direct budget, then one budget for both peers");
             let r1 = ladder(&mut t, PROBE_DELAY + ms(tickle_ladder(BUDGET)) + 1).await;
-            assert!(r1.offline.is_empty() && t.is_in_hold_down(&id), "ladder 1 no path opens the hold-down: nothing is owed to the provider");
-            // Ladder 2 is due one floor after ladder 1's verdict, when its probes ended (the hold-down
-            // is stamped there, not at the tick that started the ladder): one floor after ladder 1
-            // STARTED is still inside it.
-            assert!(ladder(&mut t, PROBE_DELAY + FLOOR).await.tickled.is_empty(), "one floor after ladder 1 started is inside the hold-down that runs from its verdict");
-            let start = Instant::now();
-            assert_eq!(ladder(&mut t, PROBE_DELAY + ms(tickle_ladder(BUDGET)) + FLOOR).await.tickled, vec![id.clone()], "ladder 2 starts one floor after ladder 1's verdict");
-            assert_eq!(start.elapsed(), Duration::ZERO, "the tick that starts ladder 2 waits on none of it");
-            sleep(tickle_ladder(BUDGET) + Duration::from_millis(1)).await;
-            assert_eq!(verdict_at.lock().unwrap()[1] - start, tickle_ladder(BUDGET), "ladder 2: the direct budget, then one budget for both peers");
-            let r2 = ladder(&mut t, PROBE_DELAY + ms(tickle_ladder(BUDGET)) + FLOOR + ms(tickle_ladder(BUDGET)) + 1).await;
-            assert_eq!(r2.offline, vec![id.clone()], "ladder 2 no path is TRUE OFFLINE: the provider is owed");
-            assert_eq!(rig.ended.load(Ordering::SeqCst), 6, "TRUE OFFLINE only once the direct and both peer probes of both ladders ended");
+            assert_eq!(r1.offline, vec![id.clone()], "the ladder nobody answered, folded, is TRUE OFFLINE: the provider is owed");
+            assert_eq!(rig.ended.load(Ordering::SeqCst), 3, "TRUE OFFLINE only once the direct and both peer probes of the ladder ended");
+            assert!(ladder(&mut t, PROBE_DELAY + ms(tickle_ladder(BUDGET)) + FLOOR).await.tickled.is_empty(), "no second ladder: nothing holds");
+            assert_eq!(verdict_at.lock().unwrap().len(), 1, "one ladder ran");
         }
     }
 
@@ -1638,7 +1601,7 @@ pub(crate) mod tests {
         assert!(tick(&mut t, 700, true, marked("a"), false, no_path()).await.tickled.is_empty(), "listed 700 ms after its mark: no tickle yet");
         let r = tick(&mut t, PROBE_DELAY, true, marked("a"), false, no_path()).await;
         assert_eq!(r.tickled, vec!["a".to_string()], "one connect half a floor after the mark, not half a floor after the tick that first listed it");
-        assert!(t.is_in_hold_down("a"), "ladder 1 with no path opens the hold-down");
+        assert!(t.is_offline("a"), "the ladder nobody answered holds the birth offline");
         // A node-admin that takes the seat later still runs on the mark its own view holds.
         let mut successor = OfflineTickle::new();
         assert!(tick(&mut successor, 700, false, marked("a"), false, no_path()).await.tickled.is_empty(), "not the seat: bookkeeping only");
@@ -1702,19 +1665,6 @@ pub(crate) mod tests {
         assert_eq!(r.tickled, vec!["a".to_string()], "the window started before this admin took the seat");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn true_offline_needs_two_ladders_with_no_path_at_least_one_floor_apart() {
-        let mut t = OfflineTickle::new();
-        tick(&mut t, 0, true, silent("a"), false, no_path()).await;
-        let r1 = tick(&mut t, PROBE_DELAY, true, silent("a"), false, no_path()).await;
-        assert_eq!(r1.tickled, vec!["a".to_string()]);
-        assert!(r1.offline.is_empty() && t.is_in_hold_down("a"), "ladder 1 no path opens the hold-down, no verdict");
-        assert!(tick(&mut t, PROBE_DELAY + FLOOR - 1, true, silent("a"), false, no_path()).await.tickled.is_empty(), "within the hold-down");
-        let r2 = tick(&mut t, PROBE_DELAY + FLOOR, true, silent("a"), false, no_path()).await;
-        assert_eq!(r2.offline, vec!["a".to_string()], "ladder 2 no path is TRUE OFFLINE");
-        assert!(t.is_offline("a"));
-    }
-
     /// CONTRACT (node-recovery.md step 2: "Half a floor after the mark it runs node investigation on the
     /// exact birth: ... node.tickle direct, the same tickle via up to two eligible live peers ..., then
     /// node.runtime.inspect"; step 3: "Any other verdict (`running`, `os-stopped`, `exited`, `unproven`):
@@ -1743,22 +1693,19 @@ pub(crate) mod tests {
         assert_eq!(offline[0].attributes.get("path").map(String::as_str), Some("mesh1.admin.2"), "{:?}", offline[0].attributes);
     }
 
-    /// CONTRACT (node-recovery.md "Detection and proof" step 2: "No path opens a hold-down; no
-    /// path again at least one floor later is TRUE OFFLINE"): the hold-down opens at the instant
-    /// ladder 1's no path was known, when its probes ended, carried by the ladder to the tick that
-    /// folds it, never the instant the tick that started the ladder began. Ladder 1 starts at
-    /// PROBE_DELAY and the tick waits on none of it; its direct connect and its via-peer step each
-    /// spend a 10 s budget, so no path is known at PROBE_DELAY + 20 s, and the next tick folds it. A
-    /// tick one floor after ladder 1 STARTED is only 10 s after no path was known: it starts nothing.
-    /// Ladder 2 starts one floor after the verdict and, folded, is TRUE OFFLINE naming that verdict.
-    /// Must NOT happen: ladder 2 started, and TRUE OFFLINE declared, less than a floor after ladder 1's
-    /// no path (gate 0484f457: hold-down opened 1483.7 s, ladder 2 began 1485.7 s).
+    /// CONTRACT (node-recovery.md step 2: the one ladder, half a floor after the mark; step 3: the
+    /// recovery at once; Q181): the TRUE OFFLINE mark names the instant no path was known, when the
+    /// ladder's probes ended, carried by the ladder to the tick that folds it, and the instant the ladder
+    /// began, never the instant of the tick that folds it. The ladder starts at PROBE_DELAY and the tick
+    /// waits on none of it; its direct connect and its via-peer step each spend a 10 s budget, so no path
+    /// is known at PROBE_DELAY + 20 s, and the next tick folds it. Must NOT happen: a hold-down, a second
+    /// ladder, or a mark stamped with the folding tick's clock.
     // @feature: node-lifecycle
     #[tokio::test(start_paused = true)]
-    async fn the_hold_down_runs_one_floor_from_the_no_path_verdict_not_from_the_tick_that_probed() {
+    async fn the_offline_mark_names_the_instant_the_ladder_found_nobody_not_the_tick_that_folded_it() {
         const BUDGET: u64 = 10_000;
         let verdict_at = PROBE_DELAY + 2 * BUDGET;
-        let capture = crate::span_capture::Capture::new("i143-3068-hold-down-from-verdict");
+        let capture = crate::span_capture::Capture::new("q181-offline-from-verdict");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let mut t = OfflineTickle::observed_by("mesh1.admin.1".into(), crate::stop_gate::StopGate::new());
         let ladder = async |t: &mut OfflineTickle, now: u64| {
@@ -1768,7 +1715,6 @@ pub(crate) mod tests {
                 silent("a"),
                 |_| true,
                 PROBE_DELAY,
-                FLOOR,
                 |_| async {
                     // The direct probe spends its budget, then both carried probes spend one at once.
                     tokio::time::sleep(std::time::Duration::from_millis(2 * BUDGET)).await;
@@ -1782,27 +1728,18 @@ pub(crate) mod tests {
         ladder(&mut t, 0).await;
         let started = tokio::time::Instant::now();
         let r1 = ladder(&mut t, PROBE_DELAY).await;
-        assert_eq!(r1.tickled, vec!["a".to_string()], "ladder 1 runs half a floor after the mark");
-        assert_eq!(started.elapsed(), std::time::Duration::ZERO, "the tick that starts ladder 1 waits on none of it");
-        assert!(!t.is_in_hold_down("a"), "nothing is decided before a tick folds the ladder");
+        assert_eq!(r1.tickled, vec!["a".to_string()], "the ladder runs half a floor after the mark");
+        assert_eq!(started.elapsed(), std::time::Duration::ZERO, "the tick that starts the ladder waits on none of it");
+        assert!(r1.offline.is_empty() && !t.is_offline("a"), "nothing is decided before a tick folds the ladder");
         tokio::time::sleep(ended).await;
-        let folded = ladder(&mut t, verdict_at + 1).await;
-        assert!(folded.offline.is_empty() && t.is_in_hold_down("a"), "the tick after ladder 1 ended folds its no path: the hold-down opens");
-        let early = ladder(&mut t, PROBE_DELAY + FLOOR).await;
-        assert!(early.tickled.is_empty() && early.offline.is_empty(), "one floor after ladder 1 started is {} ms after its no path: still inside the hold-down: {early:?}", PROBE_DELAY + FLOOR - verdict_at);
-        assert!(ladder(&mut t, verdict_at + FLOOR - 1).await.tickled.is_empty(), "one ms short of a floor after the no path: inside the hold-down");
-        let r2 = ladder(&mut t, verdict_at + FLOOR).await;
-        assert_eq!(r2.tickled, vec!["a".to_string()], "ladder 2 starts one floor after ladder 1's no path");
-        tokio::time::sleep(ended).await;
-        let folded = ladder(&mut t, verdict_at + FLOOR + 2 * BUDGET + 1).await;
-        assert_eq!(folded.offline, vec!["a".to_string()], "ladder 2's no path, folded, is TRUE OFFLINE");
+        let folded = ladder(&mut t, verdict_at + 5_000).await;
+        assert_eq!(folded.offline, vec!["a".to_string()], "the tick after the ladder ended folds its no path: TRUE OFFLINE");
+        assert!(ladder(&mut t, verdict_at + FLOOR).await.tickled.is_empty(), "no second ladder a floor later");
         let failed = capture.named("rdm.node_admin.node.update.via-true-offline");
         assert_eq!(failed.len(), 1, "one TRUE OFFLINE span");
-        assert_eq!(failed[0].attributes.get("first_no_path_ms").map(String::as_str), Some(verdict_at.to_string().as_str()), "the hold-down ran from ladder 1's no path: {:?}", failed[0].attributes);
-        let opened = capture.named("rdm.node_admin.node.update.via-offline-hold-down-opened");
-        assert_eq!(opened.len(), 1, "one hold-down");
-        assert_eq!((opened[0].attributes.get("no_path_at_ms").map(String::as_str), opened[0].attributes.get("ladder_began_ms").map(String::as_str)), (Some(verdict_at.to_string().as_str()), Some(PROBE_DELAY.to_string().as_str())), "{:?}", opened[0].attributes);
-        eprintln!("span rdm.node_admin.node.update.via-offline-hold-down-opened trace_id={} {:?}", opened[0].trace_id, opened[0].attributes);
+        let at = |k: &str| failed[0].attributes.get(k).cloned().unwrap_or_default();
+        assert_eq!((at("no_path_at_ms"), at("ladder_began_ms")), (verdict_at.to_string(), PROBE_DELAY.to_string()), "the mark names the ladder's verdict and its start, not the folding tick: {:?}", failed[0].attributes);
+        assert!(capture.named("rdm.node_admin.node.update.via-offline-hold-down-opened").is_empty(), "no hold-down");
         eprintln!("span rdm.node_admin.node.update.via-true-offline trace_id={} {:?}", failed[0].trace_id, failed[0].attributes);
     }
 
@@ -1812,7 +1749,7 @@ pub(crate) mod tests {
         tick(&mut t, 0, true, silent("a"), false, no_path()).await;
         let r = tick(&mut t, PROBE_DELAY, true, silent("a"), false, ViaPeerVerdict::Answered { via: "mesh1.rpc.2".into() }).await;
         assert_eq!(r.reachable_silent, vec!["a".to_string()]);
-        assert!(!t.is_in_hold_down("a") && !t.is_offline("a"));
+        assert!(!t.is_offline("a"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1820,7 +1757,7 @@ pub(crate) mod tests {
         let mut t = OfflineTickle::new();
         tick(&mut t, 0, true, silent("a"), false, no_path()).await;
         let r = tick(&mut t, PROBE_DELAY, true, silent("a"), false, ViaPeerVerdict::CandidatesUnreadable("no topology".into())).await;
-        assert!(r.offline.is_empty() && r.reachable_silent.is_empty() && !t.is_in_hold_down("a"));
+        assert!(r.offline.is_empty() && r.reachable_silent.is_empty() && !t.is_offline("a"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1857,7 +1794,6 @@ pub(crate) mod tests {
                 vec![],
                 |id: &str| id != "a",
                 PROBE_DELAY,
-                FLOOR,
                 |_| async { Ok(unreached(&["mesh1.rpc.2"])) },
                 |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
             )

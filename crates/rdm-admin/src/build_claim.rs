@@ -123,7 +123,6 @@ impl AttemptContexts {
 /// ([`ClaimDoor`]'s seat check, the recovery door's recoverer), decided before this. `executor_birth`
 /// is the claim's executor's exact node id with the node rows it is read on, when the caller knows it.
 pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims: &dyn MeshStorage, contexts: &AttemptContexts, claim: &BuildAttemptClaim, mesh: &str, executor_birth: Option<(&dyn crate::storage::NodesStorage, &NodeId)>) -> BuildClaimReply {
-    let _ = executor_birth;
     let lane = claim.mesh.as_deref();
     let span = tracing::info_span!(
         "rdm.node_admin.build.update.via-claim-decision",
@@ -137,6 +136,26 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
         detail = tracing::field::Empty,
     );
     let reply = async {
+        // A deleted birth claims nothing (node-investigation.md: "A node that comes back after it was
+        // re-created is a deleted birth ... No admit reason exists for it"; Q181): the executor's exact
+        // birth, read on the store's node rows before the in-flight row is taken; nothing is taken or
+        // written.
+        if let Some((rows, node_id)) = executor_birth {
+            let executor = claim.executor.parse::<PathName>();
+            let deleted = match &executor {
+                Ok(name) => crate::node_rows::deleted_birth(rows, name, node_id).await,
+                Err(e) => return rdm_core::reply::build_claim::not_ready(format!("{me}: the executor {:?} of attempt {} of {} is not a path.name: {e}", claim.executor, claim.attempt, claim.build_id)),
+            };
+            match deleted {
+                Ok(None) => {}
+                Ok(Some(why)) => {
+                    tracing::info_span!("rdm.node_admin.build.reject.via-deleted-birth", node = %me, executor = %claim.executor, node_id = %node_id, build_id = %claim.build_id.log(), attempt = claim.attempt, reason = %why)
+                        .in_scope(|| tracing::info!("the claim's executor is a deleted birth on the node rows: it claims nothing"));
+                    return rdm_core::reply::build_claim::not_ready(why);
+                }
+                Err(e) => return rdm_core::reply::build_claim::not_ready(format!("{me}: the node row of the executor {} ({node_id}) could not be read: {e}", claim.executor)),
+            }
+        }
         // A Build a fabric.delete interrupts opens no further attempt (build.md §1): its claim is refused
         // naming the delete, the Build in progress, and nothing is taken or written.
         if let Ok(p) = builds.read_build(&claim.build_id).await {

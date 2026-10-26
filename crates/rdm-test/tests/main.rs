@@ -27,11 +27,10 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
 /// sequence): the silence (one staleness floor, marked on the pruner's gossip-interval sweep);
 /// half a floor after the mark, on the next tick, tickle ladder 1 (one direct connect, then the
 /// connects through up to `VIA_PEER_TICKLE_FANOUT` peers at once, each to a killed process and so
-/// spending the call's whole budget: `offline::tickle_ladder`); ladder 2 one floor after ladder 1's no-path
-/// verdict, when its probes ended (the hold-down runs from that instant: offline.rs
-/// `LadderEnd::ViaPeer::verdict_at_ms`), and its own ladder; TRUE OFFLINE, the provider's exit proof and the
-/// submit on the next tick; then the recovery Build's run (node.delete, node.create through the
-/// new node's start), one call budget.
+/// spending the call's whole budget: `offline::tickle_ladder`); TRUE OFFLINE at its fold, the provider's
+/// inspection and the submit on that tick (node-recovery.md steps 2-3: nothing holds); then the recovery
+/// Build's run (node.delete, node.create through the new node's start), one call budget. The bound keeps
+/// one floor and one ladder beyond that sequence, the second ladder the tick ran before Q181, as slack.
 pub fn node_recovery_due() -> std::time::Duration {
     let floor = rdm_core::cadence::staleness_floor();
     let gossip = rdm_core::cadence::gossip_interval();

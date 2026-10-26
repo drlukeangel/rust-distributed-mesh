@@ -2420,7 +2420,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         silent,
                                                         |id: &str| in_view.contains(id),
                                                         floor.as_millis() as u64 / 2,
-                                                        floor.as_millis() as u64,
                                                         |id| {
                                                             // The one ladder over the birth (node-tickle.md): the probe direct, then
                                                             // through up to two ready members of its mesh at once, this admin never

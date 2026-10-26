@@ -247,6 +247,15 @@ impl ControlPlane {
     /// "after exact departure proof"; silence is never departure, R-BI4): the provider reads its exact
     /// runtime exited. `None` while it is not, while the view names no birth there, or while no
     /// departure proof is held.
+    /// Why this admin's own birth (`node_id`, at its held name) is a deleted birth on the node rows
+    /// (`crate::node_rows::deleted_birth`, Q181), if it is one; `None` before the rows and the birth are
+    /// set. An unreadable row refuses by name: nothing is opened on a birth the rows cannot vouch for.
+    async fn deleted_self(&self) -> Result<Option<String>, Refusal> {
+        let (Some(rows), Some(node_id)) = (self.node_rows.get(), self.node_id.get()) else { return Ok(None) };
+        let me = self.held_name().await;
+        crate::node_rows::deleted_birth(&**rows, &me, node_id).await.map_err(|e| Refusal::Unavailable(format!("{me}: its own node row ({node_id}) could not be read: {e}")))
+    }
+
     async fn departure_of(&self, claimant: &PathName) -> Result<Option<crate::model::Node>, Refusal> {
         let Some(n) = self.topology.read().await.node(claimant).cloned().filter(|n| n.incarnation_id.is_some()) else { return Ok(None) };
         let Some(proof) = self.departure.get() else { return Ok(None) };
@@ -837,6 +846,19 @@ impl ControlPlane {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, mesh = %path.mesh, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), open_attempt = tracing::field::Empty, outcome = tracing::field::Empty);
         let outer = tracing::Span::current();
         let r = async {
+            // A deleted birth opens nothing (node-investigation.md: "A node that comes back after it was
+            // re-created is a deleted birth ... No admit reason exists for it"; Q181): this admin's own
+            // birth, read on the store's node rows before anything is read or written, whatever its own
+            // view says.
+            if let Some(why) = self.deleted_self().await? {
+                let me = self.held_name().await;
+                let node_id = self.node_id.get().map(|i| i.to_string()).unwrap_or_default();
+                outer.in_scope(|| {
+                    tracing::info_span!("rdm.node_admin.build.reject.via-deleted-birth", route, node = %me, node_id = %node_id, member = %path, reason = %why)
+                        .in_scope(|| tracing::info!("this admin's own birth is a deleted birth on the node rows: it opens no recovery"))
+                });
+                return Err(Refusal::Conflict(why));
+            }
             // Keyed on the exited birth across the Build log: a birth a node workflow already
             // deleted (its recovery, or a delete or retire it exited inside: node-recovery.md
             // "Failure and receipts") is answered as applied by that workflow's attempt, whatever

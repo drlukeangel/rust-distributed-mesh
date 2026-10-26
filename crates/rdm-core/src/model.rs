@@ -29,9 +29,9 @@ pub enum NodeStatus {
     /// Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting
     /// notice are removed). Never set; kept so every later status keeps its position.
     Reserved5,
-    /// True offline: half a floor after the mark the mesh primary's one QUIC connect found no path,
-    /// on two ladders at least one staleness floor apart. Observer inferred only; never sent, never a
-    /// reason to restart or delete the node.
+    /// True offline: half a floor after the mark the mesh primary's one tickle ladder reached nobody,
+    /// and its inspection and the recovery on its verdict follow at once (node-recovery.md steps 2-3).
+    /// Observer inferred only; never sent, never itself the reason to act: the verdict is.
     Dead,
     /// Deleted: the node's identity and name are released. Only the node's row carries it, written
     /// by the fabric-primary from the exit proof; the record and its config stay for the next node
