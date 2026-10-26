@@ -95,7 +95,8 @@ is admitted and refused as any Build is, one in progress at a time, and it is a 
 fabric, every mesh and every node stay ready-for-traffic, no node restarts, and no node changes
 state. Acceptance refuses by name a provider the fabric-primary's wiring does not register or cannot
 open. The change has a durable `change_id`, recorded with its Build before its first command; its
-commands carry it, and a node refuses by name a command of an older one. It is four steps:
+commands carry it, and a node refuses by name a command of an older one (`rejected-stale-change`).
+It is four steps:
 
 1. **Block.** The fabric-primary sends `mesh.block` to every mesh-primary. Each mesh-primary waits
    until its in-flight commands complete, then replies `blocked` and gossips a current aggregate of
