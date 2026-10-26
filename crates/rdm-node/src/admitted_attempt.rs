@@ -85,18 +85,20 @@ enum Verdict {
 /// The order: `(submitted_at_ms, attempt)`, the Build id only compared for equality at an equal
 /// stamp, never ordered.
 fn order(held: Option<&AttemptTriple>, asked: &AttemptTriple) -> Verdict {
-    use std::cmp::Ordering::*;
     let Some(held) = held else { return Verdict::Newer };
     let refused = |r: fn(AttemptTriple) -> AttemptRefused| Verdict::Refused(r(held.clone()));
-    match asked.submitted_at_ms.cmp(&held.submitted_at_ms) {
-        Less => refused(|admitted| AttemptRefused::Superseded { admitted }),
-        Greater => Verdict::Newer,
-        Equal if asked.build_id != held.build_id => refused(|admitted| AttemptRefused::AmbiguousOrder { admitted }),
-        Equal => match asked.attempt.cmp(&held.attempt) {
-            Less => refused(|admitted| AttemptRefused::Superseded { admitted }),
-            Equal => Verdict::Repeat,
-            Greater => Verdict::Newer,
-        },
+    if asked.submitted_at_ms < held.submitted_at_ms {
+        refused(|admitted| AttemptRefused::Superseded { admitted })
+    } else if asked.submitted_at_ms > held.submitted_at_ms {
+        Verdict::Newer
+    } else if asked.build_id != held.build_id {
+        refused(|admitted| AttemptRefused::AmbiguousOrder { admitted })
+    } else if asked.attempt < held.attempt {
+        refused(|admitted| AttemptRefused::Superseded { admitted })
+    } else if asked.attempt == held.attempt {
+        Verdict::Repeat
+    } else {
+        Verdict::Newer
     }
 }
 
