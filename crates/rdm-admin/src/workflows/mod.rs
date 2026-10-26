@@ -3,7 +3,6 @@
 
 pub mod fabric_create;
 pub mod fabric_delete;
-pub mod fabric_ready_for_traffic;
 pub mod fabric_recovery;
 pub mod mesh_create;
 pub mod mesh_delete;

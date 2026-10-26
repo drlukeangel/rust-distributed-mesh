@@ -1,4 +1,4 @@
-//! The fabric's states (states.md; lifecycles/fabric-ready-for-traffic.md).
+//! The fabric's states (states.md; lifecycles/states.md, "The fabric's ready-for-traffic").
 //!
 //! A fabric is `pending`, then `ready-for-traffic` once every mesh the accepted Build names is
 //! ready-for-traffic (Q174). Only the fabric-primary moves it.

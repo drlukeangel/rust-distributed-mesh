@@ -15,6 +15,7 @@ It runs on the stopped process, which never exits.
 | Start kind | AfterStop |
 | Peer overlay | Mesh-primary authors NodeRestarting, including from stop's stopped; never NodeStopped for this restart |
 | Readiness | The whole [node.start](node-start.md) through node.started |
+| Hooks | The composed start's: [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready), blocking, with `start_kind = AfterStop`, and [`on_node_ready`](../fabric-node-hooks.md#on_node_ready), a notice after node.started |
 | New executable | Requires a new node through Rafka's replace recipe |
 | Completion | node.restarted after the whole start completes; no event is inferred from gossip |
 | Primary | A restart of a primary with no successor is refused by name before anything moves, with [node.stop](node-stop.md)'s texts; the same two exceptions apply: [fabric.delete](fabric-delete.md) and the final-admin deletion after mesh.delete's confirmed fabric handover |

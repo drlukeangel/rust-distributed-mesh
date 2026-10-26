@@ -1226,7 +1226,7 @@ impl DriveEnv {
                 // ready-for-traffic, and the reconcile loop drives the Build again. Its first attempt is
                 // always claimed, even with nothing left to execute (build.md §1: every attempt "computes
                 // remaining work"): the fabric's change names the accepted Build's attempt
-                // (fabric-ready-for-traffic.md), and that attempt's run hands back at the hold of `plan_dispatch`.
+                // (states.md, "The fabric's ready-for-traffic"), and that attempt's run hands back at the hold of `plan_dispatch`.
                 // Waiting is not failure.
                 if p.attempt > 0 && waits_for_the_fabric_change(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
                     let why = format!("{me}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready-for-traffic state is set");

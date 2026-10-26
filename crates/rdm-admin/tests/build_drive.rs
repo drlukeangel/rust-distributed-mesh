@@ -2412,7 +2412,7 @@ impl Gate for FabricChange {
 /// ready-for-traffic again from this Build's own change ... while the fabric changes, the Build reports
 /// Blocked naming the change, never Complete"; build.md §1: every accepted Build is reconciled, "Every
 /// execution attempt re-reads the accepted topology and current realized/observed state and computes
-/// remaining work"; fabric-ready-for-traffic.md: the fabric's change names the accepted Build's `attempt`):
+/// remaining work"; states.md "The fabric's ready-for-traffic": the fabric's change names the accepted Build's `attempt`):
 /// a Build whose topology put the fabric back to pending and whose work the view already holds (nothing
 /// left to execute) claims its first attempt, which hands back with nothing run, so the fabric's change
 /// has the attempt to name; it reports Blocked `fabric-change`, never Complete, while the fabric changes,
@@ -2448,7 +2448,7 @@ async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_na
         }
     }
     let p = r.builds.read_build(&r.build).await.unwrap();
-    assert!(p.attempt >= 1, "the fabric's change names the accepted Build's attempt (fabric-ready-for-traffic.md): an attempt of the Build is claimed, not none ({:?} at attempt {})", p.state, p.attempt);
+    assert!(p.attempt >= 1, "the fabric's change names the accepted Build's attempt (states.md, the fabric's ready-for-traffic): an attempt of the Build is claimed, not none ({:?} at attempt {})", p.state, p.attempt);
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing is left to execute and nothing ran: {:?}", r.ran.0.lock().unwrap());
     let mut frames = Vec::new();
     while let Some(read) = next_within(&mut reader).await {

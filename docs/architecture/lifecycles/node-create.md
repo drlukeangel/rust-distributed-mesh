@@ -17,6 +17,7 @@ RDM's create owns identity, launch and admission; Rafka supplies its application
 | Port | Bind port 0; advertise the actual OS-assigned transport_addr |
 | Spec | The create spec: the node's properties, flat (Q166): its executable (path, sha256, image), storage, placement, tags and config, and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the claim, re-hashed at the launch, never changed for the birth ([build-deployment.md](../build-deployment.md)) |
 | Progress | Every event of the complete `node.start`, then `node.created` |
+| Hooks | The composed [node.start](node-start.md)'s: [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready), blocking, with `start_kind = FirstStart`, and [`on_node_ready`](../fabric-node-hooks.md#on_node_ready), a notice after `node.started` |
 | Completion | The composed [node.start](node-start.md) ends with `node.started`; `node.created` follows it |
 | Wire | [Typed-object mapping](../node-rpc-envelope.md#typed-object-contract); no new op number in this workflow |
 
@@ -97,7 +98,7 @@ sequenceDiagram
     participant M as Mesh-primary (executor)
     C->>F: build.create(node.create spec)
     F->>M: build.attempt.run
-    Note over M: claim name, mint, launch; compose whole node.start with FirstStart
+    Note over M: claim name, mint, launch; compose whole node.start with FirstStart (pre_node_ready, then on_node_ready)
     M-->>F: start events, node.started, node.created
     F-->>C: step frames, Complete
 ```

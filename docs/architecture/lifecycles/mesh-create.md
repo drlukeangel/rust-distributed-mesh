@@ -45,8 +45,9 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    the mesh's first state, `ApplyMeshState(Pending)`, within 20 s of the launch
    ([States](states.md), the mesh Pending row).
 6. The rest of the node-admin's [start](node-start.md#end-to-end-sequence) runs: the
-   `pre_node_ready` hook, the topology read on its maker, the Build floor, rafka-time last,
-   `node.started`. The fabric-primary, as writer of a mesh with no primary, sets the node-admin's
+   [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) hook, the topology read on its maker,
+   the Build floor, rafka-time last, `node.started`, then its
+   [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) notice. The fabric-primary, as writer of a mesh with no primary, sets the node-admin's
    ReadyForTraffic.
 7. The [election](../fabric-node-lifecycle-elections.md#42-mesh-primary) names the node-admin
    `mesh2`'s mesh-primary: the only candidate. As mesh-primary it claims the mesh's name,
@@ -55,8 +56,10 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    step.
 8. The mesh-primary creates `mesh2`'s other nodes as attempts of the same Build. When every
    planned birth is ready it reports to the fabric-primary, which applies
-   `ApplyMeshState(ReadyForTraffic)`; the mesh-primary publishes `MeshStatus` ready-for-traffic,
-   and the mesh is in traffic.
+   `ApplyMeshState(ReadyForTraffic)`; the mesh-primary records it on the mesh's record, publishes
+   `MeshStatus` ready-for-traffic, and the mesh is in traffic. Once that state is newly on the mesh's
+   record the mesh-primary calls [on_mesh_ready](../fabric-node-hooks.md#on_mesh_ready) once, a
+   notice that gates nothing (`rdm.node_admin.mesh.update.via-on-mesh-ready`).
 
 The decision in step 1 is taken from the accepted topology, never from the presence of a channel.
 A mesh that exists in the topology and has no reachable node-admin is not this arm.
@@ -150,7 +153,7 @@ sequenceDiagram
     A-->>F: reply
     F->>A: 5. ApplyMeshState(Pending)
     A-->>F: Applied
-    Note over A: 6. hook, topology read, node.started, fabric-primary sets ReadyForTraffic
+    Note over A: 6. pre_node_ready, topology read, node.started, on_node_ready; fabric-primary sets ReadyForTraffic
     Note over A: 7. election names it mesh-primary, claims mesh name, writes mesh row
     A->>G: 7. Digest (is_primary), MeshStatus pending, first Members aggregate
     G-->>R: install mesh2 into external topology
@@ -159,6 +162,7 @@ sequenceDiagram
     A->>F: 8. every planned birth ready
     F->>A: ApplyMeshState(ReadyForTraffic)
     A->>G: MeshStatus ready-for-traffic
+    Note over A: on_mesh_ready (notice)
 ```
 
 Checked against the numbered sequence: acceptance mints the id before anything is launched; the

@@ -24,7 +24,7 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 |---|---|---|
 | node starting | the node's mesh-primary | the accepted node.start execution (inside node.create, or on a stopped node) |
 | node pending | the node's mesh-primary | the node's accepted join report, on the start call or a commanded join, once per join ([node-mesh-join.md](node-mesh-join.md) step 10) |
-| node ReadyForTraffic | the node's mesh-primary | the node's node.started report, after every start gate |
+| node ReadyForTraffic | the node's mesh-primary | the node's node.started report, after every start gate ([`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) among them); the node then calls [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) |
 | node connections-deleting | the node's mesh-primary | the node's `ConnectionsDeleting` report on the command stream of `node.connections.delete { scope: All }`, its block on new application work in force; inside node.stop the visible status is stopping |
 | node connections-deleted | the node's mesh-primary | the node's node.connections.deleted completion carrying `Established`; a `Deadline` completion leaves the node connections-deleting |
 | node stopping | the node's mesh-primary | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
@@ -32,14 +32,26 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 | node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's adopted claim, published as NodeDeleting |
 | node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's step receipt |
 | mesh Pending | the node-admin that launched the mesh's first admin | one ApplyMeshState(Pending) sent after the launched birth answers Ping, waiting at most 20 s for that reachability (RDM's `apply_mesh_state` in `rdm-admin`) |
-| mesh ReadyForTraffic | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144) | its mesh-primary's report that every planned birth is ready |
+| mesh ReadyForTraffic | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144). The write that first puts it on the record calls [`on_mesh_ready`](../fabric-node-hooks.md#on_mesh_ready) | its mesh-primary's report that every planned birth is ready |
 | mesh deleting | the mesh-primary | the fabric-primary's DeleteMesh admission (mesh.deleting) |
 | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete receipts; never an op |
-| fabric ready-for-traffic | the fabric-primary | every mesh the accepted Build names ready-for-traffic, its attempt claimed |
+| fabric ready-for-traffic | the fabric-primary | every mesh the accepted Build names ready-for-traffic, its attempt claimed; the fabric-primary then calls [`on_fabric_ready`](../fabric-node-hooks.md#on_fabric_ready) |
 
 The internal report and apply that move a node's status are [node status](node-status.md).
 Which frame carries each state to peers, and who publishes it, is the
 [gossip frame catalog](../gossip.md#31-frame-catalog).
+
+<a id="the-fabrics-ready-for-traffic"></a>
+## The fabric's ready-for-traffic
+
+When every mesh the accepted Build names is ready-for-traffic and the Build's attempt is claimed, the
+fabric-primary sets the fabric ready-for-traffic, publishes FabricStatus ready-for-traffic under the
+[frame catalog](../gossip.md#31-frame-catalog), and the application receives one
+[`on_fabric_ready`](../fabric-node-hooks.md#on_fabric_ready) notice, on which Rafka opens client
+traffic (Q174, Q175). No node is commanded to open traffic and none checks in. The fabric-primary's
+change span (`rdm.node_admin.fabric.update.via-change`) holds, in order,
+`rdm.node_admin.fabric.update.via-every-mesh-ready`, `rdm.node_admin.fabric.update.via-state-entered`
+(to ready-for-traffic) and `rdm.node_admin.fabric.update.via-on-fabric-ready`.
 
 ## Setting a state
 
@@ -152,4 +164,4 @@ A Build that changes only a node's `config`, `tags`, `storage` or `placement` is
 
 A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth is ready-for-traffic.
 
-See [Fabric ready-for-traffic](fabric-ready-for-traffic.md) and [mesh.delete](mesh-delete.md).
+See [the fabric's ready-for-traffic](#the-fabrics-ready-for-traffic) and [mesh.delete](mesh-delete.md).

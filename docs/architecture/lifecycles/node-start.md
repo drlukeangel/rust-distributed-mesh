@@ -13,7 +13,7 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
 | Entry | A just-created process or a live process in stopped |
 | Stopped reachability | Fresh Node RPC dial to its still-bound endpoint ([stopped nodes](states.md#stopped-nodes)) |
 | Context | `start_kind = FirstStart` or `AfterStop`; the spec says whether the data dir is inherited |
-| Hook | `pre_node_ready`, with joined channel, cert and current rafka-time; topology follows the hook |
+| Hooks | [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready), blocking, with joined channel, cert and current rafka-time; topology follows the hook. [`on_node_ready`](../fabric-node-hooks.md#on_node_ready), a notice, once after `node.started` |
 | Completion | Hook Ok, complete topology, current time, required Build floor, `node.started`, and the mesh-primary's ReadyForTraffic on it |
 
 ## End-to-end sequence
@@ -49,8 +49,10 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
    not a caller op. The node also declares ReadyForTraffic to its mesh-primary as an owed message, as it declares
    Stopped (Q36, Q87); frame and declaration apply once (Q49). A typed
    refusal of that apply completes no readiness.
-6. Start ends with `node.started`. Create ends with `node.created` after the
-   start it contains.
+6. Start ends with `node.started`. The node then calls
+   [on_node_ready](../fabric-node-hooks.md#on_node_ready) once, with the same `NodeReadyCtx`, on a
+   task of its own: a notice that gates nothing (`rdm.mesh.node.update.via-on-node-ready`). Create
+   ends with `node.created` after the start it contains.
 
 ## Command, completion and gossip messages
 
@@ -64,6 +66,7 @@ StartNode { node_id, incarnation, build_id, attempt, operation }
   [pre_node_ready]
   [node.topology.get, missing Build floor, rafka-time last]
   ← NodeStarted (Terminal; mesh-primary records ReadyForTraffic)
+  [on_node_ready, a notice]
   [outer Build Complete only after the ReadyForTraffic record]
 ```
 
@@ -93,6 +96,7 @@ sequenceDiagram
     N->>M: node.topology.get
     M-->>N: topology, required Build facts, rafka-time last
     N-->>M: node.started
+    Note over N: on_node_ready (notice)
     Note over M: sets ReadyForTraffic
     N-->>M: Complete
 ```

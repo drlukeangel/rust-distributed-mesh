@@ -1,4 +1,4 @@
-//! The fabric's states, run by the fabric-primary (states.md; lifecycles/fabric-ready-for-traffic.md).
+//! The fabric's states, run by the fabric-primary (states.md; lifecycles/states.md, "The fabric's ready-for-traffic").
 //!
 //! - The fabric-primary alone moves the fabric: `pending` → `ready-for-traffic` once every mesh the
 //!   accepted Build names is ready-for-traffic (Q174). The FabricStatus frame carrying each state is
@@ -817,7 +817,7 @@ mod tests {
         }
     }
 
-    /// CONTRACT (fabric-ready-for-traffic.md: "Once every member has checked in under the check-in
+    /// CONTRACT (states.md "The fabric's ready-for-traffic": "Once every member has checked in under the check-in
     /// checklist, the fabric is ready-for-traffic"; the status loop reads the current Build once per turn,
     /// `admin::boot`): one status turn of the fabric-primary reads the current Build once, at its start,
     /// and every step of the fabric's change it takes in that turn is decided on that read, however many

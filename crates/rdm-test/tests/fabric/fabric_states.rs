@@ -1,4 +1,4 @@
-//! i143.e12.s6 process E2E: the fabric states (states.md; lifecycles/fabric-ready-for-traffic.md).
+//! i143.e12.s6 process E2E: the fabric states (states.md; lifecycles/states.md, "The fabric's ready-for-traffic").
 //!
 //! A real estate whose node-admin is the testkit's, carrying the testkit application. The fabric-primary
 //! alone moves the fabric: pending, then ready-for-traffic once every mesh is ready-for-traffic (Q174),
@@ -74,7 +74,7 @@ fn change_of<'a>(spans: &'a [Value], build_id: &str) -> (&'a Value, Vec<&'a Valu
     (root, mine)
 }
 
-/// CONTRACT (fabric-ready-for-traffic.md; Q174, Q175): a fabric whose Build adds a second mesh goes back
+/// CONTRACT (states.md "The fabric's ready-for-traffic"; Q174, Q175): a fabric whose Build adds a second mesh goes back
 /// to pending, and is ready-for-traffic once every mesh is ready-for-traffic, set by the fabric-primary
 /// alone; no node is commanded to open traffic and none checks in. Each mesh-primary tells the
 /// application `on_mesh_ready` once its mesh is ready-for-traffic, and the fabric-primary's one
@@ -469,7 +469,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     estate.record_trace_url(&s(&first_root["trace_id"]));
 }
 
-/// CONTRACT (fabric-ready-for-traffic.md: the fabric is ready-for-traffic once every planned mesh is
+/// CONTRACT (states.md "The fabric's ready-for-traffic": the fabric is ready-for-traffic once every planned mesh is
 /// ready-for-traffic (Q174); gossip.md §3.2: timers only for heartbeat and anti-entropy): the Day-0 Build's
 /// change finds every mesh ready when its attempt is claimed; a Build adding a member to a ready mesh puts
 /// the fabric back to pending, and the fabric-primary finds every mesh ready when the last planned member's

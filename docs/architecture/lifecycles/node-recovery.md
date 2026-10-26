@@ -23,7 +23,7 @@ node.create of a node-admin into the live mesh.)
 | Steps | node.delete of the unheard instance, node.create at the same path.name; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
 | Retained | path.name, placement and storage (from the path's create spec, which a Build has applied to the row), config and tags (inherited from the deleted row) and the executable (seeded from the deleted row: a recovered node runs the bin its row records, never the recovering admin's) ; a row written before the executable field decodes with none, and node recovery of that birth is refused by name: the topology's entry is the target, not what the birth ran; the repair is a request naming that path's executable, the ordinary replacement ([build-deployment.md](../build-deployment.md)); the inherited data dir and endpoint key when the verdict is `exited` |
 | New | node.id, incarnation, OS-assigned port, exact runtime; a newly allocated data dir and endpoint key on any verdict but `exited`, and when the inherited data dir is absent (`R-FM2`) |
-| App part | The new node's start runs `pre_node_ready` with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated one |
+| App part | The new node's start runs [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated one, then its [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) notice after node.started |
 | Lineage | No supersedes: recovery creates a new node.id ([node identity](../node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids)) |
 
 ## Detection and the verdict
