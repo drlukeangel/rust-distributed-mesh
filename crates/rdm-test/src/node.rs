@@ -66,21 +66,27 @@ pub async fn start_with_seams(
     .await
 }
 
-/// The topology storage providers a testkit node registers (storage.md §2): RDM's `file` backend and
-/// the testkit's [`crate::test_app::TOPOLOGY_STORAGE_TARGET`] at its place beside `launch`'s store dir
-/// (made here when absent), or, in a build without the file backend (the memory estate's), one
-/// process's memory as `memory`, the name the memory estate's admin registers its own under.
+/// The name a testkit node registers one process's memory under: the memory estate's admin registers
+/// its own as it, and launches its nodes on it (storage.md §2: a node writes the fabric's provider).
+const MEMORY: &str = "memory";
+
+/// The topology storage providers a testkit node registers (storage.md §2): RDM's `file` backend, the
+/// testkit's [`crate::test_app::TOPOLOGY_STORAGE_TARGET`] at its place beside `launch`'s store dir (made
+/// here when absent) and one process's memory as [`MEMORY`]; in a build without the file backend,
+/// [`MEMORY`] alone.
 fn node_backend(launch: &Launch) -> rdm_node::storage_backend::NodeStorageProviders {
     #[cfg(feature = "file-backend")]
     {
         let target = crate::test_app::topology_storage_dir(&launch.store_dir);
         let _ = std::fs::create_dir_all(&target);
-        rdm_node::storage_backend::NodeStorageProviders::file().register(crate::test_app::TOPOLOGY_STORAGE_TARGET, Arc::new(rdm_node::storage_backend::FileNodeBackend::at(target)))
+        rdm_node::storage_backend::NodeStorageProviders::file()
+            .register(crate::test_app::TOPOLOGY_STORAGE_TARGET, Arc::new(rdm_node::storage_backend::FileNodeBackend::at(target)))
+            .register(MEMORY, Arc::new(rdm_node::storage_backend::MemoryNodeBackend))
     }
     #[cfg(not(feature = "file-backend"))]
     {
         let _ = launch;
-        rdm_node::storage_backend::NodeStorageProviders::new().register("memory", Arc::new(rdm_node::storage_backend::MemoryNodeBackend))
+        rdm_node::storage_backend::NodeStorageProviders::new().register(MEMORY, Arc::new(rdm_node::storage_backend::MemoryNodeBackend))
     }
 }
 
