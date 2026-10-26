@@ -49,7 +49,7 @@ and recording it are separate for every type.
    nothing has changed, no row ([no-successor cases](#no-successor-cases)).
 3. For the `node-admin` type, NA1 finishes the writes it has issued before it calls NA2 (Q109): once
    NA2 is mesh-primary NA1 writes the mesh's rows no more. A non-admin primary has no mesh rows to finish writing
-   (its own `connections/<node>/` rows are its own, R14).
+   (its own connection facts in `connections.jsonl` are its own, R14).
 4. The primary calls `node.primary.update` on the successor's exact birth: for a type other than `node-admin`,
    the birth the mesh-primary's command names (step 2). The successor becomes
    primary: it installs the election's result the call carries in its own topology view, answers

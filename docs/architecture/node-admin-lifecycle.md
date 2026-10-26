@@ -54,7 +54,7 @@ in the launch contract (`rafka_mesh_entity::launch`):
 | fabric primary | `RDM_FABRIC_PRIMARY` | this node-admin starts as the fabric primary (total-loss recovery). |
 
 The fabric's store root (`RDM_STORE_DIR`) is required: every node of the fabric reaches the same
-root, laid out `<store_dir>/<fabric_id>/{fabric, meshes/<mesh>, nodes/<mesh>/, connections/<node>/, runtimes/}`,
+root, laid out `<store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl, builds.jsonl, locks/}` (R-SR1; a birth's runtime row is a `node-runtime` line in `nodes.jsonl`),
 and a missing or unreadable root fails the boot by name; nothing falls back to the data dir.
 The node-admin's own data dir (`RDM_DATA_DIR`) holds only its runtime material (endpoint key,
 identity, runtime record) and the recovery copy (§7): its attached last-ready snapshot, a

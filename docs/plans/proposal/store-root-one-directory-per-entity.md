@@ -187,8 +187,10 @@ line, constant or fixture; an older root is refused by the layout marker (lead, 
 
 **Before the first state-commit nothing changes.** Rows stay in the scratchpad until the commit-state
 action publishes them (fabric-state-sync.md), and the scratchpad publishes as lines appended to §4's
-files. The three stores that write before state-commit append to the new files: the Build facts to
-`builds.jsonl`, the attempt claim to `locks/in-flight/`, the declaration to `nodes.jsonl`.
+files. Four writes reach the root before state-commit, appended to the new files at once: the Build
+facts to `builds.jsonl`, the attempt claim to `locks/in-flight/`, the declaration to `nodes.jsonl`,
+and a birth's runtime row to `nodes.jsonl`, its launching admin's durable map, written once, as
+durable as when it stood in the launcher's data dir (lead, 2026-10-25).
 
 **What open costs, and the measured trigger.** A fold reads each file once from byte 0. At the
 record's size and count (142 nodes in the largest estate in the record) a long run's `nodes.jsonl` is

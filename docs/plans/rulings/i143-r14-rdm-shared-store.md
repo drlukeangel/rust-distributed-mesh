@@ -36,11 +36,16 @@ That is a defect in the standalone store's location, not in the writer ladder.
    again under the same name shares the directory and claims over the Deleted rows (R-MN1).
    The file adapters open there. The data dir keeps only the node's own runtime material
    (endpoint key, identity, runtime record, app data) and the R-SC3 transient copy.
+   **Amended (Luke, 2026-10-25; [one file per store](../proposal/store-root-one-directory-per-entity.md)):**
+   the layout is {layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl, builds.jsonl,
+   locks/}, one append-only JSONL file per storage boundary, every write the whole record as one line
+   with its format and key, nothing removed, indexes folded, a layout marker; status/ is gone; path
+   uniqueness lives in the name locks under locks/name/, as today's exclusive inserts, fabric-wide.
 2. **Writers are exactly the ladder.** Fabric-primary: `fabric/`. Each mesh-primary:
    `meshes/<its mesh>` and `nodes/<its mesh>/`. Each node, ordinary nodes included:
    `connections/<itself>/`. Keys never overlap across writers, so no cross-process lock or lease
    exists anywhere.
-3. **The name claim is the sole writer's conditional write, not a create-exclusive insert.**
+3. **The name claim is a create-exclusive insert under locks/name/, as the code has made it for both names (storage.rs:356, :1303), the lock being the claim; the attempt in flight is the other, under locks/in-flight/.**
    `claim_node_row` (`storage.rs:339`) reads the row at the name key, decides in `claim_against`
    (`:216`: same node → held by it; a live row of another node → `NameHeld { by }`; absent or
    Deleted → written) and writes the whole row from the record the mesh-primary holds, under its
@@ -60,9 +65,9 @@ That is a defect in the standalone store's location, not in the writer ladder.
    after it acquires the lock and is refused by name, so the single-writer boundary covers
    outstanding and queued writes, not only new calls. A crashed P has no outstanding write; a P
    whose loss is proven has an exited process. Nothing cross-process is added.
-5. **The filesystem contract is stated and enforced.** The adapter relies on hard-link
-   insertion, atomic rename, file and directory fsync, and coherent reads and listings on one
-   backing namespace. The same path string proves nothing; the provider supplies the same
+5. **The filesystem contract is stated and enforced.** The adapter relies on serialized O_APPEND
+   writes on the local filesystem, checked write results and file fsync, create-exclusive insertion
+   under locks/, and coherent reads on one backing namespace (R-SR3). The same path string proves nothing; the provider supplies the same
    namespace with those guarantees to every node of the fabric. The directory fsync result,
    ignored today at `record_store.rs:162` and `:176`, is propagated: a write whose directory
    fsync fails is a failed write, named. The same holds for deletion: `FileRecords::remove`
@@ -73,7 +78,7 @@ That is a defect in the standalone store's location, not in the writer ladder.
    to every node of that estate. Any other provider qualifies by a functional cell that proves
    the four guarantees on its actual backing store, cross-host included; without that proof it
    is refused by name. RDM interprets nothing about how the location is backed.
-7. **Rebuild on a seat change** reads `nodes/<mesh>/` and `meshes/<mesh>` from the shared root
+7. **Rebuild on a seat change** folds meshes.jsonl and nodes.jsonl and keeps its mesh's records from the shared root
    and takes live digests as current. Rows supply what gossip does not retain (`.old`, Deleted,
    config); liveness comes from the aggregate and 0x1E (R-T6, R-T7). A row never overrides a live
    digest's status.
