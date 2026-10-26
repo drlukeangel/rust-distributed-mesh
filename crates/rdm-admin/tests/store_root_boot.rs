@@ -993,18 +993,23 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         v["record"]["node_id"].as_str().unwrap().to_string()
     };
     let custody = custody_of(&d.data_dir);
-    // The Day-0 Build is Complete at its ready-for-traffic and then releases mesh1's in-flight row: the
-    // admin is held only once that row is gone, so the launch's claim meets no attempt of Day 0.
+    // The Day-0 Build is Complete from its own ready-for-traffic: its attempt reads Converged on the journal
+    // and then releases mesh1's in-flight row. The admin is held only once both stand, so the launch's
+    // claim meets no attempt of Day 0.
     let until = Instant::now() + ADOPTS_WITHIN;
-    while tokio::runtime::Runtime::new().unwrap().block_on(async {
+    while !tokio::runtime::Runtime::new().unwrap().block_on(async {
+        use rdm_admin::build_state::BuildStateAdapter as _;
         use rdm_admin::storage::MeshStorage as _;
         let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
-        rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap().in_flight("mesh1").await.unwrap()
-    }).is_some()
-    {
-        assert!(Instant::now() < until, "the Day-0 Build left mesh1's in-flight row held");
+        let writer = rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader);
+        let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader-day0"), &writer).await.unwrap();
+        let converged = journal.facts().await.unwrap().iter().any(|f| matches!(f, rdm_admin::build_state::BuildFact::Attempt(r) if matches!(r.outcome, rdm_admin::build_state::AttemptOutcome::Converged)));
+        let released = rdm_admin::storage::FileMeshStorage::open(&root, &writer).await.unwrap().in_flight("mesh1").await.unwrap().is_none();
+        converged && released
+    }) {
+        assert!(Instant::now() < until, "the Day-0 Build did not read Converged with mesh1's in-flight row released");
         std::thread::sleep(Duration::from_millis(50));
     }
     unsafe { libc::kill(live.pid as i32, libc::SIGSTOP) };
