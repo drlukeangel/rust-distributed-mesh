@@ -62,7 +62,7 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 /// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
 /// the tags its row carries and the config its digest carries (R-TG1: config rides the digest).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>) -> NodeView {
-    NodeView { cert: None, executable: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: n.name.clone(),
         kind: n.kind,
         mesh: n.mesh.clone(),
@@ -341,7 +341,7 @@ pub fn meshes(view: &Topology, mesh: Option<&str>) -> Option<Vec<MeshView>> {
 /// fabric record holds it.
 pub fn fabric(view: &Topology, build_id: Option<String>) -> FabricView {
     let f = view.fabric_view();
-    FabricView { next_expiry: None,
+    FabricView { next_expiry: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(),
         id: f.id,
         name: f.name,
         status: scope_status(f.status),

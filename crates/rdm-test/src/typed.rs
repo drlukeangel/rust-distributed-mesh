@@ -612,7 +612,7 @@ impl Estate {
         let mut tries = 0;
         loop {
             let current = self.current().await;
-            let change = Change::Reconcile { based_on: current.based_on.clone(), nodes: nodes(&current, &self.executables) };
+            let change = Change::Reconcile { topology_storage_provider: None, based_on: current.based_on.clone(), nodes: nodes(&current, &self.executables) };
             match self.carrier().await.create(change.clone()).await {
                 Ok(stream) => return stream,
                 Err(CallEnd::Rejected { reason, .. }) if reason == "based-on-not-current" && tries < 3 => tries += 1,
@@ -632,7 +632,7 @@ impl Estate {
     pub async fn shape_change_at(&self, carrier: &BuildCarrier, desired: &FabricDesired) -> Change {
         let current = crate::executables::Current::read(carrier).await.unwrap_or_else(|e| panic!("the current topology could not be read through {}: {e}", carrier.fabric_primary()));
         let nodes = current.resized(&desired.meshes, true, &self.executables);
-        Change::Reconcile { based_on: current.based_on, nodes }
+        Change::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes }
     }
 
     /// `node.create` of one more `kind` node in `mesh`, at the lowest free ordinal of its kind, on the

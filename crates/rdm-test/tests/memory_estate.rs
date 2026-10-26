@@ -201,7 +201,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
             }
             s
         });
-        let mut stream = carrier.create(rdm_core::build::BuildChange::Reconcile { based_on: current.based_on, nodes: request.collect() }).await.unwrap_or_else(|e| panic!("build.create of the config-only Reconcile: {e}"));
+        let mut stream = carrier.create(rdm_core::build::BuildChange::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes: request.collect() }).await.unwrap_or_else(|e| panic!("build.create of the config-only Reconcile: {e}"));
         Estate::until_complete(&mut stream).await;
         tokio::time::timeout(WRONG, async {
             while !meshes.nodes(&node.mesh, None).await.unwrap_or_else(|e| panic!("mesh.nodes.get: {e}")).iter().any(|n| n.name == node && n.config == zone) {

@@ -231,7 +231,7 @@ impl Admin {
     pub async fn build_fabric(&self, desired: FabricDesired) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
         let nodes = self.resized(&current, &desired.meshes, true)?;
-        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
+        let s = self.carrier().create(Change::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
 
@@ -242,7 +242,7 @@ impl Admin {
             return Err(CallEnd::Rejected { reason: "mesh-already-exists".into(), detail: format!("the fabric holds mesh {} already", desired.name) });
         }
         let nodes = self.resized(&current, std::slice::from_ref(&desired), false)?;
-        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
+        let s = self.carrier().create(Change::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
 
@@ -252,7 +252,7 @@ impl Admin {
     pub async fn resubmit(&self) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
         let nodes = current.paths.into_values().collect();
-        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
+        let s = self.carrier().create(Change::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
 
@@ -266,7 +266,7 @@ impl Admin {
         let spec = current.paths.get_mut(node).ok_or_else(|| CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("the fabric holds no live node at {node}") })?;
         spec.executable = Some(Binding { launch_id: node.kind.name().into(), executable, sha256, image });
         let nodes = current.paths.into_values().collect();
-        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
+        let s = self.carrier().create(Change::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
 

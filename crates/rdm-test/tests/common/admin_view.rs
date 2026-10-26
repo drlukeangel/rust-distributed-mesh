@@ -20,7 +20,7 @@ pub const ADMIN: &str = "mesh1.admin.9";
 /// and that is not born yet.
 pub fn node(name: &str, node_id: &NodeId, endpoint: Option<String>, addr: Option<SocketAddr>, incarnation: Option<IncarnationId>) -> NodeView {
     let name: PathName = name.parse().unwrap_or_else(|e| panic!("{name} is no path.name: {e:?}"));
-    NodeView { cert: None, executable: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         kind: name.kind,
         mesh: name.mesh.clone(),
         name,
@@ -85,7 +85,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
             None => meshes.push(MeshView { renewals: None, id: None, name: n.mesh.clone(), status: ScopeStatus::ReadyForTraffic, primary_admin: Some(ADMIN.parse().unwrap()), admin_api_base: None, nodes: vec![n.name.clone()] }),
         }
     }
-    let fabric = FabricView { next_expiry: None, id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process, fabric_primary: Some(ADMIN.parse().unwrap()), admin_api_base: None, meshes, build_id: None };
+    let fabric = FabricView { next_expiry: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process, fabric_primary: Some(ADMIN.parse().unwrap()), admin_api_base: None, meshes, build_id: None };
     let seen: Arc<Mutex<Vec<StatusRequest>>> = Arc::default();
     let s = seen.clone();
     let server = ServerBuilder::new()

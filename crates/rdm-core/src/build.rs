@@ -140,6 +140,12 @@ pub enum BuildChange {
         based_on: crate::BuildId,
         /// Every node of the fabric, each by its create spec.
         nodes: Vec<crate::meta::NodeSpec>,
+        /// The fabric's `topology_storage_provider` (storage.md §2): the registered name of the backend
+        /// RDM's five record stores go to. `None` leaves the fabric's current one unchanged (Q166); a
+        /// name the fabric-primary's wiring does not register is refused by name at acceptance, nothing
+        /// moved. Appended last: the Build wire is positional.
+        #[serde(default)]
+        topology_storage_provider: Option<String>,
     },
 }
 

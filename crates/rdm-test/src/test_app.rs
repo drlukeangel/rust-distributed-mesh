@@ -9,6 +9,11 @@
 //!
 //! It declares three listeners (Q151), [`LISTENERS`], on the gateway: a gateway binds them from its
 //! launch, reports them at its join and its row publishes them.
+//!
+//! It registers a second topology storage provider (storage.md §2), [`TOPOLOGY_STORAGE_TARGET`], in
+//! every executable of the testkit: RDM's file backend at a place of its own beside the fabric's store
+//! dir ([`topology_storage_dir`]), a separate durable namespace standing in for an application's
+//! backend.
 
 use rdm_admin::wiring::{FabricHooks, FabricReadyCtx, MeshReadyCtx};
 use std::sync::Arc;
@@ -27,6 +32,18 @@ pub const LISTENER_KIND: rdm_core::NodeKind = rdm_core::NodeKind::Gateway;
 /// The listeners the testkit application declares on [`LISTENER_KIND`], as Rafka's gateway names its
 /// own.
 pub const LISTENERS: [&str; 3] = ["kafka", "rest", "proxy"];
+
+/// The name the testkit registers its second topology storage provider under (storage.md §2: a name
+/// is bound to its place at registration).
+pub const TOPOLOGY_STORAGE_TARGET: &str = "test-target";
+
+/// Where [`TOPOLOGY_STORAGE_TARGET`] keeps its stores for a fabric whose store dir
+/// (`RDM_STORE_DIR`) is `store_dir`: a directory beside it, never inside it, so the file provider's
+/// store dir holds only its own roots.
+pub fn topology_storage_dir(store_dir: &std::path::Path) -> std::path::PathBuf {
+    let name = store_dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    store_dir.with_file_name(format!("{name}-{TOPOLOGY_STORAGE_TARGET}"))
+}
 
 /// The testkit application's listener declarations, as its wiring registers them.
 pub fn listeners() -> Vec<rdm_core::launch::DeclaredListeners> {

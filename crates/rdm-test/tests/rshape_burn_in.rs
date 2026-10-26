@@ -1527,7 +1527,7 @@ async fn build_now(e: &Estate, id: &str) -> Value {
 async fn created(e: &Estate, admin: &str, mesh: &str, kind: LaunchKind) -> BuildChange {
     let current = rdm_test::executables::Current::read(&e.carrier_at(&path_of(admin)).await).await.unwrap_or_else(|end| panic!("the current topology at {admin}: {end}"));
     let nodes = current.with_one_more(mesh, kind, &e.executables);
-    BuildChange::Reconcile { based_on: current.based_on, nodes }
+    BuildChange::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes }
 }
 
 async fn ask(e: &Estate, admin: &str, change: BuildChange) -> Value {

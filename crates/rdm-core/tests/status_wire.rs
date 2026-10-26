@@ -149,7 +149,7 @@ fn replies_match_the_frozen_fifty_five_variant_wire_schema() {
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31", "00")),
         (
             // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b") | next_expiry None
-            Fabric { fabric: FabricView { next_expiry: None, id: fabric(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()) } },
+            Fabric { fabric: FabricView { next_expiry: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), id: fabric(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()) } },
             concat!("23", "0c323132333435363738396162", "0766616272696331", "00", "00", "00", "00", "00", "010162", "00"),
         ),
         (
@@ -263,7 +263,7 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
 /// One node as a `node.get` answer carries it: an rpc node with its birth, provider, address, load
 /// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
-    NodeView { cert: None, executable: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: "mesh1.rpc.1".parse().unwrap(),
         kind: rdm_core::NodeKind::RpcNode,
         mesh: "mesh1".into(),

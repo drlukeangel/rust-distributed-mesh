@@ -61,6 +61,7 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
                         },
                         rdm_core::meta::NodeSpec { path: "m.rpc.1".parse().unwrap(), storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
                     ],
+                    topology_storage_provider: None,
                 }),
             },
             "00 00 0f 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00 07 6d2e7270632e31 00 00 00 01 01 6b 01 76",

@@ -241,7 +241,7 @@ impl Nodes {
     /// The stream is `Started`, then the step events of the create, ending `Complete` or
     /// `Failed { step, reason }`.
     pub async fn create_named(&self, based_on: BuildId, nodes: Vec<rdm_core::meta::NodeSpec>) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Create, BuildChange::Reconcile { based_on, nodes }).await
+        self.workflow(WorkflowKind::Create, BuildChange::Reconcile { topology_storage_provider: None, based_on, nodes }).await
     }
 
     /// `node.stop` of `node`.

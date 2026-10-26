@@ -145,7 +145,7 @@ impl Day0 {
         let executables = Executables::testkit("process");
         let current = Current::read(&self.carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
         let nodes = current.resized(meshes, true, &executables);
-        let mut stream = self.carrier.create(Change::Reconcile { based_on: current.based_on.clone(), nodes }).await.unwrap_or_else(|e| panic!("the fabric-primary refused {meshes:?}: {e}"));
+        let mut stream = self.carrier.create(Change::Reconcile { topology_storage_provider: None, based_on: current.based_on.clone(), nodes }).await.unwrap_or_else(|e| panic!("the fabric-primary refused {meshes:?}: {e}"));
         Estate::until_complete(&mut stream).await;
     }
 

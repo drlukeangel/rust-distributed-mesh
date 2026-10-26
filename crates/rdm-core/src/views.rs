@@ -162,6 +162,15 @@ pub struct NodeView {
     /// that records none (written before the field).
     #[serde(default)]
     pub executable: Option<crate::binding::Binding>,
+    /// The node's `storage_persistence` (storage.md §1), as its row records it from its create spec:
+    /// what becomes of the node's own data dir across its births and once it is gone. `None` for a row
+    /// that records none.
+    #[serde(default)]
+    pub storage_persistence: Option<crate::meta::StorageMeta>,
+    /// The `topology_storage_provider` the node writes (storage.md §2), as its row records it: the
+    /// fact, beside the fabric's intent on the Fabric row. `None` for a row that records none.
+    #[serde(default)]
+    pub topology_storage_provider: Option<String>,
 }
 
 /// A birth's member cert as `node.get` surfaces it (fabric-certs.md §Tracking: `cert { issued_at,
@@ -250,6 +259,14 @@ pub struct FabricView {
     /// §Tracking); `None` while no row names one.
     #[serde(default)]
     pub next_expiry: Option<u64>,
+    /// The fabric's `topology_storage_provider` (storage.md §2), as its Fabric row names it: the
+    /// registered name of the backend RDM's five record stores are written to. `None` while the
+    /// answering admin holds no Fabric row.
+    #[serde(default)]
+    pub topology_storage_provider: Option<String>,
+    /// Each provider the fabric left, in order, as its Fabric row names them (storage.md §2).
+    #[serde(default)]
+    pub previous_topology_storage_providers: Vec<String>,
 }
 
 /// One connection fact a node holds (`node.connections.get`).

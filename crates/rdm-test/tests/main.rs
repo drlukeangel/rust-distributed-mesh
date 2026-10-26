@@ -70,6 +70,8 @@ mod fabric_states;
 mod declared_secrets;
 #[path = "fabric/named_listeners.rs"]
 mod named_listeners;
+#[path = "fabric/topology_storage_provider.rs"]
+mod topology_storage_provider;
 #[path = "fabric/fabric_delete.rs"]
 mod fabric_delete;
 #[path = "fabric/own_delete_matrix.rs"]
