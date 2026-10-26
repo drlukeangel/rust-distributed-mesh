@@ -422,7 +422,6 @@ impl ConnectionsWriter {
                 refusal = %refusal,
             )
             .in_scope(|| tracing::info!("the connection write was refused by storage; it stays owed and is written again after its backoff"));
-            span.record("attempts", attempt);
             tokio::time::sleep(next).await;
             // Only the queue's own handle is left: the node that owed the write is gone.
             if std::sync::Arc::strong_count(&self.inner) <= 1 {
@@ -601,7 +600,8 @@ impl ConnectionsWriter {
                 ),
             };
             let landed = w.land(&row, &span).await;
-            if landed.is_some() {
+            if let Some(attempts) = landed {
+                span.record("attempts", attempts);
                 let _ = w.inner.held.lock().unwrap().apply(row.clone());
                 w.sync_recovery();
                 span.record("outcome", "landed");
