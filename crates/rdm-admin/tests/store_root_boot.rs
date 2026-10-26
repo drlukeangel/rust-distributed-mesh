@@ -607,6 +607,30 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (Q200, Luke 2026-10-26; fabric-recovery.md "Nothing alive": "A store that names no node but
+/// the launching admin's own lost birth holds no fabric to recover: the launch deletes that storage and
+/// starts as Day 0, a new fabric-primary."): an admin started on its own data dir, with no fabric id
+/// handed in, whose store root names no node but its own lost birth, deletes that fabric's storage (its
+/// directory on the store root and its own row in its data dir) and starts as Day 0: it accepts the root
+/// Build of a new fabric (`build.create.via-accepted`), claims mesh1.admin.1 under a node.id it mints,
+/// writes its own row naming a new fabric id and MeshId, and reaches Ready; the store root then holds that
+/// one new fabric. Must NOT happen: a recovery boot over the inherited root (`node.create.via-inherited-root`),
+/// the deleted fabric's directory left on the store root, or its fabric id, MeshId or node.id reused.
+#[test]
+fn a_launch_whose_store_names_no_node_but_its_own_lost_birth_deletes_that_storage_and_starts_as_day0() {
+    let root = Prepared::at("a_launch_whose_store_names_no_node_but_its_own_lost_birth");
+    let mut running = root.start();
+    let spans = root.until(&mut running, "rdm.mesh.node.update.via-ready", BOOTS_WITHIN);
+    let names: Vec<&serde_json::Value> = spans.iter().map(|s| &s["name"]).collect();
+    assert!(!spans.iter().any(|s| s["name"] == INHERITED_ROOT), "no recovery boot over a store that names no node but the lost birth: {names:?}");
+    assert!(spans.iter().any(|s| s["name"] == "rdm.node_admin.build.create.via-accepted"), "Day 0 accepts the root Build of a new fabric: {names:?}");
+    let (_, fabric_id, mesh_id) = root.own_row().expect("the Day-0 admin's own row");
+    let node_id = root.own_node_id().unwrap_or_default();
+    assert!(fabric_id != root.fabric_id.to_string() && mesh_id != root.mesh_id.to_string() && node_id != root.node_id.to_string(), "a new fabric id, MeshId and node.id: own row {fabric_id} {mesh_id} {node_id}");
+    root.end(running);
+    assert_eq!(fabric_dirs(&root.store), vec![fabric_id.clone()], "the store root holds the new fabric alone: the lost birth's fabric {} is deleted", root.fabric_id);
+}
+
 /// CONTRACT (R-MN1: "a mesh created again under the same name is a new mesh with a new id"; R-ML2: "a
 /// dead mesh's path.name used again is mesh.create of a new mesh with a new MeshId", "a dead mesh is
 /// never restarted"; states.md: a mesh id is never reissued; R-SB1: the cell starts an admin on a root
