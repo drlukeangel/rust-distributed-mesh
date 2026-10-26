@@ -10,11 +10,14 @@
 through `fabrics.atlas.get`.** It updates immediately when commands are admitted and before completion is
 returned; delayed events cannot move it backward.
 
+**The rule (Luke, 2026-10-26, Q197):** nothing starts, stops or does any action through gossip; gossip is the
+side effect of an op, never the reverse. Nothing waits for gossip.
+
 ## What it replaces
 
 The fabric-primary admits a Build from a projection rebuilt per request from the `DigestView` (the gossip
 view and everything in flight) and the store rows (`control_plane.rs` admission, `boot.rs` `view_now`,
-`projection.rs` `project_with`). A completed stop is already applied before `Complete`: `SeatGate::attempt_completed`
+`projection.rs` `project_with`). A completed stop is already applied before `Complete`, but through the gossip view, which Q197 rules out: `SeatGate::attempt_completed`
 (`admin/reconcile.rs:139-152`, awaited at `build_drive.rs:1306`) takes each completed `node.stop:` receipt into
 the fabric-primarys view (span `rdm.mesh.topology.remove.via-node-stopped`, `publisher=` empty). No other
 receipt is: a completed start leaves the node `leaving` in that view until gossip says otherwise, so a stop sent
@@ -25,10 +28,12 @@ gossip-view and everything that is inflight\").
 ## Requirements
 
 - **R-FA1.** The fabric-primary holds one `FabricAtlas`. Build admission for every change (Stop, Start,
-  Delete, Reconcile, the rest) reads it, and nothing else.
+  Delete, Reconcile, the rest) reads it, and nothing else. Its admission and progress entries are the
+  fabric-primary's own ops (what it admitted, the receipts its commands returned, directly or through
+  `build.attempt.run` for a peer mesh), never a gossip frame.
 - **R-FA2.** Command admission writes it at acceptance; execution progress writes it from each attempts
   receipts as they stream up `build.attempt.run`, before the caller is answered `Complete`.
-- **R-FA3.** Gossip observations merge in only what the fabric-primary did not do itself, each under the
+- **R-FA3.** Gossip observations are context in the atlas and decide no admission; they merge in only what the fabric-primary did not do itself, each under the
   receiver rules ordering (gossip.md §3.1: a frame older than the newest held for its key is ignored; a
   births `digest_seq`; a Builds attempt number), so a delayed event never moves it backward.
 - **R-FA4.** `fabrics.atlas.get` returns it (Q167s read naming); `fabrics.get` is unchanged.
