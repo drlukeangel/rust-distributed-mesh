@@ -2878,6 +2878,40 @@ through the fast gate:
   no victim, did not answer `mesh.nodes.get` while two admins were cut); `i143-2784-chaos-container`
   `container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end`.
 
+## e12.s93 — 2026-10-26: Q174, the open-traffic checklist is deleted; Q175, the hooks are pre_node_ready, on_node_ready, on_mesh_ready, on_fabric_ready
+
+### State
+
+Luke, 2026-10-26. Q174: "this whole thing gets deleted"; "you create/start a node you dont tell it to open
+traffic". Q175 (locked): `pre_node_ready` blocks (no timer); `on_node_ready`, `on_mesh_ready` and
+`on_fabric_ready` are fire-and-forget notices. Landed 4514ebd03..400da3ebd.
+
+- **The fabric's ready-for-traffic.** A node is ready-for-traffic once its `pre_node_ready` returned Ok and
+  it reported node.started; a mesh once every planned birth is; the fabric once every mesh the accepted
+  Build names is and its attempt is claimed. No node is commanded to open traffic and none checks in.
+  `lifecycles/fabric-ready-for-traffic.md` folds into states.md "The fabric's ready-for-traffic".
+- **The ready row and FirstReady** go with fabric-not-ready (decided by Q171.1).
+- **Wire.** StatusRequest 14 and 15 and gossip Frame 17 and 18 are reserved positions, refused by name;
+  `rdm.fabric.traffic.opening` and `.opened` are refused before decode.
+- **The lifecycle pages name their hooks** (node-start, node-create, node-restart, node-recovery,
+  mesh-create, states).
+- **Q178** (a create that fails after its launch) is decided by node-create.md and build.md §4.1: outside
+  a delete the launched birth is surplus and drift deletes it (node_stop's cell). **Q179**, decided by
+  build.md §1 ("launch evidence is retained"): under a fabric.delete the failed create keeps its claim, so
+  the teardown's roster holds the birth and deletes it.
+- **An interrupted Build's Failed names the delete** when an operation admitted before it fails within
+  its bound (build.md §1).
+- **Flame.** Before Q171 393.5 ms (trace `3551d75e1956f75cca006b62afab14ea`), after Q171 6.8 ms
+  (`f81152d14ec4fb89ac70cdabd96807e2`), after Q174 0.83 ms (`8941aa144cd8595b4eadf37dea0c23ef`):
+  every-mesh-ready at 0, ready-for-traffic entered at 0.1 ms, on_fabric_ready at 0.3 ms.
+- **141** was told the SHA and the renames Rafka makes.
+
+### Remaining
+
+- Q176 (the state named `ready`), Q177 (the LifecycleTransitionPipeline hooks) and the per-run
+  `fabric-<hex>` / `mesh-<hex>` estate names wait on Luke.
+- The tail at the landed SHA: fast, release, export, soaks, manifest.
+
 ## e10.s2 — export: one RDM SHA on which the whole export gate is green, the import manifest, and the final parity scan
 
 **Builder:** the lead (gate runs) with an RDM engineer for fixes · **Tracking issue:** #2790 (generated once; not read back) · **Architecture:** §14 Export/import gate; §15 Verification artifacts; §17 Definition of done; transport-parity.md
