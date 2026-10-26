@@ -1574,9 +1574,9 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             return Ok(rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt));
                         }
                     };
-                    // R-CR1: the name moves only while the node holds no connection, read from its
-                    // connections writer once every observation has landed.
-                    let routes = match me.own.held_routes().await {
+                    // R-CR1: the name moves only while the node has no connection open, read from
+                    // what is open now, never from the rows that have landed (Q169).
+                    let routes = match me.own.live_routes() {
                         Ok(r) => r,
                         Err(reason) => return Ok(rdm_core::reply::status::not_ready(reason)),
                     };

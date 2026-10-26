@@ -2156,13 +2156,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
                                     {
                                         // The name is held on this admin's own digest and by its topology view, taken only while it
-                                        // holds no connection (R-CR1); a stopped admin holds it and publishes nothing.
-                                        let (topology_view, digest, connections) = (topology_view.clone(), digest.clone(), connections.clone());
+                                        // has no connection open (R-CR1), read from what is open now, never from the rows that have
+                                        // landed (Q169); a stopped admin holds it and publishes nothing.
+                                        let (topology_view, digest, connections, registry) = (topology_view.clone(), digest.clone(), connections.clone(), data_connections.clone());
                                         let _ = rename.set(Arc::new(move |asked: PathName| {
-                                            let (topology_view, digest, connections) = (topology_view.clone(), digest.clone(), connections.clone());
+                                            let (topology_view, digest, connections, registry) = (topology_view.clone(), digest.clone(), connections.clone(), registry.clone());
                                             Box::pin(async move {
                                                 let held = digest.lock().unwrap().node.name.clone();
-                                                let routes = connections.held_routes().await;
+                                                let routes = connections.live_routes(None, Some(&registry));
                                                 let decision = crate::node_name::decide(&held, &asked, &routes);
                                                 if decision == crate::node_name::NameApply::Applied {
                                                     topology_view.set_name(asked.clone());

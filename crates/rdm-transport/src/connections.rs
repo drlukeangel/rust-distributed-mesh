@@ -724,6 +724,12 @@ impl ConnectionsRegistry {
         }
     }
 
+    /// Every connection this node opened that is open now, Direct or Proxy, by its entry as it
+    /// opened, whether its row has landed or is still owed (Q169); an accepted connection is none.
+    pub fn open_rows(&self) -> Vec<NodeConnection> {
+        self.inner.active.lock().unwrap().values().filter_map(|e| e.row.clone()).collect()
+    }
+
     /// Close an active data-plane connection by its [`ConnectionId`] (`node.connections.delete`),
     /// waking its streams and [`Connection::closed`] with `reason`.
     pub fn close_by_id(&self, id: &ConnectionId, reason: Closed) -> bool {

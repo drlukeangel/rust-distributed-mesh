@@ -434,6 +434,20 @@ impl NodeSelf {
         }
     }
 
+    /// The connections this birth has open now (R-CR1; Q169): read from its live connections, its
+    /// data-plane client's pool and its connections registry, never from the rows that have landed,
+    /// so a connection whose Connected row is still owed is held. What a rename and a leave decide
+    /// from. Refused by name when the process has not handed it a connections writer.
+    pub fn live_routes(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, String> {
+        let writer = self.connections.lock().unwrap().clone();
+        let data_plane = self.data_plane.lock().unwrap().clone();
+        let registry = self.data_connections.lock().unwrap().clone();
+        match writer {
+            Some(w) => Ok(w.live_routes(data_plane.as_deref(), registry.as_ref())),
+            None => Err(format!("{}: this birth holds no connections writer, so the connections it has open cannot be read", self.held_name())),
+        }
+    }
+
     /// `node.connections.get` at this birth (fabric-mesh-node-lifecycles.md: "Reading or cutting a
     /// node's held connections"): the connections it holds now, under the name it holds, answered from
     /// what is held: a connection whose row has not landed is not held yet, and the read never waits
@@ -988,12 +1002,11 @@ impl NodeSelf {
     }
 
     /// Standalone `node.mesh.leave` (`LeaveMesh` on 0x1B; node-mesh-leave.md): refuses
-    /// `BusyHoldingConnections` when the connections log still holds an open entry, otherwise
-    /// leaves the mesh channel (and backbone, for a node-admin) and cuts the Node RPC pool.
+    /// `BusyHoldingConnections` while the birth has a connection open, its row landed or still owed
+    /// (Q169), otherwise leaves the mesh channel (and backbone, for a node-admin) and cuts the Node
+    /// RPC pool.
     async fn serve_leave_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> StatusReply {
-        let writer = self.connections.lock().unwrap().clone();
-        if let Some(w) = &writer {
-            let open = w.held_routes().await;
+        if let Ok(open) = self.live_routes() {
             if !open.is_empty() {
                 let connections: Vec<rdm_core::ConnectionId> = open.into_iter().map(|r| r.id).collect();
                 tracing::info_span!(

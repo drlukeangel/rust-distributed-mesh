@@ -115,6 +115,11 @@ struct Inner {
     write_gate: Arc<tokio::sync::Mutex<()>>,
     /// Per-node reconnect scheduler state (`crate::connection_reconnect`).
     reconnect: crate::connection_reconnect::ReconnectState,
+    /// The Direct entry of the latest connection the data-plane client opened to each birth, by
+    /// its endpoint and incarnation, as observed when it opened, whether its Connected row has
+    /// landed or is still owed: what [`ConnectionsWriter::live_routes`] reads against the client's
+    /// pool, which says what is open now.
+    opened: Mutex<std::collections::HashMap<(iroh::PublicKey, IncarnationId), NodeConnection>>,
 }
 
 /// The local OS clock: a writer orders its own rows by it and ages its owed retirements by it. No
@@ -180,6 +185,7 @@ impl ConnectionsWriter {
             queue,
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
             reconnect: crate::connection_reconnect::ReconnectState::default(),
+            opened: Mutex::new(std::collections::HashMap::new()),
         });
         let weak = Arc::downgrade(&inner);
         runtime.spawn(async move {
@@ -379,6 +385,30 @@ impl ConnectionsWriter {
         let own = self.own_now();
         let held = self.inner.held.lock().unwrap();
         HeldConnections { name: own.name, complete: held.is_complete(), routes: open_routes(&held) }
+    }
+
+    /// The connections this node has open now (R-CR1; Q169), whatever their rows: each Direct the
+    /// data-plane client `data_plane` pools to a birth it observed opening, and each Direct or Proxy
+    /// `registry` holds active, every one by the minted id its entry has or will have when its row
+    /// lands. Directs first, then Proxies, each by destination. What a rename and a leave decide
+    /// from: a Connected row still owed is no connection closed.
+    pub fn live_routes(&self, data_plane: Option<&rdm_transport::NodeRpcClient>, registry: Option<&rdm_transport::connections::ConnectionsRegistry>) -> Vec<NodeConnection> {
+        let mut live: Vec<NodeConnection> = Vec::new();
+        if let Some(client) = data_plane {
+            let opened = self.inner.opened.lock().unwrap();
+            for key in client.pooled() {
+                if let Some(entry) = key.incarnation.and_then(|inc| opened.get(&(key.peer, inc))) {
+                    live.push(entry.clone());
+                }
+            }
+        }
+        if let Some(registry) = registry {
+            live.extend(registry.open_rows());
+        }
+        live.sort_by(|a, b| (a.kind == ConnectionKind::Proxy, &a.destination.name, &a.alpn).cmp(&(b.kind == ConnectionKind::Proxy, &b.destination.name, &b.alpn)));
+        let mut seen = std::collections::HashSet::new();
+        live.retain(|r| seen.insert(r.id.clone()));
+        live
     }
 
     /// `node.connections.delete`'s drops (R-CR3): each of `routes` (open entries this node held,
@@ -666,7 +696,12 @@ impl ConnectionsWriter {
 impl ConnectionObserver for ConnectionsWriter {
     fn direct_connected(&self, node: &ResolvedNode) {
         let destination = end_of(node);
-        self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Connected, None), "dial", node);
+        // The entry's id is minted as the connection opens: the connection is open now under it,
+        // and its row, owed, lands under it (Q169).
+        let opened = Self::direct(self.own(), destination.clone(), ConnectionState::Connected, None);
+        let id = opened.id.clone();
+        self.inner.opened.lock().unwrap().insert((node.endpoint_id, node.incarnation.clone()), opened);
+        self.observed(move |_, own| rdm_core::connections::NodeConnection { id, ..Self::direct(own, destination, ConnectionState::Connected, None) }, "dial", node);
     }
 
     fn direct_failed(&self, node: &ResolvedNode, reason: &str) {

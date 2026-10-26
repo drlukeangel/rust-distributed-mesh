@@ -195,3 +195,105 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.connections.delete.via-delete-connections").map(|(_, _, f)| f.clone()).collect();
     assert!(cuts.iter().any(|f| f.get("scope").map(String::as_str) == Some("all") && f.get("held").map(String::as_str) == Some("0") && f.get("outcome").map(String::as_str) == Some("connections-deleted")), "{cuts:#?}");
 }
+
+/// CONTRACT (R-CR1, node-rpc-envelope.md Node properties `name`: "the node admits no connection";
+/// node-mesh-leave.md step 2; Q169): a node decides its rename and its leave from the connections
+/// open now, never from the rows that have landed. `mesh1.rpc.7`'s connections store refuses every
+/// write, then the node opens a data-plane connection to its admin: the connection is open, its
+/// Connected row owed and not landed. `ApplyNodeName { mesh1.rpc.1 }` answers
+/// `BusyHoldingConnections` naming that connection, and `LeaveMesh` answers the same and leaves
+/// nothing; the name does not move. Once the store takes writes the row lands under the id the
+/// refusals named. What must NOT happen: a rename or a leave let through while a connection is
+/// open because its row is still queued.
+#[test]
+fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() {
+    let cap = crate::common::capture("a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
+        let root = std::env::temp_dir().join(format!("rename-precondition-owed-{}", NodeId::mint()));
+        let store = root.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        crate::common::store_past_state_commit(&store, &fabric).await;
+        let born: PathName = "mesh1.rpc.7".parse().unwrap();
+        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+        let dir = root.join(born.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        let key = node::load_or_mint_key(&dir).unwrap();
+        let renamed = Launch {
+            fabric: "fabric1".into(),
+            fabric_id: fabric.clone(),
+            name: born.clone(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
+            seeds: vec![admin.seed.clone()],
+            launcher: Some(admin.launcher.clone()),
+            data_dir: dir,
+            store_dir: store.clone(),
+            mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
+            issuing: None,
+            roots: Vec::new(),
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
+        };
+        admin.deployed(&renamed, &key);
+        let seams: Arc<OnceLock<Seams>> = Arc::default();
+        let slot = seams.clone();
+        let _running = node::start_with_seams(&renamed, move |b, s| {
+            let _ = slot.set(s);
+            b
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{born} comes up: {e}"));
+        let seams = seams.get().cloned().expect("the node handed its seams");
+        let digest_view = &admin.observer.topology_view.digest_view;
+        let mut heard = digest_view.heard_changes();
+        while digest_view.get(renamed.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+            heard.changed().await.unwrap();
+        }
+        seams.connections.observations_landed().await;
+        assert!(seams.connections.held_routes().await.is_empty(), "the node holds no connection yet");
+
+        // Its store refuses every write; the node opens a data-plane connection to its admin: open
+        // now, its Connected row owed.
+        seams.fault.arm(u32::MAX, u32::MAX, 0);
+        match seams.client.call::<Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &CallOptions::default()).await.0 {
+            RpcOutcome::Reply(_) => {}
+            other => panic!("the ping did not end in a reply: {other:?}"),
+        }
+        assert!(seams.connections.held_routes().await.is_empty(), "the Connected row has not landed: nothing is held");
+        assert!(seams.connections.in_flight() > 0, "the Connected row is owed");
+
+        let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
+        admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        let target = NodeTarget::ExactNode(renamed.node_id.clone());
+        let call = |req: StatusRequest| {
+            let (client, target, opts) = (&admin.observer.client, &target, &opts);
+            async move {
+                match client.call::<Status>(target, &req, opts).await.0 {
+                    RpcOutcome::Reply(r) => r.into_value(),
+                    other => panic!("{} did not end in a reply: {other:?}", req.op()),
+                }
+            }
+        };
+        let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.to_string() };
+        let busy = call(apply).await;
+        let StatusReply::BusyHoldingConnections { connections } = &busy else { panic!("a node with an open connection keeps its name, its row owed or not: {busy:?}") };
+        assert_eq!(connections.len(), 1, "the one open connection is named: {busy:?}");
+        assert_eq!(seams.connections.own().name, born, "the node holds the name it had");
+        let leave = StatusRequest::LeaveMesh { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 1, operation: format!("node.mesh.leave:{born}") };
+        assert_eq!(call(leave).await, busy, "the leave is refused naming the same open connection");
+
+        // The store takes writes: the row lands under the id the refusals named.
+        seams.fault.release();
+        tokio::time::timeout(Duration::from_secs(30), seams.connections.observations_landed()).await.expect("the owed row is retried until it lands");
+        let held: Vec<_> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
+        assert_eq!(&held, connections, "the landed entry is the connection the refusals named");
+        let _ = std::fs::remove_dir_all(&root);
+    });
+}

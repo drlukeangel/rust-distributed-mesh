@@ -45,8 +45,8 @@ pub fn route_name(route: &NodeConnection) -> String {
     format!("{} ({kind}, entry {})", route.destination.name, route.id)
 }
 
-/// Decide the apply of `asked` at a node holding `held` and the connections `routes` (its open
-/// entries, every observation landed).
+/// Decide the apply of `asked` at a node holding `held` and the connections `routes` (those it has
+/// open now, each by its entry's id, its row landed or still owed: Q169).
 pub fn decide(held: &PathName, asked: &PathName, routes: &[NodeConnection]) -> NameApply {
     if held == asked {
         NameApply::AlreadyApplied
