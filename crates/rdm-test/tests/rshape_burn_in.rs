@@ -658,15 +658,14 @@ fn check_services(spans: &[Value], inv: &mut Invariants) -> BTreeSet<String> {
         assert!(!services.contains(never), "no built-in `{never}` ran: {services:?}");
     }
     inv.holds("the estate ran only the consumer's four executables (the other services are the controller's probe)", true, json!({"services": services}));
-    // The consumer's node-admin seams (demo/src/bin/rshape_node_admin.rs): its own storage backend opened
-    // the boundaries of every admin, and its lifecycle hook ran on the way into traffic of each kind of node.
+    // The consumer's node-admin seam (demo/src/bin/rshape_node_admin.rs): its own storage backend opened
+    // the boundaries of every admin. Application work enters a lifecycle only through Fabric and node
+    // hooks (build.md §9, Q177): no lifecycle hook of the transition pipeline runs in the consumer's estate.
     let opened: Vec<&Value> = named(spans, "rdm.mesh.node.resolve.via-storage-opened").into_iter().filter(|sp| sp["service"] == "rshape-node-admin").collect();
     assert!(!opened.is_empty() && opened.iter().all(|sp| s(&sp["attributes"]["writes_to"]).starts_with("rshape-backend:")), "the consumer's backend opened every node-admin's boundaries: {opened:?}");
-    let hooked: BTreeSet<String> = named(spans, "rdm.node_admin.lifecycle_hook.update.via-transition").into_iter().filter(|sp| sp["attributes"]["hook_id"] == "rshape-ready").map(|sp| s(&sp["attributes"]["transition_id"])).collect();
-    for kind in ["broker", "gateway", "compute"] {
-        assert!(hooked.iter().any(|t| t.contains(&format!(".{kind}."))), "the consumer's lifecycle hook ran on a {kind}'s way into traffic: {hooked:?}");
-    }
-    inv.holds("the consumer's storage backend opened every admin's boundaries and its lifecycle hook ran on each kind's way into traffic", true, json!({"backend_opens": opened.len(), "hooked": hooked}));
+    let hooked: BTreeSet<String> = named(spans, "rdm.node_admin.lifecycle_hook.update.via-transition").into_iter().map(|sp| format!("{}:{}", s(&sp["attributes"]["hook_id"]), s(&sp["attributes"]["transition_id"]))).collect();
+    assert!(hooked.is_empty(), "no lifecycle hook ran in the consumer's estate (build.md §9: application work enters only through Fabric and node hooks): {hooked:?}");
+    inv.holds("the consumer's storage backend opened every admin's boundaries and no lifecycle hook ran", true, json!({"backend_opens": opened.len(), "hooked": hooked}));
     services
 }
 
