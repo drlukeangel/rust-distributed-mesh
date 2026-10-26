@@ -41,7 +41,6 @@ application transport. RDM owns the lifecycle; Rafka owns the state-sync work.
   "message": "sync-state",
   "fabric_id": "fabric1",
   "build_id": "bld_1a2b3c4d",
-  "submitted_at_ms": 1767225600000,
   "attempt": 1,
   "operation": "state-sync:fabric1",
   "context": {
@@ -59,7 +58,6 @@ application transport. RDM owns the lifecycle; Rafka owns the state-sync work.
   "message": "state-synced",
   "fabric_id": "fabric1",
   "build_id": "bld_1a2b3c4d",
-  "submitted_at_ms": 1767225600000,
   "attempt": 1,
   "operation": "state-sync:fabric1",
   "context": {
@@ -72,9 +70,7 @@ application transport. RDM owns the lifecycle; Rafka owns the state-sync work.
 ```
 The hook's answer means the requested application work is complete for this state. It
 starts [state-commit](fabric-state-commit.md), not traffic opening. A foreign Build,
-old attempt or incomplete application phase is not this completion. The work an older
-attempt's hook started on another node is refused there by
-[`admit_attempt`](../fabric-node-hooks.md#admit-attempt) (Q168).
+old attempt or incomplete application phase is not this completion.
 
 ### Fabric state dissemination
 

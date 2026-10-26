@@ -61,7 +61,6 @@ pub mod readiness;
 pub(crate) mod reenter;
 pub mod checklist;
 pub mod seat_watch;
-pub use rdm_node::admitted_attempt;
 pub use rdm_node::blocking;
 pub use rdm_node::durable_file;
 pub mod record_cache;

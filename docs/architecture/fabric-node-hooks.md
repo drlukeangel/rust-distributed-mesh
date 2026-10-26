@@ -126,29 +126,6 @@ The call and its answer carry the state as the
 [state-commit](lifecycles/fabric-state-commit.md), not ready-for-traffic;
 [fabric state-sync](lifecycles/fabric-state-sync.md) owns the state's rules.
 
-<a id="admit-attempt"></a>
-
-**An older attempt's work (Q168).** The handoff and every application operation it sends carry
-`build_id`, `submitted_at_ms` and `attempt`. The order is `(submitted_at_ms, attempt)`; a Build id
-is never ordered. `submitted_at_ms` is the accepted Build's acceptance stamp, strictly increasing
-across accepted Builds by construction: `max(now, newest accepted + 1)`, the newest read from the
-builds store (R-BI3), so it holds across a restart and a clock rollback. A newer Build's attempt 1
-supersedes an older Build's attempt 8.
-
-Every node has `admit_attempt(build_id, submitted_at_ms, attempt)`, on the `NodeSeams` its served
-ops are registered with (and on the running node; on a node-admin, its `Running`). It compares
-against the node's durable admitted triple. An older pair is refused by name, `superseded`; a
-different `build_id` carrying the same `submitted_at_ms` is refused by name, `ambiguous-order`; an
-equal triple is admitted (a repeat). A newer triple is written durably beside the node's data dir
-(`admitted-attempt`, one whole record) before `admit_attempt` returns, so its effect is never
-allowed ahead of its record; it is read back when the node starts.
-
-The application runs `admit_attempt` and the mutation under the same per-resource serialization
-every competing attempt takes. Work prepared outside it (an async restore) takes the serialization
-again and calls `admit_attempt` again immediately before publishing. Repeats of one attempt stay
-subject to the operation's own idempotency. RDM owns the comparison and the durable value; the
-application owns applying it at each mutation and publication.
-
 ## traffic_opened
 
 After the ready-for-traffic state is set, the fabric-primary sends the application one

@@ -89,34 +89,3 @@ async fn an_accepted_build_is_current_from_the_build_store_alone() {
         Ok(o) => panic!("a change was accepted as {} while B1 ({b1}), newer than B0 ({b0}), is in progress", o.build_id),
     }
 }
-
-/// CONTRACT (Q168 arm A, "a clock rollback does not lower the order"; R-BI3: the acceptance stamp is
-/// `max(now, newest accepted + 1)`, the newest read from the builds store): a fabric-primary started
-/// again with its clock an hour behind stamps the next Build after every Build accepted before it, so
-/// on a node the newer Build's attempt 1 is admitted over the older Build's attempt 8 and the older
-/// one is refused `superseded`.
-#[tokio::test]
-async fn a_clock_rollback_does_not_lower_the_order() {
-    let (cp, builds, _b0) = fabric_primary().await;
-    let b1 = cp.submit("POST /api/meshes", crate::named_request(&cp, TopologyChange::CreateMesh { desired: mesh("mesh2") }).await).await.expect("B1 is accepted").build_id;
-    fail(&builds, &b1).await;
-    let s1 = builds.read_build(&b1).await.unwrap().submitted_at_ms;
-    let behind = rdm_transport::clock::RafkaTime::unadopted();
-    behind.adopt(s1.saturating_sub(3_600_000).max(1));
-    assert!(behind.now_ms() < s1, "the restarted fabric-primary's clock reads before B1's stamp");
-    let observed = cp.topology.read().await.clone();
-    let restarted = Arc::new(ControlPlane::new(builds.clone(), cp.accepted.clone(), "mesh1.admin.1".parse().unwrap(), observed, behind));
-    let b2 = restarted.submit("POST /api/meshes", crate::named_request(&restarted, TopologyChange::CreateMesh { desired: mesh("mesh3") }).await).await.expect("B2 is accepted").build_id;
-    let s2 = builds.read_build(&b2).await.unwrap().submitted_at_ms;
-    assert!(s2 > s1, "B2 ({s2} ms) is stamped after B1 ({s1} ms) though the clock went back");
-    let dir = std::env::temp_dir().join(format!("clock-rollback-{}-{}", std::process::id(), b2.as_str()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let node = rdm_admin::admitted_attempt::AdmittedAttempt::open(&dir).unwrap();
-    node.admit_attempt(b1.as_str(), s1, 8).await.expect("B1's attempt 8 is admitted first");
-    node.admit_attempt(b2.as_str(), s2, 1).await.expect("B2's attempt 1 is admitted over B1's attempt 8");
-    match node.admit_attempt(b1.as_str(), s1, 8).await {
-        Err(rdm_admin::admitted_attempt::AttemptRefused::Superseded { admitted }) => assert_eq!(admitted.build_id, b2.as_str()),
-        other => panic!("B1's attempt 8 after B2's attempt 1 is refused superseded, not {other:?}"),
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-}

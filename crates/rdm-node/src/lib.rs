@@ -22,7 +22,6 @@ pub mod node_name;
 pub mod node_rpc;
 pub mod node_self;
 pub mod rafka_time;
-pub mod admitted_attempt;
 pub mod blocking;
 pub mod durable_file;
 #[cfg(feature = "file-backend")]

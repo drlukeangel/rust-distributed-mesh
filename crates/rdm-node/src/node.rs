@@ -70,9 +70,6 @@ pub struct RunningNode {
     /// The surface that serves this birth's lifecycle and state commands
     /// (`crate::node_self`).
     pub own: Arc<crate::node_self::NodeSelf>,
-    /// This node's admitted state-sync attempt (Q168), the same one its served ops reach on
-    /// [`NodeSeams::attempts`].
-    pub attempts: Arc<crate::admitted_attempt::AdmittedAttempt>,
     before_ready: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>,
     before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -275,18 +272,6 @@ pub struct NodeSeams {
     pub connections: Arc<crate::connections_writer::ConnectionsWriter>,
     /// The name this birth holds, read per call by every door that names it.
     pub name: crate::held_name::HeldName,
-    /// This node's admitted state-sync attempt (Q168; fabric-node-hooks.md, `sync_state`), read back
-    /// from beside its data dir before anything serves: an op that does work for a state-sync attempt
-    /// calls [`NodeSeams::admit_attempt`] under its resource's serialization before it mutates.
-    pub attempts: Arc<crate::admitted_attempt::AdmittedAttempt>,
-}
-
-impl NodeSeams {
-    /// Admit the state-sync attempt `(build_id, submitted_at_ms, attempt)` on this node, or refuse it
-    /// by name ([`crate::admitted_attempt::AdmittedAttempt::admit_attempt`]).
-    pub async fn admit_attempt(&self, build_id: &str, submitted_at_ms: u64, attempt: u32) -> std::result::Result<(), crate::admitted_attempt::AttemptRefused> {
-        self.attempts.admit_attempt(build_id, submitted_at_ms, attempt).await
-    }
 }
 
 /// Optional callback invoked after rafka-time is refreshed during startup.
@@ -441,8 +426,6 @@ async fn start_booted(
     };
     let key = load_or_mint_key(&launch.data_dir)?;
     drop(step);
-    // The state-sync attempt this node admitted, read back before anything serves (Q168).
-    let attempts = Arc::new(crate::admitted_attempt::AdmittedAttempt::open(&launch.data_dir).map_err(|e| anyhow!("refusing to start: {e}"))?);
     // This process's one live resolver: a handler registered below may hold it; it is fed once
     // the topology view is joined.
     let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
@@ -539,7 +522,7 @@ async fn start_booted(
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
     // The name this birth holds, read per call by every door that names it: its launch's until it joins.
     let held_name = crate::held_name::HeldName::of_birth(launch.name.clone());
-    let seams = NodeSeams { resolver: resolver.clone(), client: data_plane.clone(), connections: connections.clone(), name: held_name.clone(), attempts: attempts.clone() };
+    let seams = NodeSeams { resolver: resolver.clone(), client: data_plane.clone(), connections: connections.clone(), name: held_name.clone() };
     let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // node.primary.update (op 0x21) on a node that is not a node-admin (lifecycles/node-primary-update.md):
     // the primary its mesh-primary commands, and the successor that primary calls.
@@ -829,7 +812,7 @@ async fn start_booted(
                                     leave: None,
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, attempts: attempts.clone(), before_ready: before_ready_cell, before_ready_task: before_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections, listeners: bound_listeners.clone() });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, before_ready: before_ready_cell, before_ready_task: before_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections, listeners: bound_listeners.clone() });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },

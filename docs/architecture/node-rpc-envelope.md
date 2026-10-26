@@ -916,12 +916,8 @@ receives one outer traffic-opened integration notice after the completed check-i
 ### Application state-sync handoff
 
 SyncState and StateSynced name the external RDM/Rafka integration messages, with the
-fields `fabric_id: FabricId`, `build_id: String`, `submitted_at_ms: u64` (the accepted Build's
-acceptance stamp, R-BI3), `attempt: u32`,
+fields `fabric_id: FabricId`, `build_id: String`, `attempt: u32`,
 `operation: String` (`state-sync:<fabric_id>`) and observability `context: CallContext`.
-Every application operation the hook sends carries `build_id`, `submitted_at_ms` and `attempt`,
-and the node serving it admits it by
-[`admit_attempt`](fabric-node-hooks.md#admit-attempt) (Q168).
 SyncState hands state-sync to the application; StateSynced reports its requested work
 complete to the fabric-primary. It triggers state-commit, not ready-for-traffic.
 The integration transport has no Node RPC opcode or target defined here; an application
