@@ -12,7 +12,7 @@
 //! its own beside the fabric's store dir (`rdm_test::test_app::topology_storage_dir`).
 
 use rdm_client::{CallEnd, Change, FabricDesired, FabricView, MeshDesired, NodeStatus, NodeView, PathName};
-use rdm_test::estate::{estate_root, estate_store_dir, named, wait_for, Estate, Owner};
+use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha};
 use rdm_test::test_app::{topology_storage_dir, TOPOLOGY_STORAGE_TARGET};
 use serde_json::{json, Value};
@@ -201,11 +201,12 @@ async fn an_unsupported_provider_changes_nothing() {
     let after = estate.node_views().await;
     assert_eq!(births(&after), before, "every node is the same birth");
     nodes_write(&after, FILE);
+    // Every process's evidence is flushed as it leaves: the spans are read once the estate has stopped.
+    estate.stop().await;
     let spans = estate.spans();
     let reject = named(&spans, "rdm.node_admin.build.reject.via-topology-storage-provider-not-registered");
     assert!(reject.iter().any(|sp| s(&sp["attributes"]["detail"]).contains(UNREGISTERED)), "the fabric-primary's refusal span names the provider: {reject:#?}");
     assert!(named(&spans, "rdm.node.build.update.via-storage-block").is_empty(), "no node blocked: no step of a change ran");
-    estate.stop().await;
 }
 
 /// CONTRACT (storage.md §2 "The property": Day 0, "the bootstrap admin, on the Fabric row ... its
@@ -227,7 +228,7 @@ async fn an_omitted_provider_preserves_the_current_provider() {
     fabric_names(&fabric, TOPOLOGY_STORAGE_TARGET, &[]);
     nodes_write(&estate.node_views().await, TOPOLOGY_STORAGE_TARGET);
     // Day 0 on the named provider: its place holds the fabric's root, the file provider's store dir none.
-    let store_dir = estate_store_dir(&estate_root(test));
+    let store_dir = estate.store_dir();
     let file_held: Vec<String> = std::fs::read_dir(&store_dir).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
     assert!(file_held.is_empty(), "the file provider's store dir {} holds nothing of the fabric: {file_held:?}", store_dir.display());
     let target = topology_storage_dir(&store_dir).join(fabric.id.to_string());
@@ -269,10 +270,6 @@ async fn admin_restart_resolves_the_same_change(test: &str, how: Ended) {
     estate.restart_admin_with(&estate.bootstrap_data_dir("mesh1"), &[("RDM_TOPOLOGY_STORAGE_PROVIDER", FILE)]);
     let done = estate.follow(stream).await;
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
-    let spans = estate.spans();
-    let switched: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-storage-switch").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == build_id && sp["attributes"]["outcome"] == "inserted").collect();
-    assert_eq!(switched.len(), 1, "exactly one `commit` is inserted for the change: {switched:#?}");
-    assert_eq!(s(&switched[0]["attributes"]["change_id"]), change_id, "the resumed change is the same change_id");
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
     let after = estate.node_views().await;
     nodes_write(&after, TOPOLOGY_STORAGE_TARGET);
@@ -287,7 +284,13 @@ async fn admin_restart_resolves_the_same_change(test: &str, how: Ended) {
     history_carried(&old, &store_lines(&target_root));
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(store_lines(&file_root), old, "the previous provider is written no more");
+    // Every process's evidence is flushed as it leaves: the spans are read once the estate has stopped.
     estate.stop().await;
+    let spans = estate.spans();
+    let spans = estate.spans();
+    let switched: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-storage-switch").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == build_id && sp["attributes"]["outcome"] == "inserted").collect();
+    assert_eq!(switched.len(), 1, "exactly one `commit` is inserted for the change: {switched:#?}");
+    assert_eq!(s(&switched[0]["attributes"]["change_id"]), change_id, "the resumed change is the same change_id");
 }
 
 /// CONTRACT (i149 § Restart-recovery canary, FIRST test; storage.md §2 "Changing it": "The change has a
@@ -367,6 +370,8 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(store_lines(&file_root), old, "the previous provider is written no more");
 
+    // Every process's evidence is flushed as it leaves: the spans are read once the estate has stopped.
+    estate.stop().await;
     let spans = estate.spans();
     let mut traces = BTreeSet::new();
     for (step, outcome) in [
@@ -382,5 +387,4 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     }
     assert_eq!(traces.len(), 1, "the storage steps are on one causal trace: {traces:?}");
     estate.record_trace_url(traces.iter().next().unwrap());
-    estate.stop().await;
 }

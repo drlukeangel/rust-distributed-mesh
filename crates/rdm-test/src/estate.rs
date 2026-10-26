@@ -803,6 +803,12 @@ impl Estate {
         writeln!(f, "{entry}").unwrap();
     }
 
+    /// The estate's store dir (`RDM_STORE_DIR`), `<estate root>/store`: what every admin it starts is
+    /// given.
+    pub fn store_dir(&self) -> PathBuf {
+        estate_store_dir(&self.root)
+    }
+
     /// The fabric's store root, `<estate store_dir>/<fabric id>/` (R14): the one fabric directory the
     /// estate's store_dir holds beside the fabrics' name index (`fabrics/`, R-FN1).
     pub fn fabric_store_root(&self) -> PathBuf {
