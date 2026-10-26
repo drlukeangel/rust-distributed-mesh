@@ -3141,3 +3141,19 @@ CLAUDE.md name stop then start; 27 cells removed, 18 renamed (declared). Found a
 a second stop or start of the same birth in one Build reported Complete without running (9589869bf).
 Q189 asked: a start right after a stop of a node in another mesh can be refused node-not-live while
 the fabric-primary's view lags. 141: message pending (Remote Control disconnected).
+
+## e12.s101 — 2026-10-26: i149 e1 lands, the customer names and reads topology_storage_provider
+
+i149 e1 (lane e4s8, branch i149-e1, rebased on 2dab38ef0): named providers registered per executable
+(`TopologyStorageProviders` / `NodeStorageProviders`; `admin::start_on` takes the registry), Day 0's
+`RDM_TOPOLOGY_STORAGE_PROVIDER` written on the Fabric row, `build.create`'s Reconcile names
+`topology_storage_provider` (omitted keeps the current one; an unregistered name is refused at
+acceptance by name), `fabric.get` and every node view read it; `storage` → `storage_persistence`,
+`on_retire` → `disposition`. A Build message carries no provider (Q184). e1's three acceptance cells
+green; the restart-recovery canary and the happy-path seed stay RED for e4, kept on branch
+i149-e4-cells. The live switch (block, finish writes, copy, switch, unblock) is e2–e4.
+
+Landing gate red at 53518fc44: `rdm-admin:main` timed out at 300 s, its 8 test workers stuck at once on
+8 unrelated cells, every other tree at its usual time; host load average 13 at the time, source not
+attributable afterwards; the hang watcher ran the same binary 8 times on the lane, 8/8 green (448
+cells, 31.6 s each), no stack. Read and unattributed; the watcher stays on every tail.
