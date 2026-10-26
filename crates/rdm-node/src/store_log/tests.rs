@@ -463,12 +463,12 @@ async fn the_open_span_carries_the_files_bytes_lines_and_duration() {
     let mut expected = vec![format!("{}:1", writer("a")), format!("{}:1", writer("b"))];
     expected.sort();
     assert_eq!(open.1.get("writers"), Some(&expected.join(",")), "{open:?}");
-    assert!(open.1.contains_key("fold_ms") && open.1.get("outcome").map(String::as_str) == Some("folded"), "{open:?}");
+    assert!(open.1.contains_key("duration") && open.1.get("outcome").map(String::as_str) == Some("folded"), "{open:?}");
     let at = std::fs::metadata(&path).unwrap().len() + 1;
     append_raw(&path, b"\n{\"len\":5}\n");
     let spans = capture_spans(|| async { assert!(reopen(&path).await.is_err()) }).await;
     let open = spans.iter().find(|s| s.0 == OPEN_SPAN).expect("an open span");
-    assert_eq!((open.1.get("outcome").map(String::as_str), open.1.get("offset")), (Some("refused"), Some(&at.to_string())), "{open:?}");
+    assert_eq!((open.1.get("outcome").map(String::as_str), open.1.get("invalid_offset")), (Some("refused"), Some(&at.to_string())), "{open:?}");
     assert!(open.1.get("cause").is_some_and(|c| c.contains("len")), "{open:?}");
 }
 

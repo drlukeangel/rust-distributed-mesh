@@ -53,8 +53,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// The span every open of a store file records: the file, its bytes and lines, the latest `op` of
-/// each writer and the fold's duration; a refused fold its offset and cause.
+/// The span every open of a store file records: the file, its provider when the opener names it, its
+/// bytes and lines, the latest `op` of each writer and the fold's `duration` in milliseconds; a refused
+/// fold its `invalid_offset` and cause (i149 plan, "OTLP span-assertion bar").
 pub const OPEN_SPAN: &str = "rdm.store.open.via-fold";
 
 /// The bytes every object ends with after its checksummed bytes: `,"crc32":"xxxxxxxx"}`.
@@ -494,16 +495,25 @@ impl StoreLog {
     /// blocking pool, recorded on the [`OPEN_SPAN`] span. A file this build cannot fold whole is
     /// refused by name.
     pub async fn open(path: &Path, formats: Formats) -> Result<Self, StorageError> {
-        Self::opened(path, formats, Arc::new(DiskIo), None).await
+        Self::opened(path, formats, Arc::new(DiskIo), None, None).await
+    }
+
+    /// [`Self::open`] of a store of the topology storage provider registered as `provider`, its open's
+    /// span naming it.
+    pub async fn open_for(provider: &str, path: &Path, formats: Formats) -> Result<Self, StorageError> {
+        Self::opened(path, formats, Arc::new(DiskIo), None, Some(provider)).await
     }
 
     /// [`Self::open`], showing `observer` every line the fold reads, once each, in file order.
     pub async fn open_observed(path: &Path, formats: Formats, observer: Observer) -> Result<Self, StorageError> {
-        Self::opened(path, formats, Arc::new(DiskIo), Some(observer)).await
+        Self::opened(path, formats, Arc::new(DiskIo), Some(observer), None).await
     }
 
-    async fn opened(path: &Path, formats: Formats, io: Arc<dyn AppendIo>, observer: Option<Observer>) -> Result<Self, StorageError> {
-        let span = tracing::info_span!("rdm.store.open.via-fold", file = %path.display(), bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, fold_ms = tracing::field::Empty, outcome = tracing::field::Empty, offset = tracing::field::Empty, cause = tracing::field::Empty);
+    async fn opened(path: &Path, formats: Formats, io: Arc<dyn AppendIo>, observer: Option<Observer>, provider: Option<&str>) -> Result<Self, StorageError> {
+        let span = tracing::info_span!("rdm.store.open.via-fold", file = %path.display(), provider = tracing::field::Empty, bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, duration = tracing::field::Empty, outcome = tracing::field::Empty, invalid_offset = tracing::field::Empty, cause = tracing::field::Empty);
+        if let Some(provider) = provider {
+            span.record("provider", provider);
+        }
         let began = std::time::Instant::now();
         let p = path.to_path_buf();
         let file = blocking_io(move || -> Result<std::fs::File, StorageError> {
@@ -529,7 +539,7 @@ impl StoreLog {
             Ok(()) => {
                 let f = log.0.fold.lock().unwrap_or_else(|e| e.into_inner());
                 let writers: Vec<String> = f.ops.iter().map(|((n, i), seq)| format!("{n}/{i}:{seq}")).collect();
-                span.record("bytes", f.consumed).record("lines", f.lines).record("writers", writers.join(",")).record("fold_ms", began.elapsed().as_millis() as u64).record("outcome", "folded");
+                span.record("bytes", f.consumed).record("lines", f.lines).record("writers", writers.join(",")).record("duration", began.elapsed().as_millis() as u64).record("outcome", "folded");
                 Ok(log.clone())
             }
             Err(e) => {
@@ -537,9 +547,9 @@ impl StoreLog {
                     StorageError::Unrecognised { reason, .. } => reason.split("byte offset ").nth(1).and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next()).map(str::to_string),
                     _ => None,
                 };
-                span.record("outcome", "refused").record("cause", e.to_string()).record("fold_ms", began.elapsed().as_millis() as u64);
+                span.record("outcome", "refused").record("cause", e.to_string()).record("duration", began.elapsed().as_millis() as u64);
                 if let Some(o) = offset {
-                    span.record("offset", o);
+                    span.record("invalid_offset", o);
                 }
                 Err(e)
             }
@@ -622,6 +632,25 @@ impl StoreLog {
         .await
     }
 
+    /// Append `line` as its writer wrote it, its `op` kept (storage.md §2 Copy: the old provider's lines
+    /// appended to the new one, every writer's included): this store's pending append is reconciled
+    /// first, then the line is written and fsynced as [`Self::append`] writes one, and a sequence this
+    /// process hands its writer later in this file is past it.
+    pub async fn append_line(&self, line: &Line) -> Result<(), StorageError> {
+        let file = self.0.path.display().to_string();
+        let op = line.op.clone().ok_or_else(|| StorageError::Io { file: file.clone(), reason: format!("the {} line at {:?} has no op: only a line on a store is appended as written", line.format, line.key) })?;
+        let bytes = serde_json::to_vec(&line.record).map_err(|e| StorageError::Io { file: file.clone(), reason: format!("the {} record at {:?} does not encode: {e}", line.format, line.key) })?;
+        self.0.formats.check(&line.format, &line.record).map_err(|why| StorageError::Unrecognised { file, reason: format!("a write refused: {why}") })?;
+        let guard = self.0.append.clone().lock_owned().await;
+        let inner = self.0.clone();
+        let (format, key) = (line.format.clone(), line.key.clone());
+        blocking_io(move || {
+            let mut guard = guard;
+            inner.append_written(&mut *guard, op, &format, &key, &bytes)
+        })
+        .await
+    }
+
     /// Reconcile this store's pending append, if it holds one: done, or refused by name.
     pub async fn reconcile(&self) -> Result<(), StorageError> {
         let guard = self.0.append.clone().lock_owned().await;
@@ -640,7 +669,7 @@ impl StoreLog {
 
     #[cfg(test)]
     pub(crate) async fn open_with(path: &Path, formats: Formats, io: Arc<dyn AppendIo>) -> Result<Self, StorageError> {
-        Self::opened(path, formats, io, None).await
+        Self::opened(path, formats, io, None, None).await
     }
 
     /// Forget the `seq`s this process handed out for `path`: what a restart of the process is.
@@ -712,6 +741,21 @@ impl Inner {
     fn append_line(&self, pending: &mut Option<Pending>, writer: &LogWriter, format: &str, key: &str, record: &[u8]) -> Result<(), StorageError> {
         self.settle(pending)?;
         let op = self.next_op(writer);
+        self.write_new(pending, op, format, key, record)
+    }
+
+    /// Append a line under the `op` its writer wrote it with: this process's sequence of that writer in
+    /// this file moves past it, so no later write reuses it.
+    fn append_written(&self, pending: &mut Option<Pending>, op: Op, format: &str, key: &str, record: &[u8]) -> Result<(), StorageError> {
+        self.settle(pending)?;
+        let mut issued = issued().lock().unwrap_or_else(|e| e.into_inner());
+        let last = issued.entry((self.path.clone(), (op.node_id.clone(), op.incarnation_id.clone()))).or_insert(0);
+        *last = (*last).max(op.seq);
+        drop(issued);
+        self.write_new(pending, op, format, key, record)
+    }
+
+    fn write_new(&self, pending: &mut Option<Pending>, op: Op, format: &str, key: &str, record: &[u8]) -> Result<(), StorageError> {
         let obj = encode_object(&op, format, key, record);
         let from = self.fold.lock().unwrap_or_else(|e| e.into_inner()).consumed;
         *pending = Some(Pending { op, obj, from, reported: 0 });
@@ -895,6 +939,32 @@ impl StoreLocks {
                 Some(held) => Ok(LockTaken::Held(held)),
                 None => Err(StorageError::Io { file: path.display().to_string(), reason: "the lock stood at the take and was gone at the read after it: its claimant released it between the two; nothing is taken, and the next take decides on the free lock".into() }),
             }
+        })
+        .await
+    }
+
+    /// Every lock `kind` that stands, by name, with its content, in name order: a temp file of a take
+    /// and a name's reclamation anchor are not locks.
+    pub async fn held(&self, kind: LockKind) -> Result<Vec<(String, Vec<u8>)>, StorageError> {
+        let dir = self.dir.join(kind.dir());
+        blocking_io(move || {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(e) => return Err(StorageError::Io { file: dir.display().to_string(), reason: e.to_string() }),
+            };
+            let mut held = BTreeMap::new();
+            for entry in entries {
+                let entry = entry.map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') || name.ends_with(".reclaim") {
+                    continue;
+                }
+                if let Some(content) = read_lock(&entry.path())? {
+                    held.insert(name, content);
+                }
+            }
+            Ok(held.into_iter().collect())
         })
         .await
     }

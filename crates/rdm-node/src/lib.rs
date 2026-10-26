@@ -29,6 +29,8 @@ pub mod record_store;
 pub mod owed;
 pub mod storage;
 pub mod storage_backend;
+#[cfg(feature = "file-backend")]
+pub mod storage_copy;
 pub mod storage_error;
 pub mod storage_handle;
 #[cfg(feature = "file-backend")]

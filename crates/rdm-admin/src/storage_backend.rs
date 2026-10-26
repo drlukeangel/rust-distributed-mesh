@@ -89,6 +89,14 @@ pub trait StorageBackend: Send + Sync {
     async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError>;
     /// Opens the five boundaries of `scope`.
     async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String>;
+    /// This backend's five stores as their lines and its claims for the fabric `fabric_id`, registered
+    /// as `provider`: what a storage change's copy reads from the old provider and appends to the new
+    /// one (storage.md §2 Copy, [`rdm_node::storage_copy`]). A backend that answers none refuses by name.
+    #[cfg(feature = "file-backend")]
+    async fn lines(&self, provider: &str, fabric_id: &FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, String> {
+        let _ = fabric_id;
+        Err(format!("the topology storage provider `{provider}` answers no lines and claims to copy (storage.md §2 Copy)"))
+    }
 }
 
 /// RDM standalone's backend: the boundaries as files, the shared ones on the fabric's store root
@@ -121,6 +129,11 @@ impl StorageBackend for FileBackend {
 
     async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
         crate::storage::FileNodesStorage::put_own_in(data_dir, writer, record).await
+    }
+
+    async fn lines(&self, provider: &str, fabric_id: &FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, String> {
+        let lines = rdm_node::storage_copy::FileProviderLines::open(provider, &self.store_dir, fabric_id).await.map_err(|e| format!("the topology storage provider `{provider}` does not open its lines: {e}"))?;
+        Ok(Arc::new(lines))
     }
 
     async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String> {
@@ -207,6 +220,15 @@ impl TopologyStorageProviders {
         self.registered.iter().find(|(n, _)| n == name).map(|(_, b)| b.clone()).ok_or_else(|| {
             format!("{} names topology storage provider `{name}`, which this executable does not register (it registers: {})", rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER, names.join(", "))
         })
+    }
+
+    /// The lines and claims of the provider registered as `name` for the fabric `fabric_id`: a storage
+    /// change's copy reads the old provider's and appends to the new one's (storage.md §2 Copy,
+    /// [`rdm_node::storage_copy::copy`]). Refused by name as [`Self::named`] refuses, or when the
+    /// provider answers none.
+    #[cfg(feature = "file-backend")]
+    pub async fn lines(&self, name: &str, fabric_id: &FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, String> {
+        self.named(name)?.lines(name, fabric_id).await
     }
 }
 
@@ -695,6 +717,25 @@ mod tests {
         let twice = providers.register("app", Arc::new(MemoryBackend)).named("file").err().expect("a name registered twice is refused");
         assert!(twice.contains("`app` is registered twice"), "{twice}");
     }
+    /// CONTRACT (storage.md §2 Copy: the fabric-primary "appends every line of every store on the old
+    /// provider to the new one"): the registry answers the lines of a provider by its registered name,
+    /// the provider's fold spans naming it; a provider whose backend answers none, and a name the
+    /// executable does not register, are refused by name. Must NOT happen: a copy opened on a provider
+    /// that cannot answer its lines, or on an unregistered name.
+    #[cfg(feature = "file-backend")]
+    #[tokio::test]
+    async fn a_registered_provider_answers_its_lines_by_its_name_and_one_that_answers_none_is_refused_by_name() {
+        let store = crate::test_support::tempdir("provider-lines-store");
+        let providers = TopologyStorageProviders::file(&store).register("memory", Arc::new(MemoryBackend));
+        let fabric = FabricId::mint();
+        let lines = providers.lines("file", &fabric).await.unwrap_or_else(|e| panic!("the file provider answers its lines: {e}"));
+        assert!(lines.lines(rdm_node::storage_copy::Store::Fabric).await.unwrap().is_empty(), "a new root holds no line");
+        let memory = providers.lines("memory", &fabric).await.err().expect("a provider that answers no lines is refused");
+        assert!(memory.contains("`memory`"), "{memory}");
+        let other = providers.lines("other", &fabric).await.err().expect("an unregistered name is refused");
+        assert!(other.contains("`other`"), "{other}");
+    }
+
     use crate::model::NodeId;
 
     /// Whether any file under `dir`, by its path or its contents, names `needle`.
