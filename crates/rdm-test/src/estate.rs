@@ -747,13 +747,32 @@ impl Estate {
         })
         .await;
         estate.fabric_id = fabric_id;
-        // The estate started the Day-0 Build by starting its admin, so it follows that Build to its
-        // terminal frame before a cell submits anything: a cell's first build.create is never refused
-        // for a Build in progress it did not start.
+        // The estate started the Day-0 Build by starting its admin, so it follows that Build until its
+        // work is done before a cell submits anything: a cell's first build.create is never refused
+        // for a Build in progress it did not start. The Day-0 Build is Complete only from its own
+        // ready-for-traffic (states.md "Resize and executable replacement": "as fabric.create's is"): an
+        // application that answers `sync_state` is followed to that Complete; one that holds or refuses
+        // Day 0's state-sync (`RDM_TEST_APP` other than `answer`) to the Blocked frame naming the fabric's
+        // change, its attempt handed back with nothing left and nothing of it in flight.
+        let answers = extra_env.iter().find(|(k, _)| *k == "RDM_TEST_APP").is_none_or(|(_, v)| v.trim().is_empty() || v.starts_with("answer"));
         let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
         let id = rdm_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
         let mut stream = estate.carrier().await.resubmit(&id, 1).await.unwrap_or_else(|e| panic!("the bootstrap admin does not stream its Day-0 Build {id}: {e}"));
-        Self::until_complete(&mut stream).await;
+        let mut frames = Vec::new();
+        loop {
+            let frame = match stream.next().await {
+                Some(frame) => frame.unwrap_or_else(|e| panic!("the stream of the Day-0 Build {id} broke before its work was done: {e}")),
+                None => panic!("the stream of the Day-0 Build {id} ended without its Complete or its Blocked fabric-change frame: {frames:?}"),
+            };
+            frames.push(frame.clone());
+            match frame {
+                rdm_client::BuildFrame::Complete { .. } => break,
+                rdm_client::BuildFrame::Blocked { step, .. } if !answers && step == "fabric-change" => break,
+                rdm_client::BuildFrame::Failed { attempt, operation, step, reason, .. } => panic!("the Day-0 Build {id} attempt {attempt} failed at {operation} {step}: {reason}"),
+                rdm_client::BuildFrame::FabricPrimaryMoved { fabric_primary } => panic!("the fabric-primary seat moved ({fabric_primary:?}) while the Day-0 Build {id} ran"),
+                _ => {}
+            }
+        }
         estate
     }
 
