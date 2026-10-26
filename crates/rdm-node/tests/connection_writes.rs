@@ -9,6 +9,9 @@
 //! - `a_refused_connection_write_is_retried_with_backoff_until_it_lands`: each refusal is named on
 //!   its own span with its attempt, and the row lands once.
 //! - `a_disconnected_owed_after_a_connected_lands_after_it`: rows land in queue order.
+//! - `a_start_hold_and_a_settlement_never_wait_behind_a_refused_writes_backoff`: the write gate is
+//!   taken for one write attempt and let go before the backoff, so a start's hold and the
+//!   reconciler's settlement proceed while a refused row waits to be written again.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -250,6 +253,47 @@ fn a_disconnected_owed_after_a_connected_lands_after_it() {
         assert_eq!(directs.len(), 1);
         assert_eq!(directs[0].state, ConnectionState::Disconnected, "the close ends right: the pair's latest is the drop");
         assert!(source.writer.held_routes().await.is_empty(), "nothing is held open");
+        drop(conn);
+        source.shutdown().await;
+        dest.shutdown().await;
+    });
+}
+
+#[test]
+fn a_start_hold_and_a_settlement_never_wait_behind_a_refused_writes_backoff() {
+    let capture = capture("backoff");
+    capture.run(4, async {
+        let store = OverTheConnection::new();
+        store.reachable.send_replace(true);
+        store.refuse.store(3, Ordering::SeqCst);
+        let (source, dest) = pair(store.clone()).await;
+        let dialer = source.registry.connections(ALPN).unwrap();
+        let conn = tokio::time::timeout(Duration::from_secs(10), dialer.open(&dest.birth))
+            .await
+            .expect("the open never waits for its row")
+            .expect("the open succeeds");
+        // The row's first attempt is refused: it now waits its backoff (the publish cadence, then
+        // doubling) before it is written again, and two more attempts are still to be refused.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while store.refuse.load(Ordering::SeqCst) > 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the row's first write is attempted and refused");
+        let hold = tokio::time::timeout(Duration::from_millis(200), source.writer.hold_rows())
+            .await
+            .expect("a start's hold is taken while a refused write waits its backoff, never behind it");
+        assert!(own_directs(&source).is_empty(), "the hold was taken inside the backoff: the refused row has not landed yet");
+        drop(hold);
+        tokio::time::timeout(Duration::from_millis(200), source.writer.settle_owed())
+            .await
+            .expect("the reconciler's settlement never waits behind a refused write's backoff")
+            .expect("nothing is owed, so the settlement writes nothing");
+        tokio::time::timeout(Duration::from_secs(20), source.writer.observations_landed()).await.expect("the refused write is retried until it lands");
+        let directs = own_directs(&source);
+        assert_eq!(directs.len(), 1, "the row lands once its backoff ends: {directs:?}");
+        assert_eq!(directs[0].id, *conn.id());
         drop(conn);
         source.shutdown().await;
         dest.shutdown().await;

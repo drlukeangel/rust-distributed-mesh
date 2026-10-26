@@ -103,9 +103,10 @@ struct Inner {
     /// one consumer builds, stamps, writes (retrying with backoff until it lands) and applies them
     /// one at a time, so rows land in queue order and the index member of a pair is the last owed.
     queue: tokio::sync::mpsc::UnboundedSender<Owed>,
-    /// The one write gate: held across every build, durable write and apply, whether it is an
-    /// observation, a [`ConnectionsWriter::record`] or a retirement settlement; and by a start
-    /// until it holds the name its join answer handed ([`ConnectionsWriter::hold_rows`]).
+    /// The one write gate: held across every build, durable write attempt and apply, whether it is
+    /// an observation, a [`ConnectionsWriter::record`] or a retirement settlement, and let go
+    /// before a refused write's backoff; and by a start until it holds the name its join answer
+    /// handed ([`ConnectionsWriter::hold_rows`]).
     write_gate: Arc<tokio::sync::Mutex<()>>,
     /// Per-node reconnect scheduler state (`crate::connection_reconnect`).
     reconnect: crate::connection_reconnect::ReconnectState,
@@ -385,8 +386,11 @@ impl ConnectionsWriter {
     /// after a refusal on the delivery schedule (the publish cadence, doubling with jitter, capped
     /// at the staleness floor), so a step that landed is never written twice. Each refusal is named
     /// on its own span, a child of the row's, with its attempt and the delay before the next.
-    /// Returns the attempts it took, or `None` when every handle on this writer is gone.
-    async fn land(&self, row: &NodeConnection, span: &tracing::Span) -> Option<u32> {
+    /// `gate` is the write gate, held for one attempt and let go before each backoff, so a start's
+    /// hold and a settlement never wait behind a refused write; the next attempt takes it again.
+    /// Returns the attempts it took and the gate, held, for the row's apply; or `None` when every
+    /// handle on this writer is gone.
+    async fn land<'a>(&'a self, row: &NodeConnection, span: &tracing::Span, mut gate: tokio::sync::MutexGuard<'a, ()>) -> Option<(u32, tokio::sync::MutexGuard<'a, ()>)> {
         let pacing = rdm_transport::delivery::Pacing::from_cadences();
         let mut appended = false;
         let mut attempt = 0u32;
@@ -403,7 +407,8 @@ impl ConnectionsWriter {
                     Err(e) => Some(e),
                 }
             };
-            let Some(refusal) = refusal else { return Some(attempt) };
+            let Some(refusal) = refusal else { return Some((attempt, gate)) };
+            drop(gate);
             let next = pacing.after(attempt);
             tracing::info_span!(
                 parent: span,
@@ -427,6 +432,7 @@ impl ConnectionsWriter {
             if std::sync::Arc::strong_count(&self.inner) <= 1 {
                 return None;
             }
+            gate = self.inner.write_gate.lock().await;
         }
     }
 
@@ -554,8 +560,9 @@ impl ConnectionsWriter {
         self.owe(Box::new(move |w, own| Some(build(w, own))), Origin::Observed { origin, peer: node.endpoint_id.fmt_short().to_string() });
     }
 
-    /// Write one owed row inside the write gate until it lands, apply it, then settle the
-    /// retirement it may owe.
+    /// Write one owed row until it lands, each attempt and the apply inside the write gate, then
+    /// settle the retirement it may owe. The queue's consumer takes the next row only once this
+    /// one has landed, so rows land in queue order.
     async fn write_owed(&self, owed: Owed) {
         let w = self;
         let Owed { build, origin, parent } = owed;
@@ -599,21 +606,25 @@ impl ConnectionsWriter {
                     outcome = tracing::field::Empty,
                 ),
             };
-            let landed = w.land(&row, &span).await;
-            if let Some(attempts) = landed {
-                span.record("attempts", attempts);
-                let _ = w.inner.held.lock().unwrap().apply(row.clone());
-                w.sync_recovery();
-                span.record("outcome", "landed");
-            } else {
-                span.record("outcome", "writer-gone");
-            }
+            let landed = match w.land(&row, &span, gate).await {
+                Some((attempts, gate)) => {
+                    span.record("attempts", attempts);
+                    let _ = w.inner.held.lock().unwrap().apply(row.clone());
+                    w.sync_recovery();
+                    span.record("outcome", "landed");
+                    drop(gate);
+                    true
+                }
+                None => {
+                    span.record("outcome", "writer-gone");
+                    false
+                }
+            };
             span.in_scope(|| match origin {
                 Origin::Observed { .. } => tracing::info!("one connection fact this node observed"),
                 Origin::Drop { .. } => tracing::info!("the drop of a connection this node cut"),
             });
-            drop(gate);
-            if settles && landed.is_some() {
+            if settles && landed {
                 let _ = tracing::Instrument::instrument(w.settle_owed(), span.clone()).await;
             }
             drop(span);
