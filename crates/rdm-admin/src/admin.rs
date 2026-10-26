@@ -237,8 +237,8 @@ mod tests {
     /// Build, so the projection holds one entry per `path.name`"; §2.3: "the deleted row releases the
     /// `path.name`"): the birth at a path is the one the records say is current, stopped or not. A
     /// recovery re-created mesh1.rpc.2 under a new node id; the predecessor's row is `Deleted`, and its
-    /// digest is still held, silent past the staleness floor (its `NodeDeleted` never reached this
-    /// view). The successor was then stopped. The projection lists the successor, stopped, at
+    /// digest is still held, heard or silent past the staleness floor (its `NodeDeleted` never reached
+    /// this view). The successor was then stopped. The projection lists the successor, stopped, at
     /// mesh1.rpc.2. Must NOT happen: the predecessor's held digest taking the path from the stopped
     /// successor (release red at 31666a3c3: `node.start:mesh2.admin.1 is fenced to birth ptkpqdd24s4x,
     /// the view holds z8pb1w7gckwy at that path`).
@@ -267,20 +267,22 @@ mod tests {
                 name: successor.node.name.clone(),
                 event_at_rafka_ms: 1,
             }));
-            // Past the staleness floor: the predecessor publishes nothing, and both births are named by their rows.
-            let at = std::time::Instant::now() + digest_view.staleness_floor() + std::time::Duration::from_secs(1);
-            let me: PathName = "mesh1.admin.1".parse().unwrap();
-            let reads = ViewReads { at, rows: super::projection::RowNames::read(&me, &digest_view, &records, &fabric1(), at).await };
-            let t = project_with("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &reads);
-            let n = t.node(&successor.node.name).expect("a birth is listed at mesh1.rpc.2");
-            assert_eq!(
-                n.incarnation_id.as_ref().map(|i| i.as_str()),
-                Some(successor.node.incarnation.as_str()),
-                "{backend}: mesh1.rpc.2 lists the successor {} (the birth its row names), not the deleted predecessor {}: {n:?}",
-                successor.node.incarnation.as_str(),
-                predecessor.node.incarnation.as_str()
-            );
-            assert!(n.stopped, "{backend}: listed stopped: {n:?}");
+            // Within the staleness floor the predecessor still publishes its own name (heard); past it,
+            // it publishes nothing (silent). Either way the successor's row holds the name.
+            for (when, at) in [("heard", std::time::Instant::now()), ("silent", std::time::Instant::now() + digest_view.staleness_floor() + std::time::Duration::from_secs(1))] {
+                let me: PathName = "mesh1.admin.1".parse().unwrap();
+                let reads = ViewReads { at, rows: super::projection::RowNames::read(&me, &digest_view, &records, &fabric1(), at).await };
+                let t = project_with("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &reads);
+                let n = t.node(&successor.node.name).expect("a birth is listed at mesh1.rpc.2");
+                assert_eq!(
+                    n.incarnation_id.as_ref().map(|i| i.as_str()),
+                    Some(successor.node.incarnation.as_str()),
+                    "{backend}, predecessor {when}: mesh1.rpc.2 lists the successor {} (the birth its row names), not the deleted predecessor {}: {n:?}",
+                    successor.node.incarnation.as_str(),
+                    predecessor.node.incarnation.as_str()
+                );
+                assert!(n.stopped, "{backend}, predecessor {when}: listed stopped: {n:?}");
+            }
         }
     }
 
