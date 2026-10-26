@@ -2005,6 +2005,66 @@ mod tests {
         assert_eq!(plan_for_build(&build(vec![step(6, "StopNode"), step(6, "Complete"), step(7, "StopNode")]), &gone).operations, stop, "another birth's Complete is not this stop's");
     }
 
+    /// CONTRACT (node-stop.md "Completion": the matching node.stopped and the recorded stop receipt;
+    /// node-start.md; Q183: callers run node.stop then node.start, and may again): a stop, a start and a
+    /// second stop of the same birth in one Build are three requests, each its own run. The second
+    /// stop (attempt 6, the latest opened) is planned although attempt 4's stop of the same birth
+    /// receipted `Complete`: an earlier run's receipts are not this run's progress. Likewise a second
+    /// start after it. Must NOT happen: the second stop answered `Complete` with no `StopNode` sent,
+    /// the node left running.
+    #[test]
+    fn a_second_stop_or_start_of_the_same_birth_in_one_build_is_planned_again() {
+        use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
+        let cur = t(&[("mesh1", 2, 3)]);
+        let o = mn();
+        let path: PathName = "mesh1.rpc.3".parse().unwrap();
+        let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
+        let receipt = |attempt: u32, operation: &str, step: &str| BuildStepReceipt {
+            mesh: None,
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
+            attempt,
+            operation: format!("{operation}:{path}"),
+            step: step.into(),
+            outcome: StepOutcome::Complete,
+            output: None,
+            executor: None,
+        };
+        let (stop, start) = (AttemptAction::Stop { path: path.clone(), from_incarnation: from.clone() }, AttemptAction::Start { path: path.clone(), from_incarnation: from.clone() });
+        let build = |action: &AttemptAction, opened: u32, actions: Vec<(u32, AttemptAction)>, steps: Vec<BuildStepReceipt>| BuildProjection {
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
+            topology: cur.clone(),
+            submitted_change: None,
+            submitted_at_ms: 0,
+            state: BuildState::Pending,
+            attempt: opened,
+            executor: None,
+            steps,
+            last_failure: None,
+            reason: AttemptReason::Stop,
+            action: Some(action.clone()),
+            attempt_actions: actions.into_iter().collect(),
+            attempt_executors: Default::default(),
+            opened,
+            failed_at: None,
+            completed_at: None,
+            reported: Default::default(),
+            claimant: None,
+            lanes: Default::default(),
+        };
+        let first_runs = vec![receipt(4, "node.stop", "StopNode"), receipt(4, "node.stop", "Complete"), receipt(5, "node.start", "StartNode"), receipt(5, "node.start", "Complete")];
+        let second_stop = build(&stop, 6, vec![(4, stop.clone()), (5, start.clone()), (6, stop.clone())], first_runs.clone());
+        assert_eq!(plan_for_build(&second_stop, &o).operations, vec![BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }], "the second stop of the live birth is planned");
+        let mut stopped = o.clone();
+        stopped.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| {
+            n.status = NodeStatus::Leaving;
+            n.stopped = true;
+        });
+        let mut steps = first_runs;
+        steps.extend([receipt(6, "node.stop", "StopNode"), receipt(6, "node.stop", "Complete")]);
+        let second_start = build(&start, 7, vec![(4, stop.clone()), (5, start.clone()), (6, stop), (7, start.clone())], steps);
+        assert_eq!(plan_for_build(&second_start, &stopped).operations, vec![BuildOperation::StartNode { node: path.clone(), from_incarnation: from }], "the second start of the stopped birth is planned");
+    }
+
     /// CONTRACT (node-recovery.md, Operation summary "Steps"; proposal node-properties-own-commands.md
     /// §5 item 8, §8: "Replace's caller-meta copy step goes with recovery's"; rdm-code-conformance.md
     /// §0.1 and §2 item 4): an admitted recovery is two operations of its exited birth, in the doc's

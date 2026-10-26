@@ -136,14 +136,15 @@ async fn a_successor_manages_births_it_never_launched() {
     for r in &recoveries {
         assert_eq!(r["attributes"]["scope"], "mesh1.node_admin: 1 present of 2 desired (exited: mesh1.admin.1)");
     }
-    // A restart relaunches nothing (node-restart.md: "Live process stops and rejoins; no relaunch"): its
-    // WaitForNodeReady follows NodeRestarting and none of the launch steps. Every other wait is a launch.
+    // A restart, node.stop then node.start, relaunches nothing (node-start.md: the same process rejoins):
+    // its start's WaitForNodeReady follows StartNode and none of the launch steps. Every other wait is a
+    // launch.
     let steps_before = |wait: &Value| -> Vec<Value> {
         let (node, build) = (wait["attributes"]["node"].as_str().unwrap(), wait["attributes"]["build_id"].clone());
         steps_of(node, &|sp| sp["attributes"]["build_id"] == build && ns(sp, "end_unix_nano") <= ns(wait, "start_unix_nano"))
     };
     let (restarts, launches): (Vec<&Value>, Vec<&Value>) =
-        launched.iter().filter(|w| w["attributes"]["node"] != "mesh1.admin.1").partition(|w| steps_before(w).iter().any(|sp| sp["attributes"]["step"] == "NodeRestarting"));
+        launched.iter().filter(|w| w["attributes"]["node"] != "mesh1.admin.1").partition(|w| steps_before(w).iter().any(|sp| sp["attributes"]["step"] == "StartNode"));
     let restarted_nodes: Vec<&str> = restarts.iter().map(|w| w["attributes"]["node"].as_str().unwrap()).collect();
     assert_eq!(restarted_nodes, ["mesh1.rpc.2"], "mesh1.rpc.2's restart waited for Ready, and no other node was restarted");
     for node in ["mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"] {
