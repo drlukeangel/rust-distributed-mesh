@@ -397,7 +397,14 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
             .await;
         };
         echo(b"before").await;
-        let held_before = bounded("node.connections.get of mesh1.rpc.1 before the renewal", call(&root, &a, &StatusRequest::GetConnections { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() })).await;
+        // The open answers before its row lands (Q169): mesh1.rpc.1 holds the connection once its write
+        // lands, and the renewal is compared against that.
+        let opened_id = conn.id().to_string();
+        let held_before = until("node.connections.get of mesh1.rpc.1 holds the open connection before the renewal", BOUND, async || {
+            let held = call(&root, &a, &StatusRequest::GetConnections { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() }).await;
+            matches!(&held, Ok(StatusReply::Connections { connections }) if connections.connections.iter().any(|c| c.id == opened_id)).then_some(held)
+        })
+        .await;
         let view_before = bounded("node.get of mesh1.rpc.1 before the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.rpc.1 in the view");
         let (digest_before, _) = b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).expect("mesh1.rpc.2 holds mesh1.rpc.1's digest");
         let connection_spans = |spans: &crate::common::Spans| spans.0.lock().unwrap().values().filter(|(n, _, _)| n.starts_with("rdm.node.connections.")).count();
@@ -413,7 +420,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         echo(b"after").await;
         assert_eq!(conn.id(), server.id(), "the same connection carries the stream after the install");
         let held_after = bounded("node.connections.get of mesh1.rpc.1 after the renewal", call(&root, &a, &StatusRequest::GetConnections { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() })).await;
-        assert_eq!(held_after, held_before, "what the member holds is unchanged");
+        assert_eq!(held_after, held_before, "what the node holds is unchanged");
         let view_after = bounded("node.get of mesh1.rpc.1 after the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.rpc.1 in the view");
         assert_eq!(
             (view_after.status, &view_after.incarnation_id, &view_after.name, &view_after.config, view_after.stopped),
