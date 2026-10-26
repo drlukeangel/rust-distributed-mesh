@@ -130,7 +130,9 @@ async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_shows_no_appli
     hand.provider().terminate(hand.handle(), TerminationMode::Immediate).await.expect("the immediate terminate of the exact handle");
     until_host(hand, &["exited"], "the terminated runtime gone").await;
     let took = t.elapsed();
-    assert!(took < Duration::from_secs(2), "the immediate terminate of a suspended runtime takes no grace: {took:?}");
+    // No grace: it ends before the stop ladder's grace could have run (a graceful terminate waits it).
+    let grace = rdm_admin::deployment::pipeline::Timeouts::default().stop_grace;
+    assert!(took < grace, "the immediate terminate of a suspended runtime takes no grace: {took:?}, the grace {grace:?}");
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(hand.heartbeat(), held, "no application progress is observed after the suspension: its heartbeat never grew again (took {took:?})");
     let status = hand.provider().inspect(hand.handle()).await;
