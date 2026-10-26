@@ -3179,3 +3179,15 @@ disjoint-file inventory only, its implementation after e2 lands; e4s eight accep
 restart canaries and the seed are authored RED alongside (lane e7s3, branch i149-e4-red), the spans
 as the plans OTLP bar names them. Q177 (Wiring.hooks removal, decided by build.md §9) runs in lane
 e6s4. Q189 is open with Luke.
+
+## e12.s104 — 2026-10-26: soaks on the canonical shape; release reds fixed; two rdm-admin:main hangs recorded
+
+The two #2787 driver soaks run the canonical R-shape, two meshes of 2 node-admins, 2 compute, 3 gateway,
+3 broker (8934f7d25; 120 s proof: 20 nodes formed, 24 rounds, 0 violations), as the rshape soaks already
+did (Luke: "make sure that soak is running on a 2,2,3,3 x2 meshs"). The release run at 31666a3c3 was red on
+six cells, all read: three still counted node.restart's single attempt (fixed to stop then start, Q183);
+the container node cell asserted pre-Q181 behaviour (now follows the page, Q195), both landed 076c56ee2;
+two Builds failed on a recovered-away birth listed at a stopped birth's path (projection, fix in flight).
+Landing gate red twice on rdm-admin:main timeouts, unattributed: at 53518fc44 eight workers stuck at once
+(8/8 clean reruns), at e400d832e one cell (`app_protocol_dials::a_day0_root_holds_a_chained_member_cert_and_its_app_protocol_dials_are_admitted_both_ways`)
+past 300 s with the host's load average at 19 under parallel agents' estates; read off the critical path.
