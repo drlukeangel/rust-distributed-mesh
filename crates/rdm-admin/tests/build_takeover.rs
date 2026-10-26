@@ -13,7 +13,7 @@ use iroh::{Endpoint, SecretKey};
 use rdm_admin::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rdm_admin::build::{BuildId, BuildOperation, MeshDesired};
 use rdm_admin::build_state::{BuildState, BuildStateAdapter};
-use rdm_admin::build_drive::{Drive, DriveEnv, DriveEnd, OpenGate};
+use rdm_admin::build_drive::{Drive, DriveEnv, DriveEnd};
 use rdm_admin::executor::OperationRunner;
 use rdm_admin::fabric_builds::FabricBuildStateAdapter;
 use rdm_admin::control_plane::ControlPlane;
@@ -119,6 +119,31 @@ impl OperationRunner for Runner {
     }
 }
 
+/// The drive's gate over the fixture's view: no seat fence, and the node rows record what each live
+/// node of the view runs, the executable its entry names (the create's claim records it,
+/// build-deployment.md §2.3), as production rows do.
+struct RowsGate {
+    view: Arc<RwLock<Topology>>,
+}
+
+#[async_trait::async_trait]
+impl rdm_admin::build_drive::Gate for RowsGate {
+    async fn fence(&self) -> Result<Option<String>, rdm_admin::build_state::BuildStateError> {
+        Ok(None)
+    }
+    async fn recorded_executables(&self, topology: &FabricTopology) -> Result<rdm_admin::accepted::Recorded, String> {
+        let v = self.view.read().await;
+        Ok(v.nodes
+            .iter()
+            .filter(|n| n.status.is_live())
+            .filter_map(|n| {
+                let entry = rdm_admin::accepted::target_executable(topology, &n.name)?;
+                Some((n.name.clone(), rdm_admin::accepted::RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: n.node_id.clone(), sha256: Some(entry.sha256.clone()) }))
+            })
+            .collect())
+    }
+}
+
 /// A fabric-primary's drive of the Build over `builds`: its claim door is its own log, and
 /// `dispatch` reaches the executors that are still alive.
 fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Arc<crate::loopback::Loopback>, proofs: Arc<crate::loopback::Proofs>) -> Arc<DriveEnv> {
@@ -142,7 +167,7 @@ fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Ar
             claimed: Default::default(),
         }),
         dispatcher: dispatch,
-        gate: Arc::new(OpenGate),
+        gate: Arc::new(RowsGate { view: topology.clone() }),
         departure: proofs,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rdm_admin::stop_gate::StopGate::new(),
@@ -300,7 +325,8 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         vec![
             // A's admin is lost too: its path is part of what is left.
             (2, BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap(), over: None, executable: None }),
-            (2, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), over: None, executable: None }),
+            // The successor reads the Build from the store, where each entry keeps its executable (Q186).
+            (2, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)) }),
         ],
         "mesh1.rpc.2 is never created twice"
     );
