@@ -252,7 +252,8 @@ async fn an_omitted_provider_preserves_the_current_provider() {
 /// node applies the map only once its mesh-primary's `mesh.unblock` began; the row carrying it is on
 /// `test-target` and not on `file`. The Build completes; the Fabric
 /// row names `test-target` with `file` previous; every node writes `test-target` and is the same birth,
-/// ready-for-traffic, carrying the config the update set; every line of the five stores is on
+/// ready-for-traffic, carrying the config its last row names (the update and the Build's own config are
+/// a serial order of the two, node-config-update.md); every line of the five stores is on
 /// `test-target` in source order, the deleted birth's and the deleted mesh's included; `file` is written
 /// no more; and each mesh-primary's `mesh.block` (its reply `blocked`), the copy, the switch and each
 /// `mesh.unblock` (its reply `unblocked`) are spans on one trace (storage.md §2, Q198). Must NOT
@@ -288,7 +289,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(subject.node_id.clone()), node_id: subject.node_id.clone(), incarnation: subject.incarnation_id.clone().expect("a live birth") };
     let carrier = estate.carrier().await;
     let (rpc, options) = (rdm_client::NodeRpc::new(carrier.client()), rdm_transport::CallOptions::default());
-    let update = rpc.config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &options);
+    let update = rpc.config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told, &options);
     let (done, updated) = tokio::join!(estate.follow(stream), update);
     updated.unwrap_or_else(|e| panic!("node.config.update during the change is answered: {e}"));
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
@@ -302,7 +303,18 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     assert_eq!(births(&after), before, "every node is the same birth: none restarted or replaced");
     assert!(after.iter().all(|v| v.status == NodeStatus::ReadyForTraffic), "every node is ready-for-traffic: {after:?}");
     let path: PathName = "mesh2.rpc.1".parse().unwrap();
-    assert_eq!(after.iter().find(|v| v.name == path).map(|v| v.config.clone()), Some(told), "the config the update set during the change stands");
+    // The update and the Build's own config of the node are a serial order of the two
+    // (node-config-update.md): whichever was written last on its row is the config the node carries.
+    let subject_after = after.iter().find(|v| v.name == path).cloned().expect("mesh2.rpc.1 after the change");
+    let last_row: Value = std::fs::read_to_string(target_root.join(rdm_admin::store_root::NODES_FILE))
+        .unwrap()
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|l| l["key"] == subject_after.node_id.to_string())
+        .expect("mesh2.rpc.1's row is on the new provider");
+    let row_config: BTreeMap<String, String> = serde_json::from_value(last_row["record"]["config"].clone()).unwrap_or_default();
+    assert_eq!(subject_after.config, row_config, "mesh2.rpc.1 carries the config its last row on {TOPOLOGY_STORAGE_TARGET} names");
     let old = store_lines(&file_root);
     history_carried(&old, &store_lines(&target_root));
     tokio::time::sleep(Duration::from_secs(2)).await;
