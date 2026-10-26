@@ -93,80 +93,52 @@ A storage change is a Build that carries the complete topology with the same mes
 `topology_storage_provider` ([build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)). It
 is admitted and refused as any Build is, one in progress at a time, and it is a property Build: the
 fabric, every mesh and every node stay ready-for-traffic, no node restarts, and no node changes
-state. The progress is the Build's step receipts and each node's row. Acceptance refuses by name a
-provider the fabric-primary's wiring does not register or cannot open. The change is three steps,
-each fabric-wide, carried fabric-primary → mesh-primary → node as the Build's ordinary order:
+state. Acceptance refuses by name a provider the fabric-primary's wiring does not register or cannot
+open. The change has a durable `change_id`, recorded with its Build before its first command; its
+commands carry it, and a node refuses by name a command of an older one. It is five steps, carried
+fabric-primary → mesh-primary → node as the Build's ordinary order:
 
-Each migration run has a durable `change_id`, recorded with its Build before any migration command.
-Commands, freeze acknowledgements, copy progress and the decision carry that identity. Recovery of
-an unfinished run reuses it, including when its decision is uncertain. After a confirmed abort and
-completion of the rollback, resubmitting the same Build starts a new run with a new `change_id`.
-Nodes retain the resolved run identity and refuse delayed commands from an older run by name;
-accepting a new run does not erase that protection. A committed run only resumes release.
+1. **Block.** Each node stops admitting writes and claim operations to its stores. Every write it
+   would make is held as owed, never refused: a caller's command and a node's declaration are
+   answered only once their line has landed, and a connection event stays owed on the node's
+   writer queue (Q169). The node opens the new provider beside the old one and records the block
+   and both providers in its data dir, which a restart reads before it writes anything. A node
+   whose executable does not register the provider fails the step by name, and the Build fails
+   with nothing moved.
+2. **Finish outstanding writes.** Each node brings every write and claim operation it issued before
+   the block to a durable outcome on the old provider, then acknowledges. The copy waits for every
+   node's acknowledgement or node investigation's `exited` verdict on it; silence is neither.
+3. **Copy.** The fabric-primary, the one reader of every store, appends every line of every store
+   on the old provider to the new one in source order, dead births' and deleted nodes' records
+   included, and every name claim and in-flight row with its exact claimant. A copy resumed after
+   a lost answer recognises the lines already there and appends none twice; a new provider holding
+   lines the old one does not is refused by name, and nothing switches.
+4. **Switch.** The decision: the fabric-primary inserts `commit` for `(build_id, change_id)` on the
+   new provider with the store's insert-and-fail primitive, then appends the Fabric row's line: the
+   new provider current, the old appended to `previous_topology_storage_providers`. The insert is
+   the switch, of records and claims alike. Whoever resumes the change, a successor or the
+   fabric-primary after a lost answer, learns the decision only by reading that record: `commit`
+   found is switched, and the row's line is written if missing; no `commit` on a provider that
+   answers is not switched, and the change resumes from its step; a provider that does not answer
+   is neither, and the block holds until it answers. A timeout never means "not switched".
+5. **Unblock.** Each node moves to the new provider, lands its owed writes there in its own order,
+   answers its owed commands and closes the old provider. A node that fails it keeps its writes
+   owed and retries; the Build is in progress until the last node has unblocked.
 
-1. **Open.** Every node opens the new provider beside the old, writes nothing to it, and reports. A
-   node whose executable does not register the provider fails the step by name, naming the node and
-   the provider, and the Build fails with nothing moved.
-2. **Copy.** The fabric-primary, the one reader of every store, appends every line of every store on
-   the old provider to the new one in source order, every writer's included, dead births' and
-   deleted nodes' records among them, keeping a verified position per source file that advances only
-   when the lines before it are durable on the new provider, with source order preserved per key
-   across ownership changes as well as within one writer. Nodes keep writing the old provider
-   throughout; nothing is blocked and nothing is written twice. Claims stay decided in the old
-   provider.
-3. **Freeze, tails, decision, release.**
-   - *Freeze.* Each node first closes admission to ordinary appends and claim operations for the
-     `change_id`, settles every already-issued append and claim operation to a resolved durable
-     outcome, and durably records the frozen state and both providers in its data dir before
-     acknowledging. An indeterminate operation prevents that acknowledgement. On restart the node
-     reads this state before opening ordinary writes and resolves the same run's decision; a stale
-     launch environment cannot unfreeze it. Migration control records use the explicit migration
-     path while ordinary writes remain blocked. Each node holds every write
-     it would make as owed. Nothing is refused and nothing is acknowledged before it is durable: a
-     caller's command and a node's declaration are answered only once their line has landed, so the
-     caller and the declarer retry until then; a fact a node observes, a connection event, is
-     appended to a pending log in its own data dir and replayed at the release or at its restart. No
-     claim is decided during the freeze.
-   - *Tails.* Each frozen node records its final source positions and its own row, then acknowledges.
-     The fabric-primary continues the ordered copy from its verified positions to those final
-     positions, dead births' and deleted nodes' records included; nodes do not independently append unordered
-     tails. Every writer must have acknowledged the freeze or be proven unable to write by node
-     investigation's `exited` verdict. Silence is not proof and no timer substitutes for it.
-     For each key, the destination history must be a prefix of the source history before missing
-     records are appended. Existing operations are verified by identity and content, not merely by
-     the highest identity or set membership. A hole or reordered history is refused by name before
-     cutover; an older missing record is never appended behind a newer record of that key. A retry
-     after a lost copy receipt recognizes the already-landed prefix and does not append it twice.
-     The pass verifies the completed order and current value of every key, then transfers every held
-     name claim and in-flight row with the exact holder and reads the two claim sets back equal.
-   - *Decision.* The change's decision is one durable, mutually exclusive record on the new provider,
-     `commit` or `abort`, keyed by `(build_id, change_id)` using the store's insert-and-fail primitive. The fabric-primary inserts
-     `commit`, and only then appends the Fabric row's line on the new provider: the new provider
-     current, the old appended to `previous_topology_storage_providers`. The insert is the commit
-     point and the claim cutover. A successor, or the fabric-primary after a lost reply, learns the
-     decision only by reading the record: `commit` found is committed and the row's line is written
-     if missing; nothing found is undecided, and a revert is itself a decision, permitted only by a
-     successful `abort` insert; a provider not answering is neither, and the freeze holds until it
-     answers. A timeout never means "not committed".
-   - *Release.* Each node swaps to the new provider, lands its owed writes there in its own order,
-     answers its owed commands, and closes the old provider. Claims are decided in the new provider
-     from here. A node that fails its release keeps its writes owed and retries.
+A node that does not acknowledge the block or does not unblock is a lost node, as any node is
+([node investigation](lifecycles/node-investigation.md)): it is investigated, and on any verdict but
+`reached` node recovery re-creates it at its `path.name`, an attempt of the change's own Build. The new birth is launched blocked on the old provider before the switch, so it
+acknowledges at once, and on the new provider after it. After the switch the Build completes once
+every node has unblocked or been re-created; nothing else waits.
 
-While a change is undecided, a `build.create` naming the old provider is admitted beside it and
-is its abort: the fabric-primary inserts `abort` for `(build_id, change_id)` and the revert below
-follows. It is how the application or a person ends a freeze that a writer neither acknowledges nor
-is proven `exited` from; nothing else ends it and no timer does. Once `commit` is inserted, that
-Build is refused by name, `change-committed`, and the releases continue.
-
-A failed step fails by name and fails the Build as any step does; before the decision a failure
-reverts once `abort` is inserted, the freeze lifting on the old provider with the owed writes landing
-there, the new provider closed and the Fabric row unchanged, nothing lost. After the decision only
-releases remain, each an owed step a node retries, the Build in progress until the last.
-`fabric.delete` during a change is admitted and interrupts the Build as any Build; the records on
-both providers stay. The previous provider is kept, frozen at the commit and complete to the last
-tail, named on the Fabric row, written no more and never deleted by RDM; removing it is the
-application's own work or nobody's. A later Build naming it again copies into it only the lines it
-lacks.
+No Build is admitted while a change is in progress, a change of `topology_storage_provider`
+included; `fabric.delete` alone is admitted, and it interrupts the change as it interrupts any Build,
+the records on both providers kept. A step that fails before the switch fails the Build only once the
+fabric-primary has read that no `commit` exists for `(build_id, change_id)`; each node then unblocks
+on the old provider, its owed writes landing there, the new provider closed and the Fabric row
+unchanged. No timer ends a block. The previous provider is kept as it was at the switch, named on
+the Fabric row, written no more and never deleted by RDM. A later Build naming it again copies into
+it only the lines it lacks.
 
 A caller reads the fabric's with `fabrics.get` and each node's with
 `nodes.get [topology_storage_provider: file]`.
