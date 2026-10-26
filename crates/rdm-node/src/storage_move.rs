@@ -39,23 +39,24 @@ impl StorageMoves {
         if latest == change_id || !acted.contains(change_id) {
             return None;
         }
-        let span = tracing::info_span!(MOVE_SPAN, build_id = %build_id.log(), change_id = %change_id, node_id = %self.node_id, provider = %provider, outcome = "rejected-stale-change", held = %latest);
+        let span = tracing::info_span!("rdm.node.build.update.via-storage-move", build_id = %build_id.log(), change_id = %change_id, node_id = %self.node_id, provider = %provider, outcome = tracing::field::Empty, held = %latest);
+        span.record("outcome", rdm_core::reply::node_command::rejected_stale_change(latest.clone()).name());
         span.in_scope(|| tracing::info!("a command of a storage change older than the one this node acted on is refused by name"));
-        Some(NodeCommandReply::RejectedStaleChange { held: latest.clone() })
+        Some(rdm_core::reply::node_command::rejected_stale_change(latest.clone()))
     }
 
     /// Move onto `provider` for the change `change_id` of Build `build_id`.
     pub async fn serve(&self, build_id: &BuildId, change_id: &ChangeId, provider: &str) -> NodeCommandReply {
         let mut acted = self.acted.lock().await;
         if let Some(latest) = acted.last().filter(|l| *l != change_id && acted.contains(change_id)) {
-            return NodeCommandReply::RejectedStaleChange { held: latest.clone() };
+            return rdm_core::reply::node_command::rejected_stale_change(latest.clone());
         }
-        let span = tracing::info_span!(MOVE_SPAN, build_id = %build_id.log(), change_id = %change_id, node_id = %self.node_id, provider = %provider, from = %(self.provider)(), outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node.build.update.via-storage-move", build_id = %build_id.log(), change_id = %change_id, node_id = %self.node_id, provider = %provider, from = %(self.provider)(), outcome = tracing::field::Empty, reason = tracing::field::Empty);
         if (self.provider)() != provider {
             if let Err(e) = (self.mover)(provider.to_string()).await {
                 span.record("outcome", "refused").record("reason", e.as_str());
                 span.in_scope(|| tracing::info!("the move is refused by name: the node writes the provider it wrote"));
-                return NodeCommandReply::Failed { step: "storage-step".into(), reason: e, code: rdm_core::outcome::Code::FailedPrecondition };
+                return rdm_core::reply::node_command::failed("storage-step".into(), e, rdm_core::outcome::Code::FailedPrecondition);
             }
         }
         acted.retain(|c| c != change_id);

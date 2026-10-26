@@ -123,6 +123,8 @@ pub fn connections_deleting(node_id: NodeId, incarnation: IncarnationId) -> Node
 pub fn rejected_connection_scope(reason: String) -> NodeCommandReply { NodeCommandReply::RejectedConnectionScope { reason } }
 /// Construct the typed rejected-stale-incarnation outcome.
 pub fn rejected_stale_incarnation(held: IncarnationId) -> NodeCommandReply { NodeCommandReply::RejectedStaleIncarnation { held } }
+/// Construct the typed rejected-stale-change outcome: a storage change older than the one the birth acted on.
+pub fn rejected_stale_change(held: crate::ChangeId) -> NodeCommandReply { NodeCommandReply::RejectedStaleChange { held } }
 /// Construct the typed not-ready outcome.
 pub fn not_ready(reason: String) -> NodeCommandReply { NodeCommandReply::NotReady { reason } }
 /// Construct the typed peer-unresolved outcome.
