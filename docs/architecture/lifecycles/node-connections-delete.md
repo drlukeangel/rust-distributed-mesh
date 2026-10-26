@@ -6,7 +6,8 @@
 primitive: [node.stop](node-stop.md) calls it, so does [node.delete](node-delete.md) through the
 stop, a [rename](node-name-update.md) is permitted only once its `All` has completed (connections-deleted)
 or the node is stopped, and a caller can call it on its own. A connection is an open Direct or Proxy
-entry of the node's connections log. Gossip neighbours and the Node RPC pool are not connections, and
+connection of the node, read from the connections open now, a connection whose row is still owed
+included (Q169). Gossip neighbours and the Node RPC pool are not connections, and
 neither scope touches them: a node that has had its connections deleted is still heard on gossip.
 
 ## Operation contract
@@ -61,8 +62,8 @@ not complete this stream or replace its receipt.
    [mesh.delete](mesh-delete.md), after its node.fabric-primary.update step.
 1. Resolve the exact `(node.id, incarnation)` and call `node.connections.delete` with its scope.
 2. `Connections([id, …])`: refuse an empty list by name. Close exactly the named connections and
-   record each drop under the node's current name. Return `node.connections.deleted` naming the ids
-   closed, the ids unknown and the ids already closed. The node's status does not change, and the
+   queue each drop under the node's current name (Q169); the drops land behind the answer. Return
+   `node.connections.deleted` naming the ids closed, the ids unknown and the ids already closed. The node's status does not change, and the
    sequence ends here.
 3. `All`, in this order:
    1. The node blocks admission of new application work and reports `ConnectionsDeleting` on the
@@ -71,8 +72,8 @@ not complete this stream or replace its receipt.
    2. Let admitted work finish, including its downstream connections: they belong to the same
       closure.
    3. Wait for eligible work to reach zero.
-   4. Close every open connection, each open Direct or Proxy entry of the connections log.
-   5. Record the drops under the node's current name.
+   4. Close every open connection, each open Direct or Proxy connection of the node.
+   5. Queue the drop rows under the node's current name (Q169); they land behind the answer.
    6. Return `node.connections.deleted` carrying `Established` and the closed ids.
 4. The node's mesh-primary sets connections-deleted from that completion. Graceful success is never
    reported after interrupting work, and connections-deleted is never published while a covered

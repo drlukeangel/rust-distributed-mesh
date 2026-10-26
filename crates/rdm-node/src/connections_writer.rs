@@ -99,11 +99,6 @@ struct Inner {
     /// this to reach zero, `idle` wakes it when a write finishes.
     in_flight: std::sync::atomic::AtomicUsize,
     idle: tokio::sync::Notify,
-    /// How many writes were ever owed, and how many of them have finished (landed, or built to
-    /// nothing): the queue is one ordered consumer, so every write owed before a mark of `owed`
-    /// has finished once `finished` reaches it ([`ConnectionsWriter::owed_landed_by`]).
-    owed: std::sync::atomic::AtomicU64,
-    finished: std::sync::atomic::AtomicU64,
     /// The node's one ordered writer queue (Q169): every connection write in the order it was owed;
     /// one consumer builds, stamps, writes (retrying with backoff until it lands) and applies them
     /// one at a time, so rows land in queue order and the index member of a pair is the last owed.
@@ -180,8 +175,6 @@ impl ConnectionsWriter {
             last_stamp: Mutex::new(0),
             in_flight: std::sync::atomic::AtomicUsize::new(0),
             idle: tokio::sync::Notify::new(),
-            owed: std::sync::atomic::AtomicU64::new(0),
-            finished: std::sync::atomic::AtomicU64::new(0),
             queue,
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
             reconnect: crate::connection_reconnect::ReconnectState::default(),
@@ -266,25 +259,6 @@ impl ConnectionsWriter {
         }
     }
 
-    /// Resolves `true` once every connection write owed before the call has landed, or `false` at
-    /// `until` with one still owed: it stays owed and is retried until it lands (Q169). A command
-    /// that answers from the log (`node.connections.delete`) waits this long and no longer, so a
-    /// node whose connections store is reached over a connection it cuts never waits forever.
-    pub async fn owed_landed_by(&self, until: tokio::time::Instant) -> bool {
-        let mark = self.inner.owed.load(std::sync::atomic::Ordering::Acquire);
-        let landed = async {
-            loop {
-                let mut notified = std::pin::pin!(self.inner.idle.notified());
-                notified.as_mut().enable();
-                if self.inner.finished.load(std::sync::atomic::Ordering::Acquire) >= mark {
-                    return;
-                }
-                notified.await;
-            }
-        };
-        tokio::time::timeout_at(until, landed).await.is_ok()
-    }
-
     /// Hydrate the held projection from the index: every latest row this node wrote (its own
     /// Direct and Proxy facts) is applied, so the first call after a restart resolves over the
     /// latest Proxy and the reconnect series continues from the latest failure. A retirement the
@@ -367,7 +341,6 @@ impl ConnectionsWriter {
     /// Queue one owed write behind every write owed before it.
     fn owe(&self, build: Build, origin: Origin) {
         self.inner.in_flight.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        self.inner.owed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let _ = self.inner.queue.send(Owed { build, origin, parent: tracing::Span::current() });
     }
 
@@ -411,26 +384,28 @@ impl ConnectionsWriter {
         live
     }
 
-    /// `node.connections.delete`'s drops (R-CR3): each of `routes` (open entries this node held,
-    /// whose connections were just cut) owes one `disconnected` entry with its own id and `reason`,
-    /// naming this node as it is when it is written, queued behind every write owed before it and
-    /// applied once it lands (Q169). A route whose open entry is no longer the latest of its pair
-    /// when its drop is written (a newer entry landed meanwhile) writes no drop: the newer entry is
-    /// the pair's state. Returns the ids of the routes cut.
+    /// `node.connections.delete`'s drops (R-CR3): each of `routes` (connections this node had open,
+    /// just cut) owes one `disconnected` entry with its own id and `reason`, naming the pair it
+    /// closes as that pair landed (a rename that lands before the drop does not move it), queued
+    /// behind every write owed before it and applied once it lands (Q169). A route whose open entry
+    /// is no longer the latest of its pair when its drop is written (a newer entry landed meanwhile)
+    /// writes no drop: the newer entry is the pair's state. Returns the ids of the routes cut.
     pub fn write_drops(&self, routes: &[NodeConnection], reason: &str) -> Vec<rdm_core::ConnectionId> {
         for route in routes {
             let build = rdm_transport::connections::owed_drop(route, reason);
             let held = self.inner.held.clone();
             self.owe(
-                Box::new(move |_, own| {
-                    let mut row = build(&held.lock().unwrap())?;
-                    row.source = own;
-                    Some(row)
-                }),
+                Box::new(move |_, _| build(&held.lock().unwrap())),
                 Origin::Drop { closed_entry: route.id.clone(), reason: reason.to_string() },
             );
         }
         routes.iter().map(|r| r.id.clone()).collect()
+    }
+
+    /// The data-plane connection to the birth at `peer` and `incarnation` closed: it leaves the
+    /// connections opened, so [`Self::live_routes`] no longer reads it (Q169).
+    pub fn direct_closed(&self, peer: &iroh::PublicKey, incarnation: &IncarnationId) {
+        self.inner.opened.lock().unwrap().remove(&(*peer, incarnation.clone()));
     }
 
     /// The raw log first, then the index; an error names the storage's own refusal.
@@ -629,8 +604,7 @@ impl ConnectionsWriter {
             let Some(mut row) = build(w, own) else {
                 drop(gate);
                 w.inner.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                w.inner.finished.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                w.inner.idle.notify_waiters();
+                    w.inner.idle.notify_waiters();
                 return;
             };
             row.logged_at_ms = w.stamp();
@@ -687,7 +661,6 @@ impl ConnectionsWriter {
             }
             drop(span);
             w.inner.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-            w.inner.finished.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             w.inner.idle.notify_waiters();
         }
     }
@@ -738,6 +711,7 @@ impl ConnectionObserver for ConnectionsWriter {
     }
 
     fn direct_broken(&self, node: &ResolvedNode, reason: &str) {
+        self.direct_closed(&node.endpoint_id, &node.incarnation);
         let destination = end_of(node);
         let reason = reason.to_string();
         self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Disconnected, Some(reason)), "dial", node);

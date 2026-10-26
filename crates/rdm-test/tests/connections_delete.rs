@@ -170,6 +170,8 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
             }
         };
         expect(!pooled_to_peer(), "the node's data-plane client no longer pools a connection to its peer".into());
+        // The drop is queued and lands behind the answer (Q169): the cell reads the log once it has.
+        cut_seams.connections.observations_landed().await;
         let log = kept_log(&store, &fabric, &born);
         let drop = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.node_id == peer.node_id);
         expect(
@@ -196,18 +198,18 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
     );
 }
 
-/// CONTRACT (node-connections-delete.md step 5, "Bound", the `Deadline` receipt; Q169): the drops of
-/// a `node.connections.delete { All }` are owed on the node's writer queue and the delete answers
-/// once they land, within `RDM_CONNECTIONS_DELETE_DEADLINE_MS` and no longer. `mesh1.rpc.1` holds a
-/// route to its admin; its connections store then refuses every write (a store reached over a
-/// connection the delete cuts). Its `All` answers `ConnectionsDeleted` within the bound carrying
-/// `Deadline`, the admin route closed and still held (its drop has not landed); the drop stays owed
-/// and lands once the store takes writes again, and the node then holds nothing. What must NOT
-/// happen: a delete that waits forever for a drop that cannot land, or an `Established` claimed
-/// while an entry is still open in the log.
+/// CONTRACT (node-connections-delete.md steps 3.4 to 3.6, "Bound"; Q169): a `node.connections.delete
+/// { All }` decides what to close from the connections open now, closes them, queues their drops and
+/// answers: it never waits for a row. `mesh1.rpc.1` holds a route to its admin; its connections store
+/// then refuses every write (a store reached over a connection the delete cuts). Its `All` answers
+/// `ConnectionsDeleted` carrying `Established` well within `RDM_CONNECTIONS_DELETE_DEADLINE_MS`, the
+/// admin route closed and nothing still open, though the log still holds the route open (its drop
+/// has not landed); the drop stays owed and lands once the store takes writes again, and the log then
+/// holds nothing. What must NOT happen: a delete that waits for a drop that cannot land, or a
+/// connection left open.
 #[test]
-fn an_all_whose_drops_cannot_land_answers_deadline_within_its_bound() {
-    let cap = crate::common::capture("an_all_whose_drops_cannot_land_answers_deadline_within_its_bound");
+fn an_all_whose_drops_cannot_land_answers_at_once_and_closes_every_live_connection() {
+    let cap = crate::common::capture("an_all_whose_drops_cannot_land_answers_at_once_and_closes_every_live_connection");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
@@ -274,19 +276,18 @@ fn an_all_whose_drops_cannot_land_answers_deadline_within_its_bound() {
         let deleted = crate::common::node_command_completion(&admin.observer.client, &target, &NodeCommandRequest::DeleteConnections { node_id: cut.node_id.clone(), incarnation: cut.incarnation.clone(), scope: ConnectionScope::All }).await;
         let took = began.elapsed();
         let NodeCommandReply::ConnectionsDeleted { closed, not_open, held, receipt } = &deleted else { panic!("the delete ends node.connections.deleted: {deleted:?}") };
-        assert!(took < deadline + Duration::from_secs(3), "the delete answers within its bound ({deadline:?}), not after: {took:?}");
-        assert_eq!((closed, not_open, held), (&open, &Vec::new(), &open), "the route is closed and, its drop not landed, still held in the log: {deleted:?}");
-        assert_eq!(
-            receipt,
-            &Some(rdm_core::status::ConnectionsReceipt::Deadline { last_in_flight: 0, closed: open.clone(), held: open.clone() }),
-            "the bound answers Deadline naming the entry still open, never Established"
-        );
+        assert!(took < deadline, "the delete answers without waiting for its drop, well within its bound ({deadline:?}): {took:?}");
+        assert_eq!((closed, not_open, held), (&open, &Vec::new(), &Vec::new()), "the route is closed and nothing is still open: {deleted:?}");
+        assert_eq!(receipt, &Some(rdm_core::status::ConnectionsReceipt::Established { in_flight: 0, closed: open.clone() }), "no handler was in flight: the closure is Established");
+        assert!(seams.connections.live_routes(Some(seams.client.as_ref()), None).is_empty(), "the node has no connection open");
         assert!(seams.connections.in_flight() > 0, "the drop stays owed");
+        let still: Vec<ConnectionId> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
+        assert_eq!(still, open, "the log still holds the route open: the answer did not wait for its drop");
 
-        // The store takes writes again: the owed drop lands and nothing is held.
+        // The store takes writes again: the owed drop lands and the log holds nothing.
         seams.fault.release();
         tokio::time::timeout(Duration::from_secs(30), seams.connections.observations_landed()).await.expect("the owed drop is retried until it lands");
-        assert!(seams.connections.held_routes().await.is_empty(), "the drop landed: the node holds nothing");
+        assert!(seams.connections.held_routes().await.is_empty(), "the drop landed: the log holds nothing open");
         let _ = std::fs::remove_dir_all(&root);
     });
 }

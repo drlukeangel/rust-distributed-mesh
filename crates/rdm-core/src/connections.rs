@@ -359,6 +359,12 @@ impl ConnectionsHeld {
         out
     }
 
+    /// The active Direct entry whose id is `id`, whatever its source and whether or not its
+    /// destination is superseded: the pair that connection opened, as it landed.
+    pub fn active_direct_by_id(&self, id: &crate::ConnectionId) -> Option<&NodeConnection> {
+        self.cells.values().filter_map(|c| c.active.as_ref()).find(|e| &e.id == id)
+    }
+
     /// This node's active Proxy entries, sorted by destination then ALPN.
     pub fn own_active_proxies(&self) -> Vec<&NodeConnection> {
         let mut out: Vec<&NodeConnection> = self.own_proxies.values().collect();

@@ -468,10 +468,10 @@ impl NodeSelf {
     }
 
     /// `node.connections.delete` at this birth (R-CR5; node-connections-delete.md): a connection is
-    /// an open Direct or Proxy entry of this birth's connections log, and nothing else. `All` closes
-    /// every open entry; `Connections` closes exactly the entries it names. Each closed entry gets its
-    /// drop, written under the name the birth holds; an id that is no open entry is named
-    /// `not_open`. Gossip neighbours and the Node RPC pool are not connections: neither scope touches
+    /// an open Direct or Proxy connection of this birth, read from what is open now (Q169), and
+    /// nothing else. `All` closes every open connection; `Connections` closes exactly the ones it
+    /// names. Each closed connection's drop is queued on the writer, under the name the birth holds,
+    /// and lands behind the answer; an id that is no open connection is named `not_open`. Gossip neighbours and the Node RPC pool are not connections: neither scope touches
     /// them, so a birth whose connections are deleted is still heard on gossip and still answers calls.
     pub async fn delete_connections(&self, scope: &ConnectionScope) -> Deleted {
         self.delete_connections_reporting(scope, || async {}).await
@@ -497,10 +497,6 @@ impl NodeSelf {
         Fut: std::future::Future<Output = ()>,
     {
         let writer = self.connections.lock().unwrap().clone();
-        // The bound (node-connections-delete.md: `RDM_CONNECTIONS_DELETE_DEADLINE_MS`): the command
-        // waits for its work in flight and for its rows to land this long and no longer; for `All`
-        // it runs from the block on new application work.
-        let mut until = tokio::time::Instant::now() + self.connections_delete_deadline;
         // `All` is graceful node-wide closure (node-connections-delete.md step 3): admission of new
         // application work is blocked, and the eligible work in flight (every dispatched handler but
         // this call's own) is let finish, bounded by the birth's `connections_delete_deadline`.
@@ -515,8 +511,7 @@ impl NodeSelf {
                 // (Node RPC §35); the node is connections-deleting, and says so.
                 self.server.begin_connections_delete();
                 admitted().await;
-                until = tokio::time::Instant::now() + self.connections_delete_deadline;
-                let waited = self.await_in_flight(asking, until).await;
+                let waited = self.await_in_flight(asking).await;
                 // Every connection open once admitted work has finished is closed, the ones that
                 // work opened while `All` waited included (step 3.2: "they belong to the same
                 // closure"). From here the birth opens no new connection until it starts (proposal
@@ -527,20 +522,10 @@ impl NodeSelf {
             }
             ConnectionScope::Connections(_) => None,
         };
-        // The open entries are the log's: the rows owed before the delete land first (Q169), so a
-        // connection opened just before it is among those it closes; within the bound, past which the
-        // entries landed are those it closes.
-        let mut landed = true;
-        let mut open = match &writer {
-            Some(w) => {
-                landed &= w.owed_landed_by(until).await;
-                w.held_routes().await
-            }
-            None => Vec::new(),
-        };
-        if let Some(reg) = self.data_connections.lock().unwrap().clone() {
-            open.extend(reg.held_open_tunnels());
-        }
+        // The connections open now (Q169): a connection whose Connected row is still owed is open
+        // and closed with the rest; the delete never waits for a row.
+        let open = self.live_routes().unwrap_or_default();
+        let open_ids: Vec<rdm_core::ConnectionId> = open.iter().map(|r| r.id.clone()).collect();
         let (routes, not_open) = match scope {
             ConnectionScope::All => (open, Vec::new()),
             ConnectionScope::Connections(ids) => {
@@ -569,6 +554,9 @@ impl NodeSelf {
             for route in routes.iter().filter(|r| r.kind == rdm_core::connections::ConnectionKind::Direct) {
                 if let Some(peer) = data_plane.endpoint_of(&route.destination.node_id) {
                     for c in data_plane.close_connections_to(&peer, CONNECTIONS_DELETE) {
+                        if let (Some(w), Some(inc)) = (&writer, &c.key.incarnation) {
+                            w.direct_closed(&c.key.peer, inc);
+                        }
                         tracing::info_span!(
                             "rdm.node_admin.connection.delete.via-connections-delete",
                             node = %self.held_name(),
@@ -583,27 +571,16 @@ impl NodeSelf {
                 }
             }
         }
-        // Each drop is owed on the writer's one ordered queue (Q169); the completion is returned once
-        // they have landed (node-connections-delete.md steps 3.5 and 3.6: the drops are recorded,
-        // then node.connections.deleted is returned), so the connections it names as held are those
-        // the log still holds open. At the bound it is returned with the drops not yet landed: their
-        // entries are still open in the log and named held (an `All` answers `Deadline`, step 5); the
-        // drops stay owed and are retried until they land.
+        // Each drop is queued on the writer's one ordered queue (Q169) and lands behind the answer
+        // (node-connections-delete.md step 3.5); the connections still open are those open now that
+        // the delete did not close.
         let closed = match &writer {
-            Some(w) => {
-                let closed = w.write_drops(&routes, CONNECTIONS_DELETE);
-                landed &= w.owed_landed_by(until).await;
-                closed
-            }
+            Some(w) => w.write_drops(&routes, CONNECTIONS_DELETE),
             None => Vec::new(),
         };
-        let held = match &writer {
-            Some(w) => w.held_routes().await.into_iter().map(|r| r.id).collect(),
-            None => Vec::new(),
-        };
+        let held: Vec<rdm_core::ConnectionId> = open_ids.into_iter().filter(|id| !closed.contains(id)).collect();
         let receipt = in_flight.map(|w| match w {
-            InFlight::Zero { began } if landed => ConnectionsReceipt::Established { in_flight: began, closed: closed.clone() },
-            InFlight::Zero { .. } => ConnectionsReceipt::Deadline { last_in_flight: 0, closed: closed.clone(), held: held.clone() },
+            InFlight::Zero { began } => ConnectionsReceipt::Established { in_flight: began, closed: closed.clone() },
             InFlight::Deadline { last } => ConnectionsReceipt::Deadline { last_in_flight: last, closed: closed.clone(), held: held.clone() },
         });
         Deleted { closed, not_open, held, receipt }
@@ -635,14 +612,15 @@ impl NodeSelf {
     }
 
     /// Block admission of new application work and wait for the eligible work in flight to reach
-    /// zero, by `until` (the birth's `connections_delete_deadline` from the block). The `asking` calls that asked are in
+    /// zero, bounded by the birth's `connections_delete_deadline`. The `asking` calls that asked are in
     /// flight while it waits and are not eligible work. The node refuses new non-status calls with typed
     /// `ConnectionsDeleting` from here on (Node RPC §35); control streams stay usable.
-    async fn await_in_flight(&self, asking: u64, until: tokio::time::Instant) -> InFlight {
+    async fn await_in_flight(&self, asking: u64) -> InFlight {
         self.server.begin_connections_delete();
         let stats = self.server.stats();
         let eligible = || rdm_transport::ServerStats::get(&stats.in_flight).saturating_sub(asking);
         let began = eligible();
+        let until = tokio::time::Instant::now() + self.connections_delete_deadline;
         loop {
             let n = eligible();
             if n == 0 {

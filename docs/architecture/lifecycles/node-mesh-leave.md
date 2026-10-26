@@ -28,7 +28,8 @@ a fresh Node RPC dial for its rename, stop, start or delete.
 
 1. The commanding workflow has completed `node.connections.delete { All }` on the node and holds
    its receipt. Inside node.stop this is step 2 of the stop; the leave is its step 3.
-2. `leaving`: the node is commanded to leave. It checks it holds no connection; one still held
+2. `leaving`: the node is commanded to leave. It checks it has no connection open, read from the
+   connections open now, a connection whose row is still owed included (Q169); one still open
    is `BusyHoldingConnections { connections }`, the leave does not start, and the stop's
    `Deadline` evidence names why.
 3. The node leaves its mesh: its gossip neighbours on `f(FabricId, MeshId)`. A node-admin then

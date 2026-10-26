@@ -255,25 +255,32 @@ pub trait ConnectionsSink: Send + Sync {
     async fn refresh_fleet_directs(&self) {}
 }
 
-/// Whether `route` is an open entry of this node in `held`: its own latest Direct that is
-/// `connected`, or its own active Proxy, by id.
-pub fn is_open_entry(held: &ConnectionsHeld, route: &NodeConnection) -> bool {
+/// The source of the pair `route` opened while that pair is still open in `held`, found by the
+/// entry's id and never by the name the node holds now, since a rename may land before the drop
+/// does (Q169): a Direct's active entry as it landed, or this node's own active Proxy. A Proxy no
+/// longer among the node's own because the node has taken another name since is named by `route`'s
+/// own source: nothing the node writes under its new name is a newer entry of that pair.
+pub fn open_pair_source(held: &ConnectionsHeld, route: &NodeConnection) -> Option<ConnectionEnd> {
     match route.kind {
-        CoreKind::Direct => held.own_latest_directs().into_iter().any(|r| r.state == ConnectionState::Connected && r.id == route.id),
-        CoreKind::Proxy => held.own_active_proxies().into_iter().any(|r| r.id == route.id),
+        CoreKind::Direct => held.active_direct_by_id(&route.id).map(|e| e.source.clone()),
+        CoreKind::Proxy => match held.own_active_proxies().into_iter().find(|r| r.id == route.id) {
+            Some(e) => Some(e.source.clone()),
+            None if held.own_source() != Some(&route.source.name) => Some(route.source.clone()),
+            None => None,
+        },
     }
 }
 
 /// The drop `route` owes with `reason`: built when the writer takes it, as a `Disconnected` entry
-/// with its own id toward the route's destination, or nothing when `route` is no longer an open
-/// entry of this node then (a newer entry of its pair is its state).
+/// with its own id toward the route's destination under the source its pair landed with, or
+/// nothing when `route` is no longer open then (a newer entry of its pair is its state).
 pub fn owed_drop(route: &NodeConnection, reason: &str) -> OwedRow {
     let route = route.clone();
     let reason = reason.to_string();
     Box::new(move |held: &ConnectionsHeld| {
-        is_open_entry(held, &route).then(|| NodeConnection {
+        open_pair_source(held, &route).map(|source| NodeConnection {
             id: ConnectionId::mint(),
-            source: route.source.clone(),
+            source,
             destination: route.destination.clone(),
             kind: route.kind,
             alpn: route.alpn.clone(),
