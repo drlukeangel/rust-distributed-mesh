@@ -106,14 +106,16 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
 /// node.id and incarnation and a new port, with the same endpoint key over the inherited data dir";
 /// node-admin-lifecycle.md §4.4, "fabric-primary is launched again into its own mesh"; elections §4.3:
 /// "the node-admin at the fabric-primary's path.name is re-created and is mesh-primary and
-/// fabric-primary again when it is ReadyForTraffic"): mesh1 has two node-admins; the fabric-primary
-/// mesh1.admin.1's process is killed (SIGKILL) and a person starts a node-admin again over its data dir,
-/// as the topology-storage restart canaries do, while mesh1.admin.2 lives. Read through mesh1.admin.2,
+/// fabric-primary again when it is ReadyForTraffic"; Q156: "a launch that finds a living admin is
+/// refused, never an ordinary admin at the primary's name"; Q199): mesh1 has two node-admins; the
+/// fabric-primary mesh1.admin.1's process is killed (SIGKILL) and a person starts a node-admin again over
+/// its data dir, as the topology-storage restart canaries do, while mesh1.admin.2 lives. The launch is
+/// refused `NameHeld` naming mesh1.admin.2 and exits, having written nothing. Read through mesh1.admin.2,
 /// within the bound of the held-primary cell above, `fabric.get` names the fabric-primary at
 /// mesh1.admin.1, and the views name exactly one birth at mesh1.admin.1, ready-for-traffic, mesh-primary
-/// and fabric-primary. What must NOT happen: two births contending for mesh1.admin.1 (a node.delete of
-/// the lost birth refused `name-held` by the started one, again and again), or mesh1 left with no
-/// fabric-primary.
+/// and fabric-primary: the one mesh1.admin.2's fabric recovery re-created. What must NOT happen: the
+/// launch taking the path.name, two births contending for mesh1.admin.1 (a node.delete of the lost birth
+/// refused `name-held` by the started one, again and again), or mesh1 left with no fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives_ends_with_one_birth_at_its_path_that_is_fabric_primary() {
     let test = "a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives_ends_with_one_birth_at_its_path_that_is_fabric_primary";
@@ -131,14 +133,15 @@ async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives
     estate.enter(&Estate::path(standby)).await;
     let killed_at = now_ns();
     estate.kill_bootstrap();
-    let started = estate.restart_admin(&estate.bootstrap_data_dir("mesh1"));
-    assert_eq!(started.to_string(), fp, "the node-admin started on the fabric-primary's data dir is at its path.name");
+    let (status, stderr) = estate.admin_launch_refused(&estate.bootstrap_data_dir("mesh1"), &[], Duration::from_secs(60));
+    assert!(!status.success() && stderr.contains("NameHeld") && stderr.contains(standby), "the node-admin started on the fabric-primary's data dir is refused NameHeld naming {standby}: {status}: {stderr}");
     let within = floor * 12 + Duration::from_secs(120);
+    let killed = before.node_id.to_string();
     let one = estate
-        .until_view_at(&Estate::path(standby), &format!("one birth at {fp}, ready-for-traffic, mesh-primary and fabric-primary"), within, |views| {
+        .until_view_at(&Estate::path(standby), &format!("one birth at {fp}, not the killed {killed}, ready-for-traffic, mesh-primary and fabric-primary"), within, |views| {
             let ns = Estate::values(views);
             let at_fp: Vec<&Value> = ns.iter().filter(|n| n["name"] == fp && n["status"] != "deleted").collect();
-            (at_fp.len() == 1 && at_fp[0]["status"] == "ready-for-traffic" && at_fp[0]["is_fabric_primary"] == true && at_fp[0]["is_primary"] == true).then(|| at_fp[0].clone())
+            (at_fp.len() == 1 && s(&at_fp[0]["node_id"]) != killed && at_fp[0]["status"] == "ready-for-traffic" && at_fp[0]["is_fabric_primary"] == true && at_fp[0]["is_primary"] == true).then(|| at_fp[0].clone())
         })
         .await;
     let named_fp = estate.fabric_view_at(&Estate::path(standby)).await.and_then(|f| f.fabric_primary).map(|p| p.to_string());
