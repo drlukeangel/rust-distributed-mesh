@@ -157,6 +157,10 @@ pub(crate) struct RowNames {
 pub(crate) enum RowName {
     /// The name of the row the birth holds (the name it published, when it holds no row).
     At(PathName),
+    /// The name of a row that released it (`Deleted` or `Withdrawn`,
+    /// [`crate::node_rows::released_its_name`]): the birth is listed there only while no birth whose
+    /// row does not release it is listed at the name ([`RowNames::place`]).
+    Released(PathName),
     /// Its id index entry could not be read: the birth's name is not known, and the view does not
     /// list it.
     Unreadable,
@@ -188,7 +192,7 @@ impl RowNames {
     /// `(node id, incarnation, published, row's name)`.
     pub(crate) fn moved(&self) -> impl Iterator<Item = (&NodeId, &IncarnationId, &PathName, &PathName)> {
         self.names.iter().filter_map(|((id, inc), (published, row))| match row {
-            RowName::At(name) if name != published => Some((id, inc, published, name)),
+            RowName::At(name) | RowName::Released(name) if name != published => Some((id, inc, published, name)),
             _ => None,
         })
     }
@@ -198,9 +202,40 @@ impl RowNames {
     /// could not be read, and the birth is not listed.
     pub(crate) fn name_of(&self, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> Option<PathName> {
         match self.names.get(&(node_id.clone(), incarnation.clone())) {
-            Some((_, RowName::At(n))) => Some(n.clone()),
+            Some((_, RowName::At(n) | RowName::Released(n))) => Some(n.clone()),
             Some((_, RowName::Unreadable)) => None,
             None => Some(published.clone()),
+        }
+    }
+
+    /// The row this read covered for `n`'s birth released its name (`Deleted` or `Withdrawn`).
+    fn released(&self, n: &Node) -> bool {
+        n.incarnation_id.as_ref().is_some_and(|inc| matches!(self.names.get(&(n.node_id.clone(), inc.clone())), Some((_, RowName::Released(_)))))
+    }
+
+    /// Which of two births listed at one path the records say is current, when they say it: the
+    /// birth at a path is the one whose row holds the name, stopped or not, and a birth whose row
+    /// released the name never takes the path from it (node-identity-and-state.md §2.3: "the deleted
+    /// row releases the `path.name`"; §6 "Re-born": "the predecessor is deleted by the recovery Build,
+    /// so the projection holds one entry per `path.name`"; node-investigation.md: "A node that comes
+    /// back after it was re-created is a deleted birth"). `Some(true)`: `candidate` takes the path
+    /// from `listed`; `Some(false)`: `listed` keeps it; `None`: the rows read do not tell them apart.
+    pub(crate) fn takes_path(&self, listed: &Node, candidate: &Node) -> Option<bool> {
+        match (self.released(listed), self.released(candidate)) {
+            (true, false) => Some(true),
+            (false, true) => Some(false),
+            _ => None,
+        }
+    }
+
+    /// List `n` at `name` when no birth is listed there yet, or when the birth listed there is not the
+    /// current one and `n` is ([`Self::takes_path`]).
+    pub(crate) fn place(&self, nodes: &mut BTreeMap<PathName, Node>, name: PathName, n: Node) {
+        match nodes.get(&name) {
+            Some(listed) if self.takes_path(listed, &n) != Some(true) => {}
+            _ => {
+                nodes.insert(name, n);
+            }
         }
     }
 }
@@ -216,8 +251,9 @@ pub(crate) fn publishes(digest_view: &DigestView, records: &Records, node_id: &N
 /// never changes the mesh). An index entry that cannot be read is one span on every projection that
 /// reads it, until it can be read.
 pub(crate) async fn row_name(me: &PathName, store: &dyn crate::storage::NodesStorage, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> RowName {
-    match store.node(node_id).await.map(|r| r.filter(|r| r.name.mesh == published.mesh).map(|r| r.name)) {
-        Ok(Some(name)) => RowName::At(name),
+    match store.node(node_id).await.map(|r| r.filter(|r| r.name.mesh == published.mesh)) {
+        Ok(Some(row)) if crate::node_rows::released_its_name(&row) => RowName::Released(row.name),
+        Ok(Some(row)) => RowName::At(row.name),
         // The node holds no row: no rename moved it, and the name it published stands.
         Ok(None) => RowName::At(published.clone()),
         Err(e) => {
@@ -359,10 +395,14 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             n.data_dir = r.data_dir.clone();
             n.listeners = r.listeners.clone();
         }
-        // One birth per path: the newest digest wins over a superseded one.
+        // One birth per path: the current birth by its row (`RowNames::takes_path`); where the rows
+        // read do not tell the two apart, the newest digest wins over a superseded one.
         match nodes.get(&name) {
-            Some(prev) if prev.status.is_live() && !n.status.is_live() => {}
-            _ => {
+            Some(prev) if rows.takes_path(prev, &n).unwrap_or(!(prev.status.is_live() && !n.status.is_live())) => {
+                nodes.insert(name, n);
+            }
+            Some(_) => {}
+            None => {
                 nodes.insert(name, n);
             }
         }
@@ -403,7 +443,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             n.data_dir = r.data_dir.clone();
             n.listeners = r.listeners.clone();
         }
-        nodes.entry(name).or_insert(n);
+        rows.place(&mut nodes, name, n);
     }
     // A stopped birth this admin never held a digest of (it joined after the stop): the stop
     // overlay the mesh topology carried names it, `Leaving` and `stopped`, until it rejoins or departs.
@@ -429,7 +469,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             n.data_dir = r.data_dir.clone();
             n.listeners = r.listeners.clone();
         }
-        nodes.entry(name).or_insert(n);
+        rows.place(&mut nodes, name, n);
     }
     // An own-mesh birth this admin holds only from its mesh-primary's projection (gossip.md §3.1
     // `Members`: what every node-admin holds of every Mesh; the member's own Digest never reached this
@@ -473,7 +513,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             n.data_dir = r.data_dir.clone();
             n.listeners = r.listeners.clone();
         }
-        nodes.entry(name).or_insert(n);
+        rows.place(&mut nodes, name, n);
     }
     // Births this admin started that have not reported yet. A launch record
     // stands in for a birth only until the topology view speaks for it: once heard,
@@ -486,7 +526,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if r.incarnation_id.as_ref().is_some_and(|i| heard.contains(i)) || digest_view.is_deleted(r.node_id.as_str()) {
             continue;
         }
-        nodes.entry(name).or_insert(r);
+        rows.place(&mut nodes, name, r);
     }
     let mut topology = Topology {
         fabric: Fabric { id: fabric_id.clone(), name: fabric.into(), status: ScopeStatus::Pending, provider },
