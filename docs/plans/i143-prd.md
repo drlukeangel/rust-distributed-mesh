@@ -3157,3 +3157,16 @@ Landing gate red at 53518fc44: `rdm-admin:main` timed out at 300 s, its 8 test w
 8 unrelated cells, every other tree at its usual time; host load average 13 at the time, source not
 attributable afterwards; the hang watcher ran the same binary 8 times on the lane, 8/8 green (448
 cells, 31.6 s each), no stack. Read and unattributed; the watcher stays on every tail.
+
+## e12.s102 — 2026-10-26: Q181 lands (a cut node is replaced, a deleted birth opens nothing); Q190's own-mesh arm fix
+
+Lane e4s2x, branch q181-cut-node-replaced. Q181: a mesh-primary's one ladder is the verdict for every
+member, its own node-admins included (the pre-Q111 hold-down and second ladder removed); a deleted
+birth's claims and recovery opens are refused by name (node_rows::deleted_birth). Q187 and Q188 cells
+as ruled. Q190, decided by fabric-recovery.md step 3: the own-mesh arm writes nothing on a running
+fabric-primary it reached through no peer (74be797fa red: the isolated admin terminated the running
+fabric-primary, trace cdf581fab5b3dc42c6e2ae919de2de27; 3942dd6e7 green). The two-victims cut now
+isolates the victims from every port, nodes born after the cut included, and prints the cut it
+applies (0e65ba807 red, 56e812c8a); the cell's runs at 3 s and 30 s floors before the fix are in the
+Q190 packet. The two-victims export job proves the fix once the consumer build runs at this landing's
+SHA (the rshape consumer bins were built at b3b82de).
