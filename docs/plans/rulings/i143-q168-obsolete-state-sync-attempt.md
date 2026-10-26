@@ -58,18 +58,40 @@ with the attempt the fabric now runs.
 
 Every arm assumes the application's ops carry the `(build_id, attempt)` of the hook call that sent them.
 
-- **A: `admit_attempt(build_id, attempt)` on every node.** A served op calls it before it changes
-  anything. The node keeps a durable, never-decreasing high-water of the `(build_id, attempt)` it has
-  seen, beside its row, fed by the requests themselves and by the fabric state it hears; an older
-  pair is refused by name, `superseded`. Once attempt 2's first request reaches a node, attempt 1's
-  late one is refused there, gossip or not. Changes: one node API and one durable value; no wire; the
-  `sync_state` section of fabric-node-hooks.md states it.
+- **A: `admit_attempt` on every node, ordered by the Build's acceptance stamp** (amended by Architect 1's
+  review, 2026-10-25):
+  - **What is carried.** The state-sync handoff and every application operation it sends carry
+    `build_id`, `submitted_at_ms` and `attempt`. The order is `(submitted_at_ms, attempt)`; a Build id is
+    never ordered. `submitted_at_ms` is the acceptance stamp, strictly increasing across accepted
+    Builds by construction: `max(now, newest accepted + 1)`, the newest read from the builds store
+    (`control_plane.rs:582`, R-BI3), so it holds across a restart and a clock rollback. A newer
+    Build's attempt 1 supersedes an older Build's attempt 8.
+  - **What RDM does.** `admit_attempt(build_id, submitted_at_ms, attempt)` compares against the node's
+    durable admitted triple, fed by the requests themselves and by the fabric state the node hears. An
+    older pair is refused by name, `superseded`; a different `build_id` carrying the same
+    `submitted_at_ms` is refused by name, `ambiguous-order`; an equal triple is admitted (a repeat).
+    A newer triple is written durably beside the node's row before `admit_attempt` returns, so its
+    effect is never allowed ahead of its record.
+  - **What the application does.** It runs `admit_attempt` and the mutation under the same
+    per-resource serialization every competing attempt takes. Work prepared outside it (an async
+    restore) takes the serialization again and calls `admit_attempt` again immediately before
+    publishing. Repeats of one attempt stay subject to the operation's own idempotency.
+  - **Changes:** the handoff gains `submitted_at_ms`; one node API and one durable value; the
+    `sync_state` section of fabric-node-hooks.md and the handoff fields on node-rpc-envelope.md
+    "Application state-sync handoff" and fabric-state-sync.md, landed with the code. RDM owns the
+    comparison and the durable value; the application owns applying it at each mutation and
+    publication.
+  - **Cells:** a delayed old restore after a newer seed is refused and the seed stands; no write
+    interleaves between the final check and the mutation; a restart keeps the admitted triple; a newer
+    Build's attempt 1 supersedes an older Build's attempt 8; equal stamps with different Build ids are
+    refused; a clock rollback does not lower the order.
 - **B: a node reads the attempt it holds** (141's arm a): an accessor over the state the node has
   heard. Changes: one read accessor. Leaves the race of §4.
 - **C: RDM holds attempt N+1 until attempt N's calls end** (141's arm b). Changes: the fabric-primary's
   state-sync step; RDM cannot see the application's calls end.
 - **X: something else.**
 
-**Recommendation: A.** It is the standard monotonic-token check a stale holder's writes are refused
-by, it closes the race B leaves, and the application adds one call at the top of each served op and no
-ordering logic of its own.
+**Recommendation: A as amended.** It is the standard monotonic-token check a stale holder's writes are
+refused by, ordered by a durable acceptance stamp RDM already mints (never by Build id); it closes the
+race B leaves; the application adds one call under its own per-resource serialization and no ordering
+logic of its own.
