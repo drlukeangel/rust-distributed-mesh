@@ -103,7 +103,8 @@ fn store_lines(root: &Path) -> BTreeMap<&'static str, Vec<String>> {
 fn history_carried(source: &BTreeMap<&'static str, Vec<String>>, destination: &BTreeMap<&'static str, Vec<String>>) {
     for (store, lines) in source {
         let copied = &destination[store];
-        assert!(!lines.is_empty(), "{store}: the old provider holds history to carry");
+        // A fabric whose nodes recorded no connection fact holds an empty connections store.
+        assert!(*store == rdm_admin::store_root::CONNECTIONS_FILE || !lines.is_empty(), "{store}: the old provider holds history to carry");
         assert!(copied.len() >= lines.len() && copied[..lines.len()] == lines[..], "{store}: the new provider holds every line of the old one in source order ({} of {} lines; first difference at {:?})", copied.len(), lines.len(), lines.iter().zip(copied.iter()).position(|(a, b)| a != b));
     }
 }
@@ -233,7 +234,9 @@ async fn an_omitted_provider_preserves_the_current_provider() {
     assert!(file_held.is_empty(), "the file provider's store dir {} holds nothing of the fabric: {file_held:?}", store_dir.display());
     let target = topology_storage_dir(&store_dir).join(fabric.id.to_string());
     assert!(target.join(rdm_admin::store_root::LAYOUT).is_file(), "the fabric's root is on {TOPOLOGY_STORAGE_TARGET}'s place {}", target.display());
-    assert!(store_lines(&target).values().all(|l| !l.is_empty()), "every store of the fabric is written on {TOPOLOGY_STORAGE_TARGET}");
+    // Every store the fabric has written (a fabric whose nodes recorded no connection fact has written
+    // none to its connections store) is on the named provider.
+    assert!(store_lines(&target).iter().all(|(store, l)| *store == rdm_admin::store_root::CONNECTIONS_FILE || !l.is_empty()), "every store of the fabric is written on {TOPOLOGY_STORAGE_TARGET}");
     estate.stop().await;
 }
 
