@@ -3362,6 +3362,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// CONTRACT (Q185, Luke 2026-10-26: "Every admin reads Build records from the store"; build.md §5.3:
+    /// "The Build facts are the Build journal on the fabric's shared store root (§5.3), each record at its
+    /// own key, written by the fabric-primary, so a successor reads them there"): an admin that is not
+    /// the fabric-primary holds the Build records the fabric-primary wrote on the shared store root, with
+    /// no Build channel to carry them: the accepted Build, its claim, and a receipt written after its
+    /// first read, so it can read the current Build, run a drift attempt of it in its own mesh and take
+    /// it over. Must NOT happen: an admin that is not the fabric-primary holding no Build (UnknownBuild,
+    /// no current Build) because its facts were to reach it on a gossip channel.
+    #[tokio::test]
+    async fn an_admin_that_is_not_the_fabric_primary_reads_every_build_record_from_the_store_root() {
+        let dir = tmp();
+        let writer = open_at(&dir).await.unwrap();
+        writer.publish_accepted(&intent("b1")).await.unwrap();
+        writer.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+
+        // Another admin on the same store root, not the fabric-primary (its boot's gate, as boot.rs sets it).
+        let other = open_at(&dir).await.unwrap();
+        other.read_while_fabric_primary(Arc::new(|| false));
+        let id = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
+        let read = other.read_build(&id).await.unwrap_or_else(|e| panic!("an admin that is not the fabric-primary reads the Build from the store root: {e}"));
+        assert_eq!((read.state, read.attempt, read.executor.as_deref()), (BuildState::Running, 1, Some("mesh1.admin.1")), "the accepted Build and its claim, as the store root records them");
+        assert_eq!(other.current_build().await.unwrap(), CurrentBuild::InProgress(id.clone()), "the current Build, from the store root");
+
+        // A record written after its first read reaches it the same way.
+        writer.append_step_receipt(&step("b1", 1, "node.create:mesh1.rpc.2")).await.unwrap();
+        assert_eq!(other.read_build(&id).await.unwrap().steps.len(), 1, "a record written later is read from the store root");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn accepted_at(id: &str, at_ms: u64) -> BuildAccepted {
         BuildAccepted { submitted_at_ms: at_ms, ..intent(id) }
     }

@@ -1,13 +1,12 @@
 //! i143.e1.s5 functional: Build identity is fabric control state.
 //!
-//! Two node-admins of one fabric hold the fabric's Build facts over the Build
-//! topic (iroh-gossip). Admin A is the fabric-primary: it accepts a Build, claims attempt 1 on its
-//! own log, runs it, completes one operation and dies in the middle of the next. Admin B takes the
-//! seat and drives the SAME build id from its own projection (A's state is gone with it): the
-//! attempt A held is dispatched to A, which answers nothing, and only after B holds proof of A's
-//! departure does it claim attempt 2 on its own log. B re-plans against the observed topology,
-//! runs only what is left and completes the Build, under
-//! `rdm.node_admin.build.update.via-reconcile`.
+//! Two node-admins of one fabric hold the fabric's Build records on its shared store root (build.md
+//! §5.3; Q185: no Build channel). Admin A is the fabric-primary: it accepts a Build, claims attempt 1,
+//! runs it, completes one operation and dies in the middle of the next. Admin B, never connected to
+//! A, reads the Build from the store root, takes the seat and drives the SAME build id (A's process
+//! is gone with it): the attempt A held is dispatched to A, which answers nothing, and only after B
+//! holds proof of A's departure does it claim attempt 2. B re-plans against the observed topology,
+//! runs only what is left and completes the Build, under `rdm.node_admin.build.update.via-reconcile`.
 
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
@@ -152,16 +151,19 @@ fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Ar
 }
 
 struct Admin {
-    endpoint: Endpoint,
     router: Router,
     builds: Arc<FabricBuildStateAdapter>,
-    /// The admin's own Build log, which the Build topic feeds and the intent a call carries is absorbed into.
-    local: Arc<rdm_admin::build_state::MemoryBuildStateAdapter>,
-    /// The Fabric identity as the admin holds it: what its Build topic feeds.
+    /// The admin's Build journal on the fabric's shared store root, which the intent a call carries is
+    /// absorbed into.
+    local: Arc<rdm_admin::build_state::FileJournal>,
+    /// The Fabric identity as the admin holds it.
     accepted: Arc<AcceptedStore>,
 }
 
-async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
+/// An admin of the fabric whose store root is `root`, connected to no other admin; `fabric_primary`
+/// says whether it is the fabric-primary (its boot's gate).
+async fn admin(root: &std::path::Path, fabric_primary: Arc<std::sync::atomic::AtomicBool>) -> Admin {
+    let peers: Vec<iroh::EndpointAddr> = vec![];
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::generate())
         .alpns(vec![iroh_gossip::ALPN.to_vec()])
@@ -177,14 +179,14 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
     let storage = Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new());
     rdm_admin::fabric_storage::claim_identity(&*storage, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
-    let local = Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new());
+    let writer = rdm_admin::store_log::LogWriter::new(&NodeId::mint(), &IncarnationId::mint());
+    let local = Arc::new(rdm_admin::build_state::FileJournal::open_on_root(&rdm_admin::store_root::StoreRoot::at(root), &root.join(format!("data-{}", NodeId::mint())), &writer).await.unwrap());
+    {
+        use rdm_admin::build_state::LocalBuildLog as _;
+        local.read_while_fabric_primary(Arc::new(move || fabric_primary.load(std::sync::atomic::Ordering::SeqCst)));
+    }
     let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rdm_transport::topology::LocationView::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, local.clone(), accepted.clone(), "test-admin".into(), rdm_admin::fabric_builds::SeatSource::unrecorded(), None).await.unwrap());
-    Admin { endpoint, router, builds, local, accepted }
-}
-
-fn addr(a: &Admin) -> iroh::EndpointAddr {
-    let ip = a.endpoint.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap();
-    iroh::EndpointAddr::new(a.endpoint.id()).with_ip_addr(ip)
+    Admin { router, builds, local, accepted }
 }
 
 async fn eventually<F, Fut>(what: &str, mut f: F)
@@ -208,14 +210,16 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let topology = Arc::new(RwLock::new(observed()));
 
-    let a = admin(vec![]).await;
-    let b = admin(vec![addr(&a)]).await;
-    // B returns from joining once connected to A on the fabric Build topic.
+    // One store root, the fabric's; A and B are never connected to each other.
+    let root = std::env::temp_dir().join(format!("build-takeover-{}", NodeId::mint()));
+    std::fs::create_dir_all(&root).unwrap();
+    let b_is_fabric_primary = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let a = admin(&root, Arc::new(std::sync::atomic::AtomicBool::new(true))).await;
+    let b = admin(&root, b_is_fabric_primary.clone()).await;
 
     // A accepts the Build through its control plane: grow mesh1 to 3 rpc nodes.
     // A holds a settled accepted Build of what is observed: the one the change compiles against.
-    // The settled Build A is seeded into A's own builds store, the store its
-    // Build topic adapter serves to a neighbour and its control plane moves.
+    // The settled Build A is seeded into the fabric's builds store, which its control plane moves.
     let seed = rdm_admin::build::BuildId::mint();
     a.builds
         .publish_accepted(&rdm_admin::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&observed()), submitted_change: None, submitted_at_ms: 0 })
@@ -248,14 +252,14 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         r = &mut a_driving => panic!("A was to stop inside mesh1.rpc.3, but its drive ended: {r:?}"),
         _ = died.notified() => {}
     }
-    // While A is stuck in mesh1.rpc.3, the fabric projection carries the
-    // Build to B: the intent and A's claim of attempt 1.
+    // While A is stuck in mesh1.rpc.3, B, not the fabric-primary, reads the Build from the store
+    // root: the intent and A's claim of attempt 1.
     eventually("B's projection shows A's attempt", || {
         let (b, id) = (b.builds.clone(), build_id.clone());
         async move { b.read_build(&id).await.is_ok_and(|v| v.attempt == 1 && v.executor.as_deref() == Some("mesh1.admin.1")) }
     })
     .await;
-    // A dies: its execution, endpoint, gossip and Build state go with it.
+    // A dies: its execution and Build state go with it.
     drop(a_driving);
     let Admin { router, builds: a_builds, .. } = a;
     drop(a_env);
@@ -263,11 +267,12 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     drop(a_builds);
     router.shutdown().await.unwrap();
     lose_a(&topology).await;
+    b_is_fabric_primary.store(true, std::sync::atomic::Ordering::SeqCst);
 
     // B drives the same Build: the same build id, the next attempt, only what is left.
     let b_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: None, died: Arc::new(Notify::new()) });
-    // B holds the Build through its Build topic, never set by hand: the successor may drive only
-    // its current Build (R-BI3), read from its own builds store.
+    // B holds the Build from the store root, never set by hand: the successor may drive only
+    // its current Build (R-BI3), read from the fabric's builds store.
     eventually("B's current Build is the Build", || {
         let (builds, id) = (b.builds.clone(), build_id.clone());
         async move { builds.current_build().await.ok().and_then(|c| c.into_build_id()) == Some(id) }
@@ -336,6 +341,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(proven.len(), 1, "the departure was proven once: {proven:?}");
     assert_eq!(proven[0].get("executor").map(String::as_str), Some("mesh1.admin.1"));
     b.router.shutdown().await.unwrap();
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The test fabric's canonical id.
