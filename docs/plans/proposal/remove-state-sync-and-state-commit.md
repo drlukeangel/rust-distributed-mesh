@@ -4,6 +4,8 @@ Luke, 2026-10-26: state-sync and state-commit are removed. Q171.1 (the `fabric-n
 goes with the scratchpad) and the gossip change are approved with it. The node's `before_ready` hook
 stays: it is where a node gets its projections from node-admin.
 
+Landed `688c32241` (2026-10-26); PRD e12.s92.
+
 ## Why
 
 - **State-commit wrote again what is already written.** The scratchpad held RDM's rows in memory

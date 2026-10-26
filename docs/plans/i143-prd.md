@@ -2845,6 +2845,39 @@ Landed from `047db41f7` to `9938fb9f5`, each through the fast gate:
   - the multi-mesh fabric.delete stall. Rafka's storage reads (`<sys>.ops.nodes`, `ops.builds`) count replicas on mesh2's deleted brokers toward coverage. fabric-delete.md deletes the fabric-primary's own mesh last, so the fix is placement and coverage in Rafka's adapter, not an RDM ruling.
 - **The tail at one SHA:** fast, release, export run, soaks, `export-manifest --candidate <sha>` (e10.s2, e11.s12).
 
+## e12.s92 — 2026-10-26: Q171, the fabric goes from pending to ready-for-traffic
+
+### State
+
+Luke, 2026-10-26: state-sync, state-commit, the `sync_state` hook, the scratchpad and `fabric-not-ready` are
+removed (Q171, Q171.1; the gossip change approved; proposal
+[remove-state-sync-and-state-commit](proposal/remove-state-sync-and-state-commit.md)). Landed as `688c32241`
+through the fast gate:
+
+- **States.** The fabric is pending, then ready-for-traffic once every mesh the accepted Build names is
+  ready-for-traffic and the open-traffic check-ins complete. No compatibility read: a row naming
+  `state-sync` or `state-commit` is from a fabric that no longer runs (`durable format moved`).
+- **Rows.** Every writer writes to the store root from Day 0; the scratchpad and its publication are gone.
+- **Hooks.** `traffic_opened` is the application's one notice (`FabricHooks { traffic_opened }`, fields
+  `TrafficOpened`); Rafka's Day 0 is its own. `before_ready` stays.
+- **Refusals.** `fabric-not-ready` is gone; the Day-0 Build in progress still refuses every other Build
+  `build-in-progress` (Q170).
+- **Wire.** StatusRequest 12 and 13, StatusReply 44, NodePrimaryUpdateReply 2 and gossip Frame 15 and 16
+  are reserved positions, refused by name.
+- **Flame.** Before, at `093f7e071`, trace `3551d75e1956f75cca006b62afab14ea`: the Day-0 change took
+  393.5 ms (state-sync 0-160 ms, the commit-state checklist 160-286 ms, open-traffic 286-392 ms). After:
+  at `688c32241`, trace `f81152d14ec4fb89ac70cdabd96807e2`: 6.8 ms (every mesh ready at 0, the open-traffic
+  checklist 0.1-2.9 ms, the ready row 3-6.3 ms, ready-for-traffic at 6.3 ms, the `traffic_opened` notice at 6.5 ms).
+- **141** was told the SHA.
+
+### Remaining
+
+- The tail at one SHA: fast, release, export run, soaks, `export-manifest --candidate <sha>`.
+- Read on the 093f7e071 tail, unattributed: `backbone` (a read through mesh1.admin.1 ended `not sent:
+  Deadline` while mesh1.admin.2 was isolated) and `i143-rshape-adv-two-victims-process` (mesh1.admin.1,
+  no victim, did not answer `mesh.nodes.get` while two admins were cut); `i143-2784-chaos-container`
+  `container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end`.
+
 ## e10.s2 — export: one RDM SHA on which the whole export gate is green, the import manifest, and the final parity scan
 
 **Builder:** the lead (gate runs) with an RDM engineer for fixes · **Tracking issue:** #2790 (generated once; not read back) · **Architecture:** §14 Export/import gate; §15 Verification artifacts; §17 Definition of done; transport-parity.md
