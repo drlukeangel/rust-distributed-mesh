@@ -73,6 +73,8 @@ mod named_listeners;
 mod topology_storage_provider;
 #[path = "fabric/fabric_delete.rs"]
 mod fabric_delete;
+#[path = "fabric/fabric_atlas.rs"]
+mod fabric_atlas;
 #[path = "fabric/own_delete_matrix.rs"]
 mod own_delete_matrix;
 #[path = "rpc/proof_holder_lifecycle.rs"]
