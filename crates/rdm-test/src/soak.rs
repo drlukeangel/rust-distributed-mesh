@@ -537,6 +537,32 @@ fn refused(call: &str, end: CallEnd) -> Broken {
     broken("topology-action-accepted", format!("{call}: {end}"))
 }
 
+/// The bound of [`after_build_in_progress`]: as long as a round waits for its Build.
+const BUILD_IN_PROGRESS_BOUND: Duration = Duration::from_secs(120);
+
+/// `submit`, submitted again while it is refused `build-in-progress` (one Build at a time, build.md
+/// §1): a caller that must go after the Build in flight follows it to its end and submits again
+/// (`CallEnd::BuildInProgress`). An attempt the fabric opens itself between rounds, a recovery or the
+/// termination of a returned birth, is that Build in flight. Exponential backoff from 500 ms to 4 s,
+/// within [`BUILD_IN_PROGRESS_BOUND`]; any other refusal, or the bound passed, is the call's.
+async fn after_build_in_progress<T, F, Fut>(mut submit: F) -> Result<T, CallEnd>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, CallEnd>>,
+{
+    let until = Instant::now() + BUILD_IN_PROGRESS_BOUND;
+    let mut backoff = Duration::from_millis(500);
+    loop {
+        match submit().await {
+            Err(CallEnd::BuildInProgress { .. }) if Instant::now() + backoff < until => {
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(4));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// The Build and attempt a workflow call opened, as a round row records them.
 fn accepted_json(a: &Accepted) -> Value {
     json!({"build_id": a.build_id.to_string(), "attempt": a.attempt})
@@ -1331,13 +1357,13 @@ impl Driver {
         match action {
             Action::Grow { mesh, class } => {
                 let kind = class.kind_name();
-                let spawn = self.estate.create_node(&mesh, launch_kind(*class)).await.map_err(|end| refused(&format!("node.create {kind} in {mesh}"), end))?;
+                let spawn = after_build_in_progress(|| self.estate.create_node(&mesh, launch_kind(*class))).await.map_err(|end| refused(&format!("node.create {kind} in {mesh}"), end))?;
                 entry["accepted"] = accepted_json(spawn.accepted());
                 entry["build"] = self.await_build(spawn).await?;
             }
             Action::Shrink { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
-                let delete = self.estate.nodes_obj().await.delete(&path_name(node)).await.map_err(|end| refused(&format!("node.delete {node}"), end))?;
+                let delete = after_build_in_progress(|| async { self.estate.nodes_obj().await.delete(&path_name(node)).await }).await.map_err(|end| refused(&format!("node.delete {node}"), end))?;
                 entry["accepted"] = accepted_json(delete.accepted());
                 entry["build"] = self.await_build(delete).await?;
                 gone = Some(node.clone());
@@ -1345,7 +1371,7 @@ impl Driver {
             }
             Action::Restart { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
-                let restart = self.estate.nodes_obj().await.restart(&path_name(node)).await.map_err(|end| refused(&format!("node.restart {node}"), end))?;
+                let restart = after_build_in_progress(|| async { self.estate.nodes_obj().await.restart(&path_name(node)).await }).await.map_err(|end| refused(&format!("node.restart {node}"), end))?;
                 entry["accepted"] = accepted_json(restart.accepted());
                 // A restart keeps the birth: the same node id and incarnation start again on the live
                 // process once its Build completes (pipeline.rs restart steps); nothing is replaced.
@@ -1592,7 +1618,8 @@ impl Driver {
         let (path, mesh) = (s(&n["name"]), s(&n["mesh"]));
         let kind: LaunchKind = serde_json::from_value(n["kind"].clone()).unwrap_or_else(|e| panic!("{path}: the view's kind {} is no node kind: {e}", n["kind"]));
         let nodes = self.estate.nodes_obj().await;
-        let delete = nodes.delete(&path_name(&path)).await.map_err(|end| refused(&format!("node.delete {path}"), end))?;
+        let target = path_name(&path);
+        let delete = after_build_in_progress(|| nodes.delete(&target)).await.map_err(|end| refused(&format!("node.delete {path}"), end))?;
         entry["accepted"] = accepted_json(delete.accepted());
         entry["build"] = self.await_build(delete).await?;
         // A deleted fabric-primary or entry admin takes the entry with it: the create goes to the admin
@@ -1600,7 +1627,7 @@ impl Driver {
         if relocate_control(&mut self.estate, &self.known).await.is_none() {
             return Err(broken("control-api-answers", format!("after node.delete {path}, no admin answers fabric.get: {:?}", self.known.iter().map(|a| a.name.as_str()).collect::<Vec<_>>())));
         }
-        let spawn = self.estate.create_node(&mesh, kind).await.map_err(|end| refused(&format!("node.create {kind:?} in {mesh}"), end))?;
+        let spawn = after_build_in_progress(|| self.estate.create_node(&mesh, kind)).await.map_err(|end| refused(&format!("node.create {kind:?} in {mesh}"), end))?;
         entry["regrow"] = accepted_json(spawn.accepted());
         let build = spawn.accepted().build_id.to_string();
         self.await_build(spawn).await?;
@@ -2187,6 +2214,27 @@ pub fn summary(r: &Report) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CONTRACT (build.md §1, one Build at a time; `CallEnd::BuildInProgress`: a caller that must go
+    /// after the Build in flight follows it and submits again): a workflow call refused
+    /// `build-in-progress` is submitted again until it is accepted, and any other refusal is the
+    /// call's at once. Must NOT happen: a round broken by an attempt the fabric opened itself between
+    /// rounds (the routing and randomized soaks at 14034530d: `node.delete` refused while a returned
+    /// birth's termination ran).
+    #[tokio::test(start_paused = true)]
+    async fn a_call_refused_build_in_progress_is_submitted_again_and_any_other_refusal_is_the_calls() {
+        let current = rdm_client::BuildId::parse(&rdm_core::fixture_crockford60("inflight")).unwrap();
+        let tries = std::sync::atomic::AtomicU32::new(0);
+        let accepted = after_build_in_progress(|| {
+            let n = tries.fetch_add(1, Ordering::SeqCst);
+            let current = current.clone();
+            async move { if n < 3 { Err(CallEnd::BuildInProgress { current }) } else { Ok(n) } }
+        })
+        .await;
+        assert_eq!(accepted.ok(), Some(3), "accepted on the fourth submit, after three build-in-progress refusals");
+        let other = after_build_in_progress(|| async { Err::<u32, _>(CallEnd::Rejected { reason: "unknown-node".into(), detail: String::new() }) }).await;
+        assert!(matches!(other, Err(CallEnd::Rejected { ref reason, .. }) if reason == "unknown-node"), "{other:?}");
+    }
 
     /// A held birth is marked unheard by its own row: `dead`, or `pending-reconnect` when the hold is
     /// not judged true offline. Node recovery re-creates it at once on a verdict other than `reached`
