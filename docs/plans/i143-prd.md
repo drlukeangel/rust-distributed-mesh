@@ -3107,3 +3107,16 @@ command is silent. The i149 plan (R9–R11 restated, R18–R19 added, canaries, 
 and the inventory's dating note follow it. Dispatched: i149-e1 (lane e4s8), q182-unanswered-command
 (lane e6s4). Landed for the soaks: 491e871ab (an attempt's end releases the in-flight row it took),
 dcfbd6933 (the soak driver resubmits on build-in-progress).
+
+## e12.s98 — 2026-10-26: rulings Q176, Q181, Q183, Q184, Q185 recorded; Q182 landed
+
+- Q176 (Luke): A, the state `ready-for-traffic` is named `ready` (node, mesh, fabric; wire and stored
+  values, old values still decoding; `durable format moved`). Owner: the lead; not built.
+- Q181 (Luke): a cut-off node is replaced and its old birth refused, so it never acts. Building:
+  q181-cut-node-replaced, lane e4s2x.
+- Q183 (Luke): node.restart is removed; callers run node.stop then node.start (Q180 decided by it).
+  Building: q183-node-restart-removal, lane e6s4; 141 told to move restart_node.
+- Q184 (Luke): topology_storage_provider never rides gossip; it is on the Fabric and node records.
+- Q185 (Luke): the Build gossip channel is removed. Building: q185-build-channel-removal, lane e6s8.
+- Q182 landed aa3967715 (a node answering no command is silent); 141 told.
+- Open: Q177 (the LifecycleTransitionPipeline, build.md §9).
