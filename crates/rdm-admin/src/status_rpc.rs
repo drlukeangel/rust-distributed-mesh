@@ -3209,4 +3209,98 @@ mod tests {
         assert_eq!(authority.declared.lock().unwrap().node(&exited.node_id, exited.incarnation_id.as_ref().unwrap()), None, "the exited birth is forgotten");
         assert!(Declared::rehydrate(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.unwrap().nodes.is_empty(), "a restarted authority folds nothing of it back");
     }
+
+    /// CONTRACT (Q197: an action decision reads the records, never gossip; node-identity-and-state.md
+    /// §2.3 "the deleted row releases the `path.name`"; Luke 2026-10-26: "the birth at a path is the one
+    /// the records say is current, stopped or not"): the birth that holds a path.name is the one whose
+    /// row holds it live. A deleted predecessor whose digest this admin's view still holds (its
+    /// deletion never applied here) does not hold the path, so the current birth at that path keeps its
+    /// declared-state rows.
+    /// Must NOT happen: the current birth's declared state tombstoned via-new-node, naming the deleted
+    /// predecessor as the node at its path.
+    #[tokio::test]
+    async fn a_current_birth_keeps_its_declared_state_while_the_view_still_holds_its_deleted_predecessor() {
+        let mut admin = node("mesh1.admin.1");
+        admin.mesh = "mesh1".into();
+        admin.kind = NodeKind::NodeAdmin;
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let mut predecessor = node("mesh1.rpc.1");
+        predecessor.mesh = "mesh1".into();
+        predecessor.kind = NodeKind::RpcNode;
+        predecessor.endpoint_id = Some(EndpointId("mesh1.rpc.1-endpoint".into()));
+        predecessor.transport_addr = Some("127.0.0.1:1".parse().unwrap());
+        // The recovery's new node at the same path.name (node-recovery.md: "New: node.id").
+        let mut current = predecessor.clone();
+        current.node_id = NodeId::mint();
+        current.incarnation_id = Some(IncarnationId::mint());
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![admin.clone(), current.clone()],
+        }));
+        let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
+        let authority = StatusAuthority {
+            certs: None,
+            app_channels: None,
+            declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
+            stopped: Default::default(),
+            me: admin.name.clone(),
+            node_id: admin.node_id.clone(),
+            fabric_id: topology.read().await.fabric.id.clone(),
+            topology: topology.clone(),
+            declared: Arc::new(Mutex::new(Declared::default())),
+            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
+            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
+            mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
+            commands: Arc::new(crate::node_commands::CommandView::default()),
+            own: Arc::new(OnceLock::new()),
+            mesh_deleter: Arc::new(OnceLock::new()),
+            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            wake: Default::default(),
+            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
+            nodes_storage: status.clone(),
+            caches: Default::default(),
+            configs: Default::default(),
+            republish: Default::default(), configure: Default::default(),
+            pre_node_ready: Default::default(),
+            rename: Default::default(),
+            row_moved: Default::default(),
+            loads: None,
+            digest_view: None,
+            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
+        };
+        // The records: the predecessor's row is Deleted (it released the path.name), and the current
+        // birth's row claims the name over it.
+        assert!(crate::node_rows::write_deleted(&*status, &authority.caches.nodes, &predecessor.name, &predecessor.node_id, None).await.is_ok(), "the predecessor's Deleted row is written");
+        let declare = StatusRequest::DeclareNodeState { node_id: current.node_id.clone(), incarnation: current.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
+        assert_eq!(authority.apply(Some(current.clone()), &declare).await, R::Applied);
+        use crate::storage::NodesStorage as _;
+        assert_eq!(status.name_claim(&current.name).await.unwrap(), Some(current.node_id.clone()), "the current birth holds the path.name's claim");
+        // This admin's view still holds the predecessor's digest (its deletion never applied here), and
+        // holds nothing of the current birth yet.
+        let digest_view = rdm_transport::topology::DigestView::default();
+        digest_view.record(digest_of(&predecessor, predecessor.incarnation_id.clone().unwrap()));
+        let capture = crate::span_capture::Capture::new("superseded-rows-read-from-records");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            authority.drop_superseded(&digest_view).await;
+        }
+        let removed: Vec<_> = ["rdm.node_admin.status.remove.via-new-node", "rdm.node_admin.status.remove.via-new-incarnation", "rdm.node_admin.status.remove.via-node-deleted"]
+            .into_iter()
+            .flat_map(|n| capture.named(n))
+            .filter(|s| s.attributes.get("node_id") == Some(&current.node_id.to_string()))
+            .collect();
+        for s in &removed {
+            eprintln!("span {} trace_id={} {:?}", s.name, s.trace_id, s.attributes);
+        }
+        assert!(removed.is_empty(), "the current birth's declared state is not removed: {:?}", removed.iter().map(|s| (s.name.clone(), s.attributes.clone())).collect::<Vec<_>>());
+        let rows: Vec<String> = Declaration::of_records(&status.nodes("mesh1").await.unwrap()).into_iter().map(|r| r.node_id.to_string()).collect();
+        assert_eq!(rows, vec![current.node_id.to_string()], "the current birth keeps its declared-state row");
+        assert_eq!(authority.declared.lock().unwrap().node(&current.node_id, current.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "the current birth keeps its state");
+        assert_eq!(Declared::rehydrate(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.unwrap().nodes.len(), 1, "a restarted authority folds the current birth back");
+    }
 }
