@@ -3170,3 +3170,12 @@ isolates the victims from every port, nodes born after the cut included, and pri
 applies (0e65ba807 red, 56e812c8a); the cell's runs at 3 s and 30 s floors before the fix are in the
 Q190 packet. The two-victims export job proves the fix once the consumer build runs at this landing's
 SHA (the rshape consumer bins were built at b3b82de).
+
+## e12.s103 — 2026-10-26: i149 waves 2–4 dispatched
+
+Per the i149 plans dispatch ordering: e2 (agent, lane e4s8, branch i149-e2) owns the shared storage
+files this wave; e3 (lane e4s2x, branch i149-e3) authors its four acceptance cells RED and a
+disjoint-file inventory only, its implementation after e2 lands; e4s eight acceptance cells, both
+restart canaries and the seed are authored RED alongside (lane e7s3, branch i149-e4-red), the spans
+as the plans OTLP bar names them. Q177 (Wiring.hooks removal, decided by build.md §9) runs in lane
+e6s4. Q189 is open with Luke.
