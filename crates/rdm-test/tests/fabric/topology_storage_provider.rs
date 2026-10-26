@@ -99,7 +99,7 @@ fn store_lines(root: &Path) -> BTreeMap<&'static str, Vec<String>> {
 }
 
 /// `source`'s lines, store by store, are a prefix of `destination`'s: every record and its history
-/// copied in source order, nothing missing and nothing reordered (storage.md §2 "Copy" and "Tails").
+/// copied in source order, nothing missing and nothing reordered (storage.md §2 "Copy").
 fn history_carried(source: &BTreeMap<&'static str, Vec<String>>, destination: &BTreeMap<&'static str, Vec<String>>) {
     for (store, lines) in source {
         let copied = &destination[store];
@@ -173,7 +173,7 @@ async fn a_customer_reads_each_nodes_topology_provider() {
 /// refused by name, `topology-storage-provider-not-registered`, its detail naming the provider and the
 /// ones the fabric-primary registers; nothing is accepted (the current Build stands, and no record on
 /// the store root names the provider), the Fabric row still names `file` with no previous provider, and
-/// every node is the same birth, writing `file`. Must NOT happen: a Build accepted, an open step run, or
+/// every node is the same birth, writing `file`. Must NOT happen: a Build accepted, a block step run, or
 /// the fabric's provider moved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unsupported_provider_changes_nothing() {
@@ -204,7 +204,7 @@ async fn an_unsupported_provider_changes_nothing() {
     let spans = estate.spans();
     let reject = named(&spans, "rdm.node_admin.build.reject.via-topology-storage-provider-not-registered");
     assert!(reject.iter().any(|sp| s(&sp["attributes"]["detail"]).contains(UNREGISTERED)), "the fabric-primary's refusal span names the provider: {reject:#?}");
-    assert!(named(&spans, "rdm.node_admin.build.update.via-storage-open").is_empty(), "no node opened the provider");
+    assert!(named(&spans, "rdm.node.build.update.via-storage-block").is_empty(), "no node blocked: no step of a change ran");
     estate.stop().await;
 }
 
@@ -252,10 +252,10 @@ async fn admin_restart_resolves_the_same_change(test: &str, how: Ended) {
     let (file_root, target_root) = roots(&estate);
     let stream = estate.carrier().await.create(naming_provider(&estate, Some(TOPOLOGY_STORAGE_TARGET)).await).await.unwrap_or_else(|e| panic!("the storage change naming {TOPOLOGY_STORAGE_TARGET} is accepted: {e}"));
     let build_id = stream.build_id().to_string();
-    // A writer has durably frozen the run: its freeze is recorded with the run's change_id.
-    let frozen = step_spans(&estate, "rdm.node.build.update.via-storage-freeze", &build_id, "frozen").await;
-    let change_id = s(&frozen[0]["attributes"]["change_id"]);
-    assert!(!change_id.is_empty(), "the freeze carries the run's change_id: {:#?}", frozen[0]);
+    // A node has blocked under the change: its block, recorded in its data dir, carries the change_id.
+    let blocked = step_spans(&estate, "rdm.node.build.update.via-storage-block", &build_id, "blocked").await;
+    let change_id = s(&blocked[0]["attributes"]["change_id"]);
+    assert!(!change_id.is_empty(), "the block carries the change's change_id: {:#?}", blocked[0]);
     match how {
         Ended::Forced => estate.kill_bootstrap(),
         Ended::Clean => {
@@ -265,15 +265,14 @@ async fn admin_restart_resolves_the_same_change(test: &str, how: Ended) {
         }
     }
     // The same logical admin over the same data dir, its launch environment naming the old provider: a
-    // stale environment, which never unfreezes the run.
+    // stale environment: the restart reads its block from its data dir before it writes anything.
     estate.restart_admin_with(&estate.bootstrap_data_dir("mesh1"), &[("RDM_TOPOLOGY_STORAGE_PROVIDER", FILE)]);
     let done = estate.follow(stream).await;
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
     let spans = estate.spans();
-    let decisions: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-storage-decision").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == build_id && sp["attributes"]["outcome"] == "inserted").collect();
-    assert_eq!(decisions.len(), 1, "exactly one decision stands for the run: {decisions:#?}");
-    assert_eq!(s(&decisions[0]["attributes"]["change_id"]), change_id, "the recovered run is the same change_id");
-    assert_eq!(s(&decisions[0]["attributes"]["decision"]), "commit", "the run commits");
+    let switched: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-storage-switch").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == build_id && sp["attributes"]["outcome"] == "inserted").collect();
+    assert_eq!(switched.len(), 1, "exactly one `commit` is inserted for the change: {switched:#?}");
+    assert_eq!(s(&switched[0]["attributes"]["change_id"]), change_id, "the resumed change is the same change_id");
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
     let after = estate.node_views().await;
     nodes_write(&after, TOPOLOGY_STORAGE_TARGET);
@@ -291,17 +290,18 @@ async fn admin_restart_resolves_the_same_change(test: &str, how: Ended) {
     estate.stop().await;
 }
 
-/// CONTRACT (i149 § Restart-recovery canary, FIRST test; storage.md §2 "Freeze": "On restart the node
-/// reads this state before opening ordinary writes and resolves the same run's decision; a stale launch
-/// environment cannot unfreeze it"; "Recovery of an unfinished run reuses it"; "Decision": "one durable,
-/// mutually exclusive record ... keyed by `(build_id, change_id)`"): a storage change to `test-target`
-/// on a two-mesh fabric is frozen by a writer, the fabric-primary is ended, once by SIGKILL and once by
-/// its own stop, and started again over the same data dir with a launch environment naming `file`. The
-/// run resolves under the same `change_id` with exactly one decision, `commit`; the Fabric row names
+/// CONTRACT (i149 § Restart-recovery canary, FIRST test; storage.md §2 "Changing it": "The change has a
+/// durable `change_id`"; "Block": the node "records the block and both providers in its data dir, which
+/// a restart reads before it writes anything"; "Switch": "Whoever resumes the change, a successor or
+/// the fabric-primary after a lost answer, learns the decision only by reading that record"): a storage
+/// change to `test-target` on a two-mesh fabric has a node blocked, the fabric-primary is ended, once by
+/// SIGKILL and once by its own stop, and started again over the same data dir with a launch environment
+/// naming `file`. The change resumes under the same `change_id` with exactly one `commit` inserted for
+/// `(build_id, change_id)`; the Fabric row names
 /// `test-target` with `file` previous; every node writes `test-target`, every other node the same birth
 /// and ready-for-traffic; every record of the five stores and its history is on `test-target` in source
-/// order, and `file` is written no more. Must NOT happen: a second decision, a new `change_id` for the
-/// recovered run, an ordinary write unfrozen by the stale environment, or a record lost.
+/// order, and `file` is written no more. Must NOT happen: a second `commit`, a new `change_id` for the
+/// resumed change, a write let through by the stale environment, or a record lost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn topology_storage_state_survives_admin_restart_at_same_data_dir() {
     admin_restart_resolves_the_same_change("topology_storage_state_survives_admin_restart_at_same_data_dir-forced", Ended::Forced).await;
@@ -311,13 +311,14 @@ async fn topology_storage_state_survives_admin_restart_at_same_data_dir() {
 /// CONTRACT (i149 § Seed spec, `a_customer_changes_topology_storage_without_restarting_members`; storage.md
 /// §2 "Changing it": "a property Build: the fabric, every mesh and every node stay ready-for-traffic, no
 /// node restarts, and no node changes state"; "Copy" ... "dead births' and deleted nodes' records among
-/// them"; "The previous provider is kept, frozen at the commit and complete to the last tail"): a
+/// them"; "The previous provider is kept as it was at the switch ... written no more"): a
 /// two-mesh fabric with history (a deleted birth, a deleted mesh) is moved to `test-target` by one Build
 /// of its complete topology while a `node.config.update` is in flight. The Build completes; the Fabric
 /// row names `test-target` with `file` previous; every node writes `test-target` and is the same birth,
 /// ready-for-traffic, carrying the config the update set; every line of the five stores is on
 /// `test-target` in source order, the deleted birth's and the deleted mesh's included; `file` is written
-/// no more; and the open, copy, freeze, decision and release steps are spans on one trace. Must NOT
+/// no more; and the block, finish outstanding writes, copy, switch and unblock steps are spans on one
+/// trace. Must NOT
 /// happen: a node restarted or replaced, a record lost or reordered, or the old provider written after
 /// the commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -369,11 +370,11 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     let spans = estate.spans();
     let mut traces = BTreeSet::new();
     for (step, outcome) in [
-        ("rdm.node_admin.build.update.via-storage-open", "opened"),
+        ("rdm.node.build.update.via-storage-block", "blocked"),
+        ("rdm.node.build.update.via-storage-finish", "finished"),
         ("rdm.node_admin.build.update.via-storage-copy", "copied"),
-        ("rdm.node.build.update.via-storage-freeze", "frozen"),
-        ("rdm.node_admin.build.update.via-storage-decision", "inserted"),
-        ("rdm.node.build.update.via-storage-release", "released"),
+        ("rdm.node_admin.build.update.via-storage-switch", "inserted"),
+        ("rdm.node.build.update.via-storage-unblock", "unblocked"),
     ] {
         let found: Vec<&Value> = named(&spans, step).into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == build_id && sp["attributes"]["outcome"] == outcome).collect();
         assert!(!found.is_empty(), "{step} outcome={outcome} is recorded for Build {build_id}");
