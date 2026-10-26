@@ -1,9 +1,6 @@
 # Storage
 
-**Status:** ARCHITECTURE, the contract for the two things RDM calls storage. Luke, 2026-10-26. The
-mechanics of changing the topology storage provider are in
-[fabric-storage-provider](../plans/proposal/fabric-storage-provider.md) until they land; the file
-backend's layout is in [store-root-one-directory-per-entity](../plans/proposal/store-root-one-directory-per-entity.md).
+**Status:** ARCHITECTURE, the contract for the two things RDM calls storage.
 
 Two things are called storage, and neither is the other:
 
@@ -11,9 +8,6 @@ Two things are called storage, and neither is the other:
 |---|---|---|---|
 | **`storage_persistence`** | a node's own data dir: its keys and secrets, and whatever the application keeps there, a broker's or gateway's WAL, a node-admin's themes and images | the node's, on its create spec and its row | does this node's own storage survive its births, and what becomes of it once the node is gone |
 | **`topology_storage_provider`** | RDM's five record stores: fabric, meshes, nodes, connections, builds | the fabric's, on the Fabric row; the node's row carries the provider the node writes | which backend RDM's records are written to |
-
-The code's names today are `storage` and `on_retire` for the first and nothing for the second; both
-are renamed and the second added by the proposal above. This page states the contract by its names.
 
 ## 1. `storage_persistence`: a node's own storage
 
@@ -73,7 +67,7 @@ registered in its wiring by name:
 
 | provider | registered by | where the records go |
 |---|---|---|
-| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`): `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, with `layout` and `locks/` |
+| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, with the `layout` marker and the `locks/` of the name claims and in-flight rows; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
 | the application's | the application's binaries, at `start_on` | its own stores; Rafka binds the traits to its system topics |
 
 A name is bound to its place at registration. A node can move only between the providers its own
@@ -93,16 +87,62 @@ value is the intent, the node's is the fact, and during a change they differ, wh
 | a change | the application, by `build.create` naming the new value, once its store exists | the Build; a Build that omits the property leaves it unchanged (Q166) |
 | the end of a change | the fabric-primary, on the Fabric row | the commit |
 
-**Changing it.** A storage change is a Build that carries the complete topology with the same
-meshes and the new provider. It is a property Build: the fabric, every mesh and every node stay
-ready-for-traffic, no node restarts, and no node changes state; the progress is the Build's step
-receipts and the node rows. Every node opens the new provider; the fabric-primary copies every store
-and verifies completeness and transfers the claims; every node freezes its writes, appends its own
-tail and acknowledges; the fabric-primary decides, one durable commit-or-abort record, and writes the
-Fabric row; every node releases its owed writes onto the new provider. Before the decision a failure
-reverts with nothing lost; the previous provider is kept frozen at the commit, named on the Fabric
-row, written no more and never deleted by RDM. The steps, the freeze, the decision and the cells are
-the proposal's.
+### Changing it
+
+A storage change is a Build that carries the complete topology with the same meshes and the new
+`topology_storage_provider` ([build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)). It
+is admitted and refused as any Build is, one in progress at a time, and it is a property Build: the
+fabric, every mesh and every node stay ready-for-traffic, no node restarts, and no node changes
+state. The progress is the Build's step receipts and each node's row. Acceptance refuses by name a
+provider the fabric-primary's wiring does not register or cannot open. The change is three steps,
+each fabric-wide, carried fabric-primary → mesh-primary → node as the Build's ordinary order:
+
+1. **Open.** Every node opens the new provider beside the old, writes nothing to it, and reports. A
+   node whose executable does not register the provider fails the step by name, naming the node and
+   the provider, and the Build fails with nothing moved.
+2. **Copy.** The fabric-primary, the one reader of every store, appends every line of every store on
+   the old provider to the new one in source order, every writer's included, dead births' and
+   deleted nodes' records among them, keeping a verified position per source file that advances only
+   when the lines before it are durable on the new provider. Nodes keep writing the old provider
+   throughout; nothing is blocked and nothing is written twice. Claims stay decided in the old
+   provider.
+3. **Freeze, tails, decision, release.**
+   - *Freeze.* Each node, on its command, stops appending to the old provider and holds every write
+     it would make as owed. Nothing is refused and nothing is acknowledged before it is durable: a
+     caller's command and a node's declaration are answered only once their line has landed, so the
+     caller and the declarer retry until then; a fact a node observes, a connection event, is
+     appended to a pending log in its own data dir and replayed at the release or at its restart. No
+     claim is decided during the freeze.
+   - *Tails.* The frozen node appends to the new provider its own lines written since the copy, in
+     its own order, writes its own row, and acknowledges; the acknowledgement is written after the
+     freeze and the row. The fabric-primary then verifies completeness: every writer holding lines on
+     the old provider has acknowledged or is proven unable to write by the node investigation's
+     `exited` verdict, with no timer for a silent one; every writer's set of operations on the old
+     provider is on the new, compared by identity and never by a highest one, the missing copied;
+     every held name claim and in-flight row is taken on the new provider naming the same holder and
+     read back equal.
+   - *Decision.* The change's decision is one durable, mutually exclusive record on the new provider,
+     `commit` or `abort`, by the store's insert-and-fail primitive. The fabric-primary inserts
+     `commit`, and only then appends the Fabric row's line on the new provider: the new provider
+     current, the old appended to `previous_topology_storage_providers`. The insert is the commit
+     point and the claim cutover. A successor, or the fabric-primary after a lost reply, learns the
+     decision only by reading the record: `commit` found is committed and the row's line is written
+     if missing; nothing found is undecided, and a revert is itself a decision, permitted only by a
+     successful `abort` insert; a provider not answering is neither, and the freeze holds until it
+     answers. A timeout never means "not committed".
+   - *Release.* Each node swaps to the new provider, lands its owed writes there in its own order,
+     answers its owed commands, and closes the old provider. Claims are decided in the new provider
+     from here. A node that fails its release keeps its writes owed and retries.
+
+A failed step fails by name and fails the Build as any step does; before the decision a failure
+reverts once `abort` is inserted, the freeze lifting on the old provider with the owed writes landing
+there, the new provider closed and the Fabric row unchanged, nothing lost. After the decision only
+releases remain, each an owed step a node retries, the Build in progress until the last.
+`fabric.delete` during a change is admitted and interrupts the Build as any Build; the records on
+both providers stay. The previous provider is kept, frozen at the commit and complete to the last
+tail, named on the Fabric row, written no more and never deleted by RDM; removing it is the
+application's own work or nobody's. A later Build naming it again copies into it only the lines it
+lacks.
 
 A caller reads the fabric's with `fabrics.get` and each node's with
 `nodes.get [topology_storage_provider: file]`.
