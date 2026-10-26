@@ -13,7 +13,7 @@
 //!   before it commits Ready;
 //! - does not displace the living holder, which keeps every seat it held;
 //! - fills the seats when the holder is lost (the mesh's lowest ready NodeId), and restarts and
-//!   retires births A launched, through its own `node.restart` and `node.delete`, from their published
+//!   retires births A launched, through its own `node.stop` then `node.start` and `node.delete`, from their published
 //!   runtimes, with A's receipts nowhere.
 
 use rdm_client::{CallEnd, LaunchKind as NodeKind, NodeStatus};
@@ -116,9 +116,9 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let unknown = estate.builds_obj().await.get(&a).await;
     assert!(matches!(&unknown, Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-build"), "A's history is nowhere: {unknown:?}");
 
-    // It restarts and retires A's births.
+    // It stops and starts one of A's births and retires the other.
     let (restarted, retired) = (a_births[0].clone(), a_births[1].clone());
-    Estate::workflow(&format!("node.restart of {}", restarted.name), estate.nodes_obj().await.restart(&restarted.name).await).await;
+    estate.stop_then_start(&restarted.name).await;
     let after = estate.until_node(&restarted.name.to_string(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).cloned()).await;
     assert_eq!(after.node_id, restarted.node_id, "a restart keeps the NodeId");
     Estate::workflow(&format!("node.delete of {}", retired.name), estate.nodes_obj().await.delete(&retired.name).await).await;

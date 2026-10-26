@@ -229,12 +229,13 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let rpc_p = primary_of(&nodes, &rpc).unwrap();
     assert_eq!(advertised_fabric(&nodes).as_deref(), Some(boot.0.as_str()), "the Day-0 admin keeps the fabric seat whatever NodeId its mesh's second admin drew (R-A2)");
 
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    // restart a non-primary -> it keeps its NodeId; the seats stay computed
+    // stop then start a non-primary -> it keeps its NodeId; the seats stay computed
     let other_rpc: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["is_primary"] == false).map(|n| s(&n["name"])).collect();
     let before = id_of(&nodes, &other_rpc[1]);
-    complete(&format!("node.restart of {}", other_rpc[1]), estate.nodes_obj().await.restart(&path(&other_rpc[1])).await).await;
+    complete(&format!("node.stop of {}", other_rpc[1]), estate.nodes_obj().await.stop(&path(&other_rpc[1])).await).await;
+    complete(&format!("node.start of {}", other_rpc[1]), estate.nodes_obj().await.start(&path(&other_rpc[1])).await).await;
     // The Build completed on the executor; the asked admin's view holds the reborn node once its
     // Ready has reached it (one gossip interval): wait for the shape, as after the Build above.
     estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
@@ -242,15 +243,16 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     assert_eq!(id_of(&nodes, &other_rpc[1]), before, "restart keeps the NodeId");
     steady(&estate, &admin1, "restart non-primary", hold).await;
 
-    // restart the primary -> node.primary.update moves its seat to the next-lowest ready NodeId
-    // first (C1 step 1: the holder is commanded "as a step of the Build that ... restarts" it); the
-    // restarted node keeps its NodeId and never takes the seat back (elections §5)
+    // stop then start the primary -> node.primary.update moves its seat to the next-lowest ready NodeId
+    // first (C1 step 1: the holder is commanded "as a step of the Build that stops" it); the
+    // started node keeps its NodeId and never takes the seat back (elections §5)
     let rpc_p_id = id_of(&nodes, &rpc_p);
     let (succ_r, succ_r_id) = next_lowest(&nodes, &rpc, &rpc_p_id);
-    complete(&format!("node.restart of {rpc_p}"), estate.nodes_obj().await.restart(&path(&rpc_p)).await).await;
+    complete(&format!("node.stop of {rpc_p}"), estate.nodes_obj().await.stop(&path(&rpc_p)).await).await;
+    complete(&format!("node.start of {rpc_p}"), estate.nodes_obj().await.start(&path(&rpc_p)).await).await;
     let nodes = settle(&estate, &admin1, "restart primary").await;
     assert_eq!(id_of(&nodes, &rpc_p), rpc_p_id, "restart keeps the NodeId");
-    assert_eq!(primary_of(&nodes, &rpc).as_deref(), Some(succ_r.as_str()), "node.primary.update moved the seat of {rpc_p} to {succ_r} before the restart, and the restarted node never displaces it: {nodes:#?}");
+    assert_eq!(primary_of(&nodes, &rpc).as_deref(), Some(succ_r.as_str()), "node.primary.update moved the seat of {rpc_p} to {succ_r} before the stop, and the started node never displaces it: {nodes:#?}");
     steady(&estate, &admin1, "restart primary", hold).await;
 
     // grow, then shrink back -> one holder per cohort on every sample (a newcomer never displaces the holder)
@@ -406,7 +408,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     assert!(announced(&spans, &rpc, &succ2_id, &removed_id), "the successor to the removed primary was announced");
     // The restart's node.primary.update moved the rpc-node primary to the next-lowest ready NodeId,
     // which installed itself and answered (node-primary-update.md step 4).
-    let seat_moved_at = primary_updated(&spans, &rpc, &format!("node.restart:{rpc_p}"), &succ_r_id)
+    let seat_moved_at = primary_updated(&spans, &rpc, &format!("node.stop:{rpc_p}"), &succ_r_id)
         .unwrap_or_else(|| panic!("{succ_r} ({succ_r_id}) installed itself as the rpc-node primary before the restart of {rpc_p}"));
     // The restarted node never took its seat back while the holder lived: from the restart's seat move
     // until the kill. Before that move the cohort's first election (no holder record) seats the lowest

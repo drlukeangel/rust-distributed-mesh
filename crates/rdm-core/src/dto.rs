@@ -101,7 +101,7 @@ pub struct BuildView {
     pub steps: Vec<StepView>,
     /// The reason the last attempt failed, when one did.
     pub last_failure: Option<String>,
-    /// Why the current attempt exists (`requested`, `proven-drift`, `restart`, `recipe`, ...).
+    /// Why the current attempt exists (`requested`, `proven-drift`, `stop`, `recipe`, ...).
     pub reason: String,
     /// The fenced action the current attempt carries, if any.
     #[serde(default)]

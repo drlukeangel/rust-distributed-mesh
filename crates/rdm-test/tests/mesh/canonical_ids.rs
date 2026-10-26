@@ -96,20 +96,19 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
 
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    // Restart keeps NodeId, FabricId and the incarnation: the process is stopped and started.
+    // A restart, node.stop then node.start (Q183), keeps NodeId, FabricId and the incarnation: the
+    // process is stopped and started.
     let before = nodes.iter().find(|n| n["name"] == "mesh2.rpc.2").unwrap().clone();
-    let mut restart = estate.nodes_obj().await.restart(&"mesh2.rpc.2".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of mesh2.rpc.2: {e}"));
-    let a = Estate::complete(&mut restart).await;
+    let (a, _) = estate.stop_then_start(&"mesh2.rpc.2".parse().unwrap()).await;
     let after = estate
         .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).map(json_of))
         .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
     assert_eq!(after["incarnation_id"], before["incarnation_id"], "restart keeps the incarnation");
 
-    // A second restart of the same node is a later attempt of the same Build: the first
-    // restart's finished run hands it nothing, so it restarts the node again.
-    let mut restart = estate.nodes_obj().await.restart(&"mesh2.rpc.2".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused the second node.restart of mesh2.rpc.2: {e}"));
-    let again = Estate::complete(&mut restart).await;
+    // A second stop and start of the same node are later attempts of the same Build: the first
+    // start's finished run hands them nothing, so they stop and start the node again.
+    let (_, again) = estate.stop_then_start(&"mesh2.rpc.2".parse().unwrap()).await;
     assert_eq!(again.build_id, a.build_id, "a restart is an attempt of the accepted Build: {again:?}");
     let third = estate
         .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).map(json_of))

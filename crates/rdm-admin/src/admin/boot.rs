@@ -210,10 +210,8 @@ pub fn rpc_server(
 /// The unreadable pre-event steps already named: each is named once, not on every fact.
 pub(crate) type NamedSteps = HashSet<(String, u32, String, String)>;
 
-/// Apply the lifecycle overlays `facts` name open to `digest_view`: the restarts as the facts' truth
-/// (`DigestView::restarts_from_facts`: open while named open, closed only by its own `Complete`
-/// receipt, its attempt's `Converged` verdict or its Build's forgetting), every other open operation
-/// as a hold that its attempt's terminal verdict or its Build's forgetting closes
+/// Apply the lifecycle overlays `facts` name open to `digest_view`: every open operation as a hold
+/// that its attempt's terminal verdict or its Build's forgetting closes
 /// (`DigestView::deletions_from_facts`), and every pre-event step this build cannot read refused by
 /// name, once. Run inside the
 /// log's append as each fact enters it ([`crate::build_state::LocalBuildLog::derive_on_every_fact`]).
@@ -231,8 +229,7 @@ pub(crate) fn overlays_from_facts(facts: &[crate::build_state::BuildFact], diges
         digest_view.set_accepted_meshes(b.topology.meshes.keys().cloned().collect());
     }
     let in_flight = crate::build_state::in_flight_ops(facts, &builds);
-    digest_view.restarts_from_facts(&in_flight.ops, &in_flight.restarts_completed, &in_flight.attempts_converged, &crate::build_state::forgotten_builds(facts, &builds));
-    for op in in_flight.ops.into_iter().filter(|o| !o.is_restart()) {
+    for op in in_flight.ops {
         digest_view.deleting(op);
     }
     digest_view.deletions_from_facts(&in_flight.removals_ended, &crate::build_state::forgotten_builds(facts, &builds));
@@ -479,8 +476,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // Identity and the two addresses: assigned by the launching pipeline, the bootstrap admin's own,
     // or (an inherited root) a node.id and incarnation this admin mints at the path.name and endpoint
     // key of the inherited row, with a new port (fabric-recovery.md: "The relaunched node-admin is a new
-    // node over its inherited data dir"). A new node supersedes no birth (node-restart.md: a restart
-    // alone keeps the node.id and incarnation). Its bootstrap contacts are the births it last heard,
+    // node over its inherited data dir"). A new node supersedes no birth (node-stop.md, node-start.md: a stop
+    // and its start alone keep the node.id and incarnation). Its bootstrap contacts are the births it last heard,
     // its own Mesh first: hints, any one of which answering is enough.
     // The fabric-recovery attempt an adoption launch claimed, held until it completes or fails.
     let mut adoption_claim: Option<Arc<super::adoption::Claimed>> = None;

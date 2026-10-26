@@ -288,12 +288,14 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
             d.both_ways(&first).await;
 
             d.until_fabric_ready().await;
-            Estate::workflow("node.restart of mesh1.rpc.1", d.nodes.restart(&rpc).await).await;
+            Estate::workflow("node.stop of mesh1.rpc.1", d.nodes.stop(&rpc).await).await;
+            Estate::workflow("node.start of mesh1.rpc.1", d.nodes.start(&rpc).await).await;
             d.until_ready(&rpc).await;
-            // A restart keeps the birth (same node.id and incarnation; node-restart.md): its start's join
-            // issues it a fresh member cert, and the dials are admitted again on that birth.
+            // A stop then a start keep the birth (same node.id and incarnation; node-stop.md "Kept",
+            // node-start.md): its start's join issues it a fresh member cert, and the dials are admitted
+            // again on that birth.
             let again = d.resolved(&rpc, None).await;
-            assert_eq!(again.incarnation, first.incarnation, "a restart keeps the birth");
+            assert_eq!(again.incarnation, first.incarnation, "a stop then a start keep the birth");
             d.both_ways(&again).await;
 
             d.running.leave().await;

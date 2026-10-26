@@ -212,9 +212,14 @@ impl Admin {
         Ok(Nodes::new(self.carrier()).create_named(current.based_on, nodes).await?.accepted().clone())
     }
 
-    /// node.restart of `node`.
-    pub async fn restart(&self, node: &PathName) -> Result<Accepted, CallEnd> {
-        Ok(Nodes::new(self.carrier()).restart(node).await?.accepted().clone())
+    /// node.stop of `node`.
+    pub async fn stop(&self, node: &PathName) -> Result<Accepted, CallEnd> {
+        Ok(Nodes::new(self.carrier()).stop(node).await?.accepted().clone())
+    }
+
+    /// node.start of the stopped `node`.
+    pub async fn start(&self, node: &PathName) -> Result<Accepted, CallEnd> {
+        Ok(Nodes::new(self.carrier()).start(node).await?.accepted().clone())
     }
 
     /// node.delete of `node`.

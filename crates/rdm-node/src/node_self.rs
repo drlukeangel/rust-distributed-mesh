@@ -1036,7 +1036,7 @@ impl NodeSelf {
         // deleting, then nothing. It follows the hold, so no gated turn publishes after it.
         let mesh_deleted = self.topology_view.digest_view.statuses.mesh(&self.held_name().mesh).is_some_and(|h| h.status == "deleted" || h.status == "dead");
         // node.delete runs node.stop's steps: a deleted mesh's last admin is stopped only as its delete.
-        let final_delete = op.filter(|op| by_command && mesh_deleted && !op.is_restart());
+        let final_delete = op.filter(|_| by_command && mesh_deleted);
         if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), final_delete) {
             let del_op = if op.is_stop() { LifecycleOp { operation: format!("node.delete:{}", self.held_name()), ..op.clone() } } else { op.clone() };
             self.topology_view.digest_view.deleting(del_op);

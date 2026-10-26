@@ -87,9 +87,9 @@ async fn a_successor_manages_births_it_never_launched() {
     }
 
     // Restart one of A's births and retire another, through the successor.
-    Estate::workflow("node.restart of mesh1.rpc.2", estate.nodes_obj().await.restart(&restarted.name).await).await;
-    // A restart keeps the birth (node-restart.md: "Same node.id, incarnation, immutable path, name, endpoint
-    // key, bound port, bin and data dir"): the node is ready again as the same birth.
+    estate.stop_then_start(&restarted.name).await;
+    // A stop then a start keep the birth (node-stop.md "Kept": "node.id, incarnation, endpoint key, port,
+    // bin, path/name and storage"): the node is ready again as the same birth.
     let after = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "a restart keeps the node id and the birth");
     Estate::workflow("node.delete of mesh1.rpc.3", estate.nodes_obj().await.delete(&retired.name).await).await;

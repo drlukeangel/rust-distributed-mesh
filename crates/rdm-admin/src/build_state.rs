@@ -49,8 +49,9 @@ pub enum AttemptReason {
     Requested,
     /// A birth the topology names was proven exited; the same Build repairs it.
     ProvenDrift,
-    /// A restart of an exact birth was requested.
-    Restart,
+    /// Reserved position: the removed node.restart's reason (Q183; callers run node.stop then
+    /// node.start). Never opened; kept so every later reason keeps its position.
+    Reserved2,
     /// The previous attempt's executor is gone; another admin continues the Build.
     AuthorityMoved,
     /// `POST /api/nodes/{name}/connections/delete`: node.connections.delete { All }.
@@ -80,7 +81,7 @@ impl AttemptReason {
         match self {
             Self::Requested => "requested",
             Self::ProvenDrift => "proven-drift",
-            Self::Restart => "restart",
+            Self::Reserved2 => "reserved-2",
             Self::AuthorityMoved => "authority-moved",
             Self::DeleteConnections => "node.connections.delete",
             Self::Stop => "stop",
@@ -327,7 +328,7 @@ pub struct BuildProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_at: Option<u32>,
     /// The attempt whose `Converged` verdict first completed the Build, when one did. Kept when a
-    /// later attempt reopens it (a restart, a recovery, proven drift: attempts of an unchanged
+    /// later attempt reopens it (a stop, a start, a recovery, proven drift: attempts of an unchanged
     /// topology, build.md §4.1), so a Build that once realized its topology stays the known state
     /// whatever such an attempt ends with ([`CurrentBuild`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -961,21 +962,14 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
 }
 
 /// The lifecycle operations open in `builds` (the fold of `facts`): every `NodeDeleting` step a
-/// retire operation completed with no `NodeDeleted` step of the same operation after it, and every
-/// `NodeRestarting` step whose restart (`node.restart:<path>`, the op it carries) has no `Complete`
-/// step yet and whose attempt is not `Converged`, at its own attempt or at a later one of the same
-/// Build that reused the step (which records the end under the restart's own attempt). An attempt's `Converged` verdict ends every
-/// restart of that attempt: the fabric-primary records it from the executor's stream terminal, which
-/// follows every step's `Complete` receipt durable on the executor (node-rpc-envelope.md: progress
-/// waits on no gossip), so the restart's own `Complete` need not have reached this log. Derived from
-/// the Build facts as each fact enters the log, never stored: a successor primary publishes the same
-/// overlays from the same facts.
+/// retire operation completed with no `NodeDeleted` step of the same operation after it whose attempt
+/// has no terminal verdict. Derived from the Build facts as each fact enters the log, never stored: a
+/// successor primary publishes the same overlays from the same facts.
 pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
     let mut out = InFlight::default();
     // An attempt has one verdict, the first appended (as `fold` reads it), in its own lane: the
-    // terminal verdicts by (Build, lane, attempt). `out.attempts_converged` is the fabric lane's
-    // alone (its reader keys a restart by (Build, attempt), and only the fabric lane restarts); a
-    // removal's close is handed on by the removal's own key, decided here in its own lane.
+    // terminal verdicts by (Build, lane, attempt). A removal's close is handed on by the removal's own
+    // key, decided here in its own lane.
     let mut decided: std::collections::BTreeSet<(&BuildId, Option<&str>, u32)> = std::collections::BTreeSet::new();
     let mut converged: std::collections::BTreeSet<(String, Option<String>, u32)> = std::collections::BTreeSet::new();
     let mut failed: std::collections::BTreeSet<(String, Option<String>, u32)> = std::collections::BTreeSet::new();
@@ -985,9 +979,6 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
                 let key = (a.build_id.to_string(), a.mesh.clone(), a.attempt);
                 match a.outcome {
                     AttemptOutcome::Converged => {
-                        if a.mesh.is_none() {
-                            out.attempts_converged.insert((a.build_id.to_string(), a.attempt));
-                        }
                         converged.insert(key);
                     }
                     AttemptOutcome::Failed { .. } => {
@@ -999,14 +990,10 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
         }
     }
     for p in builds.values() {
-        // The fabric lane's steps, then each drift lane's: a removal or restart in any lane holds
-        // its overlay.
+        // The fabric lane's steps, then each drift lane's: a removal in any lane holds its overlay.
         for lane_steps in std::iter::once(&p.steps).chain(p.lanes.values().map(|l| &l.steps)) {
         for s in lane_steps {
-            if s.step == "Complete" && s.outcome == StepOutcome::Complete && s.operation.starts_with("node.restart:") && s.mesh.is_none() {
-                out.restarts_completed.insert((s.build_id.to_string(), s.attempt, s.operation.clone()));
-            }
-            if s.outcome != StepOutcome::Complete || (s.step != "NodeDeleting" && s.step != "NodeRestarting") {
+            if s.outcome != StepOutcome::Complete || s.step != "NodeDeleting" {
                 continue;
             }
             // A pre-event step this build cannot read is refused by name, never skipped as if it
@@ -1029,36 +1016,17 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
             // departure, or when that attempt's verdict is terminal (Converged or Failed: the attempt
             // no longer claims the operation).
             let verdict = (op.build_id.clone(), s.mesh.clone(), op.attempt);
-            let closed = if s.step == "NodeDeleting" {
-                let by = if failed.contains(&verdict) {
-                    Some("attempt-failed")
-                } else if converged.contains(&verdict) {
-                    Some("attempt-converged")
-                } else {
-                    None
-                };
-                if let Some(by) = by {
-                    out.removals_ended.insert(op.key(), by);
-                }
-                lane_steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete) || by.is_some()
+            let by = if failed.contains(&verdict) {
+                Some("attempt-failed")
+            } else if converged.contains(&verdict) {
+                Some("attempt-converged")
             } else {
-                // A later attempt of the same Build that reused this pre-event (its pipeline re-ran the
-                // operation and wrote no new one: it holds a receipt of the operation) ends it by the
-                // operation's `Complete` or by its own `Converged` verdict, recorded under the
-                // operation's own stamped attempt, so every reader's (Build, attempt, operation)
-                // lookup closes the hold it opened (gossip.md: NodeRestarting stays until the
-                // restart's node.started).
-                let ended_later = lane_steps.iter().any(|t| {
-                    t.attempt > op.attempt
-                        && t.operation == op.operation
-                        && t.outcome == StepOutcome::Complete
-                        && (t.step == "Complete" || converged.contains(&(op.build_id.clone(), s.mesh.clone(), t.attempt)))
-                });
-                if ended_later && s.mesh.is_none() {
-                    out.restarts_completed.insert((op.build_id.clone(), op.attempt, op.operation.clone()));
-                }
-                ended_later || converged.contains(&verdict) || lane_steps.iter().any(|t| t.step == "Complete" && t.attempt == op.attempt && t.operation == op.operation && t.outcome == StepOutcome::Complete)
+                None
             };
+            if let Some(by) = by {
+                out.removals_ended.insert(op.key(), by);
+            }
+            let closed = lane_steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete) || by.is_some();
             if !closed {
                 out.ops.push(op);
             }
@@ -1076,15 +1044,9 @@ pub struct InFlight {
     pub ops: Vec<rdm_core::LifecycleOp>,
     /// Completed steps whose recorded operation cannot be read.
     pub unrecognised: Vec<UnrecognisedStep>,
-    /// The restarts whose `node.restart:<path>` `Complete` is receipted, by `(build_id, attempt, operation)`:
-    /// the facts end that hold of that operation in that Build attempt.
-    pub restarts_completed: std::collections::BTreeSet<(String, u32, String)>,
-    /// The attempts whose verdict is `Converged`, by (Build, attempt): the facts end every restart
-    /// hold of that attempt in that Build.
-    pub attempts_converged: std::collections::BTreeSet<(String, u32)>,
     /// The removals (`NodeDeleting`) whose own attempt, in its own lane, has a terminal verdict, by
     /// the removal's key (`LifecycleOp::key`), each `attempt-failed` or `attempt-converged`: the
-    /// facts end that hold. A restart's hold is not one.
+    /// facts end that hold.
     pub removals_ended: std::collections::BTreeMap<(String, u32, String), &'static str>,
 }
 
@@ -1101,7 +1063,7 @@ pub(crate) fn forgotten_builds(facts: &[BuildFact], builds: &BTreeMap<BuildId, B
         .collect()
 }
 
-/// A completed `NodeDeleting`/`NodeRestarting` step whose recorded operation cannot be read.
+/// A completed `NodeDeleting` step whose recorded operation cannot be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnrecognisedStep {
     /// The Build of the step.
@@ -1308,7 +1270,6 @@ fn mesh_deleted_final(s: &BuildStepReceipt) -> Option<(crate::model::NodeId, cra
 /// What an opened attempt carries, for a refusal: its reason, its action and who opened it.
 fn describe_open(o: &AttemptOpened) -> String {
     let action = match &o.action {
-        Some(crate::accepted::AttemptAction::Restart { path, from_incarnation }) => format!("restart of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::DeleteConnections { path, from_incarnation }) => format!("node.connections.delete of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Stop { path, from_incarnation }) => format!("stop of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Start { path, from_incarnation }) => format!("start of {path} from {from_incarnation}"),
@@ -1395,7 +1356,7 @@ type LaneOf = (BuildId, Option<String>);
 /// the whole log. It reads the Builds the new facts belong to, the current Build, and the Builds
 /// `held` names (those whose derived state its caller still holds). Only the current Build carries
 /// open attempts (build.md: a second topology change is refused while the current Build reconciles,
-/// and every stop, start, restart, recovery and drift is an attempt of the current Build), so an
+/// and every stop, start, recovery and drift is an attempt of the current Build), so an
 /// adapter that keeps no log in memory serves it with per-Build reads.
 #[derive(Clone)]
 pub struct FactDerivation {
@@ -2762,7 +2723,7 @@ mod tests {
         vec![
             BuildFact::Accepted(intent("b1")),
             BuildFact::Claim(claim("b1", 1, "mesh1.admin.1")),
-            BuildFact::Step(step("b1", 1, "node.restart:mesh1.rpc.2")),
+            BuildFact::Step(step("b1", 1, "node.stop:mesh1.rpc.2")),
             BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::Failed { reason: "executor lost".into() , code: rdm_core::outcome::Code::FailedPrecondition })),
             BuildFact::Claim(claim("b1", 2, "mesh1.admin.2")),
             BuildFact::Claim(claim("b1", 2, "mesh1.admin.1")), // loses: attempt 2 already claimed
@@ -2798,7 +2759,7 @@ mod tests {
     }
 
     #[test]
-    fn open_delete_and_restart_overlays_are_derived_from_the_build_facts() {
+    fn open_delete_overlays_are_derived_from_the_build_facts() {
         let op = |node: &str| rdm_core::LifecycleOp {
             build_id: rdm_core::fixture_crockford60("b1"),
             attempt: 1,
@@ -2831,128 +2792,14 @@ mod tests {
         let open = in_flight_ops(&facts, &fold(&facts)).ops;
         assert_eq!(open, vec![b.clone()], "a retire with its pre-notice and no departure is open; a completed one is not");
 
-        // A restart is one operation (`node.restart:<path>`): its pre-event opens it, the stop of the
-        // live process leaves it open, and only its `Complete`, after the start, closes it, whoever
-        // reads the facts.
-        let c = rdm_core::LifecycleOp { operation: "node.restart:mesh1.rpc.3".into(), name: "mesh1.rpc.3".parse().unwrap(), ..op("mesh1.rpc.3") };
-        let mut facts = facts;
-        facts.push(with("node.restart:mesh1.rpc.3", "NodeRestarting", &c));
-        facts.push(with("node.restart:mesh1.rpc.3", "AwaitNodeLeft", &c));
-        assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![b.clone(), c.clone()], "a successor holds the restart from the Build facts alone");
-        facts.push(with("node.restart:mesh1.rpc.3", "Complete", &c));
-        assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![b], "the restart's Complete closes it");
         assert!(in_flight_ops(&facts, &fold(&facts)).unrecognised.is_empty());
-        assert_eq!(
-            in_flight_ops(&facts, &fold(&facts)).restarts_completed,
-            [(rdm_core::fixture_crockford60("b1"), 1, "node.restart:mesh1.rpc.3".to_string())].into(),
-            "the restart's Complete is named by Build, attempt and operation: it ends that restart's hold and no other"
-        );
+        let mut facts = facts;
 
         // A Build is forgotten once the fold drops it on its `Forget`; a `Forget` of a Build still in
         // flight leaves it held, so it names nothing forgotten.
         facts.push(BuildFact::Forget { build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap() });
         facts.push(BuildFact::Forget { build_id: BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap() });
         assert_eq!(forgotten_builds(&facts, &fold(&facts)), [rdm_core::fixture_crockford60("b9")].into(), "only a Build the fold no longer holds is forgotten");
-    }
-
-    /// CONTRACT (node-rpc-envelope.md: "Progress waits on no gossip"): a restart is open until its
-    /// `node.restart:<path>` `Complete` is receipted or its attempt's verdict is `Converged` (the
-    /// fabric-primary's own fact from the stream terminal); an attempt's first verdict is its one, so
-    /// a `Converged` after a `Failed` ends nothing, and a verdict ends only its own attempt's restarts.
-    #[test]
-    fn a_restart_is_closed_by_its_attempts_converged_verdict_and_by_no_other_attempts() {
-        let restart = |node: &str, attempt: u32| rdm_core::LifecycleOp {
-            build_id: rdm_core::fixture_crockford60("b1"),
-            attempt,
-            operation: format!("node.restart:{node}"),
-            node_id: rdm_core::NodeId::mint(),
-            incarnation: rdm_core::IncarnationId::mint(),
-            name: node.parse().unwrap(),
-            event_at_rafka_ms: 1,
-        };
-        let pre_event = |op: &rdm_core::LifecycleOp| {
-            BuildFact::Step(BuildStepReceipt {
-                mesh: None,
-                build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
-                attempt: op.attempt,
-                operation: op.operation.clone(),
-                step: "NodeRestarting".into(),
-                outcome: StepOutcome::Complete,
-                output: Some(serde_json::to_value(op).unwrap()),
-                executor: None,
-            })
-        };
-        let (failed, converged, later) = (restart("mesh1.rpc.1", 2), restart("mesh1.rpc.2", 3), restart("mesh1.rpc.3", 4));
-        let mut facts = vec![BuildFact::Accepted(intent("b1")), pre_event(&failed), pre_event(&converged), pre_event(&later)];
-        assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![failed.clone(), converged.clone(), later.clone()]);
-        facts.push(BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Failed { reason: "lost".into() , code: rdm_core::outcome::Code::FailedPrecondition })));
-        facts.push(BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Converged)));
-        facts.push(BuildFact::Attempt(attempt("b1", 3, AttemptOutcome::Converged)));
-        let read = in_flight_ops(&facts, &fold(&facts));
-        assert_eq!(read.ops, vec![failed, later], "attempt 3's Converged ends its restart; attempt 2's first verdict is Failed and attempt 4 has none");
-        assert_eq!(read.attempts_converged, [(rdm_core::fixture_crockford60("b1"), 3)].into(), "the converged attempts are named by Build and attempt");
-    }
-
-    /// CONTRACT (gossip.md:276: NodeRestarting stays until node.started of the same `(node.id,
-    /// incarnation)`): a later attempt of the same Build that reuses a restart's `NodeRestarting`
-    /// step (its pipeline re-runs the operation and writes no new pre-event receipt) and completes
-    /// the restart, or converges carrying it, ends the hold stamped with the reused step's attempt.
-    /// Its completion is recorded under the operation's own stamped attempt, so every reader's
-    /// `(build, attempt, operation)` lookup closes it. Release run at d829b383 (R3 of
-    /// `mock_recovery_retains_build_and_advances_attempt`): attempt 5 wrote `NodeRestarting` for
-    /// `node.restart:mesh2.broker.2`, its executor died, attempt 6 reused the step and completed the
-    /// restart, and an admin born after its node.started held it open for good.
-    #[test]
-    fn a_restart_reused_and_ended_by_a_later_attempt_is_completed_under_its_own_attempt() {
-        let restart = |node: &str, attempt: u32| rdm_core::LifecycleOp {
-            build_id: rdm_core::fixture_crockford60("b1"),
-            attempt,
-            operation: format!("node.restart:{node}"),
-            node_id: rdm_core::NodeId::mint(),
-            incarnation: rdm_core::IncarnationId::mint(),
-            name: node.parse().unwrap(),
-            event_at_rafka_ms: 1,
-        };
-        let step = |op: &rdm_core::LifecycleOp, attempt: u32, step: &str| {
-            BuildFact::Step(BuildStepReceipt {
-                mesh: None,
-                build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
-                attempt,
-                operation: op.operation.clone(),
-                step: step.into(),
-                outcome: StepOutcome::Complete,
-                output: (step == "NodeRestarting").then(|| serde_json::to_value(op).unwrap()),
-                executor: None,
-            })
-        };
-        let key = |op: &rdm_core::LifecycleOp| (rdm_core::fixture_crockford60("b1"), op.attempt, op.operation.clone());
-
-        // Attempt 5 writes the pre-event; attempt 6 reuses it and runs the rest to Complete.
-        let completed = restart("mesh2.broker.2", 5);
-        let mut facts = vec![BuildFact::Accepted(intent("b1")), step(&completed, 5, "NodeRestarting")];
-        assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![completed.clone()], "attempt 5's pre-event opens the restart");
-        for s in ["StopNode", "AwaitNodeLeft", "StartNode", "Complete"] {
-            facts.push(step(&completed, 6, s));
-        }
-        let read = in_flight_ops(&facts, &fold(&facts));
-        assert!(read.restarts_completed.contains(&key(&completed)), "attempt 6's Complete of the reused restart is recorded under its own attempt 5: {:?}", read.restarts_completed);
-        assert!(read.ops.is_empty(), "the reused restart is no longer in flight: {:?}", read.ops);
-
-        // Attempt 6 converging while it carried the reused operation ends it the same way.
-        let converged = restart("mesh2.broker.3", 5);
-        let mut facts = vec![BuildFact::Accepted(intent("b1")), step(&converged, 5, "NodeRestarting"), step(&converged, 6, "StopNode")];
-        facts.push(BuildFact::Attempt(attempt("b1", 6, AttemptOutcome::Converged)));
-        let read = in_flight_ops(&facts, &fold(&facts));
-        assert!(read.restarts_completed.contains(&key(&converged)), "attempt 6 converged carrying the reused restart: {:?}", read.restarts_completed);
-        assert!(read.ops.is_empty());
-
-        // A later attempt that never carried the operation ends nothing of it.
-        let untouched = restart("mesh2.broker.4", 5);
-        let mut facts = vec![BuildFact::Accepted(intent("b1")), step(&untouched, 5, "NodeRestarting")];
-        facts.push(BuildFact::Attempt(attempt("b1", 6, AttemptOutcome::Converged)));
-        let read = in_flight_ops(&facts, &fold(&facts));
-        assert_eq!(read.ops, vec![untouched.clone()], "attempt 6 never carried it");
-        assert!(!read.restarts_completed.contains(&key(&untouched)));
     }
 
     /// CONTRACT: a completed pre-event step whose recorded operation this build cannot read (a row
@@ -3053,7 +2900,7 @@ mod tests {
         assert_eq!(m.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete, "a stray claim does not reopen");
         // Two authorities proving the same drift open one attempt: the first opener wins.
         m.open_attempt(&opened("b1", 2, AttemptReason::ProvenDrift)).await.unwrap();
-        let mut again = opened("b1", 2, AttemptReason::Restart);
+        let mut again = opened("b1", 2, AttemptReason::Stop);
         again.opened_by = "mesh1.admin.2".into();
         m.open_attempt(&again).await.unwrap();
         let b = m.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap();
@@ -3064,7 +2911,7 @@ mod tests {
         assert_eq!(m.claim_attempt(&claim("b1", 2, "b")).await.unwrap(), ClaimOutcome::Won);
         let b = m.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap();
         assert_eq!((b.state, b.attempt, b.executor.as_deref()), (BuildState::Running, 2, Some("b")));
-        assert_eq!(m.open_attempt(&opened("b9", 1, AttemptReason::Restart)).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap())));
+        assert_eq!(m.open_attempt(&opened("b9", 1, AttemptReason::Stop)).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap())));
     }
 
     /// Two openers that computed one attempt number from one settled Build: the first append holds it.
@@ -3077,26 +2924,26 @@ mod tests {
         m.publish_accepted(&intent("b1")).await.unwrap();
         m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         let (inc, other) = (crate::model::IncarnationId::mint(), crate::model::IncarnationId::mint());
-        let act = |path: &str, from: &crate::model::IncarnationId| Some(AttemptAction::Restart { path: path.parse().unwrap(), from_incarnation: from.clone() });
+        let act = |path: &str, from: &crate::model::IncarnationId| Some(AttemptAction::Stop { path: path.parse().unwrap(), from_incarnation: from.clone() });
         let mut first = opened("b1", 2, AttemptReason::ProvenDrift);
         first.action = act("mesh1.rpc.2", &inc);
         m.open_attempt(&first).await.unwrap();
-        let mut same = opened("b1", 2, AttemptReason::Restart);
+        let mut same = opened("b1", 2, AttemptReason::Stop);
         same.action = act("mesh1.rpc.2", &inc);
         same.opened_by = "mesh2.admin.1".into();
         m.open_attempt(&same).await.expect("the same action asked again is the same attempt");
-        let mut other_node = opened("b1", 2, AttemptReason::Restart);
-        other_node.action = Some(AttemptAction::Restart { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: other.clone() });
+        let mut other_node = opened("b1", 2, AttemptReason::Stop);
+        other_node.action = Some(AttemptAction::Stop { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: other.clone() });
         let err = m.open_attempt(&other_node).await.expect_err("another action asked for the held number");
         match &err {
             BuildStateError::AttemptTaken { build_id, attempt, held, wanted } => {
                 assert_eq!((build_id.to_string(), *attempt), (rdm_core::fixture_crockford60("b1"), 2));
-                assert!(held.contains("restart of mesh1.rpc.2") && held.contains("proven-drift"), "the refusal names what holds the number: {held}");
-                assert!(wanted.contains("restart of mesh2.rpc.1"), "the refusal names what was asked: {wanted}");
+                assert!(held.contains("stop of mesh1.rpc.2") && held.contains("proven-drift"), "the refusal names what holds the number: {held}");
+                assert!(wanted.contains("stop of mesh2.rpc.1"), "the refusal names what was asked: {wanted}");
             }
             other => panic!("not AttemptTaken: {other:?}"),
         }
-        let mut other_birth = opened("b1", 2, AttemptReason::Restart);
+        let mut other_birth = opened("b1", 2, AttemptReason::Stop);
         other_birth.action = act("mesh1.rpc.2", &other);
         assert!(matches!(m.open_attempt(&other_birth).await, Err(BuildStateError::AttemptTaken { .. })), "the same path fenced to another birth is another action");
         assert_eq!(m.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(_))).count(), 1, "the refused opens appended nothing");
@@ -3173,7 +3020,7 @@ mod tests {
         let b1 = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         j.publish_accepted(&intent("b1")).await.unwrap();
         j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
-        let held_op = "node.restart:mesh1.rpc.9";
+        let held_op = "node.stop:mesh1.rpc.9";
         let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let (entered_tx, release_rx) = (Mutex::new(entered_tx), Mutex::new(release_rx));
@@ -3218,7 +3065,7 @@ mod tests {
             let j = open_at(&dir).await.unwrap();
             j.publish_accepted(&intent("b1")).await.unwrap();
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
-            j.append_step_receipt(&step("b1", 1, "node.restart:mesh1.rpc.2")).await.unwrap();
+            j.append_step_receipt(&step("b1", 1, "node.stop:mesh1.rpc.2")).await.unwrap();
             j.publish_accepted(&intent("b2")).await.unwrap();
             (j.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap(), j.list_active().await.unwrap())
         };
@@ -3356,12 +3203,12 @@ mod tests {
             s.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Failed { reason: "x".into() , code: rdm_core::outcome::Code::FailedPrecondition })).await.unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "the failed b1 is skipped: b0 is the known state");
             assert_eq!(s.newest_accepted_at_ms().await.unwrap(), Some(20), "the index's head is the failed b1, whatever its state");
-            // A restart of b0 is an attempt of it: in progress while it runs, and b0 stays the known
+            // A stop of b0's birth is an attempt of it: in progress while it runs, and b0 stays the known
             // state when it fails.
-            s.open_attempt(&opened("b0", 2, AttemptReason::Restart)).await.unwrap();
+            s.open_attempt(&opened("b0", 2, AttemptReason::Stop)).await.unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b0")));
             s.claim_attempt(&claim("b0", 2, "a")).await.unwrap();
-            s.append_attempt_receipt(&attempt("b0", 2, AttemptOutcome::Failed { reason: "restart failed".into() , code: rdm_core::outcome::Code::FailedPrecondition })).await.unwrap();
+            s.append_attempt_receipt(&attempt("b0", 2, AttemptOutcome::Failed { reason: "stop failed".into() , code: rdm_core::outcome::Code::FailedPrecondition })).await.unwrap();
             assert_eq!(s.read_build(&id("b0")).await.unwrap().state, BuildState::Failed);
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "an attempt of an unchanged topology that failed never makes an older Build current");
             // The failed b1 resubmitted: its next attempt makes it the Build in progress.
@@ -3470,7 +3317,7 @@ mod tests {
         assert!(drivable(&s, &p("b1").await).await.unwrap(), "the current Build");
         assert!(drivable(&s, &p("b2").await).await.unwrap(), "a failed Build accepted after the current one");
         assert!(!drivable(&s, &p("b0").await).await.unwrap(), "a failed Build older than the current one");
-        s.open_attempt(&opened("b1", 2, AttemptReason::Restart)).await.unwrap();
+        s.open_attempt(&opened("b1", 2, AttemptReason::Stop)).await.unwrap();
         assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b1")));
         assert!(!drivable(&s, &p("b2").await).await.unwrap(), "one Build in flight: not while the current one is in progress");
     }
@@ -3964,7 +3811,7 @@ mod tests {
         use rdm_core::outcome::Code;
         for code in [Code::Unknown, Code::DeadlineExceeded, Code::Unavailable] {
             let dir = tmp();
-            let receipt = BuildStepReceipt { outcome: StepOutcome::Failed { reason: "same explanation".into(), code }, ..step("b1", 1, "node.restart:mesh1.rpc.2") };
+            let receipt = BuildStepReceipt { outcome: StepOutcome::Failed { reason: "same explanation".into(), code }, ..step("b1", 1, "node.stop:mesh1.rpc.2") };
             {
                 let journal = open_at(&dir).await.unwrap();
                 journal.publish_accepted(&intent("b1")).await.unwrap();

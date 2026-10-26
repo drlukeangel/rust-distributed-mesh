@@ -115,7 +115,7 @@ async fn node_admin_refusals_reach_the_ui_with_their_reason() {
     let (_running, admin) = node_admin(&d).await;
     let timeline = Arc::new(Timeline::default());
     let ui = router(Some(admin), timeline.clone());
-    let (s, v) = call(&ui, "POST", "/api/nodes/mesh1.rpc.9/restart", None).await;
+    let (s, v) = call(&ui, "POST", "/api/nodes/mesh1.rpc.9/stop", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown-node")), "{v}");
     let (s, v) = call(&ui, "DELETE", "/api/nodes/mesh1.admin.1", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("would-leave-mesh-without-admin")), "{v}");

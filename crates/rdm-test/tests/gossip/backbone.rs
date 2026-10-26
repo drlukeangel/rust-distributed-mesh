@@ -26,7 +26,7 @@
 //!    follows node investigation's verdict, which side's births survive not pinned (Q4, Q111,
 //!    fabric-recovery.md step 2); after the heal every pre-cut path.name holds one live birth, the same in
 //!    every admin's view, and a Build submitted at the fabric-primary then completes;
-//! 8. a restarted node is ready only once it holds every mesh.
+//! 8. a node stopped and started is ready only once it holds every mesh.
 //!
 //! The faults drop UDP on loopback (`nft`, as root or `sudo -n`); where
 //! the host cannot, cells 6-7 are a named skip, a failure under
@@ -309,14 +309,13 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     })
     .await;
 
-    // 8. Restart mesh2.rpc.1: it rejoins as the same birth (node-restart.md: "Same node.id, incarnation, ...")
+    // 8. Stop then start mesh2.rpc.1: it rejoins as the same birth (node-stop.md "Kept"; node-start.md)
     // and is ready again holding both meshes.
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let before = s(&estate.node_value("mesh2.rpc.1").await["incarnation_id"]);
     let ready_before = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "incarnation_id") == before).count();
-    let mut restart = estate.nodes_obj().await.restart(&"mesh2.rpc.1".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart mesh2.rpc.1: {e}"));
-    Estate::complete(&mut restart).await;
+    estate.stop_then_start(&"mesh2.rpc.1".parse().unwrap()).await;
     // The Build can complete on another admin: wait for the asked one's view, and for the node's own
     // second ready.
     let restarted = estate
@@ -326,7 +325,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
             (n["status"] == "ready-for-traffic" && s(&n["incarnation_id"]) == before && ready_now > ready_before).then_some(s(&n["incarnation_id"]))
         })
         .await;
-    assert_eq!(restarted, before, "a restart keeps the birth");
+    assert_eq!(restarted, before, "a stop then a start keep the birth");
     let spans = estate.spans();
     let ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()

@@ -819,7 +819,7 @@ impl ProbeCalls for WatchCalls<'_> {
 /// `avoid` (the one that carried the latest probe, when this is probe 2) last; the tickle takes the
 /// first [`VIA_PEER_TICKLE_FANOUT`] of them, so probe 2 prefers members probe 1 did not carry through.
 pub(crate) fn investigation_carriers(view: &Topology, mesh: &str, connected: impl Fn(&NodeId) -> bool, avoid: Option<&PathName>) -> Vec<Node> {
-    let mut members: Vec<Node> = view.members().filter(|m| m.mesh == mesh && m.kind != NodeKind::NodeAdmin && m.status != NodeStatus::Leaving && m.status != NodeStatus::Restarting).cloned().collect();
+    let mut members: Vec<Node> = view.members().filter(|m| m.mesh == mesh && m.kind != NodeKind::NodeAdmin && m.status != NodeStatus::Leaving).cloned().collect();
     members.sort_by_key(|m| (!connected(&m.node_id), m.name.to_string()));
     members.sort_by_key(|m| avoid == Some(&m.name));
     members.into_iter().take(VIA_PEER_TICKLE_FANOUT).collect()

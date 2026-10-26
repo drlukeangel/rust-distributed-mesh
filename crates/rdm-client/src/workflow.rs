@@ -1,6 +1,6 @@
 //! A workflow's typed reply stream.
 //!
-//! A workflow (`node.create`, `node.stop`, `node.restart`, `node.delete`) is one call that RDM
+//! A workflow (`node.create`, `node.stop`, `node.start`, `node.delete`) is one call that RDM
 //! runs as several steps inside one Build. The caller gets a stream read from the fabric-primary's
 //! Build family (op `0x20`, `build.create`): `Started`, then one frame per step event as the
 //! step's `Complete` receipt becomes durable on the executor that wrote it (`node.created`,
@@ -80,8 +80,6 @@ pub enum WorkflowKind {
     Stop(PathName),
     /// `node.start` of this stopped node: `node.start:<path.name>`.
     Start(PathName),
-    /// `node.restart` of this node: `node.restart:<path.name>`, one operation.
-    Restart(PathName),
     /// `node.delete` of this node: `node.delete:<path.name>`.
     Delete(PathName),
     /// `node.connections.delete { All }` of this node: `node.connections.delete:<path.name>`. The
@@ -160,7 +158,7 @@ macro_rules! start_rows {
 
 /// The shutdown leg of `target` under `operation`: its stop call, whose one reply carries its
 /// `node.connections.delete { All }` receipt, to its `stopped` (the stop half of a delete under
-/// `retire-node`, the stop of a restart under `restart-node`). A seat holder's seats move by
+/// `retire-node`). A seat holder's seats move by
 /// node.primary.update before the operation is dispatched, never as a step of it (the approved
 /// proposal node-primary-update-fabric-mesh-and-node-type.md, Part D: the SeatTransfer step goes), so
 /// a node-admin target's rows are any target's.
@@ -239,7 +237,6 @@ impl WorkflowKind {
             Self::Create => NodeOp::Create,
             Self::Stop(_) => NodeOp::Stop,
             Self::Start(_) => NodeOp::Start,
-            Self::Restart(_) => NodeOp::Restart,
             Self::Delete(_) => NodeOp::Delete,
             Self::DeleteConnections(_) => NodeOp::ConnectionsDelete,
             Self::Recipe(_) => return None,
@@ -275,14 +272,6 @@ impl WorkflowKind {
             Self::Create => create_rows!("node.create", &[NodeEvent::Created]).into(),
             Self::Stop(_) => stop_rows(),
             Self::Start(_) => start_rows!("node.start", &[], NodeStep::Start).into(),
-            // A restart is one operation: the birth is held, drains and stops (it stops), then the
-            // same process starts, and its one `Complete` ends it.
-            Self::Restart(_) => {
-                let mut rows = vec![row("node.restart", "NodeRestarting", NodeStep::Restart, &[NodeEvent::Restarting], false)];
-                rows.extend(shutdown_rows("node.restart"));
-                rows.extend(start_rows!("node.restart", &[NodeEvent::Restarted], NodeStep::Restart));
-                rows
-            }
             // A standalone node.connections.delete { All }: one call to the exact birth through its
             // mesh-primary, and its `Complete`. Nothing stops the process and nothing is deleted.
             Self::DeleteConnections(_) => vec![
@@ -310,7 +299,7 @@ impl WorkflowKind {
     fn operation_matches(&self, prefix: &str, key: &str) -> bool {
         match self {
             Self::Create => prefix == "node.create" && key.starts_with("node.create:"),
-            Self::Stop(n) | Self::Start(n) | Self::Restart(n) | Self::Delete(n) | Self::DeleteConnections(n) => key == format!("{prefix}:{n}"),
+            Self::Stop(n) | Self::Start(n) | Self::Delete(n) | Self::DeleteConnections(n) => key == format!("{prefix}:{n}"),
             Self::Recipe(steps) => steps.iter().any(|s| key == format!("{prefix}:{}", s.node())),
         }
     }
@@ -321,7 +310,6 @@ impl WorkflowKind {
             Self::Create => NodeStep::Create,
             Self::Stop(_) => NodeStep::Stop,
             Self::Start(_) => NodeStep::Start,
-            Self::Restart(_) => NodeStep::Restart,
             Self::Delete(_) => NodeStep::Delete,
             Self::DeleteConnections(_) => NodeStep::ConnectionsDelete,
             Self::Recipe(steps) => steps.iter().find(|s| key.split_once(':').is_some_and(|(_, p)| p == s.node().to_string())).map(recipe_node_step).unwrap_or(NodeStep::Create),

@@ -195,11 +195,11 @@ fn bootstrap_admin_not_fabric_primary(settled: &[NodeView]) -> String {
 }
 
 /// CONTRACT (#2805, acceptance 8; R-SB1: a restart keeps node.id and incarnation, and a restart of a
-/// mesh's only admin is refused; node-restart.md Seat holder): the bootstrap node-admin of a peer mesh
+/// mesh's only admin is refused; node-stop.md Primary; node.restart is node.stop then node.start, Q183): the bootstrap node-admin of a peer mesh
 /// of two admins (mesh2 or mesh3, whichever does not hold the fabric seat), the admin Pending was handed
 /// to, is restarted through the Build rectifier (never the fabric-primary), its mesh's seat moving to the
 /// other admin first when it holds it: it comes back as the same birth, the same node and incarnation
-/// (node-restart.md: a restart introduces no new incarnation), and reaches Ready without a fabric-primary
+/// (node-start.md: a start introduces no new incarnation), and reaches Ready without a fabric-primary
 /// hand-off, because the Pending it was applied before the restart is its own durable status row, folded
 /// at boot. Ready is never granted by election authority it lacks; its mesh's primary is the restarted
 /// admin only through the ordinary election afterwards. What must NOT happen: the restarted admin stuck
@@ -221,11 +221,10 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     let target = bootstrap_admin_not_fabric_primary(&settled);
     let before = estate.node_view(&target).await;
 
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    // The restart, through the rectifier: an attempt of the accepted Build.
-    let mut restart = estate.nodes_obj().await.restart(&target.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
-    let restart_build = Estate::complete(&mut restart).await.build_id.to_string();
+    // The restart, node.stop then node.start through the rectifier (Q183): attempts of the accepted Build.
+    let restart_build = estate.stop_then_start(&target.parse().unwrap()).await.0.build_id.to_string();
     let after = estate.settled_views(&shape).await;
     let after = after.iter().find(|n| n.name.to_string() == target).cloned().expect("the restarted admin in the view");
     let mesh_name = target.split('.').next().unwrap().to_string();
@@ -233,7 +232,7 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     let spans = estate.spans();
 
     assert_eq!(after.node_id, before.node_id, "the same node");
-    assert_eq!(after.incarnation_id, before.incarnation_id, "the same incarnation: a restart keeps the birth (node-restart.md, Kept: same node.id, incarnation)");
+    assert_eq!(after.incarnation_id, before.incarnation_id, "the same incarnation: a stop then a start keep the birth (node-stop.md, Kept: same node.id, incarnation)");
     assert_eq!(after.status, NodeStatus::ReadyForTraffic, "{after:?}");
     let readies: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|r| r["attributes"]["node"] == target.as_str()).collect();
     assert_eq!(readies.len(), 2, "Ready at birth and again after the restart: {readies:?}");

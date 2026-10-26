@@ -168,17 +168,18 @@ async fn estate_with_build_in_flight(cell: &str) -> (Estate, BuildStream) {
     (estate, stream)
 }
 
-/// The refusal `restart` of `node` ended with, named: the reason and the detail the fabric-primary gave.
+/// The refusal the stop of `node`, a restart's first call (Q183: a restart is node.stop then
+/// node.start), ended with, named: the reason and the detail the fabric-primary gave.
 async fn restart_refused(estate: &Estate, node: &str) -> CallEnd {
-    match estate.nodes_obj().await.restart(&node.parse().expect("a path.name")).await {
+    match estate.nodes_obj().await.stop(&node.parse().expect("a path.name")).await {
         Err(refused) => refused,
-        Ok(stream) => panic!("the fabric-primary accepted the restart of {node} as Build {} attempt {}", stream.accepted().build_id, stream.accepted().attempt),
+        Ok(stream) => panic!("the fabric-primary accepted the stop of {node} as Build {} attempt {}", stream.accepted().build_id, stream.accepted().attempt),
     }
 }
 
-/// CONTRACT: while a Build is still reconciling, a restart is refused `build-in-progress` naming
-/// that Build and opens no attempt; once the Build settles the same restart is accepted as the next
-/// attempt of that Build.
+/// CONTRACT: while a Build is still reconciling, a restart's node.stop is refused `build-in-progress`
+/// naming that Build and opens no attempt; once the Build settles the same node.stop, then node.start,
+/// are accepted as the next attempts of that Build.
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_during_an_inflight_build_is_refused_and_opens_no_attempt() {
     require_provider("process");
@@ -188,17 +189,17 @@ async fn restart_during_an_inflight_build_is_refused_and_opens_no_attempt() {
     let refused = restart_refused(&estate, "mesh1.rpc.2").await;
     assert_eq!(refused, CallEnd::BuildInProgress { current: build.clone() }, "{refused}");
     let view = estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build");
-    assert!(view.attempt <= 1 && view.reason != "restart", "the refusal opened no attempt: {view:?}");
+    assert!(view.attempt <= 1 && view.reason != "stop", "the refusal opened no attempt: {view:?}");
     Estate::until_complete(&mut stream).await;
     estate.settled_views(&[("mesh1", 2, 5)]).await;
-    let mut restart = estate.nodes_obj().await.restart(&"mesh1.rpc.2".parse().unwrap()).await.expect("the fabric-primary accepts the restart once the Build settled");
-    let accepted = Estate::complete(&mut restart).await;
-    assert_eq!(accepted.build_id, build, "the restart is an attempt of the accepted Build: {accepted:?}");
+    let (accepted, started) = estate.stop_then_start(&"mesh1.rpc.2".parse().unwrap()).await;
+    assert_eq!(accepted.build_id, build, "the stop is an attempt of the accepted Build: {accepted:?}");
+    assert_eq!(started.build_id, build, "and so is the start: {started:?}");
     write_result(cell, &json!({"cell": cell, "provider": "process", "build_id": build, "refused": {"error": "build-in-progress", "current_build_id": build}, "restart_accepted": {"build_id": accepted.build_id, "attempt": accepted.attempt}}));
     estate.shutdown().await;
 }
 
-/// CONTRACT: a restart naming a path the Build does not hold is refused `unknown-node` and
+/// CONTRACT: a restart's node.stop naming a path the Build does not hold is refused `unknown-node` and
 /// opens no attempt; the accepted Build's attempt count is what it was.
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt() {
@@ -209,7 +210,7 @@ async fn restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt() {
     Estate::until_complete(&mut stream).await;
     let before = estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build");
     let refused = restart_refused(&estate, "mesh1.rpc.9").await;
-    let CallEnd::Rejected { reason, detail } = &refused else { panic!("the restart of an unknown node ends Rejected: {refused:?}") };
+    let CallEnd::Rejected { reason, detail } = &refused else { panic!("the stop of an unknown node ends Rejected: {refused:?}") };
     assert_eq!(reason, "unknown-node", "{detail}");
     let after = estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build");
     assert_eq!(before.attempt, after.attempt, "the refusal opened no attempt: {before:?} / {after:?}");

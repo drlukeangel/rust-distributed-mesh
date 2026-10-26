@@ -139,9 +139,7 @@ mod readiness_gates;
 mod reconcile_variants;
 mod receipt_refusal;
 mod recovery_admission;
-#[cfg(feature = "file-backend")]
-mod restart_hold_from_facts;
-mod restart_one_operation;
+mod start_join_order;
 mod pipeline_moves_no_seat;
 mod pipeline_step_io;
 mod status_declarations;

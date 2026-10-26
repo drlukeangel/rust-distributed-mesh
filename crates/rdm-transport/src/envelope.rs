@@ -306,12 +306,13 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
     let index = TYPES.iter().position(|t| *t == kind);
     // Required context is checked before the named type outcome; no domain data is decoded.
     let Some(index) = index else { return Err(DecodeError::Unknown(kind)); };
-    if (8..=17).contains(&index) {
+    if index == 5 || (8..=17).contains(&index) {
         if sequence.is_some() { return Err(invalid("reserved type declares sequence").into()); }
         // Its historical page position (gossip.md "Reserved lifecycle frame positions": the reserved
         // types "retain their historical page positions"), which the types removed before them move not.
         // `rdm.fabric.state.committing` and `rdm.fabric.state.committed` are reserved since Q171,
-        // `rdm.fabric.traffic.opening` and `rdm.fabric.traffic.opened` since Q174.
+        // `rdm.fabric.traffic.opening` and `rdm.fabric.traffic.opened` since Q174, and
+        // `rdm.node.restarting` (position 7) since Q183.
         return Err(DecodeError::Reserved(kind, index + 2));
     }
     match index {
@@ -340,7 +341,7 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
     let frame: Frame = wire::decode(&tagged)?;
     let context = Context { id, source, kind, subject, sequence, time_ms, publication, traceparent: trace.traceparent.clone(), tracestate: trace.tracestate.clone() };
     match &frame {
-        Frame::NodeDeleting { publisher, .. } | Frame::NodeRestarting { publisher, .. } | Frame::NodeStopped { publisher, .. }
+        Frame::NodeDeleting { publisher, .. } | Frame::NodeStopped { publisher, .. }
             if Birth::publisher(&context.source.fabric, publisher) != context.source => return Err(invalid("publisher and source disagree").into()),
         Frame::FabricStatus { fabric, .. } if fabric != &context.source.fabric => return Err(invalid("fabric and source disagree").into()),
         _ => (),

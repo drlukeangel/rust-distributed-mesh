@@ -753,6 +753,16 @@ impl Estate {
         }
     }
 
+    /// `node.stop` of `node`, then `node.start` of it, each awaited to its `Complete` (Q183: callers run
+    /// node.stop then node.start; the same birth, node.id and incarnation, rejoins). The two attempts
+    /// the calls opened, the stop's first; a refusal is a defect of the cell.
+    pub async fn stop_then_start(&self, node: &PathName) -> (Accepted, Accepted) {
+        let nodes = self.nodes_obj().await;
+        let stopped = Self::workflow(&format!("node.stop of {node}"), nodes.stop(node).await).await;
+        let started = Self::workflow(&format!("node.start of {node}"), nodes.start(node).await).await;
+        (stopped, started)
+    }
+
     /// A workflow call the fabric-primary accepted, awaited to its `Complete`: a refusal is a defect of the
     /// cell and `what` names the call.
     pub async fn workflow(what: &str, call: Result<WorkflowStream, CallEnd>) -> Accepted {

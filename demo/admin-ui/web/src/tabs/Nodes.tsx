@@ -41,7 +41,8 @@ export function Nodes() {
               incarnation: {n.incarnation_id ? n.incarnation_id.slice(0, 12) : "—"}
             </div>
             <div className="row" style={{ marginTop: 8 }}>
-              <button onClick={() => act("restart", n.name, () => api.restart(n.name))}>restart</button>
+              <button onClick={() => act("stop", n.name, () => api.stop(n.name))}>stop</button>
+              <button onClick={() => act("start", n.name, () => api.start(n.name))}>start</button>
               <button className="danger" onClick={() => act("remove", n.name, () => api.remove(n.name))}
                 title="Submits a RemoveNode Build to node-admin">remove</button>
             </div>

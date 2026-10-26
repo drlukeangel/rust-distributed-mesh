@@ -594,10 +594,6 @@ impl LifecycleEvents for FaultedEvents {
         self.faults.hold(Probe::Event { event: "deleted", op: op.clone() }).await;
         self.inner.deleted(op).await
     }
-    async fn restarting(&self, op: &LifecycleOp) {
-        self.faults.hold(Probe::Event { event: "restarting", op: op.clone() }).await;
-        self.inner.restarting(op).await
-    }
     // Every other event the admin publishes passes through unchanged: a decorator that leaves one
     // to the trait's empty default withholds that event's gossip from every faulted estate.
     async fn stopped(&self, op: &LifecycleOp) {

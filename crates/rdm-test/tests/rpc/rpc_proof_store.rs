@@ -78,11 +78,10 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let absent = estate.probe(&["get", "--target", &path, "--key", &"k".repeat(256)]);
     assert_eq!(absent["reply"]["result"], json!({"found": false}));
 
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    // 2. A same-node restart keeps the store.
-    let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {NODE}: {e}"));
-    Estate::complete(&mut restart).await;
+    // 2. A same-node restart, node.stop then node.start (Q183), keeps the store.
+    estate.stop_then_start(&NODE.parse().unwrap()).await;
     let restarted = estate
         .until_node(NODE, "the restarted birth is ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).map(|n| serde_json::to_value(n).expect("a view serializes")))
         .await;

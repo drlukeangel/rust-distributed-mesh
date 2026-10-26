@@ -214,18 +214,17 @@ async fn a_two_mesh_fabrics_primary_left_after_fabric_deleted_is_deleted_by_its_
 /// accepted topology): none is run by itself as its own executor, which would leave a stopped
 /// fabric-primary that nothing is left to start or delete; its node.delete, step 4's call, is the one
 /// admitted. Then its own node.delete from outside answers node.deleted and its runtime exits
-/// inside the stop's bound. What must NOT happen: a stop, restart or connections delete of the
+/// inside the stop's bound. What must NOT happen: a stop or connections delete of the
 /// fabric-primary admitted after fabric.deleted, or its own delete failing after the refusals.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn after_fabric_deleted_the_fabric_primarys_own_stop_restart_and_connections_delete_are_refused_by_name_and_its_own_delete_ends_it() {
-    let test = "after_fabric_deleted_the_fabric_primarys_own_stop_restart_and_connections_delete_are_refused_by_name_and_its_own_delete_ends_it";
+async fn after_fabric_deleted_the_fabric_primarys_own_stop_and_connections_delete_are_refused_by_name_and_its_own_delete_ends_it() {
+    let test = "after_fabric_deleted_the_fabric_primarys_own_stop_and_connections_delete_are_refused_by_name_and_its_own_delete_ends_it";
     let (mut estate, _) = ready(test, &[("mesh1", 1, 1)]).await;
     fabric_deleted(&estate).await;
     let nodes = estate.nodes_obj().await;
     let fp = path("mesh1.admin.1");
     let mut refusals = Vec::new();
     refusals.push(refused_by_name("node.stop of the fabric-primary after fabric.deleted", "unknown-node", nodes.stop(&fp).await));
-    refusals.push(refused_by_name("node.restart of the fabric-primary after fabric.deleted", "unknown-node", nodes.restart(&fp).await));
     refusals.push(refused_by_name("node.connections.delete of the fabric-primary after fabric.deleted", "unknown-node", nodes.delete_connections(&fp).await));
     let pid = pid_of(&estate, "mesh1.admin.1").await;
     assert!(running(pid), "the refusals moved nothing: the fabric-primary runs");
@@ -322,8 +321,8 @@ async fn followed(estate: &mut Estate, what: &str, call: Result<rdm_client::Work
 }
 
 /// node.stop then node.start of the fabric-primary mesh1.admin.1 of a fabric at `shape` (mesh1 with two
-/// admins), then node.restart of the fabric-primary it handed over to.
-async fn stop_start_then_restart_of_the_fabric_primary(test: &str, shape: &[(&str, u32, u32)]) {
+/// admins), then node.stop then node.start of the fabric-primary it handed over to.
+async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, u32, u32)]) {
     let (mut estate, views) = ready(test, shape).await;
     let successor = views.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && !n.is_primary).map(|n| n.name.clone()).expect("mesh1's second admin");
     let before = views.iter().find(|n| n.name == path("mesh1.admin.1")).cloned().unwrap();
@@ -348,16 +347,19 @@ async fn stop_start_then_restart_of_the_fabric_primary(test: &str, shape: &[(&st
     assert!(!back.stopped && back.incarnation_id == before.incarnation_id && back.status == NodeStatus::ReadyForTraffic, "the same birth runs again: {back:?}");
     assert!(running(pid), "the start rejoined the same process {pid}");
 
-    // node.restart of the fabric-primary it handed over to: it hands over first, and it is the same node after.
+    // node.stop then node.start of the fabric-primary it handed over to: it hands over first, and it is the
+    // same node after.
     let primary = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == fp).expect("node.get lists the fabric-primary");
     let other = if fp == before.name { successor.clone() } else { before.name.clone() };
     estate.enter(&other).await;
-    let restart = estate.nodes_obj().await.restart(&fp).await;
-    let restarted = followed(&mut estate, "node.restart of the fabric-primary", restart).await;
+    let stop = estate.nodes_obj().await.stop(&fp).await;
+    let restarted = followed(&mut estate, "node.stop of the fabric-primary", stop).await;
     let fabric = estate.fabric_view_at(&other).await.expect("the other admin answers fabric.get");
-    assert!(fabric.fabric_primary.is_some(), "a fabric-primary after the restart: {fabric:?}");
-    let after = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == fp).expect("node.get lists the restarted admin");
-    assert!(after.node_id == primary.node_id && after.status == NodeStatus::ReadyForTraffic, "the restarted fabric-primary is the same node, running: {after:?}");
+    let now = fabric.fabric_primary.clone().unwrap_or_else(|| panic!("a fabric-primary after the stop: {fabric:?}"));
+    estate.enter(&now).await;
+    Estate::workflow("node.start of the second fabric-primary", estate.nodes_obj().await.start(&fp).await).await;
+    let after = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == fp).expect("node.get lists the started admin");
+    assert!(after.node_id == primary.node_id && after.status == NodeStatus::ReadyForTraffic, "the stopped and started fabric-primary is the same node, running: {after:?}");
     estate.stop().await;
     let spans = estate.spans();
     let own: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-stop-quiesce").into_iter().filter(|sp| !attr(sp, "commanded_by").is_empty()).collect();
@@ -367,24 +369,24 @@ async fn stop_start_then_restart_of_the_fabric_primary(test: &str, shape: &[(&st
 
 /// CONTRACT (node-stop.md "Primary": "A target that is a primary hands over first by node.primary.update
 /// (node.fabric-primary.update for the fabric-primary) and is stopped by its successor"; node-start.md;
-/// node-restart.md): a one-mesh fabric {2 node-admins, 1 rpc node}. node.stop of the fabric-primary
+/// Q183): a one-mesh fabric {2 node-admins, 1 rpc node}. node.stop of the fabric-primary
 /// mesh1.admin.1 hands over to mesh1.admin.2 first, which executes the stop: the same birth stopped,
-/// its process alive. node.start makes it rejoin as the same birth. node.restart of the fabric-primary
-/// it handed over to hands over first again and completes, the same node running after. What must
-/// NOT happen: an admin executing its own stop or restart (its own run commanding its stop), or a stop
+/// its process alive. node.start makes it rejoin as the same birth. node.stop of the fabric-primary
+/// it handed over to hands over first again, and its node.start completes, the same node running after.
+/// What must NOT happen: an admin executing its own stop (its own run commanding its stop), or a stop
 /// that ends the process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn in_a_one_mesh_fabric_the_fabric_primarys_stop_start_and_restart_are_executed_by_its_successor() {
-    let test = "in_a_one_mesh_fabric_the_fabric_primarys_stop_start_and_restart_are_executed_by_its_successor";
-    stop_start_then_restart_of_the_fabric_primary(test, &[("mesh1", 2, 1)]).await;
+async fn in_a_one_mesh_fabric_the_fabric_primarys_stops_and_starts_are_executed_by_its_successor() {
+    let test = "in_a_one_mesh_fabric_the_fabric_primarys_stops_and_starts_are_executed_by_its_successor";
+    stop_and_start_of_the_fabric_primary_twice(test, &[("mesh1", 2, 1)]).await;
 }
 
 /// CONTRACT (as the one-mesh row; node-primary-update.md "The fabric-primary"): the same in a two-mesh
 /// fabric, mesh1 {2 node-admins, 1 rpc node} holding the fabric-primary and mesh2 {1, 1}.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn in_a_two_mesh_fabric_the_fabric_primarys_stop_start_and_restart_are_executed_by_its_successor() {
-    let test = "in_a_two_mesh_fabric_the_fabric_primarys_stop_start_and_restart_are_executed_by_its_successor";
-    stop_start_then_restart_of_the_fabric_primary(test, &[("mesh1", 2, 1), ("mesh2", 1, 1)]).await;
+async fn in_a_two_mesh_fabric_the_fabric_primarys_stops_and_starts_are_executed_by_its_successor() {
+    let test = "in_a_two_mesh_fabric_the_fabric_primarys_stops_and_starts_are_executed_by_its_successor";
+    stop_and_start_of_the_fabric_primary_twice(test, &[("mesh1", 2, 1), ("mesh2", 1, 1)]).await;
 }
 
 /// CONTRACT (fabric-delete.md steps 1-4 as the demo estate's teardown runs them, `scripts/demo-estate.sh

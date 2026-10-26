@@ -189,7 +189,7 @@ fn read_chunks(topology: &[rdm_transport::snapshot::SourceSnapshot], mesh: &str)
 /// CONTRACT (gossip.md §3.1 `Members` / `MembersDelta`: "Own-mesh members receive authoritative
 /// statuses through the primary's versioned member projection ... For an own-mesh birth, liveness,
 /// endpoints with freshness and the runtime fact come from its Digest and status from the
-/// projection; NodeStopped, NodeDeleting and NodeRestarting stay immediate events"): through real
+/// projection; NodeStopped, NodeDeleting and NodeRestarting stay immediate events"; NodeRestarting is reserved since Q183): through real
 /// gossip, mesh1.rpc.2 (an own-mesh member) holds mesh1.rpc.1 stopped by the mesh-primary's
 /// `NodeStopped`. Every heartbeat of the stopped birth it hears (a late ready one, a pending one) is
 /// refused by name, and so is a projection entry of the birth from a version that never carried the

@@ -6,7 +6,8 @@
 //!
 //! ```text
 //! POST   /api/nodes/spawn          {mesh, kind}  -> Reconcile: the topology with the next path of that kind
-//! POST   /api/nodes/{name}/restart               -> RestartNode
+//! POST   /api/nodes/{name}/stop                  -> Stop (a restart is a stop, then a start: Q183)
+//! POST   /api/nodes/{name}/start                 -> Start
 //! DELETE /api/nodes/{name}                       -> RemoveNode
 //! POST   /api/bootstrap   [{meshes: [{name, node_admin, rpc_node?, gateway?, compute?, broker?}]}] -> one Build to that
 //!                                                   shape (no body: the MN shape), Reconcile
@@ -91,7 +92,8 @@ struct SpawnRequest {
 pub fn router(admin: Option<Arc<Admin>>, events: Arc<dyn BuildEvents>) -> Router {
     Router::new()
         .route("/api/nodes/spawn", post(spawn))
-        .route("/api/nodes/{node_name}/restart", post(restart))
+        .route("/api/nodes/{node_name}/stop", post(stop))
+        .route("/api/nodes/{node_name}/start", post(start))
         .route("/api/nodes/{node_name}/replace", post(replace))
         .route("/api/builds/resubmit", post(resubmit))
         .route("/api/nodes/{node_name}", delete(remove))
@@ -142,13 +144,22 @@ async fn spawn(State(c): State<Control>, Json(body): Json<SpawnRequest>) -> Resp
     answer(&c, "add node", r, None, Some(&body.mesh))
 }
 
-async fn restart(State(c): State<Control>, Path(name): Path<String>) -> Response {
+async fn stop(State(c): State<Control>, Path(name): Path<String>) -> Response {
     let (admin, node) = match (client(&c), parse_node(&name)) {
         (Ok(a), Ok(n)) => (a, n),
         (Err(r), _) | (_, Err(r)) => return r,
     };
-    let r = admin.restart(&node).await;
-    answer(&c, "restart node", r, Some(&name), Some(&node.mesh))
+    let r = admin.stop(&node).await;
+    answer(&c, "stop node", r, Some(&name), Some(&node.mesh))
+}
+
+async fn start(State(c): State<Control>, Path(name): Path<String>) -> Response {
+    let (admin, node) = match (client(&c), parse_node(&name)) {
+        (Ok(a), Ok(n)) => (a, n),
+        (Err(r), _) | (_, Err(r)) => return r,
+    };
+    let r = admin.start(&node).await;
+    answer(&c, "start node", r, Some(&name), Some(&node.mesh))
 }
 
 async fn replace(State(c): State<Control>, Path(name): Path<String>, Json(body): Json<ReplaceRequest>) -> Response {

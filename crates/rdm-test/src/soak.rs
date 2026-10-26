@@ -1371,11 +1371,14 @@ impl Driver {
             }
             Action::Restart { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
-                let restart = after_build_in_progress(|| async { self.estate.nodes_obj().await.restart(&path_name(node)).await }).await.map_err(|end| refused(&format!("node.restart {node}"), end))?;
-                entry["accepted"] = accepted_json(restart.accepted());
-                // A restart keeps the birth: the same node id and incarnation start again on the live
-                // process once its Build completes (pipeline.rs restart steps); nothing is replaced.
-                self.await_build(restart).await?;
+                // A restart is node.stop then node.start (Q183): the birth is kept, the same node id and
+                // incarnation start again on the live process; nothing is replaced.
+                let stop = after_build_in_progress(|| async { self.estate.nodes_obj().await.stop(&path_name(node)).await }).await.map_err(|end| refused(&format!("node.stop {node}"), end))?;
+                entry["accepted"] = accepted_json(stop.accepted());
+                self.await_build(stop).await?;
+                let start = after_build_in_progress(|| async { self.estate.nodes_obj().await.start(&path_name(node)).await }).await.map_err(|end| refused(&format!("node.start {node}"), end))?;
+                entry["accepted_start"] = accepted_json(start.accepted());
+                self.await_build(start).await?;
                 restarted = Some((node.clone(), (s(&n["node_id"]), s(&n["incarnation_id"]))));
             }
             Action::Replace { node } => {

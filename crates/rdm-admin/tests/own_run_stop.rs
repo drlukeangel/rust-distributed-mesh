@@ -3,11 +3,11 @@
 //! `crates/rdm-test/tests/fabric/own_delete_matrix.rs`.
 //!
 //! Why missed: until f982ad9fa no cell had an admin's own run command a stop of that admin. The
-//! control plane names a node-admin the executor of its own stop, restart, connections delete or
+//! control plane names a node-admin the executor of its own stop, connections delete or
 //! delete in exactly one place, `executor.rs` `node_op_executor`'s `last_mesh_gone` (every mesh Dead
 //! and the target its mesh's only node: the fabric-primary after fabric.deleted, fabric-delete.md step
 //! 4); everywhere else a primary hands over first (node.primary.update) and another admin executes it, or `last_admin`
-//! refuses it by name (R-MT1, Q7). So every node_stop, node_delete, node_restart, connections-delete
+//! refuses it by name (R-MT1, Q7). So every node_stop, node_delete, connections-delete
 //! and mesh_delete cell has a different admin execute. The one cell that reached the branch,
 //! `rdm-admin/tests/fabric_delete.rs` crit:e12.s59.1, asserted `executor_for` names the fabric-primary
 //! for its own node.delete and then ran `pipeline.delete_node` over a stub fleet: no admin gate, no run
@@ -21,9 +21,9 @@
 //!
 //! The rows. Each runs on the build_run rig: `mesh1.admin.1`'s executor door with its own gate, the
 //! fabric-primary of a one-mesh fabric, and a run whose one operation is the cell's. The gate does not
-//! tell a stop, a restart, a connections delete and a delete apart: each holds the admin's tasks
+//! tell a stop, a connections delete and a delete apart: each holds the admin's tasks
 //! through the one `Session::hold_tasks(commanded_by)`, so the first row runs every one of them.
-//! - its own run commands a stop, restart, connections delete or delete of itself, the run served for a
+//! - its own run commands a stop, connections delete or delete of itself, the run served for a
 //!   fabric-primary elsewhere and the run its own drive pass dispatched: the hold resolves inside the
 //!   connections-delete bound without that run's turns, and the run reaches its terminal;
 //! - the hold every other stop takes, `quiesce()`, commanded from inside that run: it waits on the run
@@ -89,8 +89,8 @@ impl Calls {
 }
 
 /// The executor's runner: its one operation commands, in process, the stop its op names of the admin it
-/// runs on and waits on it (the executor's own node.delete composes the whole node.stop; a restart's
-/// start resumes the gate once its stop holds), bounded by the connections-delete bound.
+/// runs on and waits on it (the executor's own node.delete composes the whole node.stop), bounded by
+/// the connections-delete bound.
 struct OwnAdmin {
     calls: Arc<Calls>,
     gate: StopGate,
@@ -116,11 +116,6 @@ impl OperationRunner for OwnAdmin {
                 self.calls.push("the hold waited on its own run past the bound".into());
                 return Err(RunEnd::failed(format!("{}: the stop's hold waited on the run that commanded it past {BOUND:?}", op.key())));
             }
-        }
-        if matches!(op, BuildOperation::RestartNode { .. }) {
-            // The restart's start: the same birth live again.
-            self.gate.resume();
-            self.calls.push("started".into());
         }
         Ok(())
     }
@@ -153,13 +148,12 @@ async fn executor(calls: &Arc<Calls>, hold: Hold, op: BuildOperation) -> (RunDoo
     (door, gate, RunPlan { operations: vec![op], hand_off_to: None })
 }
 
-/// The four operations of `mesh1.admin.1` on itself whose stop its own run commands.
+/// The three operations of `mesh1.admin.1` on itself whose stop its own run commands.
 fn own_operations() -> Vec<BuildOperation> {
     let node: PathName = "mesh1.admin.1".parse().unwrap();
     let birth = IncarnationId::mint();
     vec![
         BuildOperation::StopNode { node: node.clone(), from_incarnation: birth.clone() },
-        BuildOperation::RestartNode { node: node.clone() },
         BuildOperation::DeleteConnections { node: node.clone(), from_incarnation: birth },
         BuildOperation::RetireNode { node, exited: None },
     ]
@@ -181,14 +175,14 @@ async fn terminal(what: &str, reader: &mut rdm_admin::build_run::RunReader) -> B
 /// CONTRACT (fabric-delete.md step 4: the fabric-primary executes its own node.delete; node-delete.md
 /// step 1: a live target's delete composes the whole node.stop; node-stop.md steps 2-3; stop_gate.rs:
 /// "a stop of this node that a turn commands and waits on does not wait for that turn"): an admin's own
-/// run commands a stop, a restart, a connections delete and a delete of the admin it runs on, each from
+/// run commands a stop, a connections delete and a delete of the admin it runs on, each from
 /// a run served for a fabric-primary elsewhere (`build.attempt.run`) and from the run its own drive
 /// pass dispatched (the pass's turn of the Build, as `DriveEnv` takes it). The hold the run commands
 /// resolves inside the connections-delete bound, waiting for no turn (the run's and the pass's are the
 /// Build's), and the run reaches `Complete`. What must NOT happen: the hold waiting on the run that
 /// waits on it, so the step idles to its reply budget and the delete never reaches node.deleted.
 #[tokio::test(start_paused = true)]
-async fn its_own_runs_stop_restart_connections_delete_or_delete_of_itself_holds_inside_the_bound_without_that_runs_turns() {
+async fn its_own_runs_stop_connections_delete_or_delete_of_itself_holds_inside_the_bound_without_that_runs_turns() {
     for op in own_operations() {
         for dispatched in ["served", "under-its-own-pass"] {
             let what = format!("{} {dispatched}", op.key());
@@ -205,10 +199,7 @@ async fn its_own_runs_stop_restart_connections_delete_or_delete_of_itself_holds_
             assert_eq!(disposition, Disposition::Started, "{what}");
             let end = terminal(&what, &mut reader).await;
             assert!(matches!(end, BuildReply::Complete { attempt: 1, .. }), "{what}: the run reached its terminal: {end:?} after {:?}", calls.log());
-            let mut want = vec![format!("call {}", op.key()), "held []".to_string()];
-            if matches!(op, BuildOperation::RestartNode { .. }) {
-                want.push("started".into());
-            }
+            let want = vec![format!("call {}", op.key()), "held []".to_string()];
             assert_eq!(calls.log(), want, "{what}: the hold its own run commanded waited for no turn of that run");
             drop(pass);
             assert_eq!(gate.state().borrow().in_progress(), 0, "{what}: every turn of the Build ended with it");

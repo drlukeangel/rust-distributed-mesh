@@ -113,7 +113,7 @@ async fn settled(builds: &MemoryBuildStateAdapter, id: &BuildId, holder: &str, s
 }
 
 async fn open(builds: &MemoryBuildStateAdapter, id: &BuildId, attempt: u32) {
-    builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 }).await.unwrap();
+    builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 }).await.unwrap();
 }
 
 /// A fabric-primary P whose log holds the Build at `settled` converged attempts, listing the

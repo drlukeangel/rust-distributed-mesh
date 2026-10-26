@@ -323,11 +323,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
                 None => continue,
             }
         };
-        // A birth under an open restart is held through everything below until its later birth is
-        // heard: the restart's own retire (its Leaving, its removal from these records) is not a
-        // departure (node-identity-and-state.md: Restarting is commanded silence).
-        let restarting = digest_view.restart_of(d.node.node_id.as_str(), &d.node.incarnation).is_some();
-        if !restarting && removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
+        if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
         }
         let silent = age > digest_view.staleness_floor();
@@ -341,9 +337,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.provider = Some(provider);
         // Silent past the staleness floor: this node's own pruner marks it PendingReconnect in place;
         // `Dead` only while the mesh primary's offline tickle holds this exact birth true offline.
-        n.status = if restarting {
-            NodeStatus::Restarting
-        } else if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
+        n.status = if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
             NodeStatus::Dead
         } else if !silent {
             node_status(d.status)

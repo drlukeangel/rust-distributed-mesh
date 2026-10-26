@@ -31,8 +31,6 @@ pub enum NodeOp {
     Stop,
     /// `node.start`.
     Start,
-    /// `node.restart`.
-    Restart,
     /// `node.delete`.
     Delete,
     /// `node.primary.update`: move a cohort's or mesh-primary's seat (and the fabric-primary seat
@@ -59,7 +57,6 @@ impl NodeOp {
             Self::Create => "node.create",
             Self::Stop => "node.stop",
             Self::Start => "node.start",
-            Self::Restart => "node.restart",
             Self::Delete => "node.delete",
             Self::PrimaryUpdate => "node.primary.update",
             Self::FabricPrimaryUpdate => "node.fabric-primary.update",
@@ -68,7 +65,7 @@ impl NodeOp {
 
     /// Whether the call is a workflow: one call that RDM runs as several steps inside one Build.
     pub const fn is_workflow(self) -> bool {
-        matches!(self, Self::Create | Self::Stop | Self::Start | Self::Restart | Self::Delete)
+        matches!(self, Self::Create | Self::Stop | Self::Start | Self::Delete)
     }
 
     /// The span of one call of this op: `rdm.node_admin.node.<verb>.via-call` for a single call,
@@ -87,7 +84,6 @@ impl NodeOp {
             Self::Create => tracing::info_span!("rdm.node_admin.node.create.via-workflow", op = "node.create", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Stop => tracing::info_span!("rdm.node_admin.node.stop.via-workflow", op = "node.stop", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Start => tracing::info_span!("rdm.node_admin.node.start.via-workflow", op = "node.start", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
-            Self::Restart => tracing::info_span!("rdm.node_admin.node.restart.via-workflow", op = "node.restart", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Delete => tracing::info_span!("rdm.node_admin.node.delete.via-workflow", op = "node.delete", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::PrimaryUpdate => tracing::info_span!("rdm.node_admin.node.primary.update.via-call", op = "node.primary.update", outcome = tracing::field::Empty),
             Self::FabricPrimaryUpdate => tracing::info_span!("rdm.node_admin.node.fabric-primary.update.via-call", op = "node.fabric-primary.update", outcome = tracing::field::Empty),
@@ -200,10 +196,6 @@ pub enum NodeEvent {
     Stopped,
     /// `node.deleted`: id and name released.
     Deleted,
-    /// `node.restarting`: the restart began.
-    Restarting,
-    /// `node.restarted`: the restart finished.
-    Restarted,
     /// `node.updated`: the node's row holds what the update put (lifecycles/node-name-update.md).
     Updated,
     /// `node.mesh.left`: the node left its mesh, and the backbone a node-admin, keeping its endpoint
@@ -221,8 +213,6 @@ impl NodeEvent {
             Self::ConnectionsDeleted => "node.connections.deleted",
             Self::Stopped => "node.stopped",
             Self::Deleted => "node.deleted",
-            Self::Restarting => "node.restarting",
-            Self::Restarted => "node.restarted",
             Self::Updated => "node.updated",
             Self::MeshLeft => "node.mesh.left",
         }
@@ -237,8 +227,6 @@ impl NodeEvent {
             Self::ConnectionsDeleted => tracing::info_span!("rdm.node_admin.node.connections.deleted.via-reply-frame", event = "node.connections.deleted"),
             Self::Stopped => tracing::info_span!("rdm.node_admin.node.stopped.via-reply-frame", event = "node.stopped"),
             Self::Deleted => tracing::info_span!("rdm.node_admin.node.deleted.via-reply-frame", event = "node.deleted"),
-            Self::Restarting => tracing::info_span!("rdm.node_admin.node.restarting.via-reply-frame", event = "node.restarting"),
-            Self::Restarted => tracing::info_span!("rdm.node_admin.node.restarted.via-reply-frame", event = "node.restarted"),
             Self::Updated => tracing::info_span!("rdm.node_admin.node.updated.via-reply-frame", event = "node.updated"),
             Self::MeshLeft => tracing::info_span!("rdm.node_admin.node.mesh.left.via-reply-frame", event = "node.mesh.left"),
         }
@@ -259,8 +247,6 @@ pub enum NodeStep {
     ConnectionsDelete,
     /// `node.stop`.
     Stop,
-    /// `node.restart`.
-    Restart,
     /// `node.delete`.
     Delete,
     /// `node.update`.
@@ -278,7 +264,6 @@ impl NodeStep {
             Self::Join => "node.join",
             Self::ConnectionsDelete => "node.connections.delete",
             Self::Stop => "node.stop",
-            Self::Restart => "node.restart",
             Self::Delete => "node.delete",
             Self::Update => "node.update",
             Self::MeshLeave => "node.mesh.leave",

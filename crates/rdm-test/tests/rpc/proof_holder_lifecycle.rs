@@ -97,13 +97,13 @@ async fn proof_holder_restarts_preserves_same_node_store() {
 
     // Whether the restarted node holds its type's seat: then the request's attempt moves the seat first.
     let holder = view(&estate, NODE).await["is_primary"] == true;
-    let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
-    let restart_attempt = Estate::complete(&mut restart).await;
+    // The restart: node.stop then node.start (Q183).
+    let (restart_attempt, _) = estate.stop_then_start(&NODE.parse().unwrap()).await;
     let restart_build = restart_attempt.build_id.to_string();
     let restarted = view(&estate, NODE).await;
     assert_eq!(restarted["status"], "ready-for-traffic", "the restarted birth is ready: {restarted}");
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
-    assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "a restart is stop then start on the stopped process: the same birth (ops-naming-proposal.md, Restart is not a re-birth)");
+    assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "a restart is node.stop then node.start on the stopped process: the same birth (ops-naming-proposal.md, Restart is not a re-birth)");
     let restarted_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");
     assert_eq!(restarted_dir, first_dir, "a restart keeps the node's data dir");
     let kept = estate.probe(&["get", "--target", &exact, "--key", "41"]);
@@ -117,35 +117,36 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let at = |inc: &Value, op: &str, outcome: &str| served.iter().find(|s| s["attributes"]["incarnation_id"] == *inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).cloned().cloned();
     let put_span = at(&first["incarnation_id"], "put", "stored").expect("the first birth served the put");
     let kept_span = at(&restarted["incarnation_id"], "get", "value").expect("the restarted birth served the kept value");
-    // The restart ran as the Build its node.restart call was accepted as: the call, then the
-    // rectifier's node update of this path under the same Build. A restart of its type's seat holder
-    // moves the seat first (node-stop.md, Seat holder): the request's attempt carries the
-    // node.primary.update and ends handed-off, and the restart runs in the attempt the fabric-primary
-    // claims next (node-rpc-envelope.md: "Hand-off is the fabric-primary's next claim and call").
+    // The stop ran as the Build its node.stop call was accepted as: the call, then the rectifier's
+    // node update of this path under the same Build. A stop of its type's seat holder moves the seat
+    // first (node-stop.md, Seat holder): the request's attempt carries the node.primary.update and
+    // ends handed-off, and the stop runs in the attempt the fabric-primary claims next
+    // (node-rpc-envelope.md: "Hand-off is the fabric-primary's next claim and call").
     let bare = |v: &Value| s(v).trim_start_matches("bid_").replace('-', "");
     let build = bare(&json!(restart_build));
     let of_build = |sp: &&Value| bare(&sp["attributes"]["build_id"]) == build;
     let attempt_of = |sp: &Value| s(&sp["attributes"]["attempt"]).parse::<u32>().unwrap_or_else(|_| panic!("a span without its attempt: {sp}"));
-    let accepted = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().filter(of_build).find(|sp| sp["attributes"]["node"] == NODE).cloned().expect("the restart's build.create span");
-    let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().filter(of_build).find(|sp| sp["attributes"]["node"] == NODE).cloned().expect("the restart's node update");
-    let opened = attempt_of(&accepted);
+    let opened = restart_attempt.attempt;
+    let accepted = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().filter(of_build).find(|sp| sp["attributes"]["node"] == NODE && attempt_of(sp) == opened).cloned().expect("the stop's build.create span");
+    let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().filter(of_build).filter(|sp| sp["attributes"]["node"] == NODE && attempt_of(sp) >= opened).min_by_key(|sp| attempt_of(sp)).cloned().expect("the stop's node update");
+    assert_eq!(attempt_of(&accepted), opened, "the call's span names the attempt it opened");
     let seat_move = if holder {
         let moved = named(&spans, "rdm.node_admin.primary.update.via-command")
             .into_iter()
             .filter(of_build)
-            .find(|sp| attempt_of(sp) == opened && s(&sp["attributes"]["operation"]).ends_with(&format!(":{opened}:node.restart:{NODE}")))
+            .find(|sp| attempt_of(sp) == opened && s(&sp["attributes"]["operation"]).ends_with(&format!(":{opened}:node.stop:{NODE}")))
             .cloned()
             .unwrap_or_else(|| panic!("{NODE} held its type's seat: the request's attempt {opened} moves it first"));
         let handed = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(of_build).find(|sp| attempt_of(sp) == opened && sp["attributes"]["outcome"] == "handed-off").cloned();
         assert!(handed.is_some(), "the seat move's attempt {opened} ends handed-off");
-        assert_eq!(attempt_of(&update), opened + 1, "the restart runs in the attempt the fabric-primary claims after the seat move's hand-off");
+        assert_eq!(attempt_of(&update), opened + 1, "the stop runs in the attempt the fabric-primary claims after the seat move's hand-off");
         json!({"attempt": opened, "operation": moved["attributes"]["operation"], "span_id": moved["span_id"]})
     } else {
         assert_eq!(attempt_of(&update), opened, "the node update runs the attempt the request opened");
         Value::Null
     };
     let reconcile = spans.iter().find(|sp| sp["span_id"] == update["parent_span_id"]).cloned().unwrap_or(Value::Null);
-    // The restart is stop then start on the stopped process: the Get after it is served by the incarnation that served the Put.
+    // The restart is node.stop then node.start on the stopped process: the Get after it is served by the incarnation that served the Put.
     assert_eq!(kept_span["attributes"]["incarnation_id"], put_span["attributes"]["incarnation_id"], "the restarted node is the same birth");
 
     let result = json!({

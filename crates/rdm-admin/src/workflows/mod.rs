@@ -16,7 +16,6 @@ pub mod node_mesh_leave;
 pub mod node_name_update;
 pub mod node_primary_update;
 pub mod node_recovery;
-pub mod node_restart;
 pub mod node_runtime_inspect;
 pub use rdm_node::workflows::node_start;
 pub mod node_status;

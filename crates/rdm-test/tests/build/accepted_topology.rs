@@ -20,7 +20,7 @@
 //!    path.name with a new node.id over the inherited data dir and endpoint key. The current Build
 //!    stays the same; the attempt converges; the fabric lane gains no attempt; the fabric-primary opens no drift
 //!    attempt for the member.
-//! 8. A restart changes no topology: it is an attempt of the accepted Build, under the same id.
+//! 8. A stop and a start change no topology: each is an attempt of the accepted Build, under the same id.
 
 use crate::build_log;
 use rdm_client::{BuildId, CallEnd, FabricDesired, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeStatus};
@@ -183,14 +183,14 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_ne!(back["node_id"], lost["node_id"], "a lost birth's path gets a new logical node");
     assert_eq!(back["endpoint_id"], lost["endpoint_id"], "over the inherited data dir and its endpoint key");
 
-    // 8. A restart is an attempt of the accepted Build, under the same id.
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // 8. A stop, then a start, each an attempt of the accepted Build, under the same id.
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let restarted_from = estate.node_value("mesh1.rpc.1").await;
-    let mut restart = estate.nodes_obj().await.restart(&"mesh1.rpc.1".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of mesh1.rpc.1: {e}"));
-    let r = Estate::complete(&mut restart).await;
-    assert_eq!(r.build_id.to_string(), r4, "a restart opens an attempt of the accepted Build: {r:?}");
-    assert_eq!(u64::from(r.attempt), attempts_before + 1, "the restart opens the fabric lane's next attempt (the recovery was mesh1's lane's): {r:?}");
+    let (r, started) = estate.stop_then_start(&"mesh1.rpc.1".parse().unwrap()).await;
+    assert_eq!(r.build_id.to_string(), r4, "a stop opens an attempt of the accepted Build: {r:?}");
+    assert_eq!(u64::from(r.attempt), attempts_before + 1, "the stop opens the fabric lane's next attempt (the recovery was mesh1's lane's): {r:?}");
+    assert_eq!((started.build_id.to_string(), u64::from(started.attempt)), (r4.clone(), attempts_before + 2), "the start opens the attempt after it: {started:?}");
     estate
         .until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again as the same birth", Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
@@ -244,17 +244,17 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
         "the recovery created mesh1.rpc.2 under the same Build"
     );
     estate.record_trace_url(submit["trace_id"].as_str().unwrap_or(""));
-    // 8: the restart ran as an attempt of the same Build.
+    // 8: the stop ran as an attempt of the same Build.
     let restart = ran
         .iter()
-        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["reason"] == "restart" && sp["attributes"]["outcome"] == "converged")
-        .unwrap_or_else(|| panic!("the restart attempt of {r4} converged: {ran:?}"));
-    // The restart attempt's context is the restart call's request span, not the span that accepted the Build.
+        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["reason"] == "stop" && sp["attributes"]["outcome"] == "converged")
+        .unwrap_or_else(|| panic!("the stop attempt of {r4} converged: {ran:?}"));
+    // The stop attempt's context is the stop call's request span, not the span that accepted the Build.
     let rest = named(&spans, "rdm.node_admin.build.update.via-node-rpc")
         .into_iter()
-        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["node"] == "mesh1.rpc.1")
-        .expect("the restart call's request span");
-    assert_eq!(restart["parent_span_id"], rest["span_id"], "the restart's reconcile is the child of the restart call's request span: {restart}");
+        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["node"] == "mesh1.rpc.1" && sp["attributes"]["attempt"] == r.attempt.to_string().as_str())
+        .expect("the stop call's request span");
+    assert_eq!(restart["parent_span_id"], rest["span_id"], "the stop's reconcile is the child of the stop call's request span: {restart}");
     assert_eq!(restart["trace_id"], rest["trace_id"]);
     // 4 and 6: the fabric-primary writes each Build once; the late admin committed Ready holding the
     // current Build, and the paused admin caught up to the Build written while it was stopped.

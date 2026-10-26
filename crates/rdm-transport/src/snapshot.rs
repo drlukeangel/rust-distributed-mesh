@@ -145,17 +145,10 @@ impl Full {
     /// never lists a stopped birth, and lists it again only after its `node.joined` cleared the
     /// stop ([`Full::apply`]). An expired departure is a local fact of the receiver's age.
     pub fn delta_to(&self, new: &Full) -> Delta {
-        // A birth whose restart ended (node.started at the source) is named even when its digest is
-        // the same: its entry is what ends the restart at the receiver.
-        let restart_ended = |d: &MeshDigest| self.in_flight.iter().any(|(k, o)| o.is_restart() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation && !new.in_flight.contains_key(k));
-        let changed: Vec<MeshDigest> = new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d)) || restart_ended(d)).map(|(_, d)| without_load(d)).collect();
-        // A changed birth's open restart travels again beside it: [`Full::apply`] clears a changed
-        // birth's restart, so one the source still holds open stays open, and one node.started
-        // ended there ends at the receiver too.
-        let restarting = |o: &LifecycleOp| o.is_restart() && changed.iter().any(|d| d.node.node_id == o.node_id && d.node.incarnation == o.incarnation);
+        let changed: Vec<MeshDigest> = new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d))).map(|(_, d)| without_load(d)).collect();
         Delta {
             removed: self.digests.keys().filter(|id| !new.digests.contains_key(*id)).cloned().collect(),
-            in_flight: new.in_flight.iter().filter(|(k, o)| !self.in_flight.contains_key(*k) || restarting(o)).map(|(_, o)| o.clone()).collect(),
+            in_flight: new.in_flight.iter().filter(|(k, _)| !self.in_flight.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
             departed: new.departed.iter().filter(|(k, _)| !self.departed.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
             changed,
         }
@@ -164,13 +157,11 @@ impl Full {
     /// This full moved by `delta` (gossip.md §3.1, `MembersDelta` carries "overlay and departed
     /// changes"). A `changed` entry of a birth clears that exact birth's stop overlay
     /// (`NodeStopped`, `node.stop:`): the source lists the birth again once its primary's
-    /// `node.joined` ended the stop. It clears that exact birth's restart overlay too, which the
-    /// delta carries again while the source holds it open ([`Full::delta_to`]): one node.started
-    /// ended at the source ends here. A departure ends every overlay of its exact birth, its stop
+    /// `node.joined` ended the stop. A departure ends every overlay of its exact birth, its stop
     /// included: node.delete replaces NodeStopped with the deleted retention (gossip.md §3.1).
     pub fn apply(&mut self, delta: &Delta) {
         for d in &delta.changed {
-            self.in_flight.retain(|_, o| !((o.is_stop() || o.is_restart()) && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
+            self.in_flight.retain(|_, o| !(o.is_stop() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
             self.put(d.clone());
         }
         for id in &delta.removed {

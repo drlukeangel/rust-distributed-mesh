@@ -29,15 +29,8 @@ use std::time::Duration;
 
 const FABRIC: &str = "fabric1";
 const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 1), ("mesh2", 2, 2)];
-/// The events a restart's stream carries, in order.
-const RESTART_EVENTS: [NodeEvent; 6] = [
-    NodeEvent::Restarting,
-    NodeEvent::ConnectionsDeleted,
-    NodeEvent::Stopped,
-    NodeEvent::Joined,
-    NodeEvent::Started,
-    NodeEvent::Restarted,
-];
+/// The events a stop's stream carries, in order.
+const STOP_EVENTS: [NodeEvent; 2] = [NodeEvent::ConnectionsDeleted, NodeEvent::Stopped];
 
 fn owner(test: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "fabric-build".into(), subfeature: "build-op".into(), rung: "MM".into(), provider: "process".into(), test: test.into() }
@@ -151,30 +144,30 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
 }
 
 /// The rpc node of `mesh2` that holds no seat: executed by `mesh2`'s own primary with no preceding
-/// seat move, so its restart is one attempt (`accepted.attempt`).
+/// seat move, so its stop is one attempt (`accepted.attempt`).
 async fn secondary_node(estate: &Estate) -> PathName {
     estate.node_views().await.into_iter().filter(|n| n.name.to_string().starts_with("mesh2.rpc.") && !n.is_primary).map(|n| n.name).min().expect("an rpc node of mesh2 holding no seat")
 }
 
-/// CONTRACT (acceptance 1): `node.restart` over `0x20` is one call. The stream is `Started`, a frame
+/// CONTRACT (acceptance 1): `node.stop` over `0x20` is one call. The stream is `Started`, a frame
 /// per step as its `Complete` receipt becomes durable on the admin that wrote it, and `Complete`,
 /// pushed by the executor through the fabric-primary: the node is executed by `mesh2`'s own primary,
-/// so the Build crosses a real `build.attempt.run`. Every event the restart names arrives once, in
+/// so the Build crosses a real `build.attempt.run`. Every event the stop names arrives once, in
 /// order, and nothing polls a Build to learn it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restart_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes() {
-    let test = "a_restart_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes";
+async fn a_stop_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes() {
+    let test = "a_stop_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
 
-    let mut stream = caller.nodes(&carrier).restart(&node).await.expect("the fabric-primary accepts the restart");
+    let mut stream = caller.nodes(&carrier).stop(&node).await.expect("the fabric-primary accepts the stop");
     let accepted = stream.accepted().clone();
     let frames = frames_of(&mut stream).await;
     assert_eq!(frames.first(), Some(&Frame::Started { build_id: accepted.build_id.clone(), attempt: accepted.attempt }));
     assert_eq!(frames.last(), Some(&Frame::Complete), "the stream ends with its terminal frame: {frames:?}");
-    assert_eq!(events(&frames), RESTART_EVENTS, "every step event, once, in order: {frames:?}");
+    assert_eq!(events(&frames), STOP_EVENTS, "every step event, once, in order: {frames:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Failed { .. } | Frame::Blocked { .. })), "{frames:?}");
     assert_eq!(stream.disposition(), StartDisposition::Created);
 
@@ -217,24 +210,24 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
     let node = secondary_node(&estate).await;
     let nodes = caller.nodes(&carrier);
 
-    let mut cut = nodes.restart(&node).await.expect("the fabric-primary accepts the restart");
+    let mut cut = nodes.stop(&node).await.expect("the fabric-primary accepts the stop");
     let accepted = cut.accepted().clone();
     // The first frame is the call's `Started`; the cut follows it, before any step is reported.
     assert!(matches!(cut.next().await, Some(Ok(Frame::Started { .. }))));
     drop(cut);
 
-    let mut attached = nodes.resume(WorkflowKind::Restart(node.clone()), &accepted).await.expect("the re-submit is accepted");
+    let mut attached = nodes.resume(WorkflowKind::Stop(node.clone()), &accepted).await.expect("the re-submit is accepted");
     assert_eq!(attached.disposition(), StartDisposition::Attached, "the Build the cut left running is the one the re-submit attaches to");
     assert_eq!(attached.accepted().build_id, accepted.build_id, "never a second Build");
     let first = frames_of(&mut attached).await;
     assert_eq!(first.last(), Some(&Frame::Complete));
-    assert_eq!(events(&first), RESTART_EVENTS, "{first:?}");
+    assert_eq!(events(&first), STOP_EVENTS, "{first:?}");
 
-    let mut again = nodes.resume(WorkflowKind::Restart(node), &accepted).await.expect("the second re-submit is accepted");
+    let mut again = nodes.resume(WorkflowKind::Stop(node), &accepted).await.expect("the second re-submit is accepted");
     assert_eq!(again.disposition(), StartDisposition::AlreadyApplied);
     let second = frames_of(&mut again).await;
     assert_eq!(second.last(), Some(&Frame::Complete), "the terminal frame follows AlreadyApplied");
-    assert_eq!(events(&second), RESTART_EVENTS, "the receipts held are replayed as frames: {second:?}");
+    assert_eq!(events(&second), STOP_EVENTS, "the receipts held are replayed as frames: {second:?}");
 
     let receipts = Builds::new(carrier.clone()).get(&accepted.build_id).await.expect("build.get");
     let mut keys: Vec<(u32, String, String)> = receipts.steps.iter().filter(|r| r.attempt >= accepted.attempt).map(|r| (r.attempt, r.operation.clone(), r.step.clone())).collect();
@@ -360,7 +353,7 @@ async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
-    let mut stream = caller.nodes(&carrier).restart(&node).await.expect("the fabric-primary accepts the restart");
+    let mut stream = caller.nodes(&carrier).stop(&node).await.expect("the fabric-primary accepts the stop");
     let accepted = stream.accepted().clone();
     assert_eq!(frames_of(&mut stream).await.last(), Some(&Frame::Complete));
 
@@ -387,10 +380,10 @@ async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_
 /// of the executor's departure (its exact runtime inspected and exited), never on silence; and the
 /// caller's one stream carries the successor's frames to `Complete`. No event is delivered twice.
 ///
-/// The executor is lost at the same step every run: its own Door holds it in the restart's start, the
-/// node's `start-node` answered `Started` and its `StartNode` receipt not yet durable, and it is killed
-/// while held. The successor replays the receipted stop and reissues the start, which the node settles
-/// `AlreadyApplied`.
+/// The node is stopped first (node.stop, complete). The executor is lost at the same step every run of
+/// its node.start: its own Door holds it in the start, the node's `start-node` answered `Started` and
+/// its `StartNode` receipt not yet durable, and it is killed while held. The successor reissues the
+/// start, which the node settles `AlreadyApplied`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_proof() {
     let test = "a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_proof";
@@ -401,16 +394,18 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
 
-    // The executor, mesh2's primary, is held in the middle of the restart: the start of the stopped node
+    let mut stopped = caller.nodes(&carrier).stop(&node).await.expect("the fabric-primary accepts the stop");
+    assert_eq!(frames_of(&mut stopped).await.last(), Some(&Frame::Complete), "the node is stopped first");
+    // The executor, mesh2's primary, is held in the middle of the start: the start of the stopped node
     // answered, its receipt not durable.
     const EXECUTOR: &str = "mesh2.admin.1";
     let door = Door::at(&estate, EXECUTOR).await;
-    door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "node.restart", "node": node.to_string()})).await;
-    let mut stream = caller.nodes(&carrier).restart(&node).await.expect("the fabric-primary accepts the restart");
+    door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "node.start", "node": node.to_string()})).await;
+    let mut stream = caller.nodes(&carrier).start(&node).await.expect("the fabric-primary accepts the start");
     let accepted = stream.accepted().clone();
     let held = door.wait_held("lost").await;
     assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
-    assert_eq!(held["hit"]["attempt"], json!(accepted.attempt), "the executor is held in the attempt the restart was accepted at: {held}");
+    assert_eq!(held["hit"]["attempt"], json!(accepted.attempt), "the executor is held in the attempt the start was accepted at: {held}");
     estate.kill_node(EXECUTOR).await;
     let frames = frames_of(&mut stream).await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "the caller's stream carries the successor's frames to the end: {frames:?}");
@@ -418,7 +413,7 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     let mut once = seen.clone();
     once.dedup();
     assert_eq!(seen, once, "no event is delivered twice: {frames:?}");
-    assert_eq!(seen.last(), Some(&NodeEvent::Restarted), "{seen:?}");
+    assert_eq!(seen.last(), Some(&NodeEvent::Started), "{seen:?}");
 
     estate.stop().await;
     let spans = estate.spans();
@@ -453,7 +448,7 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
     // The cut: the fabric-primary's claim is durable and broadcast, and the drive has not dispatched.
     let door = Door::at(&estate, &fp).await;
     door.arm("claimed", json!({"kind": "claimed-attempt", "attempt": null})).await;
-    let mut stream = caller.nodes(&carrier).restart(&node).await.expect("the fabric-primary accepts the restart");
+    let mut stream = caller.nodes(&carrier).stop(&node).await.expect("the fabric-primary accepts the stop");
     let accepted = stream.accepted().clone();
     let held = door.wait_held("claimed").await;
     assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
@@ -473,11 +468,11 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
     // re-submits there by the Build id.
     let restored = caller.restored_fabric_primary(&fp).await;
     let carrier = caller.carrier_at(&restored);
-    let mut resumed = caller.nodes(&carrier).resume(WorkflowKind::Restart(node), &accepted).await.expect("the restored fabric-primary accepts the re-submit");
+    let mut resumed = caller.nodes(&carrier).resume(WorkflowKind::Stop(node), &accepted).await.expect("the restored fabric-primary accepts the re-submit");
     assert_eq!(resumed.accepted().build_id, accepted.build_id, "never a second Build");
     let frames = frames_of(&mut resumed).await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
-    assert_eq!(events(&frames), RESTART_EVENTS, "{frames:?}");
+    assert_eq!(events(&frames), STOP_EVENTS, "{frames:?}");
 
     let receipts = Builds::new(carrier.clone()).get(&accepted.build_id).await.expect("build.get");
     let mut keys: Vec<(u32, String, String)> = receipts.steps.iter().filter(|r| r.attempt >= accepted.attempt).map(|r| (r.attempt, r.operation.clone(), r.step.clone())).collect();

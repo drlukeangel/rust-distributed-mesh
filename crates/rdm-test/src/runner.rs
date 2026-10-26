@@ -159,7 +159,7 @@ pub async fn run_replayable(
     let shape: Vec<(&str, u32, u32)> = sc.meshes.iter().map(|m| (m.name.as_str(), m.node_admin, m.rpc_node)).collect();
     estate.settles_to(&shape, SETTLE).await;
 
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(SETTLE).await;
     let mut failures = Vec::new();
     let mut outcomes = Vec::new();
@@ -171,17 +171,26 @@ pub async fn run_replayable(
             let path: rdm_client::PathName = node.parse().unwrap_or_else(|e| panic!("the fault names {node}, not a path.name: {e:?}"));
             let step = format!("fault[{fault_no}]");
             fault_no += 1;
-            let mut restart = match estate.nodes_obj().await.restart(&path).await {
-                Ok(stream) => stream,
-                Err(end) => {
-                    failures.push(Failure { step: step.clone(), reason: format!("restart {node}: {end}") });
-                    outcomes.push(StepOutcome { step, action: "restart_node".into(), target: node.clone(), key: None, outcome: format!("Refused({})", end.outcome()), result: Value::Null });
-                    continue;
+            // The node restarted by node.stop then node.start of the same process (Q183): it keeps the node
+            // id and the incarnation (node-stop.md "Kept"; node-start.md), and is ready again.
+            let mut refused = None;
+            for (call, verb) in [(true, "stop"), (false, "start")] {
+                let nodes = estate.nodes_obj().await;
+                match if call { nodes.stop(&path).await } else { nodes.start(&path).await } {
+                    Ok(mut stream) => {
+                        Estate::complete(&mut stream).await;
+                    }
+                    Err(end) => {
+                        refused = Some((verb, end));
+                        break;
+                    }
                 }
-            };
-            Estate::complete(&mut restart).await;
-            // A restart is stop then start of the same process: it keeps the node id and the incarnation
-            // (node-restart.md "Kept"); its completed attempt is the restart, and the node is ready again.
+            }
+            if let Some((verb, end)) = refused {
+                failures.push(Failure { step: step.clone(), reason: format!("{verb} {node}: {end}") });
+                outcomes.push(StepOutcome { step, action: "restart_node".into(), target: node.clone(), key: None, outcome: format!("Refused({})", end.outcome()), result: Value::Null });
+                continue;
+            }
             let after = estate
                 .until_node(node, &format!("{node} ready again as the same birth after its restart"), SETTLE, |n| {
                     let n = serde_json::to_value(n?).expect("a view serializes");

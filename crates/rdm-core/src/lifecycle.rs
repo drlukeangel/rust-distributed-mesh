@@ -57,12 +57,6 @@ pub struct StateHook {
 }
 
 impl LifecycleOp {
-    /// A restart operation (`node.restart:<path>`): the logical node is kept, a later birth
-    /// follows; every other operation here removes the node.
-    pub fn is_restart(&self) -> bool {
-        self.operation.starts_with("node.restart:")
-    }
-
     /// A stop operation (`node.stop:<path>`): the birth is stopped and rejoins as itself; its
     /// departure is `NodeStopped`, never `NodeDeleted`.
     pub fn is_stop(&self) -> bool {

@@ -45,7 +45,8 @@ pub struct Source {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Fault {
-    /// Restart `node` through the node-admin Build rectifier (same NodeId, new incarnation).
+    /// Restart `node`: node.stop then node.start through node-admin (Q183; the same NodeId and
+    /// incarnation).
     RestartNode { node: String },
 }
 

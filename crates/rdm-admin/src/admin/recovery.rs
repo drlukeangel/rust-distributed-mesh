@@ -197,7 +197,7 @@ impl RecoverySubmitter {
         if let Some(op) = self.digest_view.deleted().into_iter().find(|op| op.node_id == n.node_id) {
             return Some(of("node-deleted", op));
         }
-        if let Some(op) = self.digest_view.in_flight().into_iter().find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_restart() && !op.is_stop()) {
+        if let Some(op) = self.digest_view.in_flight().into_iter().find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_stop()) {
             return Some(of("node-deleting", op));
         }
         let announced = match self.digest_view.statuses.mesh(&n.mesh)?.status.as_str() {

@@ -877,7 +877,7 @@ fn silence_word(status: Option<crate::model::NodeStatus>) -> &'static str {
         Some(ConnectionsDeleting) => "connections-deleting",
         Some(Leaving) => "leaving",
         Some(PendingReconnect) => "pending-reconnect",
-        Some(Restarting) => "restarting",
+        Some(Reserved5) => "reserved-5",
         Some(Dead) => "dead",
         Some(Deleted) => "deleted",
         Some(Withdrawn) => "withdrawn",

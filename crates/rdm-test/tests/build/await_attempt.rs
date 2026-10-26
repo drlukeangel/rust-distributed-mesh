@@ -1,7 +1,7 @@
 //! i143 process E2E: a caller waits for the attempt its own request opened (RDM fabric-build).
 //!
-//! A real estate whose node-admin is the testkit's faulted one. A restart opens the next attempt of
-//! the accepted Build and answers 202 naming it; a receipt cut holds that attempt in its retire half.
+//! A real estate whose node-admin is the testkit's faulted one. A stop opens the next attempt of
+//! the accepted Build and answers 202 naming it; a receipt cut holds that attempt in its stop.
 //! While it is held, `await_attempt(build, attempt)` must not return, whatever the Build's earlier
 //! attempts left behind; released, it returns the Build at that attempt, complete.
 
@@ -24,7 +24,7 @@ fn owner() -> Owner {
     }
 }
 
-/// CONTRACT: after a restart is accepted at the attempt after the accepted Build's Complete (the Build's
+/// CONTRACT: after a stop is accepted at the attempt after the accepted Build's Complete (the Build's
 /// run, then its Complete after the fabric's change, Q154), its reply stream carries no `Complete` while that attempt is
 /// held mid-flight, and ends `Complete` once the hold is released, with the Build, as the
 /// fabric-primary's log holds it, `complete` at that attempt. The accepted call names the opened
@@ -45,9 +45,9 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let created = Estate::complete(&mut spawn).await;
     assert_eq!(created.attempt, 1, "{created:?}");
     estate.until_node(first, &format!("{first} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
-    // A second rpc node, and the restart is of the one that does not hold the cohort's seat: a restart
+    // A second rpc node, and the stop is of the one that does not hold the cohort's seat: a stop
     // of the seat's node moves the seat first and needs a secondary to move it to
-    // (node-primary-update-fabric-mesh-and-node-type.md Part C1, "no secondary"). The restart opens an
+    // (node-primary-update-fabric-mesh-and-node-type.md Part C1, "no secondary"). The stop opens an
     // attempt of the second create's Build, the accepted one.
     let mut second = estate.create_node("mesh1", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a second rpc node in mesh1: {e}"));
     let created = Estate::complete(&mut second).await;
@@ -61,23 +61,23 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let primary = estate.node_views().await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == "mesh1" && n.is_primary).expect("mesh1 has an admin primary");
     let door = Door::at(&estate, &primary.name.to_string()).await;
 
-    let cut = "restart:NodeRestarting";
-    door.arm(cut, json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "node.restart", "node": node})).await;
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    let cut = "stop:StopNode";
+    door.arm(cut, json!({"kind": "receipt", "step": RetireStep::StopNode.name(), "operation": "node.stop", "node": node})).await;
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The create put the fabric back to pending, so its Build is Complete at the attempt after its run,
-    // claimed once the fabric's ready-for-traffic state was set (Q154): the restart opens the attempt after that one.
+    // claimed once the fabric's ready-for-traffic state was set (Q154): the stop opens the attempt after that one.
     let attempt = estate.attempt_of_build(&build_id).await as u32 + 1;
-    let mut restart = estate.nodes_obj().await.restart(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {node}: {e}"));
-    let opened = restart.accepted().clone();
-    assert_eq!(opened.build_id.to_string(), build_id, "a restart opens an attempt of the accepted Build: {opened:?}");
-    assert_eq!(opened.attempt, attempt, "the restart answers the attempt it opened: {opened:?}");
+    let mut stop = estate.nodes_obj().await.stop(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node}: {e}"));
+    let opened = stop.accepted().clone();
+    assert_eq!(opened.build_id.to_string(), build_id, "a stop opens an attempt of the accepted Build: {opened:?}");
+    assert_eq!(opened.attempt, attempt, "the stop answers the attempt it opened: {opened:?}");
     door.wait_held(cut).await;
 
     let mut seen = Vec::new();
     let waiting = tokio::time::timeout(Duration::from_secs(3), async {
-        while let Some(frame) = restart.next().await {
-            let frame = frame.unwrap_or_else(|e| panic!("the restart's reply stream broke while attempt {attempt} was held: {e}"));
+        while let Some(frame) = stop.next().await {
+            let frame = frame.unwrap_or_else(|e| panic!("the stop's reply stream broke while attempt {attempt} was held: {e}"));
             let complete = matches!(frame, Frame::Complete);
             seen.push(frame);
             if complete {
@@ -86,12 +86,12 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
         }
     })
     .await;
-    assert!(waiting.is_err(), "the restart's reply stream completed while attempt {attempt} was held: {seen:?}");
+    assert!(waiting.is_err(), "the stop's reply stream completed while attempt {attempt} was held: {seen:?}");
     let held = build_log::build_value(&estate.carrier().await, &build_id).await;
     assert_ne!(held["state"], "complete", "attempt {attempt} is held mid-flight: {held}");
 
     door.release(cut).await;
-    let finished = Estate::complete(&mut restart).await;
+    let finished = Estate::complete(&mut stop).await;
     assert_eq!((finished.build_id.as_str(), finished.attempt), (build_id.as_str(), attempt), "{finished:?}");
     let done = build_log::build_fact(&estate.carrier().await, &build_id, &format!("attempt {attempt} complete"), Duration::from_secs(120), |b| b.attempt == attempt && b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
     assert!(done.attempt == attempt && done.state == rdm_admin::build_state::BuildState::Complete, "{done:?}");

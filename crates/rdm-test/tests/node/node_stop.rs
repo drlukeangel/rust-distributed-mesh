@@ -808,10 +808,10 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
 /// served, no node.connections.delete, no node.primary.update commanded or run. Through the whole run,
 /// the estate's teardown included, no admin hands its primaries to nobody
 /// (`rdm.node_admin.build.update.via-seat-hand-over` with `to = none`).
-/// Must NOT happen: a stop or restart step of the only admin, a node.primary.update, a hand-over to none.
+/// Must NOT happen: a stop step of the only admin, a node.primary.update, a hand-over to none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_moves() {
-    let test = "a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_moves";
+async fn a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_moves() {
+    let test = "a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_moves";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
     let before = estate.settled_views(&[("mesh1", 1, 1)]).await;
@@ -822,7 +822,7 @@ async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and
     let held = before.iter().find(|n| n.name == target).expect("node.get lists the only admin");
     assert!(held.is_primary && held.is_fabric_primary, "mesh1.admin.1 holds both seats: {held:?}");
     let q7 = "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic";
-    for (action, refused) in [("stop", nodes.stop(&target).await.err()), ("restart", nodes.restart(&target).await.err())] {
+    for (action, refused) in [("stop", nodes.stop(&target).await.err())] {
         let refused = refused.unwrap_or_else(|| panic!("the {action} of the fabric's only node-admin was accepted"));
         let rdm_client::CallEnd::Rejected { reason, detail } = &refused else { panic!("the {action} ends Rejected: {refused:?}") };
         assert_eq!((reason.as_str(), detail.strip_prefix("last-admin: ")), ("last-admin", Some(q7)), "{action}: {refused:?}");
@@ -834,7 +834,7 @@ async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and
     estate.stop().await;
     let spans = estate.spans();
     let rejected: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().filter(|sp| attr(sp, "detail") == q7).collect();
-    assert_eq!(rejected.len(), 2, "one refusal per call: {rejected:#?}");
+    assert_eq!(rejected.len(), 1, "one refusal per call: {rejected:#?}");
     for name in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.node.connections.delete.via-stop", "rdm.node_admin.primary.update.via-command", "rdm.node_admin.primary.update.via-update-primary"] {
         // The estate's teardown runs the stop workflow on its signal (`signal`): not the refused stop.
         let ran: Vec<&Value> = named(&spans, name).into_iter().filter(|sp| attr(sp, "operation") != "signal").collect();

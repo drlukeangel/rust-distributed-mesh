@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 pub struct Build;
 
 /// What a caller submits. The fabric-primary compiles it once against the accepted topology (a
-/// topology change opens a new Build) or opens the next attempt of the accepted Build (a restart,
+/// topology change opens a new Build) or opens the next attempt of the accepted Build (a
 /// connections delete, stop, start, recovery or recipe, targeted at the births it acts on).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildChange {
@@ -64,11 +64,10 @@ pub enum BuildChange {
         /// The mesh to remove.
         mesh: String,
     },
-    /// Restart the live birth at `node` (the next attempt of the accepted Build).
-    Restart {
-        /// The node.
-        node: PathName,
-    },
+    /// Reserved position: the removed `node.restart` (Q183; callers run node.stop then node.start).
+    /// Never sent; a request at this position decodes as `UnknownVariant` ([`Build::decode_request`]).
+    /// Kept so every later change keeps its position.
+    Reserved6,
     /// `node.connections.delete { All }` of the live birth at `node`; it keeps running.
     DeleteConnections {
         /// The node.
@@ -145,10 +144,11 @@ pub enum BuildChange {
 }
 
 impl BuildChange {
-    /// Whether this is a reserved position (positions 0, 1, 2, 4 and 14: the removed count forms and the
-    /// removed executable-set change): never sent, and a request at one is an unknown variant.
+    /// Whether this is a reserved position (positions 0, 1, 2, 4, 6 and 14: the removed count forms, the
+    /// removed restart and the removed executable-set change): never sent, and a request at one is an
+    /// unknown variant.
     pub fn is_reserved(&self) -> bool {
-        matches!(self, Self::Reserved0 | Self::Reserved1 | Self::Reserved2 | Self::Reserved4 | Self::Reserved14)
+        matches!(self, Self::Reserved0 | Self::Reserved1 | Self::Reserved2 | Self::Reserved4 | Self::Reserved6 | Self::Reserved14)
     }
 }
 

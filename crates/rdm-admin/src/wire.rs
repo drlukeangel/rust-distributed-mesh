@@ -170,7 +170,9 @@ enum WireChange {
 
 #[derive(Serialize, Deserialize)]
 enum WireAction {
-    Restart { path: PathName, from_incarnation: IncarnationId },
+    /// Reserved position: the removed node.restart's action (Q183). Never sent; a fact carrying it is
+    /// refused by name ([`fact_from_wire`]). Kept so every later action keeps its position.
+    Reserved0 { path: PathName, from_incarnation: IncarnationId },
     DeleteConnections { path: PathName, from_incarnation: IncarnationId },
     Stop { path: PathName, from_incarnation: IncarnationId },
     Start { path: PathName, from_incarnation: IncarnationId },
@@ -236,7 +238,6 @@ impl From<WireChange> for TopologyChange {
 impl From<&AttemptAction> for WireAction {
     fn from(a: &AttemptAction) -> Self {
         match a {
-            AttemptAction::Restart { path, from_incarnation } => Self::Restart { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::DeleteConnections { path, from_incarnation } => Self::DeleteConnections { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Stop { path, from_incarnation } => Self::Stop { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Start { path, from_incarnation } => Self::Start { path: path.clone(), from_incarnation: from_incarnation.clone() },
@@ -248,10 +249,13 @@ impl From<&AttemptAction> for WireAction {
         }
     }
 }
-impl From<WireAction> for AttemptAction {
-    fn from(a: WireAction) -> Self {
-        match a {
-            WireAction::Restart { path, from_incarnation } => Self::Restart { path, from_incarnation },
+impl TryFrom<WireAction> for AttemptAction {
+    type Error = String;
+    /// The action a wire action carries; the reserved position of the removed node.restart is refused
+    /// by name.
+    fn try_from(a: WireAction) -> Result<Self, String> {
+        Ok(match a {
+            WireAction::Reserved0 { path, .. } => return Err(format!("the attempt's action is node.restart of {path}, a reserved position: node.restart is removed (Q183)")),
             WireAction::DeleteConnections { path, from_incarnation } => Self::DeleteConnections { path, from_incarnation },
             WireAction::Stop { path, from_incarnation } => Self::Stop { path, from_incarnation },
             WireAction::Start { path, from_incarnation } => Self::Start { path, from_incarnation },
@@ -260,7 +264,7 @@ impl From<WireAction> for AttemptAction {
             WireAction::Delete { path, from_incarnation } => Self::Delete { path, from_incarnation },
             WireAction::Recipe { steps, pinned } => Self::Recipe { steps, pinned },
             WireAction::Terminate { path, node_id, from_incarnation } => Self::Terminate { path, node_id, from_incarnation },
-        }
+        })
     }
 }
 /// An action through its wire form and back, as a Build message carries it.
@@ -268,7 +272,7 @@ impl From<WireAction> for AttemptAction {
 pub(crate) fn action_round_trip(a: &AttemptAction) -> AttemptAction {
     let wire = WireAction::from(a);
     let bytes = rdm_transport::wire::encode(&wire).expect("an action encodes");
-    rdm_transport::wire::decode::<WireAction>(&bytes).expect("an action decodes").into()
+    rdm_transport::wire::decode::<WireAction>(&bytes).expect("an action decodes").try_into().expect("an action this build reads")
 }
 
 impl From<&NodeSpec> for WireSpec {
@@ -512,7 +516,7 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         Produces::RuntimeEvidence
     } else if is(CreateStep::ApplyMeshPending) {
         Produces::MeshPending
-    } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) {
+    } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeDeleted) {
         Produces::LifecycleOp
     } else if ret(RetireStep::DeleteConnections) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
         Produces::CommandAdmission
@@ -689,10 +693,16 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
             submitted_at_ms: a.submitted_at_ms,
         }),
         WireFact::Opened(o) => BuildFact::Opened(AttemptOpened {
+            action: {
+                let refuse = |reason: String| WireRefusal { build_id: o.build_id.clone(), attempt: o.attempt, step: "Opened".into(), reason };
+                if o.reason == AttemptReason::Reserved2 {
+                    return Err(refuse("the attempt's reason is node.restart's, a reserved position: node.restart is removed (Q183)".into()));
+                }
+                o.action.map(AttemptAction::try_from).transpose().map_err(refuse)?
+            },
             build_id: o.build_id,
             attempt: o.attempt,
             reason: o.reason,
-            action: o.action.map(Into::into),
             opened_by: o.opened_by,
             opened_at_ms: o.opened_at_ms,
             mesh: o.mesh,

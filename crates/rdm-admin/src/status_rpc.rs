@@ -385,8 +385,7 @@ pub use rdm_core::status::{declared_of_member, member_of_declared};
 pub enum MemberStatusReceipt<'a> {
     /// The birth's declared state, its row put, acknowledged and applied by this admin's status
     /// authority: the Pending of its accepted join report, the ReadyForTraffic of its node.started,
-    /// the Stopped of its stop, or the state its `DeclareNodeState` names. Its ReadyForTraffic also
-    /// ends that exact birth's open restart.
+    /// the Stopped of its stop, or the state its `DeclareNodeState` names.
     Declared(&'a crate::status_rpc::Declaration),
     /// `NodeJoined` on the start's command stream (`node.mesh.joined`): the birth's stop, if one is
     /// held, ends, and the birth is held Pending; or, when `already` names the state its declared state
@@ -1256,7 +1255,7 @@ impl StatusAuthority {
     }
 
     /// The declared-state rows of every birth this admin holds that `digest_view` says is superseded: the
-    /// view holds a later incarnation of the node (a restart), holds the node departed
+    /// view holds a later incarnation of the node (a superseding birth), holds the node departed
     /// (node.deleted), or holds the birth's path.name under another node_id (a recovery's new node,
     /// node-recovery.md). Each such birth's keys are tombstoned, blind, and then forgotten in memory.
     /// A birth the view holds at the same incarnation keeps its rows, however long it is silent, and
@@ -1658,9 +1657,7 @@ impl StatusAuthority {
         if let (StatusReply::Applied, Effect::Node(row, ..)) = (&reply, &effect) {
             // The node's report, applied, sets its status (node-status.md "Status report": "A node
             // reports to its mesh's primary, which sets its status"), carried by this primary's member
-            // projection. node.started, its ReadyForTraffic, also ends that exact birth's restart
-            // (gossip.md "NodeRestarting stays until node.started of the same (node.id, incarnation)
-            // arrives").
+            // projection.
             if let Some(digest_view) = &self.digest_view {
                 let _ = set_member_status(digest_view, MemberStatusReceipt::Declared(row));
             }
@@ -1674,12 +1671,10 @@ impl StatusAuthority {
         // A birth's Leaving, applied, that names the operation which stopped it (i146 Q29, Q36): this
         // mesh-primary publishes NodeStopped with that identity, as from the stop stream's `stopped`,
         // whichever of the two reached it first; the other finds the row held (`AlreadyApplied`) and
-        // publishes nothing. A restart's stop is never NodeStopped (NodeRestarting holds it).
+        // publishes nothing.
         if let (StatusReply::Applied, Effect::Node(row, NodeState::Stopped, Some(operation))) = (&reply, &effect) {
-            if !operation.operation.starts_with("node.restart:") {
-                if let Some(publish) = self.stopped.get() {
-                    publish(row.clone(), operation.clone()).await;
-                }
+            if let Some(publish) = self.stopped.get() {
+                publish(row.clone(), operation.clone()).await;
             }
         }
         reply
@@ -1749,8 +1744,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
         S::Pending => NodeState::Pending,
         S::ReadyForTraffic => NodeState::ReadyForTraffic,
         S::ConnectionsDeleting => NodeState::ConnectionsDeleting,
-        // A birth under restart is leaving; the frozen status vocabulary has no Restarting.
-        S::Leaving | S::Restarting | S::PendingReconnect | S::Dead | S::Deleted | S::Withdrawn => NodeState::Stopped,
+        S::Leaving | S::Reserved5 | S::PendingReconnect | S::Dead | S::Deleted | S::Withdrawn => NodeState::Stopped,
     }
 }
 
@@ -2197,7 +2191,7 @@ mod tests {
     /// stopped it, applied by its mesh-primary, publishes NodeStopped once with that identity, whether
     /// the birth's declaration or the stop stream's `stopped` reached it first; the other finds the
     /// row held (`AlreadyApplied`) and publishes nothing. A Stopped naming no operation (a state the
-    /// birth measured itself) and a restart's stop publish nothing. Must NOT happen: NodeStopped twice
+    /// birth measured itself) publishes nothing. Must NOT happen: NodeStopped twice
     /// for one stop, or a lifecycle frame from a declaration that names no operation.
     #[tokio::test]
     async fn a_stops_leaving_publishes_node_stopped_once_from_whichever_reaches_the_mesh_primary_first() {
@@ -2212,11 +2206,11 @@ mod tests {
             n.kind = NodeKind::RpcNode;
             n
         };
-        let (declared_first, stream_first, measured, restarted) = (rpc("mesh1.rpc.1"), rpc("mesh1.rpc.2"), rpc("mesh1.rpc.3"), rpc("mesh1.rpc.4"));
+        let (declared_first, stream_first, measured) = (rpc("mesh1.rpc.1"), rpc("mesh1.rpc.2"), rpc("mesh1.rpc.3"));
         let topology = Arc::new(tokio::sync::RwLock::new(Topology {
             fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
             meshes: Vec::new(),
-            nodes: vec![admin.clone(), declared_first.clone(), stream_first.clone(), measured.clone(), restarted.clone()],
+            nodes: vec![admin.clone(), declared_first.clone(), stream_first.clone(), measured.clone()],
         }));
         let authority = StatusAuthority {
             certs: None,
@@ -2278,9 +2272,8 @@ mod tests {
         assert_eq!(authority.apply(Some(stream_first.clone()), &declare(&stream_first, Some(stop2.clone()))).await, R::AlreadyApplied, "Q49: the old stop declaration after the next cycle began cannot apply again");
         assert_eq!(authority.stop_received(&stream(&stream_first, &stop2)).await, R::AlreadyApplied, "Q49: the frame names the same applied operation");
         assert_eq!(authority.apply(Some(stream_first.clone()), &declare(&stream_first, None)).await, R::Applied, "Q49: without an operation the normal forward transition still applies");
-        // A Leaving the birth measured itself, and a restart's stop: applied, and nothing published.
+        // A Leaving the birth measured itself: applied, and nothing published.
         assert_eq!(authority.apply(Some(measured.clone()), &declare(&measured, None)).await, R::Applied);
-        assert_eq!(authority.apply(Some(restarted.clone()), &declare(&restarted, Some(stop_of(&restarted, "node.restart")))).await, R::Applied);
 
         assert_eq!(
             *published.lock().unwrap(),
@@ -3000,7 +2993,7 @@ mod tests {
     }
 
     /// CONTRACT (#3051, node-recovery.md "Steps": node.delete of the exited instance, then node.create
-    /// with a new node.id; node-restart: a new incarnation of the same node.id): a birth's declared
+    /// with a new node.id; a superseding birth: a new incarnation of the same node.id): a birth's declared
     /// state is a fact about that birth only. Once the view holds a later incarnation of the node, or
     /// holds the node departed (node.deleted), the authority tombstones the old birth's declared-state
     /// keys, blind, and forgets them; a birth the view still holds at the same incarnation (silent or

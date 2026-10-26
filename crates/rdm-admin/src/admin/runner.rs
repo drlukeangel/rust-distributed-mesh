@@ -138,14 +138,6 @@ pub(crate) fn stopped_publisher(topology_view: TopologyView, backbone: Backbone,
     Arc::new(move |row: crate::status_rpc::Declaration, operation: rdm_core::status::DeclaredOperation| {
         let (topology_view, backbone, project) = (topology_view.clone(), backbone.clone(), project.clone());
         Box::pin(async move {
-            // Inside node.restart the stop's stopped is held by NodeRestarting, never published as
-            // NodeStopped (gossip.md, "Node-stopped lifecycle overlay"; Q135): NodeRestarting ends at
-            // node.started of the same birth, where a NodeStopped would wait for a node.joined.
-            if let Some(restart) = topology_view.digest_view.restart_of(row.node_id.as_str(), &row.incarnation_id) {
-                tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %row.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), build_id = %operation.build_id, attempt = operation.attempt, operation = %operation.operation, outcome = "held-by-restart", restart = %restart.operation)
-                    .in_scope(|| tracing::info!("the stop belongs to an open restart of this birth: NodeRestarting holds it and no NodeStopped is published"));
-                return;
-            }
             let op = rdm_core::LifecycleOp {
                 build_id: operation.build_id,
                 attempt: operation.attempt,
@@ -177,15 +169,6 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         async {
             self.backbone.publish_status_event(rdm_transport::topology::StatusEvent::Deleting, op).await;
             tracing::info!("the node is being removed: every mesh hears it is not routable");
-        }
-        .instrument(span)
-        .await
-    }
-    async fn restarting(&self, op: &rdm_core::LifecycleOp) {
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-restarting", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
-        async {
-            self.backbone.publish_status_event(rdm_transport::topology::StatusEvent::Restarting, op).await;
-            tracing::info!("the node is being restarted: every mesh holds it through its Leaving");
         }
         .instrument(span)
         .await
@@ -240,7 +223,7 @@ impl AdminRunner {
     }
 
     /// The template of an operation on a node of `kind` in `mesh` that launches nothing (a delete, a
-    /// stop, a start, a restart in place, a terminate, a rename): it names no executable. Every node
+    /// stop, a start, a terminate, a rename): it names no executable. Every node
     /// carries its mesh's identity (it names the mesh's channel): the one this admin created, else the
     /// one the fabric knows (a recovered mesh is reconstructed as itself, never anew). A create's
     /// template is [`Self::create_template`]'s, which names the executable it launches.
@@ -1101,19 +1084,7 @@ impl AdminRunner {
         Ok((record, handle, deployed))
     }
 
-    /// `node.restart:<path>` (node-restart.md): stop, then start, on the same process: the same node id,
-    /// incarnation, endpoint key and port. The process never exits and no runtime is deployed.
-    pub(crate) async fn restart_in_place(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<(), crate::executor::RunEnd> {
-        // A birth this restart's own earlier attempt stopped is held as a stopped one (its digest the
-        // stopped one its rejoin is verified against), and its run resumes at the start.
-        let stopped = self.topology.read().await.node(node).is_some_and(|n| n.stopped);
-        let (record, handle, deployed) = if stopped { self.stopped_birth("node.restart", node, None).await? } else { self.stopped_birth_or_live("node.restart", node).await? };
-        let template = self.template_for(node.kind, &node.mesh).await?;
-        let req = crate::deployment::pipeline::StartRequest { build_id: build_id.clone(), attempt, node: record, handle, deployed };
-        self.pipeline(&template).restart(&req).await.map_err(crate::executor::RunEnd::from)
-    }
-
-    /// The live birth at `node` before its stop, for a restart: the same record shape as a stopped one.
+    /// The live birth at `node`, for a commanded rejoin: the same record shape as a stopped one.
     pub(crate) async fn stopped_birth_or_live(&self, op: &str, node: &PathName) -> Result<(Node, DeploymentHandle, crate::join::Deployed), String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
@@ -1309,12 +1280,6 @@ impl AdminRunner {
                 self.create_over(&*builds, build_id, attempt, node, from, None).instrument(span).await
             }
             BuildOperation::CreateNode { node, over: None, executable } => self.create_node(build_id, attempt, node, executable.as_ref(), crate::node_rows::ClaimFor::Create).await,
-            BuildOperation::RestartNode { node } => {
-                // node-restart.md: the live process stops and rejoins; there is no relaunch. A member
-                // proven exited is node recovery's (node-recovery.md).
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt);
-                self.restart_in_place(build_id, attempt, node).instrument(span).await
-            }
             BuildOperation::StartNode { node, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt);
                 self.start_stopped(build_id, attempt, node, from_incarnation).instrument(span).await

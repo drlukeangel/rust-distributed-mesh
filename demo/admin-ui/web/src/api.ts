@@ -169,8 +169,10 @@ export const api = {
   bootstrap: (meshes?: MeshShape[]) => call<BuildAccepted>("/api/bootstrap", meshes ? post({ meshes }) : { method: "POST" }),
   spawn: (kind: ManagedKind, mesh: string) =>
     call<BuildAccepted>("/api/nodes/spawn", post({ mesh, kind })),
-  restart: (name: string) =>
-    call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/restart`, { method: "POST" }),
+  stop: (name: string) =>
+    call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/stop`, { method: "POST" }),
+  start: (name: string) =>
+    call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/start`, { method: "POST" }),
   remove: (name: string) =>
     call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}`, { method: "DELETE" }),
   replace: (name: string, executable: string) =>

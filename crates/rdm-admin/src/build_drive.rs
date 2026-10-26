@@ -129,7 +129,7 @@ pub struct PrecedingUpdate {
 }
 
 /// The node.primary.updates that may precede `op` of Build `build_id` in the run whose first attempt
-/// is `run` (R-MT1, ruling R-PU2, [`crate::executor::seat_move`]): for a stop, delete, restart, replace
+/// is `run` (R-MT1, ruling R-PU2, [`crate::executor::seat_move`]): for a stop, delete, replace
 /// or node.connections.delete of a node-admin, the mesh-primary's update and the fabric-primary's
 /// alone; of a node of any other type, its type's primary's update; for a mesh retire, the
 /// fabric-primary's under that mesh. None for any other operation.
@@ -141,7 +141,6 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
     match op {
         BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { mesh: mesh.clone(), operation: update_operation(Seat::FabricPrimary, build_id.as_str(), run, &key), holder: None }],
         BuildOperation::RetireNode { node, exited: None }
-        | BuildOperation::RestartNode { node }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::RecipeStep { step: RecipeStep::Stop { node } | RecipeStep::Delete { node } | RecipeStep::DeleteConnections { node }, .. }
@@ -151,7 +150,6 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
         }
         // Any other node type's primary, commanded by its mesh-primary (node-primary-update.md, "Commander").
         BuildOperation::RetireNode { node, exited: None }
-        | BuildOperation::RestartNode { node }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::RecipeStep { step: RecipeStep::Stop { node } | RecipeStep::Delete { node } | RecipeStep::DeleteConnections { node }, .. } => {
@@ -848,7 +846,7 @@ fn changes_the_fabric(p: &BuildProjection) -> bool {
 /// Build's own change of the fabric, Day 0's or a submitted topology change's (Q154; states.md "Resize and
 /// executable replacement"), up to the Build's
 /// first Complete, which comes only from its own ready-for-traffic. Every later attempt of the Build
-/// (node.stop, node.start, node.restart, a primary change, node recovery, drift: attempts of an
+/// (node.stop, node.start, a primary change, node recovery, drift: attempts of an
 /// unchanged topology, build.md §1) ends at its own completion and never waits on the fabric's change
 /// (states.md "The check-in checklist": "Individual lifecycle status changes do not wait for the entire
 /// check-in checklist").

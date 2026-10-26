@@ -846,7 +846,7 @@ async fn members_heard_again_mid_attempt_through_the_recovered_forwarder_are_nev
 }
 
 /// CONTRACT (node-recovery.md, "Lineage: No supersedes"): an exit carrying the TRANSPORT_STOPPED code
-/// (4) is recovered like any other exit. The fabric-primary opens no Restart; the mesh-primary's
+/// (4) is recovered like any other exit. The fabric-primary opens no start; the mesh-primary's
 /// recovery creates a new node.id at the path, never the same identity under a new incarnation.
 #[tokio::test]
 async fn a_transport_stopped_exit_is_recovered_as_a_new_node_never_restarted() {
@@ -869,13 +869,13 @@ async fn a_transport_stopped_exit_is_recovered_as_a_new_node_never_restarted() {
 }
 
 /// CONTRACT (mesh-recovery.md:8-9 "A lost member of a mesh with a live mesh-primary is node
-/// recovery, driven by that mesh-primary"; node-restart.md: a restart stops a live process, so a
-/// proven exit is never restarted): a secondary node-admin of a peer mesh (its mesh-primary live and
+/// recovery, driven by that mesh-primary"; node-start.md: a start rejoins a stopped live process, so a
+/// proven exit is never started again): a secondary node-admin of a peer mesh (its mesh-primary live and
 /// not the fabric-primary) that exits, with the TRANSPORT_STOPPED code (4) and with another code
 /// (137), is recovered by its mesh-primary: the fabric-primary's drift opens nothing, the recovery
 /// is attempt 1 of the mesh's lane of the same Build keyed on the exact exited birth, run by that
 /// mesh-primary itself (R-BI7), and the path gets a new node.id. Must NOT happen: a proven-drift
-/// Replace or a Restart.
+/// Replace or a start.
 #[tokio::test]
 async fn a_secondary_node_admins_exit_is_recovered_by_its_mesh_primary_whatever_its_code() {
     for code in [Some(rdm_core::runtime::TRANSPORT_STOPPED_EXIT_CODE), Some(137)] {
@@ -1238,12 +1238,12 @@ mod one_attempt_number {
     }
 
     /// CONTRACT: the proven-drift pass has read the settled Build and computed attempt k+1 for a lost
-    /// node when a requested restart of another node opens k+1 first. The restart holds the number:
+    /// node when a requested stop of another node opens k+1 first. The stop holds the number:
     /// the drift pass is told it lost, opens nothing and returns no attempt to execute, and the one
-    /// Opened fact of k+1 is the restart's. Canon: build_state.rs `AttemptOpened` (insert-and-fail on
+    /// Opened fact of k+1 is the stop's. Canon: build_state.rs `AttemptOpened` (insert-and-fail on
     /// `(build_id, attempt)`), CLAUDE.md "an acknowledged write is the write that executes".
     #[tokio::test]
-    async fn a_drift_attempt_that_loses_its_number_to_a_requested_restart_opens_nothing() {
+    async fn a_drift_attempt_that_loses_its_number_to_a_requested_stop_opens_nothing() {
         let e = estate().await;
         let k = lose_a_node(&e).await;
         let g = gate(&e, Holds::Attempt(AttemptReason::Recipe));
@@ -1257,28 +1257,28 @@ mod one_attempt_number {
             _ = g.arrived.notified() => {}
             ended = &mut drift => panic!("the drift pass ended without reaching the Build log's door to open attempt {}: it proved no loss ({ended:?})", k + 1),
         }
-        let rest = cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rdm_admin::control_plane::ActionKind::Restart).await;
+        let rest = cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, "mesh2.rpc.1".parse().unwrap(), rdm_admin::control_plane::ActionKind::Stop).await;
         g.release.notify_one();
         let drift = drift.await;
-        let rest = rest.expect("the restart took the free number");
+        let rest = rest.expect("the stop took the free number");
         assert_eq!(rest.attempt, k + 1);
         let held = opened_facts(&e, k + 1).await;
         assert_eq!(held.len(), 1, "one Opened fact for attempt {}: {held:?}", k + 1);
-        assert_eq!((held[0].reason, held[0].opened_by.as_str()), (AttemptReason::Restart, cp.me.to_string().as_str()), "the number is the restart's: {held:?}");
+        assert_eq!((held[0].reason, held[0].opened_by.as_str()), (AttemptReason::Stop, cp.me.to_string().as_str()), "the number is the stop's: {held:?}");
         assert_eq!(drift, None, "the drift pass lost the number: it opened nothing and has no attempt to execute");
     }
 
-    /// CONTRACT: the requested restart has read the settled Build and computed attempt k+1 when the
+    /// CONTRACT: the requested stop has read the settled Build and computed attempt k+1 when the
     /// proven-drift pass opens k+1 for a lost node first. The drift attempt holds the number: the
-    /// restart is refused 409 `attempt-taken` naming the attempt, never acknowledged 202 for an attempt
-    /// that replaces the lost node and restarts nothing, and no second fact is appended.
+    /// stop is refused 409 `attempt-taken` naming the attempt, never acknowledged 202 for an attempt
+    /// that replaces the lost node and stops nothing, and no second fact is appended.
     #[tokio::test]
-    async fn a_requested_restart_that_loses_its_number_to_a_drift_attempt_is_refused_by_name() {
+    async fn a_requested_stop_that_loses_its_number_to_a_drift_attempt_is_refused_by_name() {
         let e = estate().await;
         let k = lose_a_node(&e).await;
-        let g = gate(&e, Holds::Attempt(AttemptReason::Restart));
+        let g = gate(&e, Holds::Attempt(AttemptReason::Stop));
         let cp = door(&e, g.clone()).await;
-        let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rdm_admin::control_plane::ActionKind::Restart), async {
+        let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, "mesh2.rpc.1".parse().unwrap(), rdm_admin::control_plane::ActionKind::Stop), async {
             g.arrived.notified().await;
             let d = drift_pass(&e, &*e.builds).await;
             g.release.notify_one();
@@ -1288,10 +1288,10 @@ mod one_attempt_number {
         let held = opened_facts(&e, k + 1).await;
         assert_eq!(held.len(), 1, "one Opened fact for attempt {}: {held:?}", k + 1);
         assert_eq!(held[0].reason, AttemptReason::Recipe, "the number is the drift attempt's, a one-step node.create recipe: {held:?}");
-        let refusal = rest.expect_err("the restart lost the number and was told so");
+        let refusal = rest.expect_err("the stop lost the number and was told so");
         match refusal {
             Refusal::AttemptTaken(detail) => assert!(detail.contains(&format!("{}", k + 1)), "the refusal names the attempt: {detail}"),
-            other => panic!("the restart was refused attempt-taken, not {other:?}"),
+            other => panic!("the stop was refused attempt-taken, not {other:?}"),
         }
     }
 
@@ -1360,9 +1360,9 @@ mod one_attempt_number {
     }
 
     /// CONTRACT: the proven-drift pass for a peer mesh whose recovery the ladder decided (its two
-    /// node-admins exited, the mesh unheard) is refused at the admission, because a requested restart
+    /// node-admins exited, the mesh unheard) is refused at the admission, because a requested stop
     /// of the same Build was admitted first. A refused pass opened nothing, so it spends nothing:
-    /// once the restart's attempt completes, the next pass releases the mesh's first recovering
+    /// once the stop's attempt completes, the next pass releases the mesh's first recovering
     /// node-admin as attempt k+2. Must NOT happen: the refused pass records the mesh's one release as
     /// spent, and the decided mesh's node-admins stay held for as long as the Build stays accepted.
     #[tokio::test]
@@ -1379,7 +1379,7 @@ mod one_attempt_number {
         }
         e.unheard(&admins.iter().map(String::as_str).collect::<Vec<_>>()).await;
         let before = e.builds.current().await.unwrap().unwrap();
-        let g = gate(&e, Holds::Attempt(AttemptReason::Restart));
+        let g = gate(&e, Holds::Attempt(AttemptReason::Stop));
         let cp = door(&e, g.clone()).await;
         let me: PathName = fp.parse().unwrap();
         let decided = |m: &str| (m == peer_mesh).then_some(PeerMesh { unheard_ms: Some(30_000), recovery_decided: true, unreachable_decided: false });
@@ -1390,34 +1390,34 @@ mod one_attempt_number {
         let hold = |m: &str| decided(m).and_then(|p| p.unheard_ms);
         let defers = |_: &str| false;
         let recovery = |m: &str| decided(m).is_some_and(|p| p.recovery_decided);
-        // The restarted node holds no seat: a seat holder's restart runs node.primary.update first, and the
+        // The stopped node holds no seat: a seat holder's stop runs node.primary.update first, and the
         // writer's view takes the moved seat from its view loop, which this harness does not run.
         let target = secondary_rpc(&e, &own).await;
-        let restart = tokio::spawn({
+        let stop = tokio::spawn({
             let (cp, path): (_, PathName) = (cp.clone(), target.parse().unwrap());
-            async move { cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, path, rdm_admin::control_plane::ActionKind::Restart).await }
+            async move { cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, path, rdm_admin::control_plane::ActionKind::Stop).await }
         });
         g.arrived.notified().await;
         let t = e.view.read().await.clone();
         let me_id = own_id(&t, &me);
         let refused = {
             let mut pass = Box::pin(rdm_admin::admin::reconcile_drift(&time, &me, &me_id, &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false));
-            // One poll while the restart holds the admission inside its write.
+            // One poll while the stop holds the admission inside its write.
             let early = tokio::select! {
                 biased;
                 r = &mut pass => Some(r),
                 _ = std::future::ready(()) => None,
             };
-            assert!(early.is_none(), "the drift pass waits at the admission the restart holds: {early:?}");
+            assert!(early.is_none(), "the drift pass waits at the admission the stop holds: {early:?}");
             g.release.notify_one();
-            let r = restart.await.unwrap().expect("the restart was admitted first");
+            let r = stop.await.unwrap().expect("the stop was admitted first");
             assert_eq!(r.attempt, before.attempt + 1);
             pass.await
         };
-        assert_eq!(refused, None, "the restart holds attempt k+1: the drift pass opened nothing");
+        assert_eq!(refused, None, "the stop holds attempt k+1: the drift pass opened nothing");
         e.converge().await;
         let settled = e.builds.current().await.unwrap().unwrap();
-        assert_eq!((settled.build_id.clone(), settled.attempt), (before.build_id.clone(), before.attempt + 1), "the restart's attempt completed on the same Build");
+        assert_eq!((settled.build_id.clone(), settled.attempt), (before.build_id.clone(), before.attempt + 1), "the stop's attempt completed on the same Build");
         let t = e.view.read().await.clone();
         let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");

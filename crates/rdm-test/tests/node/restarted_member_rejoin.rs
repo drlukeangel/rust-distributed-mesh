@@ -46,23 +46,23 @@ fn now_nano() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
 }
 
-/// The shared flow: bring the estate up, restart `NODE` through Build, wait for its new birth to
+/// The shared flow: bring the estate up, restart `NODE` through Build (node.stop then node.start,
+/// Q183), wait for its birth to
 /// be ready, stop, and hand back (the launching admin's node row, the old row, the new row, the
 /// restart's wall time, every span).
 async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>) {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     let nodes = estate.settled_views(&[("mesh1", 1, 2)]).await;
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let admin = nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").cloned().expect("the launching admin");
     let before = nodes.iter().find(|n| n.name.to_string() == NODE).cloned().expect("the member to restart");
     let restart_at = now_nano();
-    let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
-    Estate::complete(&mut restart).await;
+    estate.stop_then_start(&NODE.parse().unwrap()).await;
     let after = estate.node_view(NODE).await;
     assert_eq!(after.status, NodeStatus::ReadyForTraffic, "the restarted birth is ready: {after:?}");
-    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "a restart is stop then start on the stopped process: it keeps the NodeId and the incarnation");
+    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "a restart is node.stop then node.start on the stopped process: it keeps the NodeId and the incarnation");
     estate.stop().await;
     let spans = estate.spans();
     let json = |n: &NodeView| serde_json::to_value(n).expect("a view serializes");

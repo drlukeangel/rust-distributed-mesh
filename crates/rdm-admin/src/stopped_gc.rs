@@ -167,8 +167,7 @@ pub enum Swept {
 /// fenced to, or any birth a recipe pinned.
 fn acts_on(action: &AttemptAction, incarnation: &IncarnationId) -> bool {
     match action {
-        AttemptAction::Restart { from_incarnation, .. }
-        | AttemptAction::DeleteConnections { from_incarnation, .. }
+        AttemptAction::DeleteConnections { from_incarnation, .. }
         | AttemptAction::Stop { from_incarnation, .. }
         | AttemptAction::Start { from_incarnation, .. }
         | AttemptAction::Recover { from_incarnation, .. }
@@ -180,7 +179,7 @@ fn acts_on(action: &AttemptAction, incarnation: &IncarnationId) -> bool {
 
 /// The age of the birth `(node_id, incarnation)`'s current stopped period, from the Build log in the
 /// order it holds its facts: the latest standalone stop's `Complete` receipt naming the birth opens a
-/// period, and a later `Complete` of a start or a restart of the same birth ends it. An earlier stop
+/// period, and a later `Complete` of a start of the same birth ends it. An earlier stop
 /// before a later start never counts.
 pub fn stop_age(facts: &[BuildFact], node_id: &NodeId, incarnation: &IncarnationId) -> Age {
     // Facts arrive in any order (gossip, catch-up): an attempt's action is read from all of them.
@@ -203,7 +202,7 @@ pub fn stop_age(facts: &[BuildFact], node_id: &NodeId, incarnation: &Incarnation
                 None if ours => current = Some(Age::Unreadable(format!("the stop receipt of Build {} attempt {} commits no stop time", s.build_id, s.attempt))),
                 _ => {}
             }
-        } else if ours && (s.operation.starts_with("node.start:") || s.operation.starts_with("node.restart:")) && current.is_some() {
+        } else if ours && s.operation.starts_with("node.start:") && current.is_some() {
             current = None;
             ended = Some(format!("its last stop receipt precedes its {} in Build {} attempt {}", s.operation, s.build_id, s.attempt));
         }

@@ -25,7 +25,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let sender = TopologyView::join(&send_gossip, &send_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
-        let command = match kind { StatusEvent::Deleting => "delete", StatusEvent::Restarting => "restart", StatusEvent::Stopped => "stop" };
+        let command = match kind { StatusEvent::Deleting => "delete", StatusEvent::Stopped => "stop" };
         let op = LifecycleOp { build_id: "lifecycle-build".into(), attempt: 1, operation: format!("node.{command}:mesh1.rpc.2"), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1 };
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         // The publisher that takes the seat after it: another birth, which re-publishes the operation its
@@ -43,7 +43,6 @@ fn story(kind: StatusEvent, scenario: Story) {
         if matches!(scenario, Story::Completed) {
             match kind {
                 StatusEvent::Deleting => { assert!(receiver.digest_view.deleting(op.clone())); receiver.digest_view.deletions_from_facts(&std::collections::BTreeMap::from([(op.key(), "attempt-converged")]), &Default::default()); }
-                StatusEvent::Restarting => { assert!(receiver.digest_view.restarting(op.clone())); assert!(receiver.digest_view.started(&op.node_id, &op.incarnation, &op.name)); }
                 StatusEvent::Stopped => {
                     assert!(receiver.digest_view.stopped(op.clone()));
                     let mut start = op.clone(); start.operation = "node.start:mesh1.rpc.2".into();
@@ -108,7 +107,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         } else {
             assert_eq!(receiver.digest_view.in_flight(), vec![op.clone()], "a repeat cannot replace the held operation evidence");
             assert!(!receiver.digest_view.routable(op.node_id.as_str()), "routing reads the overlay");
-            if kind != StatusEvent::Stopped { assert_eq!(receiver.digest_view.get(op.node_id.as_str()).map(|(d, _)| d), held_before, "deleting/restarting does not rewrite the held digest"); }
+            if kind != StatusEvent::Stopped { assert_eq!(receiver.digest_view.get(op.node_id.as_str()).map(|(d, _)| d), held_before, "deleting does not rewrite the held digest"); }
             assert_eq!(*overlays.borrow(), completed_counts.1 + 1, "the overlay changes once");
         }
         send_ep.close().await; recv_ep.close().await;
@@ -116,7 +115,7 @@ fn story(kind: StatusEvent, scenario: Story) {
     });
     let spans = capture.spans().unwrap();
     for s in spans.iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.topology."))) { println!("{}", serde_json::to_string(s).unwrap()); }
-    let apply_name = match kind { StatusEvent::Deleting => "rdm.mesh.topology.update.via-node-deleting", StatusEvent::Restarting => "rdm.mesh.topology.update.via-node-restarting", StatusEvent::Stopped => "rdm.mesh.topology.remove.via-node-stopped" };
+    let apply_name = match kind { StatusEvent::Deleting => "rdm.mesh.topology.update.via-node-deleting", StatusEvent::Stopped => "rdm.mesh.topology.remove.via-node-stopped" };
     assert_eq!(spans.iter().filter(|s| s["name"] == apply_name && s["attributes"]["node_id"] == op.node_id.to_string()).count(), usize::from(!matches!(scenario, Story::Stale)), "exactly one ordinary apply, including the locally applied operation before completion; no apply of a version-refused fact");
     if !matches!(scenario, Story::Control) {
         let identity = format!("{} {} {} {}/{}", op.build_id, op.attempt, op.operation, op.node_id, op.incarnation);
@@ -152,7 +151,6 @@ macro_rules! cells {
 macro_rules! successor_cells {
     ($($name:ident: $kind:ident),*) => { $( #[test] fn $name() { story(StatusEvent::$kind, Story::Successor); } )* };
 }
-successor_cells!(deleting_reentered_by_a_successor_applies_once: Deleting, restarting_reentered_by_a_successor_applies_once: Restarting, stopped_reentered_by_a_successor_applies_once: Stopped);
+successor_cells!(deleting_reentered_by_a_successor_applies_once: Deleting, stopped_reentered_by_a_successor_applies_once: Stopped);
 cells!(deleting_first_fact_changes_routing, deleting_repeat_changes_nothing, deleting_after_completion_reopens_nothing, deleting_stale_revision_records_identity, Deleting);
-cells!(restarting_first_fact_changes_routing, restarting_repeat_changes_nothing, restarting_after_started_reopens_nothing, restarting_stale_revision_records_identity, Restarting);
 cells!(stopped_first_fact_changes_routing, stopped_repeat_changes_nothing, stopped_after_later_start_reopens_nothing, stopped_stale_revision_records_identity, Stopped);

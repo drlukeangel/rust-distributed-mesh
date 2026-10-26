@@ -7,7 +7,7 @@
 //! public node-admin runtime with the testkit's stall decorators wired in through `Wiring`
 //! (`rdm_test::admin_faults`). Every stall is armed, acknowledged, observed and
 //! released through that admin's door; the Builds that trigger them are the ones an operator makes
-//! (`node.create` / `node.delete` / `node.restart` / `build.create` accepted by the fabric-primary ->
+//! (`node.create` / `node.delete` / `build.create` accepted by the fabric-primary ->
 //! executor reconcile -> node operation -> deployment pipeline), driven through the typed objects over
 //! Node RPC. The Build "as the admin behind a door holds it" is that admin's own Build log, read over
 //! `FetchBuildFacts` (`build_log`).
@@ -16,7 +16,7 @@ use crate::build_log;
 use rdm_client::{LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
 use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
-use rdm_admin::deployment::pipeline::{AdoptStep, CreateStep, RetireStep, StartStep};
+use rdm_admin::deployment::pipeline::{AdoptStep, CreateStep, RetireStep};
 use rdm_admin::lifecycle::HookPhase;
 use rdm_test::estate::{named, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
@@ -371,7 +371,7 @@ async fn delete_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
 /// and is not complete, the later steps have not begun, and
 /// the runtime count is the one the cut position implies; release alone completes the Build with
 /// each step's receipt exactly once, one runtime (none after a retire), the current build_id on the
-/// Build that was accepted (a restart on the same Build, one attempt later) and no other Build or
+/// Build that was accepted and no other Build or
 /// attempt. The exported spans put the held step's span before the hold and the next step's span
 /// after the release, and each witness event (a lifecycle event, the Build's acceptance, a node's Ready)
 /// after the release. What must NOT happen: a step receipt recorded twice, a second runtime born by
@@ -389,7 +389,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // A lone admin hears no other member and is cut off, so it executes nothing: the mesh holds two
     // admins before any cut is armed, and either may hold the seats.
     let shape = run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await.build_id.to_string();
-    // The initial fabric refuses a node delete and a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     run.estate.until_fabric_ready(Duration::from_secs(120)).await;
     run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
     run.note_build(&shape, RUN_THEN_CHANGE);
@@ -424,18 +424,6 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
         run.plain_create(NodeKind::RpcNode, node).await;
         event_cut(&run, &retire_order, event, node).await;
     }
-
-    // A restart is an attempt of the accepted Build: stalled at its pre-event receipt, then at the
-    // pre-event's publish. A restart of a cohort's sole member is refused no-secondary (Q7), so a
-    // cohort secondary is present while `node` restarts.
-    run.plain_create(NodeKind::RpcNode, node).await;
-    run.plain_create(NodeKind::RpcNode, "mesh1.rpc.2").await;
-    let receipt = json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "node.restart", "node": node});
-    let prev = restart_cut(&run, &retire_order, "restart:NodeRestarting", receipt, "restart-step", 0, node, RUN_THEN_CHANGE + 1).await;
-    let event = json!({"kind": "event", "event": "restarting", "node": node});
-    restart_cut(&run, &retire_order, "event:restarting", event, "lifecycle-event", 1, node, prev + 1).await;
-    run.plain_delete(node).await;
-    run.plain_delete("mesh1.rpc.2").await;
 
     // Each reachable phase of the Node Pending -> ReadyForTraffic transition's hooks.
     for phase in [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition] {
@@ -486,7 +474,6 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], retire_order: &[S
     let explored: std::collections::BTreeSet<String> = rows.iter().filter_map(|r| r["cut"].as_str().map(String::from)).collect();
     let mut documented: Vec<String> = create_order.iter().map(|s| format!("create:{s}")).collect();
     documented.extend(retire_order.iter().map(|s| format!("retire:{s}")));
-    documented.push(format!("restart:{}", RetireStep::NodeRestarting.name()));
     for want in &documented {
         assert!(explored.contains(want), "no cut row for the documented step `{want}`; explored: {explored:?}");
     }
@@ -623,13 +610,12 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
     json!({"cut": cut, "pipeline_span_id": pipelines[0]["span_id"], "trace_id": pipelines[0]["trace_id"], "held_step_span_id": steps[at]["span_id"], "hold_span_id": hold["span_id"], "hold_ms": (span_end(hold) - span_start(hold)) / 1_000_000, "next_step_began_ms_after_release": next_after})
 }
 
-// ---- events, restarts, hooks --------------------------------------------------------------------------
+// ---- events, hooks --------------------------------------------------------------------------
 
 /// The span the admin emits when it publishes `event` (lifecycle events doc, span provenance table).
 fn event_span(event: &str) -> &'static str {
     match event {
         "deleting" => "rdm.node_admin.node.update.via-node-deleting",
-        "restarting" => "rdm.node_admin.node.update.via-node-restarting",
         "deleted" => "rdm.node_admin.node.delete.via-node-deleted",
         other => panic!("{other} is not a lifecycle event"),
     }
@@ -665,70 +651,6 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
     run.span_check(json!({"kind": "event", "cut": id, "span": event_span(event), "build_id": build_id, "attempt": 1}));
     run.span_check(json!({"kind": "step", "cut": format!("{id}#steps"), "hold_cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": 1, "steps": retire_order, "held_step": retire_order[receipts - 1]}));
     run.push(row(h, "lifecycle-event", &id, &spec, rel, after));
-}
-
-/// A restart's steps, in order, all of its one operation `node.restart:<path>` (node-restart.md):
-/// the pre-event and the stop, so the birth stops with its process alive (no runtime is
-/// terminated and no membership is removed), then `start-node` to the stopped birth, its ready, and
-/// one `Complete`.
-fn restart_order(retire_order: &[String]) -> Vec<String> {
-    let mut o: Vec<String> = vec![RetireStep::NodeRestarting.name().to_string()];
-    let stop = [RetireStep::StopNode, RetireStep::AwaitNodeLeft].map(RetireStep::name);
-    o.extend(retire_order.iter().filter(|s| stop.contains(&s.as_str())).cloned());
-    o.extend([StartStep::StartNode.name(), CreateStep::WaitForNodeReady.name(), CreateStep::Complete.name()].map(String::from));
-    o
-}
-
-/// A restart (an attempt of the accepted Build, never a new Build) stalled at `spec`.
-#[allow(clippy::too_many_arguments)]
-async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, group: &str, receipts_before: usize, node: &str, opened_attempt: u64) -> u64 {
-    let order = restart_order(retire_order);
-    let door = run.member_door("mesh1").await;
-    let before = run.node_ready(node).await;
-    // When `node` holds its cohort's primary seat, `DriveEnv::update_primaries_first` runs `node.primary.update`
-    // in `opened_attempt` and hands the `node.restart` step off to `opened_attempt + 1`.
-    let was_primary = before["is_primary"].as_bool().unwrap_or(false);
-    let attempt = opened_attempt + u64::from(was_primary);
-    let process_before = run.processes(node);
-    let current_before = run.fabric_build_id().await;
-    let ack = door.arm(id, spec.clone()).await;
-    let mut stream = run.estate.nodes_obj().await.restart(&path(node)).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {node}: {e}"));
-    let build_id = Run::id_of(&stream);
-    assert_eq!(build_id, current_before, "a restart opens an attempt of the accepted Build; it makes no Build");
-    assert_eq!(u64::from(stream.accepted().attempt), opened_attempt, "the call opened attempt {opened_attempt} of the Build");
-    let op = format!("node.restart:{node}");
-    let mut h = run.hold(&door, id, ack, &build_id, &op, Some(order[..receipts_before].to_vec()), Some((node, 1))).await;
-    assert_eq!(h.attempt, attempt, "the restart is attempt {attempt} of the Build");
-    h.during["attempt_is_a_restart_of_the_accepted_build"] = json!(true);
-    let rel = door.release(id).await;
-    run.complete(&mut stream).await;
-    if was_primary {
-        run.note_build(&build_id, opened_attempt);
-    }
-    let b = run.attempt_complete(&door, &build_id, attempt).await;
-    assert_eq!(done_steps(&b, &op, Some(attempt)), order, "the restart runs every step once, in order, under its one operation: {b}");
-    assert_eq!(done_steps(&b, &format!("node.delete:{node}"), Some(attempt)), Vec::<String>::new(), "no step of the restart is a retire-node receipt: {b}");
-    let counts = step_counts(&b, &op, attempt);
-    assert!(counts.values().all(|c| *c == 1) && counts.len() == order.len(), "no step receipt twice in {op}: {counts:?}");
-    let after_node = run.estate.until_node(node, &format!("{node} ready again and no longer stopped"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).cloned()).await;
-    let after_node = serde_json::to_value(after_node).expect("a view serializes");
-    assert_eq!(after_node["node_id"], before["node_id"], "a restart keeps the NodeId");
-    assert_eq!(after_node["incarnation_id"], before["incarnation_id"], "a restart keeps the incarnation: it is stop then start on the stopped birth");
-    assert_eq!(run.processes(node), process_before, "a restart is stop then start on the same process");
-    assert_eq!(run.runtimes(node), 1, "exactly one runtime serves {node} after the restart");
-    assert_eq!(run.fabric_build_id().await, current_before, "the current build_id is unchanged by a restart");
-    run.note_build(&build_id, attempt);
-    // One restart pipeline span holds every step, in order (DeploymentPipeline::restart).
-    let restart_steps: Vec<String> = order.clone();
-    if spec["kind"] == "event" {
-        run.span_check(json!({"kind": "event", "cut": id, "span": event_span("restarting"), "build_id": build_id, "attempt": attempt}));
-        run.span_check(json!({"kind": "step", "cut": format!("{id}#steps"), "hold_cut": id, "build_id": build_id, "node": node, "pipeline": "restart", "attempt": attempt, "steps": restart_steps, "held_step": RetireStep::NodeRestarting.name()}));
-    } else {
-        run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "restart", "attempt": attempt, "steps": restart_steps, "held_step": RetireStep::NodeRestarting.name()}));
-    }
-    let after = json!({"build_state": b["state"], "attempt": attempt, "operation": op, "steps": order, "node": {"node_id": after_node["node_id"], "incarnation_id": after_node["incarnation_id"]}, "processes": process_before, "runtimes": 1, "fabric_build_id": current_before});
-    run.push(row(h, group, id, &spec, rel, after));
-    attempt
 }
 
 /// A lifecycle hook of `Node: Pending -> ReadyForTraffic` stalled; the create's pipeline is done.

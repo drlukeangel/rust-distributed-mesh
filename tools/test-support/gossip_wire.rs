@@ -95,7 +95,7 @@ pub fn assert_roundtrip(f: &Frame, golden: &[u8]) {
             (Frame::Digest { digest: a }, Frame::Digest { digest: b }) => assert_eq!(rdm_core::wire::WireDigest::from(a), rdm_core::wire::WireDigest::from(b)),
             _ => assert_eq!(format!("{:?}", back.data()), format!("{:?}", f.data())),
         } }
-        Err(rdm_transport::envelope::DecodeError::Reserved(_, _)) => assert!(matches!(f.data(), Frame::Concern { .. } | Frame::NodeConnectionsDeleting { .. } | Frame::NodeConnectionsDeleted { .. } | Frame::NodeLeaving { .. } | Frame::NodeLeft { .. } | Frame::NewFabricPrimary { .. })),
+        Err(rdm_transport::envelope::DecodeError::Reserved(_, _)) => assert!(matches!(f.data(), Frame::NodeRestarting { .. } | Frame::Concern { .. } | Frame::NodeConnectionsDeleting { .. } | Frame::NodeConnectionsDeleted { .. } | Frame::NodeLeaving { .. } | Frame::NodeLeft { .. } | Frame::NewFabricPrimary { .. })),
         other => panic!("{other:?}"),
     }
 }

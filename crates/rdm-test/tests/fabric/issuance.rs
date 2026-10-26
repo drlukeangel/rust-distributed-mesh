@@ -76,14 +76,13 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh2.admin.1", "mesh2.admin.2", "mesh2.rpc.1"].into_iter().map(str::to_string).collect();
     let views = estate.settles_to_named(&want, Duration::from_secs(30)).await;
 
-    // Restart mesh1.rpc.1 through the Build: a new JoinNode of the same node.
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // Stop then start mesh1.rpc.1 through the Build: a new JoinNode of the same node.
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let before = estate.node_view("mesh1.rpc.1").await;
     let path: PathName = "mesh1.rpc.1".parse().unwrap();
-    let mut restart = estate.nodes_obj().await.restart(&path).await.unwrap_or_else(|end| panic!("node.restart of mesh1.rpc.1 was refused: {end}"));
-    Estate::complete(&mut restart).await;
-    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 ready after its restart", SETTLE, |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
+    estate.stop_then_start(&path).await;
+    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 ready after its stop and start", SETTLE, |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
     let ca = estate.bootstrap_data_dir("mesh1").join("ca-secret");
     estate.stop().await;
     let spans = estate.spans();

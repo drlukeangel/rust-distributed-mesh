@@ -575,7 +575,7 @@ pub fn resolve_for_carriers(
         Some(Some(_)) => EffectiveRoute::Direct { known: true },
         // No Direct fact was ever observed toward this destination, or the latest one is a drop
         // (Disconnected: a connection this node closed, as node.connections.delete does at every
-        // node.stop and node.restart) or an acceptor's Refused: nothing says it is unreachable and
+        // node.stop) or an acceptor's Refused: nothing says it is unreachable and
         // no reconnect series stands on it (connections.md §9.1), so the node calls it by its
         // transport key and address (§7).
         Some(None) if !held.latest_direct_failed_for(own, destination, alpn) => EffectiveRoute::Direct { known: false },

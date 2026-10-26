@@ -26,11 +26,9 @@ pub enum NodeStatus {
     /// the silent peer in place and keeps it; its next digest flips it back (node-identity-and-state.md
     /// §7.3, i77 PRD row 18). Never death, and never a reason to restart or delete it.
     PendingReconnect,
-    /// Commanded silence: its mesh executor is restarting this exact birth (`NodeRestarting`,
-    /// node-identity-and-state.md) and owns bringing it back. Held through its `Leaving` and
-    /// silence, exempt from the staleness marks, never routable; the later birth's own digest
-    /// clears it.
-    Restarting,
+    /// Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting
+    /// notice are removed). Never set; kept so every later status keeps its position.
+    Reserved5,
     /// True offline: half a floor after the mark the mesh primary's one QUIC connect found no path,
     /// on two ladders at least one staleness floor apart. Observer inferred only; never sent, never a
     /// reason to restart or delete the node.

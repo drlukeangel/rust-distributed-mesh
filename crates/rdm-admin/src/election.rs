@@ -9,7 +9,7 @@
 //! The rules, one function ([`resolve_with`]):
 //! - A holder that lives keeps its seat. A lower NodeId never displaces it. Lives means the record's
 //!   exact birth is in the view, not replaced by a later birth of its NodeId, and not known gone,
-//!   whatever its status: a `ConnectionsDeleting`, `Leaving` or `Restarting` holder keeps the seat until its
+//!   whatever its status: a `ConnectionsDeleting` or `Leaving` holder keeps the seat until its
 //!   explicit yield (a new holder record, PrimaryUpdated) is held (R-EL1). A holder this view holds
 //!   unheard past the staleness floor (`PendingReconnect`, or an observer-inferred `Dead`) is superseded
 //!   (elections §5: "silence past the staleness floor supersedes it").
@@ -696,7 +696,7 @@ mod tests {
         nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.kind == NodeKind::NodeAdmin).map(|n| n.name.to_string())
     }
 
-    use NodeStatus::{ConnectionsDeleting, Leaving, Pending, PendingReconnect, ReadyForTraffic as Ready, Restarting};
+    use NodeStatus::{ConnectionsDeleting, Leaving, Pending, PendingReconnect, ReadyForTraffic as Ready};
 
     /// CONTRACT (R-A2 cell 1): an admin with a lower NodeId appearing in another mesh leaves the
     /// fabric primary where it is. Must NOT happen: the lower id taking the seat.
@@ -724,7 +724,7 @@ mod tests {
     /// other mesh takes the seat.
     #[test]
     fn one_surviving_incumbent_admin_blocks_a_cross_mesh_takeover() {
-        for survivor in [Pending, PendingReconnect, Restarting] {
+        for survivor in [Pending, PendingReconnect] {
             let mut inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
             lose(&mut inc, "500000000000", "a1");
             let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", PendingReconnect), born("mesh1.admin.2", "600000000000", "a2", survivor), born("mesh2.admin.1", "100000000000", "b1", Ready)];
@@ -864,14 +864,14 @@ mod tests {
 
     /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md sections 5-6): a seat moves only by an
     /// explicit yield, a known loss or silence past the floor, never by a lifecycle status. A holder that is ConnectionsDeleting (a
-    /// FabricShutdown this observer has not installed yet), Leaving or Restarting keeps both its
+    /// FabricShutdown this observer has not installed yet) or Leaving keeps both its
     /// seats against a lower Ready NodeId of its own mesh. Must NOT happen: the observer reading the
     /// status as a yield and seating the lower id (gate 144a45bd: mesh2.admin.2 seated itself over
     /// the ConnectionsDeleting mesh2.admin.1 95 ms after that holder installed the shutdown).
     #[test]
-    fn a_connections_deleting_leaving_or_restarting_primary_stays_both_primaries() {
+    fn a_connections_deleting_or_leaving_primary_stays_both_primaries() {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
-        for status in [ConnectionsDeleting, Leaving, Restarting] {
+        for status in [ConnectionsDeleting, Leaving] {
             let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", status), born("mesh1.admin.2", "200000000000", "a2", Ready), born("mesh2.admin.1", "100000000000", "b1", Ready)];
             resolve_with(&mut nodes, &inc);
             assert_eq!(mesh_primary(&nodes, "mesh1").as_deref(), Some("mesh1.admin.1"), "{status:?}");
@@ -950,8 +950,8 @@ mod tests {
         let mut nodes = vec![born("mesh1.admin.1", "900000000000", "a1", Ready), born("mesh1.rpc.1", "100000000000", "r1", Ready), born("mesh1.rpc.2", "500000000000", "r2", Ready)];
         resolve_with(&mut nodes, &inc);
         assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.2"), "the recorded living holder keeps the rpc seat");
-        // A lifecycle status never yields it (R-EL1): a ConnectionsDeleting, Leaving or Restarting holder keeps it.
-        for status in [ConnectionsDeleting, Leaving, Restarting] {
+        // A lifecycle status never yields it (R-EL1): a ConnectionsDeleting or Leaving holder keeps it.
+        for status in [ConnectionsDeleting, Leaving] {
             nodes[2].status = status;
             resolve_with(&mut nodes, &inc);
             assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.2"), "{status:?}");

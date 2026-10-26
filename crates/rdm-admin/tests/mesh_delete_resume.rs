@@ -1819,7 +1819,6 @@ impl LifecycleEvents for Departures {
     async fn deleted(&self, op: &LifecycleOp) {
         self.0.lock().unwrap().push(op.clone());
     }
-    async fn restarting(&self, _: &LifecycleOp) {}
     async fn stopped(&self, _: &LifecycleOp) {}
     async fn joined(&self, _: &LifecycleOp) {}
     async fn leaving(&self, _: &LifecycleOp) {}

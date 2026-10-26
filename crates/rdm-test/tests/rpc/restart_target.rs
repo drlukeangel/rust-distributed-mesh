@@ -57,11 +57,10 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     assert_eq!(by_path["reply"]["executing_node"], broker_id, "{by_path}");
     assert_eq!(by_path["reply"]["result"], json!({"found": true, "value": "before-restart"}));
 
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    // 2. The broker restarts: the same node, birth and port.
-    let mut restart_stream = estate.nodes_obj().await.restart(&"mesh1.broker.1".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of mesh1.broker.1: {e}"));
-    let restart = Estate::complete(&mut restart_stream).await;
+    // 2. The broker restarts, node.stop then node.start (Q183): the same node, birth and port.
+    let (restart, _) = estate.stop_then_start(&"mesh1.broker.1".parse().unwrap()).await;
     let reborn = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await).into_iter().find(|n| n["name"] == "mesh1.broker.1").unwrap();
     assert_eq!(s(&reborn["node_id"]), broker_id, "a restart keeps the NodeId: {reborn}");
     assert_eq!(s(&reborn["incarnation_id"]), old_birth, "a restart keeps the birth: {reborn}");

@@ -59,7 +59,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         tokio::time::timeout(Duration::from_secs(5),topic.joined()).await.unwrap().unwrap();
         let (sender,_rx)=topic.split();
         let (restarted,started,deleted,holder)=(birth(&fabric,&mesh,"mesh1.rpc.1",1),birth(&fabric,&mesh,"mesh1.rpc.2",2),birth(&fabric,&mesh,"mesh1.rpc.3",3),birth(&fabric,&mesh,"mesh1.rpc.4",4));
-        let (restart,stop,delete)=(operation(&restarted,"restart"),operation(&started,"stop"),operation(&deleted,"delete"));
+        let (stop,delete)=(operation(&started,"stop"),operation(&deleted,"delete"));
         // The version the read serves carries the rpc node-type primary record its publisher put in it:
         // a read serves a version's content as published, never records taken since (gossip.md §3.1).
         let full=vec![own.clone(),restarted.clone(),started.clone(),MeshDigest{is_primary:Some(10),..holder.clone()}];
@@ -70,7 +70,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let mut serial=0;
         for d in [&own,&restarted,&started,&deleted,&holder] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial,&author).await;}
         let old_full=vec![own.clone(),restarted.clone(),deleted.clone(),holder.clone()].into_iter().map(|mut d|{d.digest_seq=1;d}).collect();
-        serial+=1;send(&sender,&receiver,Frame::Members{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:10,published_at_rafka_ms:10,snapshot_id:1,chunk_index:0,chunk_count:1,digests:old_full,in_flight:vec![restart.clone(),stop.clone(),delete.clone()],departed:vec![]},serial,&author).await;
+        serial+=1;send(&sender,&receiver,Frame::Members{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:10,published_at_rafka_ms:10,snapshot_id:1,chunk_index:0,chunk_count:1,digests:old_full,in_flight:vec![stop.clone(),delete.clone()],departed:vec![]},serial,&author).await;
         serial+=1;send(&sender,&receiver,Frame::MeshStatus{mesh:"mesh1".into(),status:"ready-for-traffic".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         serial+=1;send(&sender,&receiver,Frame::FabricStatus{fabric:fabric.clone(),status:"ready-for-traffic".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         let resolver=Arc::new(StaticResolver::new());resolver.insert(ResolvedNode{node_id:own.node.node_id.clone(),name:own.node.name.clone(),endpoint_id:server_ep.id(),transport_addr:server_addr,incarnation:own.node.incarnation.clone()});
@@ -93,9 +93,9 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
             Frame::Digest{digest:stale.clone()},
             Frame::MeshStatus{mesh:"mesh1".into(),status:"deleting".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:99},
             Frame::FabricStatus{fabric:fabric.clone(),status:"deleting".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:99},
-            Frame::Members{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:99,published_at_rafka_ms:200,snapshot_id:2,chunk_index:0,chunk_count:1,digests:vec![stale.clone(),deleted.clone()],in_flight:vec![restart.clone(),stop.clone(),delete.clone()],departed:vec![]},
-            Frame::MembersDelta{mesh:"mesh1".into(),source_publisher:publisher.clone(),base_version:98,topology_version:99,published_at_rafka_ms:200,changed:vec![stale],removed:vec![holder.node.node_id.to_string()],in_flight:vec![restart.clone(),stop.clone(),delete.clone()],departed:vec![]},
-            StatusEvent::Restarting.frame(restart,publisher.clone(),10),StatusEvent::Stopped.frame(stop,publisher.clone(),10),StatusEvent::Deleting.frame(delete.clone(),publisher.clone(),10),
+            Frame::Members{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:99,published_at_rafka_ms:200,snapshot_id:2,chunk_index:0,chunk_count:1,digests:vec![stale.clone(),deleted.clone()],in_flight:vec![stop.clone(),delete.clone()],departed:vec![]},
+            Frame::MembersDelta{mesh:"mesh1".into(),source_publisher:publisher.clone(),base_version:98,topology_version:99,published_at_rafka_ms:200,changed:vec![stale],removed:vec![holder.node.node_id.to_string()],in_flight:vec![stop.clone(),delete.clone()],departed:vec![]},
+            StatusEvent::Stopped.frame(stop,publisher.clone(),10),StatusEvent::Deleting.frame(delete.clone(),publisher.clone(),10),
             Frame::NodeDeleted{op:delete.clone(),forwarded_by:None},
             Frame::Concern{seat:Seat::FabricPrimary,node_id:own.node.node_id.clone(),incarnation:own.node.incarnation.clone(),observer:"mesh2.admin.1".into()},
             Frame::NodeConnectionsDeleting{op:delete.clone(),forwarded_by:None},Frame::NodeConnectionsDeleted{op:delete.clone(),forwarded_by:None},Frame::NodeLeaving{op:delete.clone(),forwarded_by:None},Frame::NodeLeft{op:delete,forwarded_by:None},

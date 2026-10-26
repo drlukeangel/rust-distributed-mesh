@@ -24,9 +24,9 @@ pub enum NodeStatus {
     /// Unheard past the staleness floor: held, never death, and never a reason to restart or
     /// delete it; its next digest flips it back.
     PendingReconnect,
-    /// Commanded silence: its mesh executor is restarting this exact birth and owns bringing it
-    /// back.
-    Restarting,
+    /// Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting
+    /// notice are removed). Never set; kept so every later status keeps its position.
+    Reserved5,
     /// True offline: the mesh primary's connect found no path on two ladders a staleness floor
     /// apart. Inferred by an observer, never announced by the node.
     Dead,

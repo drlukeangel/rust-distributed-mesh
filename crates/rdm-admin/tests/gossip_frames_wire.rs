@@ -128,7 +128,7 @@ fn frames() -> Vec<Frame> {
             published_at_rafka_ms: 12,
             changed: vec![digest(4, Some(container_runtime()), true)],
             removed: vec!["mesh2.rpc.9".into()],
-            in_flight: vec![op("node.restart:mesh2.rpc.4")],
+            in_flight: vec![op("node.stop:mesh2.rpc.4")],
             departed: vec![],
         },
         Frame::NodeDeleting { op: op("node.delete:mesh2.rpc.2"), forwarded_by: None, publisher: p.clone(), topology_version: 10 },
@@ -191,9 +191,9 @@ fn facts() -> Vec<BuildFact> {
     for change in changes() {
         out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), submitted_change: change, submitted_at_ms: 55 }));
     }
-    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Restart, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56 });
+    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Stop, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56 });
     out.push(action(None));
-    out.push(action(Some(AttemptAction::Restart { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
+    out.push(action(Some(AttemptAction::Stop { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
     // A recipe (build.md §1; lifecycles/node-replace.md): its steps and the births it pinned.
     {
         use rdm_core::build::RecipeStep;
@@ -290,7 +290,7 @@ fn facts() -> Vec<BuildFact> {
     out.push(step(CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), Some(evidence(Some("/var/lib/rafka/mesh2.rpc.1")))));
     out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": "Pending" }))));
     out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": null, "reason": "no Pending owed: not a new mesh's first admin" }))));
-    for s in [RetireStep::NodeDeleting, RetireStep::NodeRestarting, RetireStep::NodeDeleted] {
+    for s in [RetireStep::NodeDeleting, RetireStep::NodeDeleted] {
         out.push(step(s.name(), Some(to_json(&op("node.delete:mesh2.rpc.1")))));
     }
     for (command, completion) in [(RetireStep::StopNode, RetireStep::AwaitNodeLeft)] {
@@ -452,7 +452,8 @@ fn every_kind_declares_its_ruled_type_string() {
         crate::gossip_wire::assert_roundtrip(frame, &bytes);
         assert!(bytes.len() <= 4032);
     }
-    // 19 catalog types; the two reserved since Q171 and the two since Q174 are never sent.
+    // 19 catalog types; the two reserved since Q171 and the two since Q174 are never sent;
+    // rdm.node.restarting, reserved since Q183, is encoded here only to prove its refusal.
     assert_eq!(expected.into_iter().collect::<std::collections::BTreeSet<_>>().len(), 15);
 }
 

@@ -205,7 +205,7 @@ pub struct ExactBirth {
 pub struct HeldView {
     /// The births the node holds.
     pub members: Vec<rdm_core::MeshDigest>,
-    /// The open lifecycle overlays (restart, stop, delete) the node holds.
+    /// The open lifecycle overlays (stop, delete) the node holds.
     pub in_flight: Vec<rdm_core::LifecycleOp>,
     /// The departures the node retains.
     pub departed: Vec<rdm_core::LifecycleOp>,
@@ -218,7 +218,7 @@ impl HeldView {
     }
 
     /// The overlay the node holds for `node_id` whose operation starts with `prefix`
-    /// (`node.stop:`, `node.restart:`), if it holds one.
+    /// (`node.stop:`, `node.delete:`), if it holds one.
     pub fn overlay(&self, node_id: &NodeId, prefix: &str) -> Option<&rdm_core::LifecycleOp> {
         self.in_flight.iter().find(|o| &o.node_id == node_id && o.operation.starts_with(prefix))
     }

@@ -1953,7 +1953,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
 /// of type <node_type> in mesh <mesh>`, until a secondary is available. The holder stays primary, nothing
 /// is cut off, no row is written, and the workflow that commanded it ... fails by name with that
 /// reason"): in a fabric whose fabric-primary is its mesh's only node-admin, each of the changes Recipe (replace),
-/// Restart, DeleteConnections and Stop of the fabric-primary, submitted by `build.create`, is refused by name, `last-admin`
+/// DeleteConnections and Stop of the fabric-primary, submitted by `build.create`, is refused by name, `last-admin`
 /// with exactly `cannot transfer: no secondary of type node-admin in mesh <its mesh>`, one
 /// `rdm.node_admin.build.reject.via-last-admin` per call with the same text. The mesh seat has no
 /// secondary, so the peer mesh's Ready primary is no successor of both seats (C2's outside search is
@@ -1973,7 +1973,6 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     let carrier = estate.carrier().await;
     for (action, change) in [
         ("replace", Change::Recipe { steps: replace_recipe(&node) }),
-        ("restart", Change::Restart { node: node.clone() }),
         ("node.connections.delete", Change::DeleteConnections { node: node.clone() }),
         ("stop", Change::Stop { node: node.clone() }),
     ] {
@@ -1986,13 +1985,13 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     }
     let b = build_log::build_value(&estate.carrier().await, &birth_build).await;
     assert_eq!(b["attempt"], attempt, "no attempt opened: {b}");
-    let spans = wait_for("the four refusals are exported", Duration::from_secs(30), || async {
+    let spans = wait_for("the three refusals are exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        (named(&spans, "rdm.node_admin.build.reject.via-last-admin").len() >= 4).then_some(spans)
+        (named(&spans, "rdm.node_admin.build.reject.via-last-admin").len() >= 3).then_some(spans)
     })
     .await;
     let refused = named(&spans, "rdm.node_admin.build.reject.via-last-admin");
-    assert_eq!(refused.len(), 4, "one refusal per call: {refused:?}");
+    assert_eq!(refused.len(), 3, "one refusal per call: {refused:?}");
     assert!(refused.iter().all(|sp| s(&sp["attributes"]["detail"]) == q7), "every refusal span carries Q7's exact text: {refused:?}");
     assert!(named(&spans, "rdm.node_admin.primary.update.via-update-primary").is_empty(), "no node.primary.update ran");
     assert!(

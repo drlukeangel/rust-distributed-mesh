@@ -1196,7 +1196,7 @@ async fn a_completed_drive_is_kept_for_its_own_attempt_and_replaced_once_the_bui
     let stale = drives.ensure(&r.env, &r.build, done);
     assert!(Arc::ptr_eq(&stale, &first), "a read that showed attempt {done} running is handed the drive that completed it");
     r.builds
-        .open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: done + 1, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 })
+        .open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: done + 1, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 })
         .await
         .unwrap();
     let reopened = drives.ensure(&r.env, &r.build, done + 1);
@@ -2394,7 +2394,7 @@ fn a_build_whose_later_attempt_failed_claims_no_next_attempt_without_a_resubmit(
         let r = rig().await;
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal, "attempt 1 completes the Build");
         // A later attempt of it (a restart) is opened, claimed and fails at its executor.
-        r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }).await.unwrap();
+        r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }).await.unwrap();
         r.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: r.build.clone(), attempt: 2, executor: "mesh1.admin.2".into() }).await.unwrap();
         let failed = AttemptOutcome::Failed { reason: "the restart's stop was not admitted".into(), code: rdm_core::outcome::Code::FailedPrecondition };
         r.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: r.build.clone(), attempt: 2, outcome: failed }).await.unwrap();

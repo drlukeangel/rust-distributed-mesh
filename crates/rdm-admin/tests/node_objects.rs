@@ -192,8 +192,8 @@ fn node(name: &str, primary: bool) -> Node {
 }
 
 /// One mesh: `mesh1.admin.1` (the fabric-primary), `mesh1.rpc.1` and `mesh1.rpc.2`, which holds mesh1's
-/// rpc seat. The cells restart `mesh1.rpc.1`, which holds no seat, so no node.primary.update precedes
-/// the restart (proposal Part C1) and the drive's gate of this fixture, which moves no seat, is never
+/// rpc seat. The cells stop `mesh1.rpc.1`, which holds no seat, so no node.primary.update precedes
+/// the stop (proposal Part C1) and the drive's gate of this fixture, which moves no seat, is never
 /// asked to; a recovery of an exited birth moves no seat (`executor::seat_move`).
 fn mn() -> Topology {
     Topology {
@@ -889,7 +889,7 @@ impl BuildStateAdapter for ReadBeforeTheVerdict {
 /// CONTRACT (R-BI3, i143-rulings-2026-10-12-rx-authz.md: "A failed Build is never current, and nothing
 /// resumes it on its own; a caller resubmits it"): the reconcile loop's tick (`ensure_active`) reads the
 /// current Build's id, then the Build. When the Build's attempt failed between the two reads (a
-/// restart whose stop was never admitted), the Build it read is Failed and the tick drives nothing:
+/// stop that was never admitted), the Build it read is Failed and the tick drives nothing:
 /// it makes no drive and returns none, so no next attempt is claimed, and it says so on
 /// `rdm.node_admin.build.reject.via-not-in-progress-when-read` naming the Build, its attempt and its
 /// state. Must NOT happen: a drive of the failed Build's next attempt from the tick (the land gate on
@@ -906,12 +906,12 @@ fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothi
         let claim = |attempt: u32| BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() };
         rig.builds.claim_attempt(&claim(1)).await.unwrap();
         rig.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
-        // A restart reopens the completed Build; its attempt is claimed and running.
-        rig.builds.open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, mesh: None }).await.unwrap();
+        // A stop reopens the completed Build; its attempt is claimed and running.
+        rig.builds.open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, mesh: None }).await.unwrap();
         rig.builds.claim_attempt(&claim(2)).await.unwrap();
         // The tick's current-Build read, taken now; the attempt's verdict lands before its Build read.
         let before = rig.builds.current_build().await.unwrap();
-        assert_eq!(before, CurrentBuild::InProgress(b0.clone()), "the restart's attempt is in progress when the tick reads the current Build");
+        assert_eq!(before, CurrentBuild::InProgress(b0.clone()), "the stop's attempt is in progress when the tick reads the current Build");
         rig.builds
             .append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "mesh1.rpc.2: stop-node was not admitted".into(), code: rdm_core::outcome::Code::DeadlineExceeded } })
             .await
@@ -1084,9 +1084,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
 /// CONTRACT: every step the create and retire pipelines record is one the client names. The
 /// receipts of a whole create fold to `node.joined`, `node.started`, `node.created`
 /// and `Complete`; the receipts of a whole delete fold to the connections-deleted, stopped and
-/// deleted events and `Complete`; the receipts of a whole restart, one `node.restart:<path>` operation,
-/// fold to `node.restarting`, the stop's events, `node.joined`, `node.started`, `node.restarted` and
-/// `Complete`. A step the client does not name is refused by name, never skipped.
+/// deleted events and `Complete`. A step the client does not name is refused by name, never skipped.
 #[test]
 fn every_pipeline_step_is_named_by_the_client() {
     use rdm_admin::deployment::pipeline::{CreateStep, RetireStep};
@@ -1108,29 +1106,6 @@ fn every_pipeline_step_is_named_by_the_client() {
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
-    // A restart is one operation: its pre-event, the stop of the live process and the start of the
-    // same process are all `node.restart:<path>` receipts, and its one `Complete` ends it.
-    let restart = vec!["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"];
-    let f = rdm_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.restart:mesh1.rpc.3", restart.clone()), 1).unwrap();
-    assert_eq!(
-        f.frames,
-        [
-            Frame::Event(NodeEvent::Restarting),
-            Frame::Event(NodeEvent::ConnectionsDeleted),
-            Frame::Event(NodeEvent::Stopped),
-            Frame::Event(NodeEvent::Joined),
-            Frame::Event(NodeEvent::Started),
-            Frame::Event(NodeEvent::Restarted),
-            Frame::Complete
-        ]
-    );
-    // A `retire-node` receipt is the delete's, never a step of the restart: the restart folds nothing
-    // from it and stands at its own pre-event.
-    let f = rdm_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.delete:mesh1.rpc.3", vec!["NodeRestarting"]), 1).unwrap();
-    assert_eq!((f.frames.len(), f.next), (0, Some(("node.restart".to_string(), "NodeRestarting".to_string()))));
-    // Its stop half done, the restart is not over: the fold stands at the start.
-    let f = rdm_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.restart:mesh1.rpc.3", restart[..3].to_vec()), 1).unwrap();
-    assert_eq!((f.frames.last(), f.next.as_ref().map(|(_, s)| s.as_str())), (Some(&Frame::Event(NodeEvent::Stopped)), Some("StartNode")));
     // A node-admin's workflow is any node's: its seats move by node.primary.update before the operation
     // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
     // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
@@ -1207,12 +1182,12 @@ impl InnerStream for Script {
     }
 }
 
-/// The executor of a restart of `mesh1.rpc.1`, attempt by attempt. The first run is lost once its
+/// The executor of a stop of `mesh1.rpc.1`, attempt by attempt. The first run is lost once its
 /// `StopNode` frame has reached the fabric-primary: the receipt lived in the lost executor's own
 /// log alone (its broadcast never left), so no Build log the successor reads holds it, and the
 /// executor's exact runtime is proven exited. The next run holds no `StopNode` receipt: it
 /// reissues that uncertain step (node-rpc-envelope.md "Caller execution and certainty") and runs
-/// the restart to its end.
+/// the stop to its end.
 struct LostAfterStopNode {
     runs: Mutex<u32>,
     proofs: Arc<crate::loopback::Proofs>,
@@ -1238,14 +1213,12 @@ impl Dispatcher for LostAfterStopNode {
         };
         let items = if run == 1 {
             self.proofs.exited.lock().unwrap().insert(executor.to_string());
-            vec![step("node.restart", "NodeRestarting"), step("node.restart", "StopNode"), InnerItem::Broke(format!("{executor} was lost after its StopNode receipt"))]
+            vec![step("node.stop", "StopNode"), InnerItem::Broke(format!("{executor} was lost after its StopNode receipt"))]
         } else {
             vec![
-                step("node.restart", "StopNode"),
-                step("node.restart", "AwaitNodeLeft"),
-                step("node.restart", "StartNode"),
-                step("node.restart", "WaitForNodeReady"),
-                step("node.restart", "Complete"),
+                step("node.stop", "StopNode"),
+                step("node.stop", "AwaitNodeLeft"),
+                step("node.stop", "Complete"),
                 InnerItem::Frame(BuildReply::Complete { build_id: build_id.to_string(), attempt }),
             ]
         };
@@ -1254,12 +1227,12 @@ impl Dispatcher for LostAfterStopNode {
 }
 
 /// CONTRACT (node-rpc-envelope.md "Caller execution and certainty": a changing call streams each
-/// completed step's event once): the executor of a restart is lost after its `StopNode` frame
+/// completed step's event once): the executor of a stop is lost after its `StopNode` frame
 /// reached the caller and before that receipt reached any Build log the successor reads. The
 /// successor's attempt reissues `StopNode` (an uncertain step to it) and writes its own receipt:
 /// two receipts of one step, one per attempt, each a frame under its own receipt key. The caller's
 /// stream reads them as the client's receipt fold does, per step the latest attempt deciding, so
-/// `node.connections.deleted` is delivered once and every other event of the restart once, in order.
+/// `node.connections.deleted` is delivered once and every other event of the stop once, in order.
 #[test]
 fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one_event_to_the_caller() {
     let cap = capture();
@@ -1269,7 +1242,7 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
         let script = Arc::new(LostAfterStopNode { runs: Mutex::new(0), proofs: proofs.clone() });
         let door = door_via(&rig, Duration::from_secs(60), move |_| script, proofs).await;
         let served = serve(door).await;
-        let mut stream = nodes_over(&served.carrier).restart(&"mesh1.rpc.1".parse().unwrap()).await.expect("the fabric-primary accepts the restart");
+        let mut stream = nodes_over(&served.carrier).stop(&"mesh1.rpc.1".parse().unwrap()).await.expect("the fabric-primary accepts the stop");
         let (frames, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "the stream ends with its terminal frame: {end:?} after {frames:?}");
         frames
@@ -1277,8 +1250,8 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
     let events: Vec<NodeEvent> = frames.iter().filter_map(|f| if let Frame::Event(e) = f { Some(*e) } else { None }).collect();
     assert_eq!(
         events,
-        [NodeEvent::Restarting, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Joined, NodeEvent::Started, NodeEvent::Restarted],
-        "every event of the restart once, in order: {frames:?}"
+        [NodeEvent::ConnectionsDeleted, NodeEvent::Stopped],
+        "every event of the stop once, in order: {frames:?}"
     );
     assert_eq!(frames.last(), Some(&Frame::Complete));
 
@@ -1301,7 +1274,7 @@ fn a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_
     let end = cap.run(async {
         let rig = Arc::new(Rig::new());
         let served = serve(door_not_fabric_primary(&rig).await).await;
-        served.carrier.create(rdm_core::build::BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }).await.err()
+        served.carrier.create(rdm_core::build::BuildChange::Stop { node: "mesh1.rpc.1".parse().unwrap() }).await.err()
     });
     match &end {
         Some(CallEnd::Rejected { reason, detail }) => {

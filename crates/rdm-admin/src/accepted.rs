@@ -5,7 +5,7 @@
 //! exact node `path.name`s per Mesh ([`FabricTopology`]). A submitted change ([`TopologyChange`]) is
 //! input only: [`compile`] applies it once to the current accepted topology and yields the next
 //! complete map; the change itself is kept on the Build as history, never read to plan. Planning
-//! is always `topology − observed` ([`plan`]). A restart, a recovery or a recipe changes no topology:
+//! is always `topology − observed` ([`plan`]). A stop, a start, a recovery or a recipe changes no topology:
 //! it is an attempt of the current Build carrying its [`AttemptAction`].
 //!
 //! Counts (`FabricDesired`, `MeshDesired`) stay API convenience: the compiler resolves them to
@@ -348,18 +348,11 @@ fn replaced_by_target(target: Option<&rdm_core::binding::Binding>, row: Option<&
     target.is_some_and(|b| row.is_some_and(|r| r.sha256.as_deref() != Some(b.sha256.as_str())))
 }
 
-/// What one attempt of a Build does beyond realizing its topology: a same-path restart, a standalone
-/// node op, a recovery or a recipe, fenced to the births it acts on. Never part of the topology.
+/// What one attempt of a Build does beyond realizing its topology: a standalone node op, a recovery
+/// or a recipe, fenced to the births it acts on. Never part of the topology.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AttemptAction {
-    /// Restart the exact birth at a path.
-    Restart {
-        /// The node.
-        path: PathName,
-        /// The birth restarted.
-        from_incarnation: IncarnationId,
-    },
     /// `node.connections.delete { All }` of the exact birth at a path; it keeps running
     /// (node-connections-delete.md).
     DeleteConnections {
@@ -1286,21 +1279,12 @@ fn plan_with(
         return BuildPlan { operations: ops };
     }
     let mesh_exists = |m: &str| observed.meshes.iter().any(|x| x.name == m);
-    // A restart's birth: the one the attempt is fenced to, when the view still holds exactly it and
-    // it is not leaving to a departure (a leaving birth keeps the path to its departure). A stopped
-    // birth is the restart's own: only this restart's attempts carry a restart of a stopped birth (the
-    // door refuses a fresh one, `node-not-live`), and its run resumes at the start (R-PV1). The action
-    // owns its path: the generic create below never plans it a second time.
     // A replacing attempt (no action) owes its replacements after the topology's creates; a path whose
     // predecessor its delete removed, or began to and its row still names, is created by the
     // replacement, over that predecessor's data dir, never by the generic create below. Every create
     // launches the path's entry's executable.
     let replacements = replacements.filter(|_| action.is_none());
     let creates_owed = replacements.map(|(recorded, steps)| replacement_creates_owed(topology, steps, recorded)).unwrap_or_default();
-    let restarted: Option<&PathName> = match action {
-        Some(AttemptAction::Restart { path, from_incarnation }) => observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && (n.status != NodeStatus::Leaving || n.stopped)).map(|_| path),
-        _ => None,
-    };
     for (name, m) in &topology.meshes {
         if !mesh_exists(name) {
             ops.push(BuildOperation::CreateMesh { mesh: name.clone(), mesh_id: m.mesh_id.clone() });
@@ -1309,16 +1293,6 @@ fn plan_with(
             // A path whose birth the view holds live is satisfied; any other path is planned and the
             // create pipeline's fence decides against the world (a running runtime at the path is
             // held, never replaced: `AdminRunner::revise_predecessor`).
-            if restarted == Some(p) {
-                continue;
-            }
-            // An attempt that carries an action repairs exactly its birth. Another unheard birth is
-            // that birth's own proven drift, repaired by its own attempt, never swept up here.
-            if let Some(AttemptAction::Restart { path, .. }) = action {
-                if path != p || observed.node(p).is_some_and(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)) {
-                    continue;
-                }
-            }
             if creates_owed.contains_key(p) {
                 continue;
             }
@@ -1327,9 +1301,6 @@ fn plan_with(
                 ops.push(BuildOperation::CreateNode { node: p.clone(), over: None, executable: target_executable(topology, p).cloned() });
             }
         }
-    }
-    if let Some(path) = restarted {
-        ops.push(BuildOperation::RestartNode { node: path.clone() });
     }
     if let Some((recorded, steps)) = replacements {
         ops.extend(replacements_owed(topology, observed, recorded, steps));
@@ -1740,68 +1711,17 @@ mod tests {
         let o = mn();
         let path: PathName = "mesh1.rpc.2".parse().unwrap();
         let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
-        let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
-        assert_eq!(plan(&cur, &o, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }]);
+        let stop = AttemptAction::Stop { path: path.clone(), from_incarnation: from.clone() };
+        assert_eq!(plan(&cur, &o, Some(&stop)).operations, vec![BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }]);
         // Once the path runs another birth, the action is satisfied: a re-plan does nothing.
         let mut later = mn();
         later.nodes.iter_mut().find(|x| x.name == path).unwrap().incarnation_id = Some(IncarnationId::mint());
-        assert_eq!(plan(&cur, &later, Some(&restart)).operations, vec![]);
+        assert_eq!(plan(&cur, &later, Some(&stop)).operations, vec![]);
         // Day 0 roots one admin; a topology without an admin is refused.
         assert_eq!(paths(FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()).mesh("mesh1").unwrap()), ["mesh1.admin.1"]);
         let mut bad = cur.clone();
         bad.meshes.get_mut("mesh1").unwrap().nodes.retain(|p| p.kind == NodeKind::RpcNode);
         assert_eq!(bad.validate(), Err(BuildReject::MeshWithoutAdmin { mesh: "mesh1".into() }));
-    }
-
-    /// CONTRACT: a restart fenced to a birth the view holds exited plans that path exactly once: it
-    /// re-creates the SAME identity (no fresh create beside it). A restart of another birth at the path
-    /// is satisfied, and the unheard birth is not swept up by it (its own proven drift opens its own
-    /// attempt). A birth already leaving keeps its path to its departure: a restart plans the create.
-    #[test]
-    fn an_action_on_an_exited_birth_plans_its_path_once() {
-        let cur = t(&[("mesh1", 2, 3)]);
-        let path: PathName = "mesh1.rpc.2".parse().unwrap();
-        for dead in [NodeStatus::PendingReconnect, NodeStatus::Dead] {
-            let mut o = mn();
-            o.nodes.iter_mut().find(|x| x.name == path).unwrap().status = dead;
-            let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
-            let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
-            assert_eq!(plan(&cur, &o, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }], "{dead:?}");
-            let other = AttemptAction::Restart { path: path.clone(), from_incarnation: IncarnationId::mint() };
-            assert_eq!(plan(&cur, &o, Some(&other)).operations, vec![], "{dead:?}");
-            assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::CreateNode { node: path.clone(), over: None, executable: None }], "no action: the generic create decides");
-        }
-        // A surplus live birth is retired by an attempt of its own, never beside an action.
-        let mut surplus = mn();
-        surplus.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));
-        let from = surplus.node(&path).unwrap().incarnation_id.clone().unwrap();
-        let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
-        assert_eq!(plan(&cur, &surplus, None).operations, vec![BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap(), exited: None }]);
-        assert_eq!(plan(&cur, &surplus, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }]);
-        let mut leaving = mn();
-        leaving.nodes.iter_mut().find(|x| x.name == path).unwrap().status = NodeStatus::Leaving;
-        let from = leaving.node(&path).unwrap().incarnation_id.clone().unwrap();
-        let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
-        assert_eq!(plan(&cur, &leaving, Some(&restart)).operations, vec![BuildOperation::CreateNode { node: path.clone(), over: None, executable: None }]);
-    }
-
-    /// CONTRACT (R-PV1: "The pending lifecycle action is resumed per its receipts: `node.start` when
-    /// start is the pending step (the node did stop)"; node-restart.md: a restart runs on the stopped
-    /// process, which never exits): an attempt carrying the restart of the exact birth its own earlier
-    /// attempt stopped (the view holds it `Leaving` and stopped, the same incarnation) plans that restart
-    /// once, whose run resumes at its start. Must NOT happen: a create planned at the path of a stopped
-    /// birth that is still alive and still the restart's.
-    #[test]
-    fn a_restart_of_a_birth_its_own_restart_stopped_plans_the_restart_never_a_create() {
-        let cur = t(&[("mesh1", 2, 3)]);
-        let path: PathName = "mesh1.rpc.2".parse().unwrap();
-        let mut stopped = mn();
-        let birth = stopped.nodes.iter_mut().find(|x| x.name == path).unwrap();
-        birth.status = NodeStatus::Leaving;
-        birth.stopped = true;
-        let from = stopped.node(&path).unwrap().incarnation_id.clone().unwrap();
-        let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from };
-        assert_eq!(plan(&cur, &stopped, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }]);
     }
 
     /// CONTRACT: an attempt that carries an action repairs exactly its birth, from whichever admin's
@@ -1911,7 +1831,7 @@ mod tests {
             last_failure: None,
             reason: AttemptReason::Recipe,
             action: Some(action.clone()),
-            attempt_actions: [(3, AttemptAction::Restart { path: path.clone(), from_incarnation: pin.incarnation.clone() }), (4, action.clone())].into(),
+            attempt_actions: [(3, AttemptAction::Stop { path: path.clone(), from_incarnation: pin.incarnation.clone() }), (4, action.clone())].into(),
             attempt_executors: Default::default(),
             opened: 4,
             failed_at: None,

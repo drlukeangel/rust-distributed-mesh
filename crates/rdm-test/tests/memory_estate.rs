@@ -122,14 +122,15 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 }
 
 /// CONTRACT (i143 1b, Arch: "the single-admin memory estate (birth, node.create, node.stop,
-/// node.restart, build.get, from the scenario crate, file feature off) is the runtime proof"): a
+/// node.restart, build.get, from the scenario crate, file feature off) is the runtime proof"; node.restart
+/// is removed, Q183: its node.stop then node.start is the stop and start below): a
 /// Day-0 node-admin started on the memory storage backend comes up ready in both seats, its storage
 /// step spanned `writes_to = "memory"`; `node.create` of two rpc nodes in mesh1 completes and lists
 /// them ready-for-traffic; once the fabric has first reached ready-for-traffic, `node.stop` of the
 /// first stops it (its cohort seat moving to the second) and `node.start` brings it back; before
 /// that, a Reconcile changing mesh1.rpc.1's config alone completes and the node carries the config
 /// (build.md §1, "The Build applies the diff": `config` in place, as `node.config.update` applies a
-/// map; the executor reads the entry in the accepted Build the memory log holds); `node.restart` completes and it is ready again; `build.get` of the
+/// map; the executor reads the entry in the accepted Build the memory log holds); `build.get` of the
 /// first create's Build answers it Complete with its step receipts. Through all of it the admin
 /// writes nothing of its own to disk:
 /// its data dir holds no store (no `nodes/`, no `attempt-context/`), and every file under the fabric's
@@ -211,8 +212,6 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         .unwrap_or_else(|_| panic!("{node} never carried the config its entry names"));
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
-        until_status(&meshes, &node, NodeStatus::ReadyForTraffic).await;
-        Estate::workflow("node.restart of mesh1.rpc.1", nodes.restart(&node).await).await;
         until_status(&meshes, &node, NodeStatus::ReadyForTraffic).await;
         let receipts = builds.get(&created.build_id).await.unwrap_or_else(|e| panic!("build.get of the create's Build {}: {e}", created.build_id));
         assert_eq!(receipts.phase, BuildPhase::Complete, "the create's Build is Complete: {receipts:#?}");

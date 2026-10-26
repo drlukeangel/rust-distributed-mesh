@@ -120,11 +120,6 @@ pub enum BuildOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         executable: Option<rdm_core::binding::Binding>,
     },
-    /// Restart a node's exact birth.
-    RestartNode {
-        /// The node to restart.
-        node: PathName,
-    },
     /// `node.connections.delete { All }` of the exact birth `from_incarnation` of `node`; it keeps
     /// running (node-connections-delete.md).
     DeleteConnections {
@@ -236,7 +231,7 @@ impl BuildOperation {
     /// The node the operation acts on; `None` for a mesh operation.
     pub fn node(&self) -> Option<&PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::RestartNode { node } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
+            Self::CreateNode { node, .. } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
             Self::RecipeStep { step, .. } => Some(step.node()),
             Self::TerminateNode { node, .. } | Self::UpdateConfig { node } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
@@ -257,7 +252,6 @@ impl BuildOperation {
         match self {
             Self::CreateMesh { mesh, .. } => format!("create-mesh:{mesh}"),
             Self::CreateNode { node, .. } => format!("node.create:{node}"),
-            Self::RestartNode { node } => format!("node.restart:{node}"),
             Self::DeleteConnections { node, .. } => format!("node.connections.delete:{node}"),
             Self::StopNode { node, .. } => format!("node.stop:{node}"),
             Self::StartNode { node, .. } => format!("node.start:{node}"),
@@ -408,7 +402,7 @@ pub enum BuildReject {
         /// The node-admin named.
         node: String,
     },
-    /// The Build would stop, restart, delete the connections of or retire a seat holder (its
+    /// The Build would stop, delete the connections of or retire a seat holder (its
     /// mesh's primary, or the fabric-primary) whose node.primary.update has no successor (the approved proposal
     /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The no-successor cases", Q7 ruled
     /// Luke 2026-10-12): refused by name with Q7's exact text, the holder stays primary and nothing is
@@ -418,13 +412,13 @@ pub enum BuildReject {
         node: String,
         /// Its mesh.
         mesh: String,
-        /// What the Build would do to it (`restart`, `node.connections.delete`, `stop`, `retire`).
+        /// What the Build would do to it (`node.connections.delete`, `stop`, `retire`).
         action: String,
         /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, or the
         /// fabric seat's `cannot transfer fabric-primary: ...` naming both searches.
         refusal: String,
     },
-    /// The Build would stop, restart, delete the connections of or retire the holder of its
+    /// The Build would stop, delete the connections of or retire the holder of its
     /// cohort's seat, a node type other than node-admin, while no other node of its type is in its mesh
     /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
     /// no-successor cases", Q7 ruled Luke 2026-10-12: "a mesh's sole broker ... cannot be stopped or
@@ -435,8 +429,8 @@ pub enum BuildReject {
         node: String,
         /// Its mesh.
         mesh: String,
-        /// What the Build would do to it (`restart`, `node.connections.delete`, `stop`,
-        /// `retire`, `delete`).
+        /// What the Build would do to it (`node.connections.delete`, `stop`, `retire`,
+        /// `delete`).
         action: String,
         /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`.
         refusal: String,
@@ -632,6 +626,5 @@ mod tests {
         assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Create { node: node.clone(), executable: None }, birth: None }.created_node(), Some(&node));
         assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Stop { node: node.clone() }, birth: None }.created_node(), None);
         assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Start { node: node.clone() }, birth: None }.created_node(), None);
-        assert_eq!(BuildOperation::RestartNode { node: node.clone() }.created_node(), None);
     }
 }

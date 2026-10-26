@@ -32,7 +32,7 @@ pub(crate) fn node_status(s: crate::model::NodeStatus) -> NodeStatus {
         S::ConnectionsDeleting => NodeStatus::ConnectionsDeleting,
         S::Leaving => NodeStatus::Leaving,
         S::PendingReconnect => NodeStatus::PendingReconnect,
-        S::Restarting => NodeStatus::Restarting,
+        S::Reserved5 => NodeStatus::Reserved5,
         S::Dead => NodeStatus::Dead,
         S::Deleted => NodeStatus::Deleted,
         // A withdrawn create's node never ran and no view holds it; its record, read anyway, is a node

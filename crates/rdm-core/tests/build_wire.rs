@@ -16,9 +16,8 @@ fn bytes(hex: &str) -> Vec<u8> {
 #[test]
 fn requests_match_the_frozen_four_variant_wire_schema() {
     let fixtures = [
-        // positions 0, 1, 2 and 4 are reserved (the count forms): `a_request_at_a_reserved_count_position_is_an_unknown_variant`
+        // positions 0, 1, 2 and 4 are reserved (the count forms): `a_request_at_a_reserved_count_position_is_an_unknown_variant`; position 6 (the removed restart): `a_request_at_the_removed_restart_position_is_an_unknown_variant`
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { node: "m.rpc.1".parse().unwrap() }) }, "00 00 03 07 6d2e7270632e31"),
-        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }) }, "00 00 06 0b 6d657368312e7270632e31"),
         (
             BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: "mesh1.rpc.1".parse().unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }) },
             "00 00 0a 0b 6d657368312e7270632e31 0c 303132333435363738396162 0c 79727a34396a333033796834",

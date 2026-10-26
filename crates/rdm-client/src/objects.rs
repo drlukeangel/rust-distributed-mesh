@@ -256,11 +256,6 @@ impl Nodes {
         self.workflow(WorkflowKind::Start(node.clone()), BuildChange::Start { node: node.clone() }).await
     }
 
-    /// `node.restart` of `node`.
-    pub async fn restart(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Restart(node.clone()), BuildChange::Restart { node: node.clone() }).await
-    }
-
     /// `node.connections.delete { All }` of `node` as a Build (node-connections-delete.md step 0: a
     /// seat holder's seats move first). The stream is `Started`, then `node.connections.deleted`,
     /// ending `Complete`; the process keeps running.
@@ -468,10 +463,10 @@ mod tests {
     fn one_name_per_op_renders_the_same_in_the_name_and_the_span() {
         use rdm_core::names::NodeEvent;
         let (_g, spans) = capture_spans();
-        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete, NodeOp::PrimaryUpdate, NodeOp::FabricPrimaryUpdate] {
+        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Delete, NodeOp::PrimaryUpdate, NodeOp::FabricPrimaryUpdate] {
             drop(op.span());
         }
-        for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
+        for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted] {
             drop(e.span());
         }
         for b in [BuildOp::Create, BuildOp::Get, BuildOp::Delete] {
@@ -480,12 +475,12 @@ mod tests {
         drop(MeshOp::Get.span());
         drop(FabricOp::Get.span());
         let names = spans.lock().unwrap().clone();
-        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete, NodeOp::PrimaryUpdate, NodeOp::FabricPrimaryUpdate] {
+        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Delete, NodeOp::PrimaryUpdate, NodeOp::FabricPrimaryUpdate] {
             let via = if op.is_workflow() { "via-workflow" } else { "via-call" };
             let want = format!("rdm.node_admin.{}.{via}", op.name());
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }
-        for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
+        for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted] {
             let want = format!("rdm.node_admin.{}.via-reply-frame", e.name());
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }

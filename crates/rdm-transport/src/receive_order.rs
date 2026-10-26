@@ -22,7 +22,7 @@
 //!   Publication identity includes its owner birth and counter; equal-key unfinished chunks remain admissible. An ahead-base delta requests repair via-gap;
 //!   the exact repeated publication never completes repair. A new publication at the same material
 //!   version carries fresh hearing evidence. A directed topology read can resume the held version.
-//! - NodeDeleting, NodeRestarting and NodeStopped: operation identity is recorded before the
+//! - NodeDeleting and NodeStopped: operation identity is recorded before the
 //!   existing topology-version check per publisher and subject mesh. A carried revision refused
 //!   with `via-stale` still leaves that identity seen; a repeat emits `via-duplicate` and runs no
 //!   handler. The carried revision is still judged independently, even for a repeated operation:
@@ -44,7 +44,7 @@
 //! regardless of unrelated traffic. Event timestamps never order or expire that fact.
 //!
 //! The envelope refuses reserved types before domain decoding. [`refuse_reserved`] also protects
-//! in-process domain calls for Concern (position 10, Q23), NodeConnectionsDeleting (11),
+//! in-process domain calls for NodeRestarting (position 7, Q183), Concern (position 10, Q23), NodeConnectionsDeleting (11),
 //! NodeLeaving (12), NodeLeft (13), NodeConnectionsDeleted (14), and NewFabricPrimary (15).
 //! Receipt emits `via-reserved` before any identity view, apply span or carrier runs. No reserved
 //! body installs a projection, records a fact, registers a contact or commands investigation.
@@ -57,6 +57,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// identity receipt, ordinary apply span or completion carrier can run.
 pub(crate) fn refuse_reserved(f: &Frame, node: &str, via: &str) -> bool {
     let (frame, position) = match f.data() {
+        Frame::NodeRestarting { .. } => ("node-restarting", 7),
         Frame::Concern { .. } => ("concern", 10),
         Frame::NodeConnectionsDeleting { .. } => ("node-connections-deleting", 11),
         Frame::NodeLeaving { .. } => ("node-leaving", 12),
@@ -339,7 +340,6 @@ fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
             Some(("members-delta", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
         }
         Frame::NodeDeleting { op, publisher, topology_version, .. } => Some(("node-deleting", Source::Lifecycle { publisher: publisher.clone(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
-        Frame::NodeRestarting { op, publisher, topology_version, .. } => Some(("node-restarting", Source::Lifecycle { publisher: publisher.clone(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
         Frame::NodeStopped { op, publisher, topology_version, .. } => Some(("node-stopped", Source::Lifecycle { publisher: publisher.clone(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
         _ => None,
     }
@@ -396,7 +396,6 @@ impl ReceiveOrder {
     pub(crate) fn admit_lifecycle_identity(&mut self, f: &Frame) -> bool {
         let (frame, op) = match f.data() {
             Frame::NodeDeleting { op, .. } => ("node-deleting", op),
-            Frame::NodeRestarting { op, .. } => ("node-restarting", op),
             Frame::NodeStopped { op, .. } => ("node-stopped", op),
             _ => return true,
         };
@@ -686,8 +685,8 @@ mod tests {
         assert_eq!(order.admit(&StatusEvent::Deleting.frame(op(&a, "delete-node"), primary.clone(), 8)), Ok(()));
         assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&b, "stop-node"), primary.clone(), 8)), Ok(()), "a second fact at the held version is taken");
         assert_eq!(
-            order.admit(&StatusEvent::Restarting.frame(op(&b, "restart-node"), primary.clone(), 7)),
-            Err(Earlier { frame: "node-restarting", source: format!("{primary} mesh1"), held: "topology_version=8".into(), offered: "topology_version=7".into() })
+            order.admit(&StatusEvent::Deleting.frame(op(&b, "delete-node"), primary.clone(), 7)),
+            Err(Earlier { frame: "node-deleting", source: format!("{primary} mesh1"), held: "topology_version=8".into(), offered: "topology_version=7".into() })
         );
         assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&b, "stop-node"), successor, 1)), Ok(()), "another publisher counts its own versions");
         assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&c, "stop-node"), acting.clone(), 9)), Ok(()));
