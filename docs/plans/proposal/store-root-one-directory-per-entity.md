@@ -57,7 +57,7 @@ line per fact, one appender.
   `<store_dir>/fabrics/<name>` above the roots as R-FN1 ruled it: it answers which root a name is
   before any root is opened.
 - **R-SR2, every write appends the whole record; nothing is ever removed.** A line is one record
-  write: `{"format": "<record kind>/<n>", "key": "<the record's key>", … the whole record}`. The
+  write: `{"len", "op", "format": "<record kind>/<n>", "key": "<the record's key>", "record": { … the whole record }, "crc32"}`, the record nested under `record` so no field of it can collide with a line field (lead, 2026-10-25). The
   latest complete line for a key is the entity's current state; every earlier line remains. A
   delete appends the record marked Deleted (a node) or Dead (a mesh); a create withdrawn before the
   node ran appends the record marked Withdrawn, over which a name claim wins as over a Deleted one,
@@ -111,7 +111,7 @@ line per fact, one appender.
   backend's `claim_node_name`, `:1303`; R14 item 3 describes the node name as a conditional write and
   is corrected to the code): there is no claim line, so there is no window between a lock and a
   line. The name is released at Deleted or Dead by the name's holder, and the next claimant inserts
-  the lock again over a Deleted or Withdrawn latest line, which `claim_against` decides before the
+  the lock again over a Deleted or Withdrawn latest line, which the claim's decision (`take_name`, `node_rows.rs:940`, for a node name; `claim_mesh`, `storage.rs`, for a mesh name; `claim_against` in earlier text) decides before the
   take. Every removal of a name lock, the holder's own release as much as a reclamation, runs under
   the name's mutex below and re-reads the lock inside it, removing it only when its content still
   names the claimant the remover expects; a holder whose release was delayed past a reclamation
@@ -150,9 +150,9 @@ Writers, file by file; one writer per key, keys never shared:
 
 | File | Record kinds and keys | Writers |
 |---|---|---|
-| `fabric.jsonl` | `fabric-record` at the fabric; `primary-move` at `T` | the fabric-primary; a primary move's own writer at the next `T`, having folded every earlier move (Q109) |
+| `fabric.jsonl` | `fabric-record` at the fabric | the fabric-primary |
 | `meshes.jsonl` | `mesh-record` at the mesh id | that mesh's primary; the fabric-primary for a mesh with none |
-| `nodes.jsonl` | `node-record` at the node id; `node-runtime` at the node id; `node-tag` at (label, node id) | the mesh-primary of the node's mesh; the fabric-primary for a mesh with none; under build.md §5.3's exception (Q122) the fabric recovery workflow's executor for the rows its operations require, and the adoption launch for its own row; the launching admin for the runtime row |
+| `nodes.jsonl` | `node-record` at the node id; `node-runtime` at (node id, incarnation), written once (`RuntimeRow::key`); `node-tag` at (label, node id) | the mesh-primary of the node's mesh; the fabric-primary for a mesh with none; under build.md §5.3's exception (Q122) the fabric recovery workflow's executor for the rows its operations require, and the adoption launch for its own row; the launching admin for the runtime row |
 | `connections.jsonl` | `node-connection` at (source, destination, alpn, kind) | the source node |
 | `builds.jsonl` | the Build facts at their keys: `<build_id>`, `<build_id>-<attempt>`, `<build_id>-<mesh>-<attempt>`, a claim, a receipt per step | the fabric-primary for a topology attempt; the mesh-primary for its drift attempt, the mesh in the key (R-BI7) |
 | `locks/in-flight/<mesh name>` | the mesh name | its claimant, create-exclusive, released at the attempt's verdict while it still names that attempt |
@@ -181,8 +181,9 @@ records whose `mesh` is its own, one pass each. The pass is the same fold every 
 choice; this is the file adapter's choice. The fold over a Build's facts is a filter on one file
 instead of `fabric/builds/<id>/` plus every `meshes/<mesh>/builds/<id>/`.
 
-**`primary-move` replaces `seat-move`.** The word is banned; a new layout is the moment to drop it.
-The row format `seat-move/1` becomes `primary-move/1`, with the byte fixtures the format carries.
+**The seat-move rows go.** Nothing reads or writes them today (the `fabric_storage.rs` header; the
+leadership election replaced them, Q107), and the word is banned. The new layout has no primary-move
+line, constant or fixture; an older root is refused by the layout marker (lead, 2026-10-25).
 
 **Before the first state-commit nothing changes.** Rows stay in the scratchpad until the commit-state
 action publishes them (fabric-state-sync.md), and the scratchpad publishes as lines appended to §4's
@@ -217,13 +218,12 @@ over 256 MiB on a real fabric, the same shape as the reads proposal's paging tri
   `fabric_storage.rs` are subsumed and go.
 - `rdm-admin/src/storage.rs`: `FileNodesStorage` and `FileMeshStorage` over `nodes.jsonl` and
   `meshes.jsonl`, the path.name and tags indexes as the fold; `NodesStorage` loses `remove_node`:
-  `release_record` appends the record Withdrawn and releases the name, `claim_against` yields the
+  `release_record` appends the record Withdrawn and releases the name, the claim's decision yields the
   name over Withdrawn as over Deleted; `take_in_flight`, `release_in_flight` and `in_flight` keep
   their name-keyed signatures over `locks/in-flight/`; `ROOT_RUNTIMES` goes, the runtime row is a
   `node-runtime` line; the header states R-SR2 to R-SR5.
-- `rdm-admin/src/fabric_storage.rs`: the Fabric record and the primary moves in `fabric.jsonl`;
-  `SEAT_MOVES_DIR`, `REFUSED_TRANSFERS_DIR` and the retired-directory constants go; `seat-move/1` →
-  `primary-move/1`.
+- `rdm-admin/src/fabric_storage.rs`: the Fabric record in `fabric.jsonl`; `SEAT_MOVES_DIR`,
+  `REFUSED_TRANSFERS_DIR`, the `seat-move/1` format and the retired-directory constants go.
 - `rdm-admin/src/build_state.rs`: `FileJournal` over `builds.jsonl`, one line per fact;
   `refused_journal_files` and the revision walk read the one file.
 - `rdm-node/src/storage.rs`: `FileConnectionsStorage` over `connections.jsonl`; `history()` is the
@@ -278,7 +278,7 @@ connections.jsonl, the view the fold's latest line per key.`
   corrected to the code: `The name claim is the sole writer's conditional write, not a
   create-exclusive insert.` → `The name claim is a create-exclusive insert under locks/name/, as the
   code has made it for both names (storage.rs:356, :1303), the lock being the claim; the attempt in
-  flight is the other, under locks/in-flight/.` Its `claim_against` sentence stands: the decision over
+  flight is the other, under locks/in-flight/.` Its decision sentence stands (`take_name`, `claim_mesh`): the decision over
   a Deleted or Withdrawn line is the claimant's, before the take. Item 5: `relies on hard-link insertion, atomic rename,
   file and directory fsync, and coherent reads and listings` → `relies on serialized O_APPEND writes on the local filesystem,
   checked write results and file fsync, create-exclusive insertion under locks/, and coherent reads
@@ -324,8 +324,7 @@ connections.jsonl, the view the fold's latest line per key.`
   `rdm-admin/storage.rs` (6), `store_root_boot.rs` (4), `rdm-node/storage.rs` (2),
   `elections/fabric_takeover.rs` (2), `estate.rs`, `node/node_stop.rs`, `elections/node_primary_update.rs`,
   `fabric/named_listeners.rs`, `mesh/fabric_primary_handover.rs` (1 each); `mesh_claims.rs:114`
-  (`locks/in-flight/mesh2`); `fabric_storage.rs`'s older-root move-rows test reads `primary-move/1`
-  lines in `fabric.jsonl`; `demo/tests/connections.rs:86`, which asserts `fabric/record.json`, asserts
+  (`locks/in-flight/mesh2`); `fabric_storage.rs`'s older-root move-rows test goes with the rows; `demo/tests/connections.rs:86`, which asserts `fabric/record.json`, asserts
   the Fabric record's line in `fabric.jsonl`.
 - New: a root without `layout`, and one with another value, is refused by name at open, naming the
   path and the value; a populated root in the new layout reopens; a create withdrawn before its node
