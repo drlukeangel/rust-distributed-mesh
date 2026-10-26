@@ -423,4 +423,58 @@ mod tests {
         assert!(matches!(&found, Finding::Unproven { reason } if reason.contains("no recorded birth")), "{found:?}");
         assert!(!asked.load(Ordering::SeqCst), "no ladder ran: the provider is not asked");
     }
+
+    /// A caller whose probes answer as `Rig`'s do and whose commands to the birth are unanswered past the
+    /// floor, or not.
+    struct Silent {
+        rig: Rig,
+        unanswered: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl TickleCalls for Silent {
+        fn caller(&self) -> String {
+            self.rig.caller()
+        }
+        fn deadline(&self) -> std::time::Duration {
+            self.rig.deadline()
+        }
+        async fn direct(&self, node: &Node, probe: &StatusRequest) -> ProbeEnd {
+            self.rig.direct(node, probe).await
+        }
+        async fn via_peer(&self, carrier: &Node, node: &Node, probe: &StatusRequest) -> ProbeEnd {
+            self.rig.via_peer(carrier, node, probe).await
+        }
+        fn carriers(&self, view: &Topology, node: &Node) -> Vec<Node> {
+            self.rig.carriers(view, node)
+        }
+        async fn leads(&self, view: &Topology, node: &Node) -> Result<Vec<Node>, String> {
+            self.rig.leads(view, node).await
+        }
+        fn command_unanswered(&self, _node: &Node) -> bool {
+            self.unanswered
+        }
+    }
+
+    /// CONTRACT (node-investigation.md, Q182): "a tickle answered by a birth that has left a command
+    /// unanswered past the floor is not `reached`": the exact birth's answer, direct or carried, is not
+    /// `reached` while it has such a command, and the verdict continues to the provider's inspection;
+    /// the same answers from a birth with no such command are `reached`. Must NOT happen: the answer of
+    /// a birth that does not answer commands ending the investigation as `reached`, and the provider
+    /// never being asked.
+    #[tokio::test]
+    async fn a_birth_with_a_command_unanswered_past_the_floor_is_not_reached_by_its_tickle_answer() {
+        let (node, view) = world();
+        let silent = |unanswered: bool, direct: Option<StatusReply>, carried: Option<(&'static str, StatusReply)>| Silent { rig: Rig { direct, carried, asked: Mutex::default() }, unanswered };
+        for (direct, carried) in [(Some(current(&node)), None), (None, Some(("mesh1.rpc.3", current(&node))))] {
+            let asked = AtomicBool::new(false);
+            let found = investigate(&node, &view, &silent(true, direct.clone(), carried.clone()), provider_says(Finding::Running, &asked)).await;
+            assert_eq!(found, Finding::Running, "the answer of a birth that answers no command is not reached: the provider's verdict");
+            assert!(asked.load(Ordering::SeqCst), "the provider is asked");
+            let asked = AtomicBool::new(false);
+            let found = investigate(&node, &view, &silent(false, direct, carried), provider_says(Finding::Running, &asked)).await;
+            assert!(matches!(found, Finding::Reached { .. }), "a birth with no command unanswered is reached by its answer: {found:?}");
+            assert!(!asked.load(Ordering::SeqCst), "reached: the provider is not asked");
+        }
+    }
 }

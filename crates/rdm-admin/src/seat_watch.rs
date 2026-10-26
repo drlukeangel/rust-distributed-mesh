@@ -27,6 +27,9 @@ type Birth = (NodeId, IncarnationId);
 pub struct Plan {
     /// Exact silent births to investigate from this admin's own view.
     pub investigate: Vec<Node>,
+    /// Exact births the view holds ready for traffic that left a command unanswered past the floor:
+    /// silent whatever they gossip (node-investigation.md, Q182), investigated on the same terms.
+    pub unanswered: Vec<Node>,
 }
 
 /// Births already investigated during their current silence mark. Hearing the birth again
@@ -97,7 +100,7 @@ fn seat_record(which: &str, record: Option<&Primary>, me: &Birth, lost: &HashSet
 /// The pass uses only this admin's exact birth, its view, the silent births already inspected and
 /// `was_mesh_primary`: whether this admin's primary view holds a silent node-admin as its mesh's primary
 /// replaced by another birth (the election named a new mesh-primary past the floor).
-pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, said: &mut Said, was_mesh_primary: &dyn Fn(&Node) -> bool) -> Plan {
+pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, said: &mut Said, was_mesh_primary: &dyn Fn(&Node) -> bool, left_unanswered: &dyn Fn(&Node) -> bool) -> Plan {
     let silent: HashSet<Birth> = view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect).filter_map(birth).collect();
     said.investigated.retain(|b| silent.contains(b));
     let mut plan = Plan::default();
@@ -148,6 +151,9 @@ pub struct Looker {
     pub heard_again: crate::heard_again::HeardAgainSlot,
     /// Its connections store: the by-destination index names the leads of a look (Q107 item 1).
     pub connections: Option<Arc<dyn crate::storage::ConnectionsStorage>>,
+    /// The commands this admin sent: a birth that left one unanswered past the floor is investigated as
+    /// a silent one is, and is not reached by an answer (Q182); `None`: this admin sends none.
+    pub commands: Option<Arc<crate::node_commands::CommandView>>,
 }
 
 impl Looker {
@@ -155,7 +161,7 @@ impl Looker {
     /// tickle ladder and, on `unreached`, the provider's inspection (node-tickle.md "What follows";
     /// node-recovery.md step 2, run by the seat watch: fabric-node-lifecycle-elections.md §4.1).
     pub async fn look(&self, view: &Topology, n: &Node) -> Finding {
-        let calls = crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me.to_string(), connections: self.connections.clone() };
+        let calls = crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me.to_string(), connections: self.connections.clone(), commands: None };
         let finding = crate::node_investigation::investigate(n, view, &calls, self.inspect(n)).await;
         if let Finding::Reached { answer: rdm_core::status::StatusReply::Current { .. }, .. } = &finding {
             // A seat holder this admin holds off its mesh that answers Current is commanded back
@@ -170,6 +176,12 @@ impl Looker {
             }
         }
         finding
+    }
+
+    /// Whether `n`'s exact birth left a command of this admin unanswered past the staleness floor (Q182).
+    pub fn command_unanswered(&self, n: &Node) -> bool {
+        let _ = (n, &self.commands);
+        false
     }
 
     /// The provider's inspection of `n`'s exact runtime.
@@ -269,7 +281,7 @@ pub async fn run(w: Watch) {
         w.fabric_recovery.start_if_mine(held_a_floor, false).await;
         let seats = w.topology_view.primaries();
         let was_mesh_primary = |n: &Node| n.incarnation_id.as_ref().is_some_and(|i| seats.replaced(rdm_core::Seat::MeshPrimary, &n.mesh, i));
-        let plan = plan(&view, &me, &me_birth, &mut said, &was_mesh_primary);
+        let plan = plan(&view, &me, &me_birth, &mut said, &was_mesh_primary, &|n| w.looker.command_unanswered(n));
         for node in plan.investigate {
             let span = tracing::info_span!(
                 "rdm.node_admin.seat.update.via-investigation",
@@ -419,7 +431,7 @@ mod tests {
     fn an_admin_investigates_a_silent_fabric_holder_from_its_own_view() {
         let (t, holder, standby, outsider) = world();
         for admin in [&standby, &outsider] {
-            let p = plan(&t, &admin.name, &me_of(admin), &mut Said::default(), &|_| false);
+            let p = plan(&t, &admin.name, &me_of(admin), &mut Said::default(), &|_| false, &|_| false);
             assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&holder)]);
         }
     }
@@ -429,9 +441,36 @@ mod tests {
     #[test]
     fn an_admin_investigates_neither_a_ready_holder_nor_its_own_birth() {
         let (mut t, holder, standby, _) = world();
-        assert!(plan(&t, &holder.name, &me_of(&holder), &mut Said::default(), &|_| false).investigate.is_empty());
+        assert!(plan(&t, &holder.name, &me_of(&holder), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty());
         t.nodes[0].status = NodeStatus::ReadyForTraffic;
-        assert!(plan(&t, &standby.name, &me_of(&standby), &mut Said::default(), &|_| false).investigate.is_empty());
+        assert!(plan(&t, &standby.name, &me_of(&standby), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty());
+    }
+
+    /// CONTRACT (node-investigation.md, Q182): "A node that does not answer a command is silent, whatever
+    /// it gossips": a node-admin the view holds ready for traffic that left a command unanswered past the
+    /// floor is investigated like a silent one, once per time it is so, on the same terms of who looks;
+    /// one that answers its commands, and one already listed silent, are not listed twice. Must NOT
+    /// happen: a gossiping node-admin with no command unanswered investigated, or a silent one
+    /// investigated under both triggers.
+    #[test]
+    fn a_ready_admin_that_left_a_command_unanswered_is_investigated_once_as_a_silent_one_is() {
+        let (mut t, holder, standby, _) = world();
+        t.nodes[0].status = NodeStatus::ReadyForTraffic;
+        let holder_unanswered = |n: &Node| n.node_id == holder.node_id;
+        let mut said = Said::default();
+        let none = plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false, &|_| false);
+        assert!(none.investigate.is_empty() && none.unanswered.is_empty(), "every command answered: nothing to investigate");
+        let p = plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false, &holder_unanswered);
+        assert_eq!(p.unanswered.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&holder)], "gossiping, and silent for the command it left unanswered");
+        assert!(p.investigate.is_empty(), "it is not silent by its gossip");
+        let again = plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false, &holder_unanswered);
+        assert!(again.unanswered.is_empty() && again.investigate.is_empty(), "once per time it is silent");
+        let _ = plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false, &|_| false);
+        let back = plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false, &holder_unanswered);
+        assert_eq!(back.unanswered.len(), 1, "answering ended it; a later unanswered command is silence again");
+        t.nodes[0].status = NodeStatus::PendingReconnect;
+        let both = plan(&t, &standby.name, &me_of(&standby), &mut Said::default(), &|_| false, &holder_unanswered);
+        assert_eq!((both.investigate.len(), both.unanswered.len()), (1, 0), "a node silent by its gossip is listed once, as silent");
     }
 
     /// CONTRACT (R-A2 items 4-5): an admin looks at a silent birth of the incumbent mesh once per
@@ -441,12 +480,12 @@ mod tests {
     fn a_silent_incumbent_birth_is_looked_at_once_per_mark_and_other_silence_is_not() {
         let (mut t, holder, standby, _) = world();
         let mut said = Said::default();
-        let own = plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false);
+        let own = plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false, &|_| false);
         assert_eq!(own.investigate.iter().map(|n| n.name.to_string()).collect::<Vec<_>>(), vec!["mesh1.admin.1".to_string()]);
-        assert!(plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false).investigate.is_empty(), "once per mark");
+        assert!(plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false, &|_| false).investigate.is_empty(), "once per mark");
         // A silent admin of a third mesh that holds nothing.
         t.nodes.push(admin("mesh3.admin.1", "500000000000", "x1", NodeStatus::PendingReconnect));
-        assert!(plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false).investigate.is_empty());
+        assert!(plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false, &|_| false).investigate.is_empty());
         let _ = holder;
     }
 
@@ -456,7 +495,7 @@ mod tests {
     fn an_admin_does_not_treat_a_former_birth_at_its_path_as_itself() {
         let (t, holder, _, _) = world();
         let successor = admin("mesh1.admin.1", "600000000000", "r2", NodeStatus::ReadyForTraffic);
-        let p = plan(&t, &successor.name, &me_of(&successor), &mut Said::default(), &|_| false);
+        let p = plan(&t, &successor.name, &me_of(&successor), &mut Said::default(), &|_| false, &|_| false);
         assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&holder)]);
     }
 
@@ -476,9 +515,9 @@ mod tests {
         let member = admin("mesh2.admin.3", "500000000000", "o3", NodeStatus::PendingReconnect);
         let t = view(vec![fp.clone(), former.clone(), elected, member]);
         let replaced = |n: &Node| n.node_id == former.node_id;
-        let p = plan(&t, &fp.name, &me_of(&fp), &mut Said::default(), &replaced);
+        let p = plan(&t, &fp.name, &me_of(&fp), &mut Said::default(), &replaced, &|_| false);
         assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&former)], "the replaced mesh-primary only");
-        assert!(plan(&t, &fp.name, &me_of(&fp), &mut Said::default(), &|_| false).investigate.is_empty(), "no silent primary of a peer mesh");
+        assert!(plan(&t, &fp.name, &me_of(&fp), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty(), "no silent primary of a peer mesh");
     }
 
     fn digest_of(n: &Node) -> rdm_core::MeshDigest {
@@ -598,20 +637,20 @@ mod tests {
         let secondary = admin("mesh1.admin.2", "400000000000", "s1", NodeStatus::PendingReconnect);
         let other = admin("mesh1.admin.3", "500000000000", "s3", NodeStatus::ReadyForTraffic);
         let t = view(vec![fp.clone(), secondary.clone(), other.clone()]);
-        assert!(plan(&t, &fp.name, &me_of(&fp), &mut Said::default(), &|_| false).investigate.is_empty(), "the fabric-primary opens no investigation of a secondary node-admin of its own mesh");
-        assert_eq!(plan(&t, &other.name, &me_of(&other), &mut Said::default(), &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&secondary)], "an admin that is not the fabric-primary still looks");
+        assert!(plan(&t, &fp.name, &me_of(&fp), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty(), "the fabric-primary opens no investigation of a secondary node-admin of its own mesh");
+        assert_eq!(plan(&t, &other.name, &me_of(&other), &mut Said::default(), &|_| false, &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&secondary)], "an admin that is not the fabric-primary still looks");
         let mut fp_only = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::ReadyForTraffic);
         fp_only.is_fabric_primary = true;
         let mut primary = admin("mesh1.admin.2", "400000000000", "s1", NodeStatus::PendingReconnect);
         primary.is_primary = true;
         let t = view(vec![fp_only.clone(), primary.clone(), other.clone()]);
-        assert_eq!(plan(&t, &fp_only.name, &me_of(&fp_only), &mut Said::default(), &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)], "an unheard mesh-primary of its own mesh is the fabric-primary's");
+        assert_eq!(plan(&t, &fp_only.name, &me_of(&fp_only), &mut Said::default(), &|_| false, &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)], "an unheard mesh-primary of its own mesh is the fabric-primary's");
         // The election replaced it: the view names another mesh-primary, the primary view the replaced birth.
         let former = Node { is_primary: false, ..primary.clone() };
         let elected = Node { is_primary: true, ..other };
         let never = admin("mesh1.admin.4", "600000000000", "s4", NodeStatus::PendingReconnect);
         let t = view(vec![fp_only.clone(), former.clone(), elected, never]);
         let replaced = |n: &Node| n.node_id == former.node_id;
-        assert_eq!(plan(&t, &fp_only.name, &me_of(&fp_only), &mut Said::default(), &replaced).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&former)], "the replaced mesh-primary of its own mesh only, never a secondary node-admin");
+        assert_eq!(plan(&t, &fp_only.name, &me_of(&fp_only), &mut Said::default(), &replaced, &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&former)], "the replaced mesh-primary of its own mesh only, never a secondary node-admin");
     }
 }

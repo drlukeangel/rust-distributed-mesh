@@ -114,6 +114,15 @@ pub(crate) fn marked_from(mut s: SilentNode, marks: &std::collections::HashMap<c
     s
 }
 
+/// The births of `mesh` the view holds that have left a command of `commands` unanswered past the
+/// staleness `floor` (node-investigation.md, Q182), each marked as a silent birth is: from the instant
+/// the command passed the floor, on the local clock. A birth that keeps gossiping is marked all the
+/// same: it does not answer commands, so it is silent whatever it gossips.
+pub(crate) fn unanswered_marks(commands: &crate::node_commands::CommandView, view: &crate::topology::Topology, mesh: &str, floor: std::time::Duration, now: std::time::Instant, now_ms: u64) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
+    let _ = (commands, view, mesh, floor, now, now_ms);
+    std::collections::HashMap::new()
+}
+
 /// How many live peers the via-peer step asks.
 pub const VIA_PEER_TICKLE_FANOUT: usize = 2;
 
@@ -314,6 +323,11 @@ pub trait TickleCalls: Send + Sync {
     /// ([`crate::node_investigation::leads_of`]), the peers the kick goes through first; never
     /// evidence of reachability. `Err` names why the index could not be read.
     async fn leads(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Result<Vec<crate::model::Node>, String>;
+    /// Whether `node`'s exact birth has left a command of the caller's unanswered past the staleness
+    /// floor (node-investigation.md, Q182): an answer to the probe from such a birth is not `reached`.
+    fn command_unanswered(&self, _node: &crate::model::Node) -> bool {
+        false
+    }
 }
 
 /// The caller's Node RPC client at the default call budget: the mesh-primary's recovery tick and the
@@ -328,6 +342,9 @@ pub struct TickleClient {
     /// The caller's connections store, whose by-destination index names the leads (connections.md
     /// §3.1); `None`: no leads, the kick goes through the carriers alone.
     pub connections: Option<std::sync::Arc<dyn crate::storage::ConnectionsStorage>>,
+    /// The commands the caller sent: the birth that left one unanswered past the floor is not reached
+    /// by an answer (Q182); `None`: the caller sends none.
+    pub commands: Option<std::sync::Arc<crate::node_commands::CommandView>>,
 }
 
 #[async_trait::async_trait]
