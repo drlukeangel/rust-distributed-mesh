@@ -907,6 +907,8 @@ async fn a_refused_dial_starts_a_series_a_refused_attempt_continues_and_an_admit
 
     let dial = registry_recovery_dial(&gw.registry, None);
     run_due_at(&gw.writer, &dial, obs[0].due_ms).await;
+    // The attempt's Failed row is owed and lands behind it (Q169).
+    gw.writer.observations_landed().await;
     let obs = obligations(&gw.writer);
     assert_eq!(obs.len(), 1, "a refused attempt continues the series, never spent as no-fact: {obs:?}");
     assert_eq!(obs[0].recovery.attempt_ordinal, 2);

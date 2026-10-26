@@ -402,6 +402,13 @@ impl ConnectionsWriter {
         routes.iter().map(|r| r.id.clone()).collect()
     }
 
+    /// The entry of the data-plane connection open now to the birth `destination`, as it opened,
+    /// its row landed or still owed (Q169).
+    pub fn opened_to(&self, destination: &ConnectionEnd) -> Option<rdm_core::ConnectionId> {
+        let opened = self.inner.opened.lock().unwrap();
+        opened.values().find(|e| (&e.destination.node_id, &e.destination.incarnation) == (&destination.node_id, &destination.incarnation)).map(|e| e.id.clone())
+    }
+
     /// The data-plane connection to the birth at `peer` and `incarnation` closed: it leaves the
     /// connections opened, so [`Self::live_routes`] no longer reads it (Q169).
     pub fn direct_closed(&self, peer: &iroh::PublicKey, incarnation: &IncarnationId) {

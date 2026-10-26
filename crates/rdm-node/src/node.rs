@@ -506,12 +506,16 @@ async fn start_booted(
     // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
     // observation. The task ends with the process.
     let recovery_dial: crate::connection_reconnect::RecoveryDial = {
-        let data_plane = data_plane.clone();
+        let (data_plane, connections) = (data_plane.clone(), connections.clone());
         Arc::new(move |destination: rdm_core::connections::ConnectionEnd| {
-            let data_plane = data_plane.clone();
+            let (data_plane, connections) = (data_plane.clone(), connections.clone());
             Box::pin(async move {
                 use rdm_core::ping::{Ping, PingRequest};
-                let (out, _) = data_plane.call::<Ping>(&rdm_transport::NodeTarget::ExactNode(destination.node_id), &PingRequest::Ping { payload: b"recovery".to_vec() }, &rdm_transport::CallOptions::default()).await;
+                let (out, _) = data_plane.call::<Ping>(&rdm_transport::NodeTarget::ExactNode(destination.node_id.clone()), &PingRequest::Ping { payload: b"recovery".to_vec() }, &rdm_transport::CallOptions::default()).await;
+                // The dial names the entry its connection opened under, its row owed (Q169).
+                if let (true, Some(entry)) = (out.name() == "Reply", connections.opened_to(&destination)) {
+                    tracing::Span::current().record("entry", entry.to_string().as_str());
+                }
                 out.name().to_string()
             })
         })

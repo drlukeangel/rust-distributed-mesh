@@ -95,6 +95,11 @@ pub(crate) struct Pending {
     pub(crate) destination: ConnectionEnd,
     pub(crate) alpn: Vec<u8>,
     pub(crate) traceparent: Option<String>,
+    /// The latest Direct row the item's last dial was scheduled from, once it has dialled and
+    /// failed: the item is next scheduled from the Failed row that dial owes, once it lands (§9.5
+    /// step 4), and is never dialled again from this one (Q169: the dial's result is read in
+    /// memory, never by waiting for its row).
+    pub(crate) attempted: Option<Option<ConnectionId>>,
 }
 
 /// Per-node reconnect scheduler state owned by [`ConnectionsWriter`].
@@ -129,15 +134,6 @@ fn local_now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-fn state_name(s: ConnectionState) -> &'static str {
-    match s {
-        ConnectionState::Connected => "connected",
-        ConnectionState::Disconnected => "disconnected",
-        ConnectionState::Failed => "failed",
-        ConnectionState::Refused => "refused",
-    }
 }
 
 /// When an attempt toward `destination` on `alpn` is due, and the latest Direct row it is scheduled
@@ -190,7 +186,11 @@ pub fn registry_recovery_dial(
                     incarnation: inc,
                 };
                 match reg.probe_direct(&birth, &alpn).await {
-                    Ok(_) => "Reply".to_string(),
+                    Ok(conn) => {
+                        // The dial names the entry it opened, its row owed (Q169).
+                        tracing::Span::current().record("entry", conn.id().to_string().as_str());
+                        "Reply".to_string()
+                    }
                     Err(ConnectError::Refused { .. }) => "Refused".to_string(),
                     Err(_) => "NotSent".to_string(),
                 }
@@ -335,6 +335,7 @@ pub(crate) fn sync_recovery(writer: &ConnectionsWriter) {
                             destination: row.destination.clone(),
                             alpn: row.alpn.clone(),
                             traceparent: None,
+                            attempted: None,
                         });
                 }
             }
@@ -419,6 +420,7 @@ pub async fn run_due_at(
             destination,
             alpn,
             traceparent,
+            attempted,
         }) = state.recovery.lock().unwrap().get(&key).cloned()
         else {
             continue;
@@ -437,7 +439,12 @@ pub async fn run_due_at(
             } else {
                 let (due_ms, basis) = recovery_due(&held, &destination, &alpn);
                 let current_now = local_now_ms().max(now_ms);
-                if current_now < due_ms {
+                if attempted.as_ref() == Some(&basis) {
+                    // The last dial failed and no newer row is held: its Failed row is still owed,
+                    // and the item is scheduled from it once it lands; with nothing owed, the dial
+                    // owed no fact and the item is spent.
+                    if writer.in_flight() == 0 { Step::Spent("no-fact") } else { Step::Wait }
+                } else if current_now < due_ms {
                     Step::Wait
                 } else {
                     Step::Dial(due_ms, basis)
@@ -470,38 +477,24 @@ pub async fn run_due_at(
                     span.clone(),
                 )
                 .await;
-                writer.observations_landed().await;
                 state.in_flight.fetch_sub(1, Ordering::SeqCst);
 
-                let latest = writer.latest_direct_for(&destination, &alpn);
+                // The dial's own result decides, in memory (Q169): its row is owed and lands
+                // behind it, and nothing here waits for it. The entry is named by the dial.
+                let connected = outcome == "Reply";
                 span.record("outcome", outcome.as_str());
-                let fact = latest.as_ref().filter(|r| Some(&r.id) != basis.as_ref());
-                span.record("fact", fact.map_or("none", |r| state_name(r.state)));
-                if let Some(r) = fact {
-                    span.record("entry", r.id.to_string().as_str());
-                }
+                span.record("fact", if connected { "connected" } else { "failed" });
                 span.in_scope(|| {
                     tracing::info!(
                         "this node dialled its own connection toward the destination birth"
                     )
                 });
-                // The span's lifetime is the outcome it records: it is closed (handed to the
-                // exporter) before the item this dial spends is spent, so whoever waits for the
-                // spend finds it ended.
                 drop(span);
-                match latest {
-                    Some(r)
-                        if Some(&r.id) != basis.as_ref()
-                            && r.state == ConnectionState::Connected =>
-                    {
-                        spend(writer, &key, &source, &destination, "direct-connected");
-                    }
-                    Some(r) if Some(&r.id) != basis.as_ref() => {
-                        if let Some(p) = state.recovery.lock().unwrap().get_mut(&key) {
-                            p.traceparent = None;
-                        }
-                    }
-                    _ => spend(writer, &key, &source, &destination, "no-fact"),
+                if connected {
+                    spend(writer, &key, &source, &destination, "direct-connected");
+                } else if let Some(p) = state.recovery.lock().unwrap().get_mut(&key) {
+                    p.traceparent = None;
+                    p.attempted = Some(basis);
                 }
             }
         }
@@ -613,6 +606,7 @@ pub(crate) fn accepted_on_alpn(
                     destination: destination.clone(),
                     alpn: proxy_alpn,
                     traceparent: rdm_transport::traceparent_of(&span),
+                    attempted: None,
                 });
                 "pending"
             }

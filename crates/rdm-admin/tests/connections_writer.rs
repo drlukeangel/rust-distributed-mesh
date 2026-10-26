@@ -663,22 +663,16 @@ async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The recovery-dial spans open at each moment, and how many were open each time a pending recovery
-/// item was spent (its `via-recovery-attempt` span opens at the clear).
+/// The recovery-dial spans open at each moment.
 #[derive(Clone, Default)]
 struct OpenDials {
     open: Arc<std::sync::atomic::AtomicUsize>,
-    at_spend: Arc<Mutex<Vec<usize>>>,
 }
 
 impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> tracing_subscriber::Layer<S> for OpenDials {
     fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _: &tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
-        match attrs.metadata().name() {
-            "rdm.node_admin.connection.create.via-recovery-dial" => {
-                self.open.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-            "rdm.node_admin.connection.remove.via-recovery-attempt" => self.at_spend.lock().unwrap().push(self.open.load(std::sync::atomic::Ordering::SeqCst)),
-            _ => {}
+        if attrs.metadata().name() == "rdm.node_admin.connection.create.via-recovery-dial" {
+            self.open.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
     fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
@@ -767,6 +761,10 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
                 dial.go.add_permits(1);
                 until("the route cuts back to Direct after Proxy retirement", || matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true })).await;
                 until("the pending item is spent once Direct is Connected", || writer.recovery_pending().is_empty()).await;
+                // The dial decides from its own result and never waits for its row (Q169): its span,
+                // the parent of the row's, ends once that row has landed.
+                writer.observations_landed().await;
+                assert_eq!(open_dials.open.load(std::sync::atomic::Ordering::SeqCst), 0, "every recovery-dial span ended once its fact landed");
                 let _ = std::fs::remove_dir_all(&dir);
             },
             root,
@@ -801,9 +799,5 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
     let spent = named("rdm.node_admin.connection.remove.via-recovery-attempt");
     assert_eq!(spent.len(), 1);
     assert_eq!(spent[0]["attributes"]["reason"], "direct-connected");
-    // A dial span's lifetime is the outcome it records: it is closed (and so handed to the exporter)
-    // before the item that dial spends is spent, so a reader that waits for the item to be spent finds
-    // the span ended. Counted at the spend's own span, which the clear opens.
-    assert_eq!(*open_dials.at_spend.lock().unwrap(), vec![0], "no recovery-dial span was still open when its item was spent");
     println!("cell=due_time_reconnect trace_id={trace_id}");
 }
