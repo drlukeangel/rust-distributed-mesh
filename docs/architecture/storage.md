@@ -116,7 +116,7 @@ accepting a new run does not erase that protection. A committed run only resumes
    provider.
 3. **Freeze, tails, decision, release.**
    - *Freeze.* Each node first closes admission to ordinary appends and claim operations for the
-     `change_id`, drains all already-issued appends and claim operations to a resolved durable
+     `change_id`, settles every already-issued append and claim operation to a resolved durable
      outcome, and durably records the frozen state and both providers in its data dir before
      acknowledging. An indeterminate operation prevents that acknowledgement. On restart the node
      reads this state before opening ordinary writes and resolves the same run's decision; a stale
@@ -129,7 +129,7 @@ accepting a new run does not erase that protection. A committed run only resumes
      claim is decided during the freeze.
    - *Tails.* Each frozen node records its final source positions and its own row, then acknowledges.
      The fabric-primary continues the ordered copy from its verified positions to those final
-     positions, including departed writers' records; nodes do not independently append unordered
+     positions, dead births' and deleted nodes' records included; nodes do not independently append unordered
      tails. Every writer must have acknowledged the freeze or be proven unable to write by node
      investigation's `exited` verdict. Silence is not proof and no timer substitutes for it.
      For each key, the destination history must be a prefix of the source history before missing
@@ -151,6 +151,12 @@ accepting a new run does not erase that protection. A committed run only resumes
    - *Release.* Each node swaps to the new provider, lands its owed writes there in its own order,
      answers its owed commands, and closes the old provider. Claims are decided in the new provider
      from here. A node that fails its release keeps its writes owed and retries.
+
+While a change is undecided, a `build.create` naming the old provider is admitted beside it and
+is its abort: the fabric-primary inserts `abort` for `(build_id, change_id)` and the revert below
+follows. It is how the application or a person ends a freeze that a writer neither acknowledges nor
+is proven `exited` from; nothing else ends it and no timer does. Once `commit` is inserted, that
+Build is refused by name, `change-committed`, and the releases continue.
 
 A failed step fails by name and fails the Build as any step does; before the decision a failure
 reverts once `abort` is inserted, the freeze lifting on the old provider with the owed writes landing

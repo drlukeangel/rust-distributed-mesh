@@ -4,7 +4,7 @@
 **Sprint:** initiative i149; implementation epics e1–e6
 **Status:** opened 2026-10-26; requirements recorded, implementation acceptance outstanding
 **Architecture doc:** [Storage](../architecture/storage.md) §2 — the final contract this initiative implements
-**Signed off:** qa — pending · dev — pending; each lead records their own completed adversarial review
+**Testing discipline:** red-green, per epic: the epic's acceptance cells are written first and run red at the lane's base, the red output (assert and SHA) recorded in the epic's evidence; the implementation turns those exact cells green; a cell changed to pass needs Luke's yes; each landing passes the direct fast gate, the release suite runs nightly. No QA sign-off.
 **Approved:** pending Luke's approval of this PRD
 **Owner:** i143 lead; implementation owner assigned per epic
 **Feature slug:** `topology-storage-provider`
@@ -287,7 +287,12 @@ The epic blocks below are the dispatch briefs; no epics are dispatched by this d
   `a_resubmitted_build_can_commit_after_a_confirmed_abort`,
   `an_old_changes_command_cannot_release_a_new_changes_freeze`,
   `a_lost_executor_does_not_lose_pending_connection_events`,
-  `a_delete_resolves_the_storage_change_before_teardown`.
+  `a_delete_resolves_the_storage_change_before_teardown`,
+  `a_build_naming_the_old_provider_aborts_an_undecided_change`,
+  `a_build_naming_the_old_provider_after_commit_is_refused_change_committed`.
+- **Abort (Storage §2):** while a change is undecided, a `build.create` naming the old provider is
+  admitted beside it and inserts `abort`; after `commit` it is refused `change-committed`. A writer
+  alive but silent through the freeze is ended by that Build, never by a timer.
 - **Mesh plan:** multi-mesh, process/container, same shared fixture and test invocation as e1.
 - **Sizing / files:** one implementer; Build state/drive, both boot paths, local own-row and
   pending-log persistence, node command dispatch, and migration implementation. Inventory exact new
@@ -363,7 +368,7 @@ from unanswered caller retries and gives procedures for the precise provider dec
 - [ ] First restart canary RED before the happy-path seed; both RED before implementation.
 - [ ] All BUILD requirements have an implementing epic and are converted to HOLDS only with evidence.
 - [ ] Decoder round trips preserve explicit provider and omission semantics; unregistered names refuse by name.
-- [ ] Ordered copy, source-prefix refusal, lost copy answers, claims and departed-writer history pass functional coverage.
+- [ ] Ordered copy, source-prefix refusal, lost copy answers, claims and the history of dead births and deleted nodes pass functional coverage.
 - [ ] Outstanding operations settle before freeze acknowledgement; restart cannot undo a durable freeze.
 - [ ] Per-run commit/abort tests cover both execution orders, lost replies, failed writes and successor recovery.
 - [ ] Confirmed abort followed by same-Build resubmission succeeds with a new change identity.
@@ -377,7 +382,7 @@ from unanswered caller retries and gives procedures for the precise provider dec
 - [ ] Previous provider is unchanged after commit; go-back Build succeeds without history reordering.
 - [ ] The three feature docs land and their examples run; no promised file or API is asserted to exist early.
 - [ ] Repository name/document-coordinate checks and the appropriate fast/release gates pass at one implementation SHA.
-- [ ] QA and dev complete and timestamp their own adversarial sign-offs; Luke's approval is recorded explicitly.
+- [ ] Every epic's red output (assert and SHA) and its green run are recorded; Luke's approval is recorded explicitly.
 
 ### Source-doc propagation
 
