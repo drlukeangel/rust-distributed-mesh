@@ -116,12 +116,14 @@ pub struct MeshReadyCtx {
 pub trait CommandFrameSeam: Send + Sync {
     /// Before the stopped report is recovered by its mesh-primary.
     async fn before_stopped(&self, operation: &rdm_core::LifecycleOp);
-    /// The mesh-primary is about to carry `step` of the storage change `change_id` to the node `node`:
+    /// The mesh-primary is about to carry a move of the storage change `change_id` to the node `node`:
     /// a decoration that holds the command answers the release it waits for, and the mesh-primary
-    /// carries the command once it resolves, answering its caller at once that the step is not done.
-    fn hold_storage_step(&self, _node: &crate::model::PathName, _change_id: &rdm_core::ChangeId, _step: &rdm_core::build::StorageStep) -> Option<std::pin::Pin<Box<dyn Future<Output = ()> + Send>>> {
+    /// carries the command once it resolves, the move not done now.
+    fn hold_storage_step(&self, _node: &crate::model::PathName, _change_id: &rdm_core::ChangeId) -> Option<std::pin::Pin<Box<dyn Future<Output = ()> + Send>>> {
         None
     }
+    /// The fabric-primary is about to run the storage change `change_id`'s copy and switch.
+    async fn before_storage_switch(&self, _change_id: &rdm_core::ChangeId) {}
 }
 
 /// `on_fabric_ready`: the notice the fabric-primary calls once the fabric is ready-for-traffic. Fire

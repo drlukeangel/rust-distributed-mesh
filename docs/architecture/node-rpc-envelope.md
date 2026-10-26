@@ -1528,8 +1528,8 @@ to these frames is `durable format moved`, with byte fixtures.
 
 RDM owns this family. It carries the mesh-primary → exact-node hop of
 [node.connections.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md),
-[node.start](lifecycles/node-start.md) and a [storage change](storage.md#changing-it)'s block and
-unblock. The caller's hop and Build carrier are unchanged.
+[node.start](lifecycles/node-start.md) and a [storage change](storage.md#changing-it)'s move of a
+node. The caller's hop and Build carrier are unchanged.
 Every call is server-streaming, never forwarded, and served while connections-deleting.
 Births are exact identities, never names. Every earlier byte and enum position stands; requests
 `StopNode` and `StartNode` append at 1 and 2. Replies append after the existing positions 0–10.
@@ -1551,7 +1551,7 @@ after StopNode or StartNode acceptance:
   ← Failed { step, reason, code } (Terminal; appended reply 15)
 before lifecycle acceptance:
   ← RejectedInvalidNodeTransition { current } (Refusal; appended reply 16, FAILED_PRECONDITION)
-StorageStep { node_id, incarnation, build_id, change_id, step: Block { from, to } | Unblock { provider } } (appended request 3)
+StorageStep { node_id, incarnation, build_id, change_id, provider } (appended request 3)
   ← CommandAccepted { node_id, incarnation } (Started)
   ← StorageStepped { provider } (Terminal; appended reply 17)
   ← Failed { step, reason, code } (Terminal)
@@ -1559,13 +1559,13 @@ before StorageStep acceptance:
   ← RejectedStaleChange { held } (Refusal; appended reply 18, ABORTED)
 ```
 
-A storage change's step is the fabric-primary's command, carried to the exact birth's mesh-primary
-on [Status 0x1B](#status-op-0x1b-rdm) (`StorageStep`, answered `StorageStepped`, `RejectedStaleChange`
-or `StorageStepFailed`) and by the mesh-primary to the birth on this op; its own birth's step runs
-in-process. `StorageStepped` answers a block once the birth recorded it in its data dir and finished
-the writes it issued before it, an unblock once the birth writes `provider`; the mesh-primary then
-records `provider` on the birth's row. A command of a change older than the one the birth holds is
-refused `rejected-stale-change`, naming the change it holds.
+A storage change's `mesh.block` and `mesh.unblock` are operations of its Build, each claimed and
+dispatched by the fabric-primary to the mesh's mesh-primary on [Build 0x20](#build-op-0x20-rdm)
+(`build.attempt.run`) and ending in its receipt. In its `mesh.unblock` the mesh-primary moves each
+node of its mesh to the provider the `commit` record decided with `StorageStep` on this op, its own
+birth in-process; `StorageStepped` answers once the birth writes `provider`, and the mesh-primary then
+records `provider` on the birth's row. A command of a change older than the one the birth acted on is
+refused `rejected-stale-change`, naming that change.
 
 A refusal before acceptance is one refusal frame. `CommandAccepted` is admission and carries no
 lifecycle state: on a stop it makes the mesh-primary record stopping. `ConnectionsDeleting`

@@ -289,8 +289,6 @@ pub struct TopologyStorageHandle {
     derivation: std::sync::Mutex<Option<crate::build_state::FactDerivation>>,
     /// One replacement at a time, and no connections open or derivation installed during one.
     replacing: tokio::sync::Mutex<()>,
-    /// The provider a storage change's block opened beside the one the admin writes.
-    beside: std::sync::Mutex<Option<(String, AdminStores)>>,
     /// Told the provider the admin writes each time it moves to another.
     provider_written: std::sync::Mutex<Option<Box<dyn Fn(&str) + Send + Sync>>>,
 }
@@ -307,7 +305,6 @@ impl TopologyStorageHandle {
             names: Default::default(),
             derivation: Default::default(),
             replacing: tokio::sync::Mutex::new(()),
-            beside: Default::default(),
             provider_written: Default::default(),
         }))
     }
@@ -379,86 +376,20 @@ impl TopologyStorageHandle {
         self.replace_for(provider, None).await
     }
 
-    /// [`Self::replace`] as a step of the storage change `change` (`(build_id, change_id)`), which its
-    /// open span names. The provider the block opened beside the old one ([`Self::open_beside`]) is the
-    /// one moved to; a replacement onto the provider the admin writes already moves nothing.
-    pub async fn replace_for(&self, provider: &str, change: Option<(&crate::build::BuildId, &rdm_core::ChangeId)>) -> Result<(), String> {
-        let _one = self.replacing.lock().await;
-        if self.provider() == provider {
-            return Ok(());
-        }
-        let beside = self.beside.lock().unwrap_or_else(|e| e.into_inner()).take().filter(|(p, _)| p == provider).map(|(_, stores)| stores);
-        let opened = match beside {
-            Some(stores) => stores,
-            None => self.open_stores(provider, change).await?,
-        };
-        let old = self.current.replace(provider, opened).await;
-        (old.stores().boundaries.finish_writes)().await;
-        if let Some(rows) = &*self.provider_written.lock().unwrap_or_else(|e| e.into_inner()) {
-            rows(provider);
-        }
-        Ok(())
-    }
-
-    /// Open the provider this executable registers as `provider` beside the one the admin writes, for
-    /// the storage change `change` (storage.md §2 step 1, "The node opens the new provider beside the old
-    /// one"): kept until the admin moves to it or its change ends. A name the executable does not
-    /// register, or a provider that does not open, is refused by name and nothing moves.
-    pub async fn open_beside(&self, provider: &str, change: (&crate::build::BuildId, &rdm_core::ChangeId)) -> Result<(), String> {
-        let _one = self.replacing.lock().await;
-        if self.provider() == provider || self.beside.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|(p, _)| p == provider) {
-            return Ok(());
-        }
-        let stores = self.open_stores(provider, Some(change)).await?;
-        *self.beside.lock().unwrap_or_else(|e| e.into_inner()) = Some((provider.to_string(), stores));
-        Ok(())
-    }
-
-    /// Close the provider opened beside the one the admin writes, if any: its change ended without the
-    /// admin moving to it.
-    pub fn close_beside(&self) {
-        self.beside.lock().unwrap_or_else(|e| e.into_inner()).take();
-    }
-
-    /// Call `written` with the provider the admin writes each time it moves to another, so the rows
-    /// it writes record it (storage.md §2: "The same name on a node's row is the provider that node
+    /// Call `written` with the provider the admin writes each time it moves to another, so the rows it
+    /// writes record it (storage.md §2: "The same name on a node's row is the provider that node
     /// writes").
     pub fn on_provider_written(&self, written: impl Fn(&str) + Send + Sync + 'static) {
         *self.provider_written.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(written));
     }
 
-    /// Block (storage.md §2 step 1): no write or claim operation is admitted from here; each the admin
-    /// would make waits as owed. Answers how many writes were issued before the block and not answered.
-    pub fn block(&self) -> usize {
-        self.current.block()
-    }
-
-    /// Resolves once every write and claim operation the admin issued before its block has a durable
-    /// outcome on the provider it writes (storage.md §2 step 2).
-    pub async fn finish_issued(&self) {
-        self.current.finish_issued().await;
-        let current = self.current.read();
-        (current.stores().boundaries.finish_writes)().await;
-    }
-
-    /// Lift the block: every owed write is admitted to the provider the admin writes now.
-    pub fn unblock(&self) {
-        self.current.unblock()
-    }
-
-    /// Whether the admin is blocked.
-    pub fn is_blocked(&self) -> bool {
-        self.current.is_blocked()
-    }
-
-    /// How many writes wait on the block now.
-    pub fn owed(&self) -> usize {
-        self.current.owed()
-    }
-
-    /// The provider registered as `provider` opened on this admin's scope, its open span naming the
-    /// change it is opened for.
-    async fn open_stores(&self, provider: &str, change: Option<(&crate::build::BuildId, &rdm_core::ChangeId)>) -> Result<AdminStores, String> {
+    /// [`Self::replace`] as the move of the storage change `change` (`(build_id, change_id)`), which its
+    /// open span names; a move onto the provider the admin writes already moves nothing.
+    pub async fn replace_for(&self, provider: &str, change: Option<(&crate::build::BuildId, &rdm_core::ChangeId)>) -> Result<(), String> {
+        if self.provider() == provider {
+            return Ok(());
+        }
+        let _one = self.replacing.lock().await;
         let span = tracing::info_span!("rdm.node_admin.build.update.via-storage-open", build_id = tracing::field::Empty, change_id = tracing::field::Empty, node_id = %self.scope.node_id, provider = %provider, outcome = tracing::field::Empty);
         if let Some((build_id, change_id)) = change {
             span.record("build_id", build_id.log().to_string().as_str()).record("change_id", change_id.as_str());
@@ -479,11 +410,20 @@ impl TopologyStorageHandle {
         }
         .instrument(span.clone())
         .await;
-        match &opened {
-            Ok(_) => span.record("outcome", "opened"),
-            Err(e) => span.record("outcome", format!("refused: {e}").as_str()),
+        let opened = match opened {
+            Ok(opened) => opened,
+            Err(e) => {
+                span.record("outcome", format!("refused: {e}").as_str());
+                return Err(e);
+            }
         };
-        opened
+        span.record("outcome", "opened");
+        let old = self.current.replace(provider, opened).await;
+        (old.stores().boundaries.finish_writes)().await;
+        if let Some(written) = &*self.provider_written.lock().unwrap_or_else(|e| e.into_inner()) {
+            written(provider);
+        }
+        Ok(())
     }
 }
 
@@ -495,8 +435,8 @@ impl Through {
     fn read(&self) -> Arc<crate::storage_handle::Opened<AdminStores>> {
         self.0.current.read()
     }
-    async fn write(&self) -> crate::storage_handle::Admitted<AdminStores> {
-        self.0.current.write().await
+    fn write(&self) -> crate::storage_handle::Admitted<AdminStores> {
+        self.0.current.write()
     }
 }
 
@@ -506,18 +446,18 @@ impl FabricStorage for Through {
         self.read().stores().boundaries.fabric.fabric().await
     }
     async fn put_fabric(&self, record: &crate::fabric_storage::FabricRecord) -> Result<(), crate::fabric_storage::FabricStorageError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.fabric.put_fabric(record).await
     }
     async fn name_claim(&self, name: &str) -> Result<Option<crate::fabric_storage::FabricIdentity>, crate::fabric_storage::FabricStorageError> {
         self.read().stores().boundaries.fabric.name_claim(name).await
     }
     async fn put_name_claim(&self, identity: &crate::fabric_storage::FabricIdentity) -> Result<(), crate::fabric_storage::FabricStorageError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.fabric.put_name_claim(identity).await
     }
     async fn remove_name_claim(&self, name: &str) -> Result<(), crate::fabric_storage::FabricStorageError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.fabric.remove_name_claim(name).await
     }
 }
@@ -531,26 +471,26 @@ impl MeshStorage for Through {
         self.read().stores().boundaries.meshes.mesh_named(name).await
     }
     async fn put_mesh(&self, record: &crate::storage::MeshRecord) -> Result<(), StorageError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.meshes.put_mesh(record).await
     }
     async fn meshes(&self) -> Result<Vec<crate::storage::MeshRecord>, StorageError> {
         self.read().stores().boundaries.meshes.meshes().await
     }
     async fn claim_mesh_name(&self, name: &str, mesh_id: &crate::model::MeshId) -> Result<Result<(), crate::model::MeshId>, StorageError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.meshes.claim_mesh_name(name, mesh_id).await
     }
     async fn release_mesh_name(&self, name: &str, mesh_id: &crate::model::MeshId) -> Result<(), StorageError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.meshes.release_mesh_name(name, mesh_id).await
     }
     async fn take_in_flight(&self, mesh: &str, claim: &crate::mesh_claims::InFlight) -> Result<crate::mesh_claims::Taken, StorageError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.meshes.take_in_flight(mesh, claim).await
     }
     async fn release_in_flight(&self, mesh: &str, attempt: &crate::mesh_claims::InFlight) -> Result<(), StorageError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.meshes.release_in_flight(mesh, attempt).await
     }
     async fn in_flight(&self, mesh: &str) -> Result<Option<crate::mesh_claims::InFlight>, StorageError> {
@@ -564,7 +504,7 @@ macro_rules! nodes_through {
         #[async_trait]
         impl NodesStorage for $ty {
             async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), StorageError> {
-                let w = self.0.current.write().await;
+                let w = self.0.current.write();
                 $nodes(&w.boundaries)?.put_runtime(row).await
             }
             async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, StorageError> {
@@ -588,15 +528,15 @@ macro_rules! nodes_through {
                 $nodes(&r.stores().boundaries)?.nodes(mesh).await
             }
             async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), StorageError> {
-                let w = self.0.current.write().await;
+                let w = self.0.current.write();
                 $nodes(&w.boundaries)?.put_node(row).await
             }
             async fn index_path(&self, name: &PathName, node_id: &crate::model::NodeId) -> Result<(), StorageError> {
-                let w = self.0.current.write().await;
+                let w = self.0.current.write();
                 $nodes(&w.boundaries)?.index_path(name, node_id).await
             }
             async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), StorageError> {
-                let w = self.0.current.write().await;
+                let w = self.0.current.write();
                 $nodes(&w.boundaries)?.index_tags(mesh, node_id, leaving, arriving).await
             }
             async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, StorageError> {
@@ -608,11 +548,11 @@ macro_rules! nodes_through {
                 $nodes(&r.stores().boundaries)?.name_claim(name).await
             }
             async fn claim_node_name(&self, name: &PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, StorageError> {
-                let w = self.0.current.write().await;
+                let w = self.0.current.write();
                 $nodes(&w.boundaries)?.claim_node_name(name, node_id).await
             }
             async fn release_node_name(&self, name: &PathName, node_id: &crate::model::NodeId) -> Result<(), StorageError> {
-                let w = self.0.current.write().await;
+                let w = self.0.current.write();
                 $nodes(&w.boundaries)?.release_node_name(name, node_id).await
             }
         }
@@ -639,11 +579,11 @@ nodes_through!(RootRuntimes, root_runtimes_of);
 #[async_trait]
 impl crate::build_state::BuildStateAdapter for Through {
     async fn publish_accepted(&self, accepted: &crate::build_state::BuildAccepted) -> Result<(), crate::build_state::BuildStateError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.builds.publish_accepted(accepted).await
     }
     async fn open_attempt(&self, opened: &crate::build_state::AttemptOpened) -> Result<(), crate::build_state::BuildStateError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.builds.open_attempt(opened).await
     }
     async fn read_build(&self, build_id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
@@ -665,33 +605,33 @@ impl crate::build_state::BuildStateAdapter for Through {
         self.read().stores().boundaries.builds.stored_accepted(build_id).await
     }
     async fn claim_attempt(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, crate::build_state::BuildStateError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.builds.claim_attempt(claim).await
     }
     async fn in_flight_live(&self, held: &crate::mesh_claims::InFlight) -> Result<bool, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.in_flight_live(held).await
     }
     async fn claim_in_flight(&self, claim: &crate::build_state::BuildAttemptClaim, claims: &dyn MeshStorage, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, crate::build_state::BuildStateError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.builds.claim_in_flight(claim, claims, mesh, row).await
     }
     async fn adopt_claim(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<(), crate::build_state::BuildStateError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.builds.adopt_claim(claim).await
     }
     async fn append_step_receipt(&self, receipt: &crate::build_state::BuildStepReceipt) -> Result<(), crate::build_state::BuildStateError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.builds.append_step_receipt(receipt).await
     }
     async fn append_attempt_receipt(&self, receipt: &crate::build_state::BuildAttemptReceipt) -> Result<(), crate::build_state::BuildStateError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.builds.append_attempt_receipt(receipt).await
     }
     async fn facts(&self) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.facts().await
     }
     async fn forget(&self, build_id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.builds.forget(build_id).await
     }
     async fn note_blocked(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str) {
@@ -714,7 +654,7 @@ impl crate::build_state::BuildStateAdapter for Through {
 #[async_trait]
 impl LocalBuildLog for Through {
     async fn absorb_facts(&self, facts: &[crate::build_state::BuildFact]) {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.builds.absorb_facts(facts).await
     }
     async fn derive_on_every_fact(&self, derive: crate::build_state::FactDerivation) {
@@ -723,7 +663,7 @@ impl LocalBuildLog for Through {
         self.read().stores().boundaries.builds.derive_on_every_fact(derive).await
     }
     async fn put_attempt_context(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), StorageError> {
-        let w = self.write().await;
+        let w = self.write();
         w.boundaries.builds.put_attempt_context(build_id, lane, attempt, context).await
     }
     async fn attempt_context(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, StorageError> {
@@ -740,7 +680,7 @@ struct ConnectionsThrough {
 #[async_trait]
 impl ConnectionsStorage for ConnectionsThrough {
     async fn put_connection(&self, fact: &rdm_core::connections::NodeConnection) -> Result<(), StorageError> {
-        let w = self.handle.current.write().await;
+        let w = self.handle.current.write();
         w.connections_at(&self.name)?.put_connection(fact).await
     }
     async fn connections(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, StorageError> {
@@ -748,11 +688,11 @@ impl ConnectionsStorage for ConnectionsThrough {
         rows.connections().await
     }
     async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), StorageError> {
-        let w = self.handle.current.write().await;
+        let w = self.handle.current.write();
         w.connections_at(&self.name)?.remove_connection(index).await
     }
     async fn append_history(&self, fact: &rdm_core::connections::NodeConnection) -> Result<(), StorageError> {
-        let w = self.handle.current.write().await;
+        let w = self.handle.current.write();
         w.connections_at(&self.name)?.append_history(fact).await
     }
     async fn history(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, StorageError> {

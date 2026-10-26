@@ -53,22 +53,15 @@ impl<S> Drop for Admitted<S> {
     }
 }
 
-/// The provider a node writes now, replaceable while every caller keeps what it took from the handle,
-/// and the block of a storage change (storage.md §2 step 1): while it stands no write is admitted, and
-/// every write the node would make waits as owed, never refused, until the unblock admits it to the
-/// provider the node writes then.
+/// The provider a node writes now, replaceable while every caller keeps what it took from the handle.
 pub struct StorageHandle<S> {
     current: RwLock<Arc<Opened<S>>>,
-    /// Whether the node is blocked.
-    blocked: tokio::sync::watch::Sender<bool>,
-    /// The writes waiting on the block: owed.
-    owed: std::sync::atomic::AtomicUsize,
 }
 
 impl<S> StorageHandle<S> {
     /// The handle over `stores`, opened from the provider registered as `provider`.
     pub fn new(provider: &str, stores: S) -> Self {
-        Self { current: RwLock::new(Arc::new(Opened::new(provider, stores))), blocked: tokio::sync::watch::channel(false).0, owed: Default::default() }
+        Self { current: RwLock::new(Arc::new(Opened::new(provider, stores))) }
     }
 
     /// The provider the node reads and writes now.
@@ -77,64 +70,10 @@ impl<S> StorageHandle<S> {
     }
 
     /// The provider the node writes now, this write counted on it until the returned admission drops.
-    /// While the node is blocked the write waits, owed, and is admitted at the unblock to the provider the
-    /// node writes then.
-    pub async fn write(&self) -> Admitted<S> {
-        let mut blocked = self.blocked.subscribe();
-        let mut owed = false;
-        loop {
-            if *blocked.borrow_and_update() {
-                if !owed {
-                    owed = true;
-                    self.owed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                }
-                let _ = blocked.wait_for(|b| !*b).await;
-                continue;
-            }
-            // The admission and the block take the same lock: a write is admitted before the block or
-            // waits for its unblock, never both.
-            let current = self.current.read().unwrap_or_else(|e| e.into_inner());
-            if *self.blocked.borrow() {
-                continue;
-            }
-            current.admitted.send_modify(|n| *n += 1);
-            if owed {
-                self.owed.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-            }
-            return Admitted(current.clone());
-        }
-    }
-
-    /// Block: from here no write is admitted, each waiting as owed; answers how many writes admitted
-    /// before the block were not answered yet (issued). [`Self::finish_issued`] waits for them.
-    pub fn block(&self) -> usize {
-        let current = self.current.write().unwrap_or_else(|e| e.into_inner());
-        self.blocked.send_replace(true);
-        let issued = *current.admitted.borrow();
-        issued
-    }
-
-    /// Resolves once every write admitted to the provider the node writes now has been answered there.
-    pub async fn finish_issued(&self) {
-        let current = self.read();
-        let _ = current.admitted.subscribe().wait_for(|n| *n == 0).await;
-    }
-
-    /// Lift the block: every owed write is admitted, in the order each waits, to the provider the node
-    /// writes now.
-    pub fn unblock(&self) {
-        let _current = self.current.write().unwrap_or_else(|e| e.into_inner());
-        self.blocked.send_replace(false);
-    }
-
-    /// Whether the node is blocked.
-    pub fn is_blocked(&self) -> bool {
-        *self.blocked.borrow()
-    }
-
-    /// How many writes wait on the block now.
-    pub fn owed(&self) -> usize {
-        self.owed.load(std::sync::atomic::Ordering::Acquire)
+    pub fn write(&self) -> Admitted<S> {
+        let current = self.current.read().unwrap_or_else(|e| e.into_inner());
+        current.admitted.send_modify(|n| *n += 1);
+        Admitted(current.clone())
     }
 
     /// Put `stores`, opened from the provider registered as `provider`, in place of the provider the

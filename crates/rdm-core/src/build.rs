@@ -259,39 +259,6 @@ impl StorageCommit {
     }
 }
 
-/// A step of a storage change a node is commanded (storage.md §2 steps 1, 2 and 5), carried
-/// fabric-primary → mesh-primary → node.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StorageStep {
-    /// Block (steps 1 and 2): the node stops admitting writes and claim operations, holds every write
-    /// it would make as owed, opens `to` beside `from`, records the block and both providers in its data
-    /// dir, brings every write it issued before the block to a durable outcome on `from`, then
-    /// acknowledges.
-    Block {
-        /// The old provider.
-        from: String,
-        /// The new provider.
-        to: String,
-    },
-    /// Unblock (step 5): the node moves to `provider` (the new provider after the switch, the old one
-    /// when the change failed before it), lands its owed writes there in its own order, answers its owed
-    /// commands and closes the other provider.
-    Unblock {
-        /// The provider the node writes from here on.
-        provider: String,
-    },
-}
-
-impl StorageStep {
-    /// The step's name in spans and refusals.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Block { .. } => "block",
-            Self::Unblock { .. } => "unblock",
-        }
-    }
-}
-
 /// What `Create` asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildSubmit {

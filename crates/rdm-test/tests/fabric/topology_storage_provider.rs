@@ -175,7 +175,7 @@ async fn a_customer_reads_each_nodes_topology_provider() {
 /// refused by name, `topology-storage-provider-not-registered`, its detail naming the provider and the
 /// ones the fabric-primary registers; nothing is accepted (the current Build stands, and no record on
 /// the store root names the provider), the Fabric row still names `file` with no previous provider, and
-/// every node is the same birth, writing `file`. Must NOT happen: a Build accepted, a block step run, or
+/// every node is the same birth, writing `file`. Must NOT happen: a Build accepted, a mesh-primary blocked, or
 /// the fabric's provider moved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unsupported_provider_changes_nothing() {
@@ -208,7 +208,7 @@ async fn an_unsupported_provider_changes_nothing() {
     let spans = estate.spans();
     let reject = named(&spans, "rdm.node_admin.build.reject.via-topology-storage-provider-not-registered");
     assert!(reject.iter().any(|sp| s(&sp["attributes"]["detail"]).contains(UNREGISTERED)), "the fabric-primary's refusal span names the provider: {reject:#?}");
-    assert!(named(&spans, "rdm.node.build.update.via-storage-block").is_empty(), "no node blocked: no step of a change ran");
+    assert!(named(&spans, "rdm.node_admin.mesh.update.via-block").is_empty(), "no mesh-primary blocked: no step of a change ran");
 }
 
 /// CONTRACT (storage.md §2 "The property": Day 0, "the bootstrap admin, on the Fabric row ... its
@@ -257,8 +257,8 @@ async fn admin_restart_resolves_the_same_change(test: &str, how: Ended) {
     let (file_root, target_root) = roots(&estate);
     let stream = estate.carrier().await.create(naming_provider(&estate, Some(TOPOLOGY_STORAGE_TARGET)).await).await.unwrap_or_else(|e| panic!("the storage change naming {TOPOLOGY_STORAGE_TARGET} is accepted: {e}"));
     let build_id = stream.build_id().to_string();
-    // A node has blocked under the change: its block, recorded in its data dir, carries the change_id.
-    let blocked = step_spans(&estate, "rdm.node.build.update.via-storage-block", &build_id, "blocked").await;
+    // A mesh-primary has replied `blocked` to the change's `mesh.block`, its span carrying the change_id.
+    let blocked = step_spans(&estate, "rdm.node_admin.mesh.update.via-block", &build_id, "blocked").await;
     let change_id = s(&blocked[0]["attributes"]["change_id"]);
     assert!(!change_id.is_empty(), "the block carries the change's change_id: {:#?}", blocked[0]);
     match how {
@@ -270,7 +270,7 @@ async fn admin_restart_resolves_the_same_change(test: &str, how: Ended) {
         }
     }
     // The same logical admin over the same data dir, its launch environment naming the old provider: a
-    // stale environment: the restart reads its block from its data dir before it writes anything.
+    // stale environment: the change is decided by its commit record, never by that environment.
     let restarted = estate.restart_admin_with(&estate.bootstrap_data_dir("mesh1"), &[("RDM_TOPOLOGY_STORAGE_PROVIDER", FILE)]);
     // The estate enters the fabric again at the restarted birth.
     estate.enter(&restarted).await;
@@ -329,9 +329,8 @@ async fn topology_storage_state_survives_admin_restart_at_same_data_dir() {
 /// row names `test-target` with `file` previous; every node writes `test-target` and is the same birth,
 /// ready-for-traffic, carrying the config the update set; every line of the five stores is on
 /// `test-target` in source order, the deleted birth's and the deleted mesh's included; `file` is written
-/// no more; and the block (its span closing on the node's acknowledgement once its issued writes
-/// are finished: i149 § OTLP span-assertion bar), copy, switch and unblock steps are spans on one
-/// trace. Must NOT
+/// no more; and each mesh-primary's `mesh.block` (its reply `blocked`), the copy, the switch and each
+/// `mesh.unblock` (its reply `unblocked`) are spans on one trace (storage.md §2, Q198). Must NOT
 /// happen: a node restarted or replaced, a record lost or reordered, or the old provider written after
 /// the commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -385,10 +384,10 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     let spans = estate.spans();
     let mut traces = BTreeSet::new();
     for (step, outcome) in [
-        ("rdm.node.build.update.via-storage-block", "blocked"),
+        ("rdm.node_admin.mesh.update.via-block", "blocked"),
         ("rdm.node_admin.build.update.via-storage-copy", "copied"),
         ("rdm.node_admin.build.update.via-storage-switch", "inserted"),
-        ("rdm.node.build.update.via-storage-unblock", "unblocked"),
+        ("rdm.node_admin.mesh.update.via-unblock", "unblocked"),
     ] {
         let found: Vec<&Value> = named(&spans, step).into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == build_id && sp["attributes"]["outcome"] == outcome).collect();
         assert!(!found.is_empty(), "{step} outcome={outcome} is recorded for Build {build_id}");
@@ -398,26 +397,28 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     estate.record_trace_url(traces.iter().next().unwrap());
 }
 
-// ---- e4: blocked changes, the commit record, failure before the switch and lost nodes (i149 R8–R12,
-// R17–R19). The step spans are the plan's (i149 § OTLP span-assertion bar): a node's block, its span
-// closing on the node's acknowledgement once every write it issued before the block is finished; the
-// fabric-primary's switch, `commit_found` naming what it read of the `commit` record; a node's unblock,
-// `provider` naming where its owed writes land.
+// ---- e4: the mesh-primaries' block, the commit record, failure before the switch and lost nodes (i149
+// R8–R12, R17–R19; storage.md §2 "Changing it", Q198). The spans: a mesh-primary's `mesh.block` and
+// `mesh.unblock` (`rdm.node_admin.mesh.update.via-block` / `via-unblock`, its reply the outcome); the
+// fabric-primary's switch, `commit_found` naming what it read of the `commit` record; a node's move
+// onto the provider its change decided (`rdm.node.build.update.via-storage-move`).
 
-/// A node's block of a storage change (storage.md §2 steps 1 and 2).
-const BLOCK: &str = "rdm.node.build.update.via-storage-block";
+/// A mesh-primary's `mesh.block` (storage.md §2 step 1): outcome `blocked`, its reply.
+const BLOCK: &str = "rdm.node_admin.mesh.update.via-block";
 /// The fabric-primary's switch: the `commit` record for `(build_id, change_id)` inserted, or read.
 const SWITCH: &str = "rdm.node_admin.build.update.via-storage-switch";
-/// A node's unblock onto the provider its change decided.
-const UNBLOCK: &str = "rdm.node.build.update.via-storage-unblock";
+/// A mesh-primary's `mesh.unblock` (step 4): outcome `unblocked`, its reply, `provider` where it moved
+/// its nodes.
+const UNBLOCK: &str = "rdm.node_admin.mesh.update.via-unblock";
+/// A node's move onto the provider its change decided, commanded by its mesh-primary.
+const MOVE: &str = "rdm.node.build.update.via-storage-move";
 /// A node's connection event, its span open while its write lands (`connections_writer`).
 const OBSERVED: &str = "rdm.node_admin.connection.update.via-observed";
-/// The node whose silence holds a change between the block and the copy: frozen (SIGSTOP) before the
-/// change is submitted and continued within the staleness floor. storage.md §2 step 2: "The copy waits
-/// for every node's acknowledgement or node investigation's `exited` verdict on it; silence is neither."
-const HOLD: &str = "mesh1.admin.2";
-/// The role node each cell blocks, restarts, freezes or reads.
+/// The role node each cell restarts, freezes or reads.
 const ROLE: &str = "mesh2.rpc.1";
+/// The fabric-primary, where the testkit's storage-switch cut holds a change between every
+/// mesh-primary's `blocked` and the copy.
+const FP: &str = "mesh1.admin.1";
 
 /// `name`'s exact runtime, frozen (SIGSTOP: alive and silent).
 async fn freeze(estate: &Estate, name: &str) -> ExactRuntime {
@@ -429,6 +430,14 @@ async fn freeze(estate: &Estate, name: &str) -> ExactRuntime {
 /// Continue a frozen runtime. One already ended (a re-created node's old birth, terminated) is left.
 fn thaw(rt: &ExactRuntime) {
     let _ = rt.apply(Fault::Continue);
+}
+
+/// The fabric-primary's storage-switch cut armed: the next change is held after every mesh-primary
+/// replied `blocked`, before its copy, until [`Door::release`] of `"switch"`.
+async fn hold_switch(estate: &Estate) -> rdm_test::faults::Door {
+    let door = rdm_test::faults::Door::at(estate, FP).await;
+    door.arm("switch", json!({"kind": "storage-switch"})).await;
+    door
 }
 
 /// `build.create` of the complete topology naming `provider`, accepted: the stream and its Build id.
@@ -461,15 +470,15 @@ fn yes(sp: &Value, key: &str) -> Option<bool> {
     }
 }
 
-/// The spans `name` of Build `build_id` (every node's when `node_id` is `None`).
-fn of_build<'a>(spans: &'a [Value], name: &str, build_id: &str, node_id: Option<&str>) -> Vec<&'a Value> {
-    named(spans, name).into_iter().filter(|sp| attr(sp, "build_id") == build_id && node_id.is_none_or(|n| attr(sp, "node_id") == n)).collect()
+/// The spans `name` of Build `build_id` (every mesh's when `mesh` is `None`).
+fn of_build<'a>(spans: &'a [Value], name: &str, build_id: &str, mesh: Option<&str>) -> Vec<&'a Value> {
+    named(spans, name).into_iter().filter(|sp| attr(sp, "build_id") == build_id && mesh.is_none_or(|m| attr(sp, "mesh") == m)).collect()
 }
 
-/// `node_id`'s block under Build `build_id`, once its span is recorded: its acknowledgement.
-async fn blocked_at(estate: &Estate, build_id: &str, node_id: &str) -> Value {
-    wait_for(&format!("{BLOCK} outcome=blocked for Build {build_id} at node {node_id}"), STEP, || async {
-        estate.spans().into_iter().find(|sp| sp["name"] == BLOCK && attr(sp, "build_id") == build_id && attr(sp, "node_id") == node_id && sp["attributes"]["outcome"] == "blocked")
+/// `mesh`'s mesh-primary replied `blocked` to Build `build_id`'s `mesh.block`, once its span is recorded.
+async fn blocked_at(estate: &Estate, build_id: &str, mesh: &str) -> Value {
+    wait_for(&format!("{BLOCK} outcome=blocked for Build {build_id} in {mesh}"), STEP, || async {
+        estate.spans().into_iter().find(|sp| sp["name"] == BLOCK && attr(sp, "build_id") == build_id && attr(sp, "mesh") == mesh && sp["attributes"]["outcome"] == "blocked")
     })
     .await
 }
@@ -494,7 +503,7 @@ async fn terminal(estate: &Estate, stream: BuildStream) -> Vec<BuildFrame> {
 /// One direct dial from `from` to `to` (a node's own connection event, Q169), answered.
 fn dial(estate: &Estate, from: &str, to: &str) -> Value {
     let out = estate.probe(&["dial", "--target", &format!("path:{from}"), "--destination", &format!("path:{to}"), "--key", "storage-change"]);
-    assert_eq!(out["outcome"], "Reply", "{from} answers the dial to {to} while its writes are owed (Q169: a connection event never blocks): {out}");
+    assert_eq!(out["outcome"], "Reply", "{from} answers the dial to {to} during the change (Q169: a connection event never blocks): {out}");
     out
 }
 
@@ -519,11 +528,11 @@ enum Ends {
     FailedBeforeTheSwitch,
 }
 
-/// One run of the role-node restart: `ROLE` blocked under a change with a connection event owed, its
-/// process killed (SIGKILL) while the change is held, and the node re-created at its `path.name` over
-/// the same data dir (node investigation's `exited` verdict, R-FM2); the change ends `ends`. What is
-/// asserted is the restarted birth's: it reads its block from its data dir before it writes anything,
-/// and it writes only to the provider the `commit` record decided.
+/// One run of the role-node restart: `ROLE`'s mesh-primary has replied `blocked`, the change is held
+/// before its copy, `ROLE` dials (a connection event) and its process is killed (SIGKILL); node recovery
+/// re-creates it at its `path.name` over the same data dir (node investigation's `exited` verdict, R-FM2)
+/// once its mesh-primary issues commands again; the change ends `ends`. What is asserted is the
+/// restarted birth's: it writes only the provider the `commit` record decided.
 async fn role_node_restart(test: &str, ends: Ends) {
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
     let (file_root, target_root) = roots(&estate);
@@ -531,15 +540,16 @@ async fn role_node_restart(test: &str, ends: Ends) {
         foreign_line(&target_root);
     }
     let (old_id, data_dir) = (node_id_of(&estate, ROLE).await, estate.data_dir(ROLE).await);
-    let hold = freeze(&estate, HOLD).await;
+    let hold = hold_switch(&estate).await;
     let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
-    let blocked = blocked_at(&estate, &build_id, &old_id).await;
+    let blocked = blocked_at(&estate, &build_id, "mesh2").await;
     let change_id = attr(&blocked, "change_id");
     assert!(!change_id.is_empty(), "the block carries its change_id: {blocked}");
-    // A write owed: the node's own connection event, answered and not landed while it is blocked.
+    // A connection event of the node while its mesh-primary is blocked.
+    let dialled_ns = now_ns();
     dial(&estate, ROLE, "mesh2.admin.1");
     estate.kill_node(ROLE).await;
-    thaw(&hold);
+    hold.release("switch").await;
     let frames = terminal(&estate, stream).await;
     estate.artifact("frames.json", &json!(format!("{frames:?}")));
     let restarted = estate.until_node(ROLE, "the role node re-created at its path.name", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::ReadyForTraffic).cloned()).await;
@@ -557,70 +567,52 @@ async fn role_node_restart(test: &str, ends: Ends) {
     assert_eq!(restarted.topology_storage_provider.as_deref(), Some(chosen), "the restarted birth writes the provider its change decided: {restarted:?}");
     let chosen_root = if chosen == FILE { &file_root } else { &target_root };
     assert!(!lines_naming(chosen_root, &new_id).is_empty(), "the restarted birth's records are on {chosen}");
-    match ends {
-        // The old provider is written no more after the switch; nothing of a birth that started after
-        // the block is on it.
-        Ends::Switched => assert!(lines_naming(other, &new_id).is_empty(), "nothing of the restarted birth {new_id} is on {FILE}: {:#?}", lines_naming(other, &new_id)),
-        // A change failed before its switch leaves the new provider as the copy left it.
-        Ends::FailedBeforeTheSwitch => assert!(lines_naming(other, &new_id).is_empty(), "nothing of the restarted birth {new_id} is on {TOPOLOGY_STORAGE_TARGET}: {:#?}", lines_naming(other, &new_id)),
-    }
+    // Nothing of a birth that started after the change's decision is on the provider not chosen.
+    assert!(lines_naming(other, &new_id).is_empty(), "nothing of the restarted birth {new_id} is on the provider not chosen: {:#?}", lines_naming(other, &new_id));
     estate.stop().await;
     let spans = estate.spans();
-    // The restarted birth read the block from its data dir before it wrote anything, and it unblocked
-    // only onto the provider the `commit` record decided, after the fabric-primary read or inserted it.
+    // The change was decided by the commit record.
     let decided: Vec<&Value> = of_build(&spans, SWITCH, &build_id, None).into_iter().filter(|sp| attr(sp, "change_id") == change_id && yes(sp, "commit_found").is_some()).collect();
     assert!(!decided.is_empty(), "the fabric-primary decided the change by the commit record: {SWITCH} for ({build_id}, {change_id})");
-    // A birth that came back before the decision read its block from its data dir and holds it until the
-    // decision is read: its block and its unblock are spans under the same change. One launched after the
-    // switch is launched on the new provider and owes no unblock (storage.md §2, lost node).
-    let reblocked = of_build(&spans, BLOCK, &build_id, Some(&new_id));
-    let unblocked = of_build(&spans, UNBLOCK, &build_id, Some(&new_id));
-    assert!(reblocked.iter().all(|sp| attr(sp, "change_id") == change_id), "a block the restarted birth read from its data dir is the same change_id: {reblocked:#?}");
-    assert!(reblocked.is_empty() || !unblocked.is_empty(), "the restarted birth {new_id} that came back blocked unblocks under the same change: {UNBLOCK}");
-    for sp in &unblocked {
-        assert_eq!((attr(sp, "change_id"), attr(sp, "provider")), (change_id.clone(), chosen.to_string()), "the restarted birth unblocks onto {chosen} under the same change_id: {sp}");
-        assert!(decided.iter().any(|d| start_ns(d) <= start_ns(sp)), "the restarted birth unblocks only once the commit record is read: {sp}");
+    // The restarted birth only ever moves onto the provider the change decided, after it was decided.
+    for sp in named(&spans, MOVE).into_iter().filter(|sp| attr(sp, "node_id") == new_id && attr(sp, "build_id") == build_id) {
+        assert_eq!((attr(sp, "change_id"), attr(sp, "provider")), (change_id.clone(), chosen.to_string()), "the restarted birth moves onto {chosen} under the same change_id: {sp}");
+        assert!(decided.iter().any(|d| start_ns(d) <= start_ns(sp)), "the restarted birth moves only once the commit record is read: {sp}");
     }
-    // The connection event owed when the process was killed lands at most once, and only on the
-    // provider chosen (its queue is the node's writer queue, Q169).
-    let owed: Vec<&Value> = named(&spans, OBSERVED).into_iter().filter(|sp| attr(sp, "source") == ROLE && attr(sp, "destination") == "mesh2.admin.1" && attr(sp, "origin") == "dial").collect();
+    // The connection event of the killed birth lands at most once on the provider chosen.
+    let owed: Vec<&Value> = named(&spans, OBSERVED).into_iter().filter(|sp| attr(sp, "source") == ROLE && attr(sp, "destination") == "mesh2.admin.1" && attr(sp, "origin") == "dial" && start_ns(sp) >= dialled_ns).collect();
     for sp in &owed {
         let entry = attr(sp, "entry");
-        assert!(lines_naming(other, &entry).is_empty(), "the owed connection event {entry} is not on the provider the change did not choose");
-        assert!(lines_naming(chosen_root, &entry).len() <= 1, "the owed connection event {entry} lands at most once on {chosen}");
+        assert!(lines_naming(chosen_root, &entry).len() <= 1, "the connection event {entry} lands at most once on {chosen}");
     }
     estate.record_trace_url(&s(&decided[0]["trace_id"]));
 }
 
-/// CONTRACT (i149 § Restart-recovery canary, second canary; storage.md §2 "Block": "The node ... records
-/// the block and both providers in its data dir, which a restart reads before it writes anything";
-/// "Switch": "Whoever resumes the change ... learns the decision only by reading that record"; "A step
-/// that fails before the switch fails the Build only once the fabric-primary has read that no `commit`
-/// exists ...; each node then unblocks on the old provider, its owed writes landing there"): a role
-/// process (mesh2.rpc.1) is killed while it is blocked under a storage change, with a connection event
-/// owed, and comes back at its `path.name` over the same data dir. Run twice: a change that switches, and
-/// one whose copy is refused before the switch. Each time the restarted birth unblocks only onto the
-/// provider the `commit` record decided, once that record is read, under the same `change_id` (a birth
-/// back before the decision holds the block it read from its data dir until then); every
-/// record of it is on that provider and none on the other; the Fabric row names that provider. Must NOT
-/// happen: a write of the restarted birth on the provider not chosen, an unblock before the decision is
-/// read, or a new birth over a new data dir counted as the restart.
+/// CONTRACT (i149 § Restart-recovery canary, second canary; storage.md §2 "Changing it" (Q198): "Once every
+/// mesh-primary has replied `blocked`, the fabric-primary [copies]"; "Whoever resumes the change learns
+/// the decision only from that record"; "A step that fails before the switch fails the Build only once
+/// the fabric-primary has read that no `commit` exists ...; the fabric-primary then sends `mesh.unblock`
+/// on the old provider"): a role process (mesh2.rpc.1) is killed while its mesh-primary has replied
+/// `blocked` and the change is held before its copy, and comes back at its `path.name` over the same data
+/// dir. Run twice: a change that switches, and one whose copy is refused before the switch. Each time the
+/// restarted birth writes only the provider the `commit` record decided: its row names it, every record
+/// of it is on that provider and none on the other, and it only ever moves onto that provider once the
+/// record is read; the Fabric row names that provider. Must NOT happen: a write of the restarted birth on
+/// the provider not chosen, or a new birth over a new data dir counted as the restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn topology_storage_state_survives_role_node_restart() {
     role_node_restart("topology_storage_state_survives_role_node_restart-switched", Ends::Switched).await;
     role_node_restart("topology_storage_state_survives_role_node_restart-failed", Ends::FailedBeforeTheSwitch).await;
 }
 
-/// CONTRACT (storage.md §2 "Block": the node "records the block and both providers in its data dir, which
-/// a restart reads before it writes anything"; "Switch": "Whoever resumes the change ... learns the
-/// decision only by reading that record: `commit` found is switched"; i149 R8, R12): a role node blocked
-/// under a change to `test-target` is killed while the change is held, and node recovery re-creates it at
-/// its `path.name` over the same data dir. The restarted birth stays blocked until the `commit` record is
-/// read: any unblock of it is onto `test-target` under the same `change_id`, after the fabric-primary's
-/// switch;
-/// every record of it is on `test-target`, none on `file`; the Build completes and the fabric names
-/// `test-target` with `file` previous. Must NOT happen: the restarted birth writing to `file` (its stale
-/// launch provider) or unblocking before the commit record is read.
+/// CONTRACT (storage.md §2 "Changing it" (Q198): "A mesh-primary that has replied `blocked` issues no new
+/// command until it is unblocked"; "Whoever resumes the change ... learns the decision only from that
+/// record"; i149 R8, R12): a role node whose mesh-primary has replied `blocked` is killed while the change
+/// is held, and node recovery re-creates it at its `path.name` over the same data dir once its
+/// mesh-primary is unblocked. The restarted birth writes `test-target`, the provider the commit record
+/// decided: every record of it is on `test-target`, none on `file`; the Build completes and the fabric
+/// names `test-target` with `file` previous. Must NOT happen: the restarted birth writing to `file` (its
+/// stale launch provider) or moving before the commit record is read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read() {
     role_node_restart("a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read", Ends::Switched).await;
@@ -628,24 +620,22 @@ async fn a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read() 
 
 /// CONTRACT (storage.md §2 "Switch": "the fabric-primary inserts `commit` for `(build_id, change_id)` on
 /// the new provider with the store's insert-and-fail primitive, then appends the Fabric row's line ...
-/// Whoever resumes the change, a successor or the fabric-primary after a lost answer, learns the decision
-/// only by reading that record: `commit` found is switched, and the row's line is written if missing";
-/// i149 R10, R11): the fabric-primary is killed (SIGKILL) as soon as the `commit` record for the change
-/// is on `test-target`, so the insert's answer is lost to it, and is started again over the same data dir.
-/// It resumes the same `change_id`, reads the record (`commit_found = true`) and inserts nothing; exactly
+/// Whoever resumes the change learns the decision only from that record"; i149 R10, R11): the
+/// fabric-primary is killed (SIGKILL) as soon as the `commit` record for the change is on `test-target`,
+/// so the insert's answer is lost to it, and is started again over the same data dir. The change resumes
+/// under the same `change_id`, the record is read (`commit_found = true`) and nothing is inserted; exactly
 /// one `commit` record for the change is on `test-target`; the Fabric row names `test-target` with `file`
 /// previous; every node writes `test-target` and every node but the fabric-primary is the same birth.
 /// Must NOT happen: a second `commit` record, the change resumed under a new `change_id`, or the lost
-/// answer read as "not switched" (the change failed, or any node unblocked on `file`).
+/// answer read as "not switched" (the change failed, or any mesh-primary unblocked onto `file`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_commit_answer_is_resolved_by_reading_the_commit_record() {
     let test = "a_lost_commit_answer_is_resolved_by_reading_the_commit_record";
     let (mut estate, views) = two_mesh_estate(test, &[]).await;
     let before = births(&views);
     let (file_root, target_root) = roots(&estate);
-    let role_id = node_id_of(&estate, ROLE).await;
     let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
-    let change_id = attr(&blocked_at(&estate, &build_id, &role_id).await, "change_id");
+    let change_id = attr(&blocked_at(&estate, &build_id, "mesh2").await, "change_id");
     // The commit record is on the new provider, read through the store's insert-and-fail primitive it is
     // inserted with: the claim of `commit` for (build_id, change_id) under the root's `locks/commit/`.
     let commits = || {
@@ -671,28 +661,29 @@ async fn a_lost_commit_answer_is_resolved_by_reading_the_commit_record() {
     for (name, birth) in before.iter().filter(|(n, _)| n.as_str() != "mesh1.admin.1") {
         assert_eq!(after_births.get(name), Some(birth), "{name}: the same birth serves throughout");
     }
+    let _ = file_root;
     estate.stop().await;
     let spans = estate.spans();
     let switch: Vec<&Value> = of_build(&spans, SWITCH, &build_id, None);
     assert!(switch.iter().all(|sp| attr(sp, "change_id") == change_id), "every switch of the Build is the same change_id: {switch:#?}");
     let read: Vec<&&Value> = switch.iter().filter(|sp| yes(sp, "commit_found") == Some(true) && sp["attributes"]["outcome"] != "inserted").collect();
     assert!(!read.is_empty(), "the restarted fabric-primary read the commit record (commit_found = true) and inserted none: {switch:#?}");
-    assert!(of_build(&spans, UNBLOCK, &build_id, None).iter().all(|sp| attr(sp, "provider") == TOPOLOGY_STORAGE_TARGET), "no node unblocked on {FILE}: the lost answer is never read as not switched");
+    assert!(of_build(&spans, UNBLOCK, &build_id, None).iter().all(|sp| attr(sp, "provider") == TOPOLOGY_STORAGE_TARGET), "no mesh-primary unblocked onto {FILE}: the lost answer is never read as not switched");
     estate.record_trace_url(&s(&read[0]["trace_id"]));
 }
 
-/// CONTRACT (storage.md §2 "Changing it": "A step that fails before the switch fails the Build only once
-/// the fabric-primary has read that no `commit` exists for `(build_id, change_id)`; each node then
-/// unblocks on the old provider, its owed writes landing there, the new provider closed and the Fabric
-/// row unchanged"; step 3: "a new provider holding lines the old one does not is refused by name, and
+/// CONTRACT (storage.md §2 "Changing it" (Q198): "A step that fails before the switch fails the Build only
+/// once the fabric-primary has read that no `commit` exists for `(build_id, change_id)`; the
+/// fabric-primary then sends `mesh.unblock` on the old provider, the new provider closed and the Fabric
+/// row unchanged"; step 2: "a new provider holding lines the old one does not is refused by name, and
 /// nothing switches"; "No timer ends a block"; i149 R18): `test-target` holds a line `file` does not, so
-/// the change's copy is refused before the switch (mesh2's mesh-primary frozen, then continued, holds the
-/// change between the block and the copy). The fabric-primary reads that no `commit` record
-/// exists (`commit_found = false`) and only then fails the Build; every node unblocks onto `file` under
-/// the change's `change_id`, the connection event owed while it was blocked landing on `file`; the Fabric
-/// row names `file` with no previous provider; every node writes `file` and is the same birth. Must NOT
-/// happen: the Build failed before the record is read, a node left blocked or unblocked onto
-/// `test-target`, or an owed write lost.
+/// the change's copy is refused before the switch (mesh2's mesh-primary frozen, then continued, holds
+/// the change before every mesh-primary has replied `blocked`). The fabric-primary reads that no `commit`
+/// record exists (`commit_found = false`) and only then fails the Build; every mesh-primary replies
+/// `unblocked` onto `file` under the change's `change_id`, after that read; a connection event of a node
+/// during the change lands once, on `file`; the Fabric row names `file` with no previous provider; every
+/// node writes `file` and is the same birth. Must NOT happen: the Build failed before the record is read,
+/// a mesh-primary left blocked or unblocked onto `test-target`, or the event lost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider() {
     let test = "a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider";
@@ -701,13 +692,11 @@ async fn a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider
     let (file_root, target_root) = roots(&estate);
     foreign_line(&target_root);
     // mesh2's mesh-primary holds the change; mesh1.rpc.1 dials mesh1.admin.2, a node it holds no
-    // connection to, while it is blocked.
+    // connection to, while mesh1's mesh-primary is blocked.
     let (source, peer, held) = ("mesh1.rpc.1", "mesh1.admin.2", "mesh2.admin.1");
-    let role_id = node_id_of(&estate, source).await;
     let hold = freeze(&estate, held).await;
     let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
-    let change_id = attr(&blocked_at(&estate, &build_id, &role_id).await, "change_id");
-    // A write owed while blocked: answered, landed only at the unblock.
+    let change_id = attr(&blocked_at(&estate, &build_id, "mesh1").await, "change_id");
     let dialled_ns = now_ns();
     dial(&estate, source, peer);
     thaw(&hold);
@@ -725,39 +714,37 @@ async fn a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider
     let spans = estate.spans();
     let read: Vec<&Value> = of_build(&spans, SWITCH, &build_id, None).into_iter().filter(|sp| attr(sp, "change_id") == change_id && yes(sp, "commit_found") == Some(false)).collect();
     assert!(!read.is_empty(), "the fabric-primary read that no commit record exists for ({build_id}, {change_id}) before it failed the Build");
-    let unblocked = of_build(&spans, UNBLOCK, &build_id, None);
-    for v in after.iter().filter(|v| v.name.to_string() != held) {
-        let id = v.node_id.to_string();
-        let own: Vec<&&Value> = unblocked.iter().filter(|sp| attr(sp, "node_id") == id && sp["attributes"]["outcome"] == "unblocked").collect();
-        assert!(!own.is_empty(), "{}: unblocked after the failure", v.name);
+    for mesh in ["mesh1", "mesh2"] {
+        let own: Vec<&Value> = of_build(&spans, UNBLOCK, &build_id, Some(mesh)).into_iter().filter(|sp| sp["attributes"]["outcome"] == "unblocked").collect();
+        assert!(!own.is_empty(), "{mesh}'s mesh-primary replied unblocked after the failure");
         for sp in own {
-            assert_eq!((attr(sp, "change_id"), attr(sp, "provider")), (change_id.clone(), FILE.to_string()), "{}: unblocks onto {FILE} under the change: {sp}", v.name);
-            assert!(read.iter().any(|r| start_ns(r) <= start_ns(sp)), "{}: unblocks only once no commit is read: {sp}", v.name);
+            assert_eq!((attr(sp, "change_id"), attr(sp, "provider")), (change_id.clone(), FILE.to_string()), "{mesh}: unblocked onto {FILE} under the change: {sp}");
+            assert!(read.iter().any(|r| start_ns(r) <= start_ns(sp)), "{mesh}: unblocked only once no commit is read: {sp}");
         }
     }
-    // The control: the owed connection event landed once, on the old provider, after the unblock.
+    // The control: the connection event of the change lands once, on the old provider.
     let owed: Vec<&Value> = named(&spans, OBSERVED).into_iter().filter(|sp| attr(sp, "source") == source && attr(sp, "destination") == peer && attr(sp, "origin") == "dial" && start_ns(sp) >= dialled_ns).collect();
-    assert_eq!(owed.len(), 1, "the connection event owed while blocked lands once: {owed:#?}");
+    assert_eq!(owed.len(), 1, "the connection event during the change lands once: {owed:#?}");
     let entry = attr(owed[0], "entry");
-    assert_eq!((lines_naming(&file_root, &entry).len(), lines_naming(&target_root, &entry).len()), (1, 0), "the owed connection event {entry} is on {FILE} once and not on {TOPOLOGY_STORAGE_TARGET}");
+    assert_eq!((lines_naming(&file_root, &entry).len(), lines_naming(&target_root, &entry).len()), (1, 0), "the connection event {entry} is on {FILE} once and not on {TOPOLOGY_STORAGE_TARGET}");
     estate.record_trace_url(&s(&read[0]["trace_id"]));
 }
 
 /// CONTRACT (storage.md §2 "Changing it": "No Build is admitted while a change is in progress, a change
 /// of `topology_storage_provider` included; `fabric.delete` alone is admitted"; "It is admitted and
 /// refused as any Build is, one in progress at a time"; i149 R17, R18): while a change to `test-target`
-/// is held after its block, a Build of the complete topology that names no provider and one naming
-/// `file` are each refused `build-in-progress` naming the change's Build, and nothing of them is
-/// accepted; the change then completes, the Fabric row naming `test-target` with `file` previous. Must
-/// NOT happen: a Build accepted during the change, or the change ended by the refusals.
+/// is held after every mesh-primary replied `blocked`, a Build of the complete topology that names no
+/// provider and one naming `file` are each refused `build-in-progress` naming the change's Build, and
+/// nothing of them is accepted; the change then completes, the Fabric row naming `test-target` with
+/// `file` previous. Must NOT happen: a Build accepted during the change, or the change ended by the
+/// refusals.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_build_other_than_fabric_delete_is_refused_during_a_change() {
     let test = "a_build_other_than_fabric_delete_is_refused_during_a_change";
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
-    let role_id = node_id_of(&estate, ROLE).await;
-    let hold = freeze(&estate, HOLD).await;
+    let hold = hold_switch(&estate).await;
     let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
-    let blocked = blocked_at(&estate, &build_id, &role_id).await;
+    let blocked = blocked_at(&estate, &build_id, "mesh2").await;
     let mut refusals = Vec::new();
     for (what, provider) in [("a Build naming no provider", None), ("a change back to file", Some(FILE))] {
         let refused = estate.carrier().await.create(naming_provider(&estate, provider).await).await;
@@ -771,7 +758,7 @@ async fn a_build_other_than_fabric_delete_is_refused_during_a_change() {
         }
     }
     estate.artifact("refusals.json", &json!(refusals));
-    thaw(&hold);
+    hold.release("switch").await;
     let done = estate.follow(stream).await;
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
@@ -784,110 +771,112 @@ async fn a_build_other_than_fabric_delete_is_refused_during_a_change() {
 
 /// CONTRACT (storage.md §2 "Changing it": "The change has a durable `change_id`, recorded with its Build
 /// before its first command; its commands carry it, and a node refuses by name a command of an older
-/// one"; i149 R11): a first change to `test-target` runs while mesh2's mesh-primary, the carrier of its
-/// commands to mesh2.rpc.1, holds the first block command of that change on its way to mesh2.rpc.1 (the
-/// testkit's storage-step cut); the fabric-primary sends it again and the change completes. A second
-/// change, back to `file`, is held after mesh2.rpc.1 has blocked under it, and the held command of the
-/// first change is released to mesh2.rpc.1.
-/// mesh2.rpc.1 refuses every command of the first change it receives after its block under the second,
-/// and stays blocked until the second change's switch: its only unblock after that block is the second
-/// change's, onto `file`. Must NOT happen: an unblock of the node by the first change's `change_id`, or
-/// an unblock before the second change's switch.
+/// one"; i149 R11): a first change to `test-target` runs while mesh2's mesh-primary holds its first move
+/// command to mesh2.rpc.1 on its way (the testkit's storage-step cut); the mesh-primary sends it again
+/// and the change completes. A second change, back to `file`, completes, mesh2.rpc.1 moving under it, and
+/// the held command of the first change is then released to mesh2.rpc.1. mesh2.rpc.1 refuses every
+/// command of the first change it receives after its move under the second: its only move after that is
+/// none, and it writes `file`. Must NOT happen: a move of the node by the first change's `change_id`
+/// after its move under the second.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_old_change_cannot_unblock_writes_for_a_new_change() {
     let test = "an_old_change_cannot_unblock_writes_for_a_new_change";
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
     let role_id = node_id_of(&estate, ROLE).await;
-    // mesh2's mesh-primary holds the first change's first block command of mesh2.rpc.1 on its way.
+    // mesh2's mesh-primary holds the first change's first move command of mesh2.rpc.1 on its way.
     let carrier = rdm_test::faults::Door::at(&estate, "mesh2.admin.1").await;
-    carrier.arm("old-command", json!({"kind": "storage-step", "node": ROLE, "step": "block"})).await;
+    carrier.arm("old-command", json!({"kind": "storage-step", "node": ROLE})).await;
     let (first, first_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
     carrier.wait_held("old-command").await;
-    let old_change = attr(&blocked_at(&estate, &first_id, &role_id).await, "change_id");
     estate.follow(first).await;
-    let hold = freeze(&estate, HOLD).await;
+    let old_change = attr(&wait_for(&format!("{MOVE} of {ROLE} under Build {first_id}"), STEP, || async {
+        estate.spans().into_iter().find(|sp| sp["name"] == MOVE && attr(sp, "build_id") == first_id && attr(sp, "node_id") == role_id && sp["attributes"]["outcome"] == "moved")
+    }).await, "change_id");
     let (second, second_id) = change_to(&estate, FILE).await;
-    let blocked = blocked_at(&estate, &second_id, &role_id).await;
-    let new_change = attr(&blocked, "change_id");
+    estate.follow(second).await;
+    let moved = wait_for(&format!("{MOVE} of {ROLE} under Build {second_id}"), STEP, || async {
+        estate.spans().into_iter().find(|sp| sp["name"] == MOVE && attr(sp, "build_id") == second_id && attr(sp, "node_id") == role_id && sp["attributes"]["outcome"] == "moved")
+    }).await;
+    let new_change = attr(&moved, "change_id");
     assert_ne!(old_change, new_change, "each change has its own change_id");
     carrier.release("old-command").await;
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    thaw(&hold);
-    estate.follow(second).await;
+    wait_for(&format!("the first change's held command reaches {ROLE}"), STEP, || async {
+        estate.spans().into_iter().find(|sp| sp["name"] == MOVE && attr(sp, "node_id") == role_id && attr(sp, "change_id") == old_change && start_ns(sp) > start_ns(&moved))
+    }).await;
     fabric_names(&estate.fabric_view().await, FILE, &[FILE, TOPOLOGY_STORAGE_TARGET]);
+    assert_eq!(estate.node_view(ROLE).await.topology_storage_provider.as_deref(), Some(FILE), "{ROLE} writes {FILE}, the second change's provider");
     estate.stop().await;
     let spans = estate.spans();
     let switched = of_build(&spans, SWITCH, &second_id, None).into_iter().find(|sp| sp["attributes"]["outcome"] == "inserted").expect("the second change switched");
-    let at_node: Vec<&Value> = spans.iter().filter(|sp| (sp["name"] == BLOCK || sp["name"] == UNBLOCK) && attr(sp, "node_id") == role_id && start_ns(sp) > start_ns(&blocked)).collect();
+    let at_node: Vec<&Value> = spans.iter().filter(|sp| sp["name"] == MOVE && attr(sp, "node_id") == role_id && start_ns(sp) > start_ns(&moved)).collect();
     let stale: Vec<&&Value> = at_node.iter().filter(|sp| attr(sp, "change_id") == old_change).collect();
-    assert!(!stale.is_empty(), "the old mesh-primary birth delivered a command of the first change after the node blocked under the second: {at_node:#?}");
-    assert!(stale.iter().all(|sp| sp["attributes"]["outcome"] != "unblocked" && sp["attributes"]["outcome"] != "blocked"), "every command of the older change is refused by name: {stale:#?}");
-    let unblocked: Vec<&&Value> = at_node.iter().filter(|sp| sp["name"] == UNBLOCK && sp["attributes"]["outcome"] == "unblocked").collect();
-    assert!(!unblocked.is_empty() && unblocked.iter().all(|sp| attr(sp, "change_id") == new_change && attr(sp, "provider") == FILE && start_ns(sp) >= start_ns(switched)), "the node's only unblock after its block is the second change's, onto {FILE}, after its switch: {unblocked:#?}");
-    estate.record_trace_url(&s(&blocked["trace_id"]));
+    assert!(!stale.is_empty(), "the first change's held command reached the node after it moved under the second: {at_node:#?}");
+    assert!(stale.iter().all(|sp| sp["attributes"]["outcome"] == "rejected-stale-change"), "every command of the older change is refused by name: {stale:#?}");
+    assert!(at_node.iter().all(|sp| sp["attributes"]["outcome"] != "moved"), "the node does not move after its move under the second change: {at_node:#?}");
+    assert!(start_ns(&moved) >= start_ns(switched) && attr(&moved, "provider") == FILE, "the node's move under the second change is onto {FILE}, after its switch: {moved}");
+    estate.record_trace_url(&s(&moved["trace_id"]));
 }
 
-/// CONTRACT (storage.md §2 "Block": "Every write it would make is held as owed, never refused ... a
-/// connection event stays owed on the node's writer queue (Q169)"; "Unblock": "Each node moves to the new
-/// provider, lands its owed writes there in its own order"; i149 R9): mesh1.rpc.1, blocked under a
-/// change to `test-target` (held by mesh2's mesh-primary, frozen), dials mesh1.admin.2, a node it holds
-/// no connection to; the dial is answered at once. While
-/// the change is held no line of that connection event is on either provider; after the change completes
-/// it is on `test-target` exactly once, its write begun after the node's unblock, and never on `file`.
-/// Must NOT happen: the open waiting on the write, the event written to `file` after the block, lost, or
-/// landed twice.
+/// CONTRACT (storage.md §2 "Changing it" (Q198): step 1, a mesh-primary that "has replied `blocked`
+/// issues no new command until it is unblocked"; step 2, "Once every mesh-primary has replied `blocked`,
+/// the fabric-primary appends every line of every store on the old provider to the new one in source
+/// order"; step 4, "Each mesh-primary moves its nodes to the new provider"; Q169: a connection event
+/// never blocks an open): mesh1.rpc.1, whose mesh-primary has replied `blocked`, dials mesh1.admin.2, a
+/// node it holds no connection to, while the change is held before its copy; the dial is answered at
+/// once and its connection event is written once, on `file`, the provider the node writes until its
+/// mesh-primary moves it; the copy brings that line to `test-target` once; the node then writes
+/// `test-target`. Must NOT happen: the open waiting on the write, or the event lost or landed twice on
+/// either provider.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_connection_event_during_a_change_lands_once_after_the_unblock() {
     let test = "a_connection_event_during_a_change_lands_once_after_the_unblock";
     let (source, destination) = ("mesh1.rpc.1", "mesh1.admin.2");
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
     let (file_root, target_root) = roots(&estate);
-    let source_id = node_id_of(&estate, source).await;
-    let hold = freeze(&estate, "mesh2.admin.1").await;
+    let hold = hold_switch(&estate).await;
     let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
-    let blocked = blocked_at(&estate, &build_id, &source_id).await;
+    let blocked = blocked_at(&estate, &build_id, "mesh2").await;
     let dialled_ns = now_ns();
     dial(&estate, source, destination);
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    let landed_while_blocked: Vec<Value> = estate.spans().into_iter().filter(|sp| sp["name"] == OBSERVED && attr(sp, "source") == source && start_ns(sp) >= dialled_ns).collect();
-    assert!(landed_while_blocked.is_empty(), "no connection event of the blocked node is written while it is blocked: {landed_while_blocked:#?}");
-    thaw(&hold);
+    wait_for(&format!("{source}'s connection event is written"), STEP, || async {
+        estate.spans().into_iter().find(|sp| sp["name"] == OBSERVED && attr(sp, "source") == source && attr(sp, "destination") == destination && start_ns(sp) >= dialled_ns)
+    }).await;
+    hold.release("switch").await;
     estate.follow(stream).await;
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
+    nodes_write(&[estate.node_view(source).await], TOPOLOGY_STORAGE_TARGET);
     estate.stop().await;
     let spans = estate.spans();
     let owed: Vec<&Value> = named(&spans, OBSERVED).into_iter().filter(|sp| attr(sp, "source") == source && attr(sp, "destination") == destination && attr(sp, "origin") == "dial" && start_ns(sp) >= dialled_ns).collect();
-    assert_eq!(owed.len(), 1, "the connection event owed while blocked is written once: {owed:#?}");
+    assert_eq!(owed.len(), 1, "the connection event during the change is written once: {owed:#?}");
     let entry = attr(owed[0], "entry");
-    assert_eq!((lines_naming(&target_root, &entry).len(), lines_naming(&file_root, &entry).len()), (1, 0), "the connection event {entry} is on {TOPOLOGY_STORAGE_TARGET} once and never on {FILE}");
-    let unblock = of_build(&spans, UNBLOCK, &build_id, Some(&source_id)).into_iter().find(|sp| sp["attributes"]["outcome"] == "unblocked").expect("the node unblocked");
-    assert_eq!(attr(unblock, "provider"), TOPOLOGY_STORAGE_TARGET, "the node unblocks onto {TOPOLOGY_STORAGE_TARGET}: {unblock}");
-    assert!(start_ns(owed[0]) >= start_ns(unblock), "the owed write is begun after the unblock: {} vs {unblock}", owed[0]);
+    assert_eq!((lines_naming(&file_root, &entry).len(), lines_naming(&target_root, &entry).len()), (1, 1), "the connection event {entry} is on {FILE} once, where the node wrote it, and on {TOPOLOGY_STORAGE_TARGET} once, the copy's");
+    let unblocked = of_build(&spans, UNBLOCK, &build_id, Some("mesh1")).into_iter().find(|sp| sp["attributes"]["outcome"] == "unblocked").expect("mesh1's mesh-primary unblocked");
+    assert_eq!(attr(unblocked, "provider"), TOPOLOGY_STORAGE_TARGET, "mesh1's mesh-primary moves its nodes onto {TOPOLOGY_STORAGE_TARGET}: {unblocked}");
     estate.record_trace_url(&s(&blocked["trace_id"]));
 }
 
-/// CONTRACT (storage.md §2: "A node that does not acknowledge the block or does not unblock is a lost
-/// node, as any node is: it is investigated, and on any verdict but `reached` node recovery re-creates it
-/// at its `path.name`, an attempt of the change's own Build. The new birth is launched ... on the new
-/// provider after [the switch]. After the switch the Build completes once every node has unblocked or
-/// been re-created; nothing else waits"; Q182: a node not replying to commands is silent; Q188): the role
-/// node acknowledges its block, then is frozen (alive and silent) so it never unblocks. Node
+/// CONTRACT (storage.md §2 "Changing it" (Q198): step 4, "Each mesh-primary moves its nodes to the new
+/// provider, then replies `unblocked`"; "After the switch the Build completes once every mesh-primary has
+/// replied `unblocked`; nothing else waits"; a lost node "is investigated, and on any verdict but
+/// `reached` node recovery re-creates it at its `path.name`"; Q182: a node not replying to commands is
+/// silent): the role node is frozen (alive and silent) after its mesh-primary replied `blocked`, so it
+/// never answers its move. Its mesh-primary replies `unblocked` without it and the Build completes; node
 /// investigation re-creates it at mesh2.rpc.1 under a new node id, launched on `test-target`: it writes
 /// `test-target`, is ready-for-traffic, its records are on `test-target` and none on `file`; the old
-/// birth never unblocks; the Build completes and the Fabric row names `test-target` with `file` previous.
-/// Must NOT happen: the Build waiting on the frozen birth forever, the old birth unblocking, or the new
-/// birth launched on `file`.
+/// birth never moves; the Fabric row names `test-target` with `file` previous. Must NOT happen: the
+/// Build waiting on the frozen birth forever, the old birth moving, or the new birth launched on `file`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
     let test = "a_node_that_never_unblocks_is_recreated_on_the_new_provider";
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
     let (file_root, target_root) = roots(&estate);
     let old_id = node_id_of(&estate, ROLE).await;
-    let hold = freeze(&estate, HOLD).await;
+    let hold = hold_switch(&estate).await;
     let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
-    let blocked = blocked_at(&estate, &build_id, &old_id).await;
+    let blocked = blocked_at(&estate, &build_id, "mesh2").await;
     let silent = freeze(&estate, ROLE).await;
-    thaw(&hold);
+    hold.release("switch").await;
     let done = estate.follow(stream).await;
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
     let renewed = estate.until_node(ROLE, "the role node re-created at its path.name", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::ReadyForTraffic).cloned()).await;
@@ -898,36 +887,33 @@ async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
     thaw(&silent);
     estate.stop().await;
     let spans = estate.spans();
-    assert!(of_build(&spans, UNBLOCK, &build_id, Some(&old_id)).iter().all(|sp| sp["attributes"]["outcome"] != "unblocked"), "the frozen birth never unblocks");
+    assert!(named(&spans, MOVE).iter().filter(|sp| attr(sp, "node_id") == old_id).all(|sp| sp["attributes"]["outcome"] != "moved"), "the frozen birth never moves");
     let switched = of_build(&spans, SWITCH, &build_id, None).into_iter().find(|sp| sp["attributes"]["outcome"] == "inserted").expect("the change switched");
-    assert!(start_ns(switched) >= start_ns(&blocked), "the switch follows the frozen birth's acknowledgement");
+    assert!(start_ns(switched) >= start_ns(&blocked), "the switch follows the mesh-primary's blocked");
     estate.record_trace_url(&s(&switched["trace_id"]));
 }
 
 /// CONTRACT (storage.md §2 "Changing it": "`fabric.delete` alone is admitted, and it interrupts the change
-/// as it interrupts any Build, the records on both providers kept"; "Whoever resumes the change ...
-/// learns the decision only by reading that record"; i149 R12: "fabric.delete resolve[s] the current
-/// migration before issuing ordinary writes"): while a change to `test-target` is held after its block,
-/// `fabric.delete` is admitted and completes. Before its teardown begins, the delete's executor reads the
-/// change's `commit` record (`commit_found = false`: not switched), and the change is never switched
-/// (no switch inserted); every line `file` held at the delete's acceptance is still on `file` and every
-/// line `test-target` held then is still there. Must NOT
-/// happen: the delete refused, its teardown begun before the change is resolved, the change switched
-/// under it, or a record of either provider removed.
+/// as it interrupts any Build, the records on both providers kept"; "Whoever resumes the change learns the
+/// decision only from that record"; i149 R12: "fabric.delete resolve[s] the current migration before
+/// issuing ordinary writes"): while a change to `test-target` is held after every mesh-primary replied
+/// `blocked`, `fabric.delete` is admitted and completes. Before its teardown begins, the change's
+/// `commit` record is read (`commit_found = false`: not switched), and the change is never switched (no
+/// switch inserted); every line `file` held at the delete's acceptance is still on `file` and every line
+/// `test-target` held then is still there. Must NOT happen: the delete refused, its teardown begun before
+/// the change is resolved, the change switched under it, or a record of either provider removed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delete_resolves_the_storage_change_before_teardown() {
     let test = "a_delete_resolves_the_storage_change_before_teardown";
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
     let (file_root, target_root) = roots(&estate);
-    let role_id = node_id_of(&estate, ROLE).await;
-    let hold = freeze(&estate, HOLD).await;
+    let hold = hold_switch(&estate).await;
     let (_change, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
-    let change_id = attr(&blocked_at(&estate, &build_id, &role_id).await, "change_id");
+    let change_id = attr(&blocked_at(&estate, &build_id, "mesh2").await, "change_id");
     let accepted_ns = now_ns();
     let delete = estate.carrier().await.create(Change::DeleteFabric).await.unwrap_or_else(|end| panic!("fabric.delete during the change is admitted: {end}"));
     let delete_id = delete.build_id().to_string();
     let (file_at, target_at) = (store_lines(&file_root), store_lines(&target_root));
-    thaw(&hold);
     let frames = terminal(&estate, delete).await;
     estate.artifact("frames.json", &json!(format!("{frames:?}")));
     assert!(matches!(frames.last(), Some(BuildFrame::Complete { .. })), "the delete completes: {frames:?}");
@@ -938,6 +924,7 @@ async fn a_delete_resolves_the_storage_change_before_teardown() {
     for (store, lines) in &target_at {
         assert!(target_after[store].len() >= lines.len() && target_after[store][..lines.len()] == lines[..], "{store}: every line {TOPOLOGY_STORAGE_TARGET} held at the delete's acceptance is kept");
     }
+    let _ = hold;
     estate.stop().await;
     let spans = estate.spans();
     let resolved = of_build(&spans, SWITCH, &build_id, None).into_iter().filter(|sp| attr(sp, "change_id") == change_id && yes(sp, "commit_found") == Some(false) && start_ns(sp) >= accepted_ns).min_by_key(|sp| start_ns(sp)).unwrap_or_else(|| panic!("the delete's executor read the change's commit record (commit_found = false) for ({build_id}, {change_id})"));

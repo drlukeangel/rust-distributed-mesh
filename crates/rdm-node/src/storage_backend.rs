@@ -21,13 +21,6 @@ pub struct NodeStorage {
 pub trait NodeStorageBackend: Send + Sync {
     /// Opens the storage of the node `launch` names.
     async fn open(&self, launch: &Launch) -> Result<NodeStorage, String>;
-    /// Whether this provider holds the `commit` record `commit` (storage.md §2 step 4): what a node's
-    /// start that reads a block from its data dir decides by. `Err`: the provider did not answer, and
-    /// the block holds.
-    async fn commit(&self, launch: &Launch, commit: &rdm_core::build::StorageCommit) -> Result<bool, String> {
-        let _ = (launch, commit);
-        Err("this provider answers no commit record (storage.md §2 step 4)".into())
-    }
 }
 
 /// RDM standalone's backend: the node's connection facts, its lines of the fabric's store root's
@@ -58,12 +51,6 @@ impl NodeStorageBackend for FileNodeBackend {
             connections: Arc::new(connections),
             writes_to: "store-root".into(),
         })
-    }
-
-    async fn commit(&self, launch: &Launch, commit: &rdm_core::build::StorageCommit) -> Result<bool, String> {
-        let store_dir = self.store_dir.as_ref().unwrap_or(&launch.store_dir);
-        let locks = crate::store_log::StoreLocks::at(&store_dir.join(launch.fabric_id.to_string()), &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation));
-        locks.read(crate::store_log::LockKind::Commit, &commit.name()).await.map(|held| held.is_some()).map_err(|e| e.to_string())
     }
 }
 
@@ -127,8 +114,6 @@ pub struct NodeStorageHandle {
     launch: Launch,
     /// One replacement at a time.
     replacing: tokio::sync::Mutex<()>,
-    /// The provider a storage change's block opened beside the one the node writes.
-    beside: std::sync::Mutex<Option<(String, NodeStorage)>>,
 }
 
 impl NodeStorageHandle {
@@ -141,7 +126,6 @@ impl NodeStorageHandle {
             providers: providers.clone(),
             launch: launch.clone(),
             replacing: tokio::sync::Mutex::new(()),
-            beside: Default::default(),
         }))
     }
 
@@ -166,79 +150,10 @@ impl NodeStorageHandle {
     /// the old provider has been answered there ("Finish outstanding writes"). A name the executable
     /// does not register, or a provider that does not open, is refused by name and nothing moves.
     pub async fn replace(&self, provider: &str) -> Result<(), String> {
-        self.replace_for(provider, None).await
-    }
-
-    /// [`Self::replace`] as a step of the storage change `change`: the provider its block opened beside
-    /// the old one is the one moved to; a replacement onto the provider the node writes moves nothing.
-    pub async fn replace_for(&self, provider: &str, change: Option<(&rdm_core::BuildId, &rdm_core::ChangeId)>) -> Result<(), String> {
         let _one = self.replacing.lock().await;
-        if self.provider() == provider {
-            return Ok(());
-        }
-        let beside = self.beside.lock().unwrap_or_else(|e| e.into_inner()).take().filter(|(p, _)| p == provider).map(|(_, s)| s);
-        let opened = match beside {
-            Some(stores) => stores,
-            None => self.open_stores(provider, change).await?,
-        };
+        let opened = self.providers.named(provider)?.open(&Launch { topology_storage_provider: provider.to_string(), ..self.launch.clone() }).await?;
         self.current.replace(provider, opened).await;
         Ok(())
-    }
-
-    /// Open the provider this executable registers as `provider` beside the one the node writes, for
-    /// the storage change `change` (storage.md §2 step 1): kept until the node moves to it or its change
-    /// ends. A name the executable does not register, or a provider that does not open, is refused by
-    /// name.
-    pub async fn open_beside(&self, provider: &str, change: (&rdm_core::BuildId, &rdm_core::ChangeId)) -> Result<(), String> {
-        let _one = self.replacing.lock().await;
-        if self.provider() == provider || self.beside.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|(p, _)| p == provider) {
-            return Ok(());
-        }
-        let stores = self.open_stores(provider, Some(change)).await?;
-        *self.beside.lock().unwrap_or_else(|e| e.into_inner()) = Some((provider.to_string(), stores));
-        Ok(())
-    }
-
-    /// Close the provider opened beside the one the node writes, if any.
-    pub fn close_beside(&self) {
-        self.beside.lock().unwrap_or_else(|e| e.into_inner()).take();
-    }
-
-    /// Block (storage.md §2 step 1): no write is admitted from here; each waits as owed. Answers how many
-    /// writes were issued before the block and not answered.
-    pub fn block(&self) -> usize {
-        self.current.block()
-    }
-
-    /// Resolves once every write admitted before the block has been answered.
-    pub async fn finish_issued(&self) {
-        self.current.finish_issued().await
-    }
-
-    /// Lift the block: every owed write is admitted to the provider the node writes now.
-    pub fn unblock(&self) {
-        self.current.unblock()
-    }
-
-    /// How many writes wait on the block now.
-    pub fn owed(&self) -> usize {
-        self.current.owed()
-    }
-
-    async fn open_stores(&self, provider: &str, change: Option<(&rdm_core::BuildId, &rdm_core::ChangeId)>) -> Result<NodeStorage, String> {
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-storage-open", build_id = tracing::field::Empty, change_id = tracing::field::Empty, node_id = %self.launch.node_id, provider = %provider, outcome = tracing::field::Empty);
-        if let Some((build_id, change_id)) = change {
-            span.record("build_id", build_id.log().to_string().as_str()).record("change_id", change_id.as_str());
-        }
-        let opened = match self.providers.named(provider) {
-            Ok(backend) => backend.open(&Launch { topology_storage_provider: provider.to_string(), ..self.launch.clone() }).await,
-            Err(e) => Err(e),
-        };
-        match &opened {
-            Ok(_) => span.record("outcome", "opened"),
-            Err(e) => span.record("outcome", format!("refused: {e}").as_str()),
-        };
-        opened
     }
 }
 
@@ -248,18 +163,18 @@ struct ConnectionsThroughHandle(Arc<NodeStorageHandle>);
 #[async_trait]
 impl ConnectionsStorage for ConnectionsThroughHandle {
     async fn put_connection(&self, fact: &rdm_core::connections::NodeConnection) -> Result<(), crate::storage_error::StorageError> {
-        let w = self.0.current.write().await;
+        let w = self.0.current.write();
         w.connections.put_connection(fact).await
     }
     async fn connections(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, crate::storage_error::StorageError> {
         self.0.current.read().stores().connections.connections().await
     }
     async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), crate::storage_error::StorageError> {
-        let w = self.0.current.write().await;
+        let w = self.0.current.write();
         w.connections.remove_connection(index).await
     }
     async fn append_history(&self, fact: &rdm_core::connections::NodeConnection) -> Result<(), crate::storage_error::StorageError> {
-        let w = self.0.current.write().await;
+        let w = self.0.current.write();
         w.connections.append_history(fact).await
     }
     async fn history(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, crate::storage_error::StorageError> {

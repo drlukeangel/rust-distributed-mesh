@@ -92,6 +92,9 @@ pub struct CommandView {
     /// those commands was sent.
     unanswered: Mutex<HashMap<(NodeId, IncarnationId), Instant>>,
     connections_delete_deadline: Duration,
+    /// Whether this admin, as a mesh-primary, replied `blocked` to a storage change's `mesh.block`
+    /// (storage.md §2 "Changing it", step 1): it issues no new command until it is unblocked.
+    blocked: watch::Sender<bool>,
 }
 
 /// A view whose commanded births run their `node.connections.delete { All }` under the launch default.
@@ -104,7 +107,33 @@ impl Default for CommandView {
 impl CommandView {
     /// A view whose commanded births run their `node.connections.delete { All }` under `connections_delete_deadline`.
     pub fn new(connections_delete_deadline: Duration) -> Self {
-        Self { open: Mutex::new(HashMap::new()), unanswered: Mutex::new(HashMap::new()), connections_delete_deadline }
+        Self { open: Mutex::new(HashMap::new()), unanswered: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0 }
+    }
+
+    /// `mesh.block`: from here no new command is issued; resolves once every command in flight has
+    /// completed (storage.md §2 "Changing it", step 1). Answers how many were in flight at the block.
+    pub async fn block(&self) -> usize {
+        self.blocked.send_replace(true);
+        let in_flight = self.open.lock().unwrap().len();
+        while !self.open.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        in_flight
+    }
+
+    /// `mesh.unblock`: commands are issued again.
+    pub fn unblock(&self) {
+        self.blocked.send_replace(false);
+    }
+
+    /// Whether this admin replied `blocked` and is not unblocked yet.
+    pub fn is_blocked(&self) -> bool {
+        *self.blocked.borrow()
+    }
+
+    /// Resolves once this admin may issue a new command: at once, or at its unblock.
+    pub async fn admitted(&self) {
+        let _ = self.blocked.subscribe().wait_for(|b| !*b).await;
     }
 
     /// How long a command whose birth runs a `node.connections.delete { All }` (the command itself,
@@ -246,6 +275,8 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandVie
         Err(e) => return (CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.name, ctx.build_id) , code: rdm_core::outcome::Code::FailedPrecondition }, None),
     };
     let key = CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+    // A mesh-primary that replied `blocked` issues no new command until it is unblocked (storage.md §2).
+    commands.admitted().await;
     let _ = commands.open(key.clone());
     let (node_id, attempt) = (node.node_id.clone(), ctx.attempt);
     let mut unreachable = None;

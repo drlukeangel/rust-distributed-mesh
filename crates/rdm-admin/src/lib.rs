@@ -80,7 +80,7 @@ pub mod storage_change;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub use rdm_node::storage_error;
-pub use rdm_node::storage_block;
+pub use rdm_node::storage_move;
 pub use rdm_node::storage_handle;
 #[cfg(feature = "file-backend")]
 pub use rdm_node::store_log;

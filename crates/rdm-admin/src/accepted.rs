@@ -1248,6 +1248,16 @@ fn plan_with(
     // other mesh's final primary after its mesh.deleted, then release the fabric name and report
     // fabric.deleted while the fabric-primary stays alive for its separate node.delete.
     if topology.meshes.is_empty() && action.is_none() {
+        // A storage change the delete interrupted: each mesh-primary is sent `mesh.unblock` before the
+        // teardown (storage.md §2 "Changing it").
+        if let Some(change) = &topology.storage_change {
+            let done = |key: &str| steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
+            let mut meshes: Vec<&crate::model::Mesh> = observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead).collect();
+            meshes.sort_by(|a, b| a.name.cmp(&b.name));
+            for m in meshes.into_iter().filter(|m| !done(&crate::storage_change::unblock_operation(&change.change_id, &m.name))) {
+                ops.push(BuildOperation::UnblockStorage { mesh: m.name.clone(), change: change.clone() });
+            }
+        }
         let fp_mesh = observed.fabric_primary().map(|n| n.mesh.as_str());
         // A deleted mesh the view no longer holds: its final primary's node.delete, once this Build began
         // it, is owed its receipt (fabric-delete.md "Failure": a runtime whose delete has no receipt is
@@ -1367,12 +1377,28 @@ fn plan_with(
             Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-mesh-id-unknown", mesh = %m).in_scope(|| tracing::info!(error = %e, "the mesh's shutdown is not planned")),
         }
     }
-    // A storage change is its own operation, after every other the Build plans (storage.md §2
-    // "Changing it"), until its `Complete` is receipted.
+    // A storage change's operations follow every other the Build plans (storage.md §2 "Changing it"):
+    // each mesh's `mesh.block`, its mesh-primary's, the fabric-primary's own mesh first; the copy and the
+    // switch; each mesh's `mesh.unblock`; the Build's verdict. Each is planned until its `Complete` is
+    // receipted.
     if let Some(change) = topology.storage_change.as_ref().filter(|_| action.is_none()) {
-        let key = crate::storage_change::operation(&change.change_id);
-        if !steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete) {
-            ops.push(BuildOperation::ChangeStorage { change: change.clone() });
+        let done = |key: &str| steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
+        let waited = |key: &str| steps.iter().filter(|r| r.operation == key && r.step == "Waiting").count();
+        let fp_mesh = observed.fabric_primary().map(|n| n.mesh.clone());
+        let mut meshes: Vec<&String> = topology.meshes.keys().collect();
+        meshes.sort_by_key(|m| (Some(m.as_str()) != fp_mesh.as_deref(), m.to_string()));
+        for (key_of, block) in [(crate::storage_change::block_operation as fn(&rdm_core::ChangeId, &str) -> String, true), (crate::storage_change::unblock_operation, false)] {
+            let mut owed: Vec<&String> = meshes.iter().copied().filter(|m| !done(&key_of(&change.change_id, m))).collect();
+            owed.sort_by_key(|m| waited(&key_of(&change.change_id, m)));
+            for mesh in owed {
+                ops.push(if block { BuildOperation::BlockStorage { mesh: mesh.clone(), change: change.clone() } } else { BuildOperation::UnblockStorage { mesh: mesh.clone(), change: change.clone() } });
+            }
+            if block && !done(&crate::storage_change::switch_operation(&change.change_id)) {
+                ops.push(BuildOperation::SwitchStorage { change: change.clone() });
+            }
+        }
+        if !done(&crate::storage_change::operation(&change.change_id)) {
+            ops.push(BuildOperation::FinishStorage { change: change.clone() });
         }
     }
     BuildPlan { operations: ops }

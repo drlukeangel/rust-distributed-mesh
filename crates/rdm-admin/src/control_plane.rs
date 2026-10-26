@@ -94,10 +94,9 @@ pub struct ControlPlane {
     /// The fabric-primary's `FabricAtlas` (fabric-atlas.md): what Build acceptance of a node action
     /// reads the node's birth and lifecycle from, never the gossip view.
     pub atlas: Arc<crate::fabric_atlas::FabricAtlas>,
-    /// This admin's storage changes, the Node RPC client its change commands go out on and its status
-    /// door: a fabric.delete admitted during a storage change resolves it before it is written
-    /// (storage.md §2 "Changing it"). Filled once the admin holds them.
-    pub storage_changes: std::sync::OnceLock<(Arc<crate::storage_change::StorageChanges>, Arc<rdm_transport::NodeRpcClient>, crate::status_rpc::AuthoritySlot)>,
+    /// This admin's storage changes: a fabric.delete admitted during a storage change interrupts its
+    /// switch (storage.md §2 "Changing it"). Filled once the admin holds them.
+    pub storage_changes: std::sync::OnceLock<Arc<crate::storage_change::StorageChanges>>,
 }
 
 impl ControlPlane {
@@ -425,8 +424,8 @@ impl ControlPlane {
                 // commit record read, and this fabric-primary unblocked onto the provider it decided
                 // (storage.md §2: fabric.delete "interrupts the change as it interrupts any Build";
                 // i149 R12).
-                if let Some((changes, client, status_door)) = self.storage_changes.get() {
-                    changes.resolve_for_delete(Some(client.clone()), status_door.get().cloned(), self.topology.clone()).await;
+                if let Some(changes) = self.storage_changes.get() {
+                    changes.interrupt_for_delete();
                 }
                 if let Some((resumed, _)) = self.fabric_delete_in_force().await? {
                     span.record("build_id", resumed.build_id.as_str());
@@ -491,6 +490,10 @@ impl ControlPlane {
             // "Changing it"). Any other Build is none, whatever Build it was compiled against.
             topology.storage_change = match (&change, &current_provider) {
                 (TopologyChange::Reconcile { topology_storage_provider: Some(to), .. }, Some(from)) if to != from => Some(rdm_core::build::StorageChange { change_id: rdm_core::ChangeId::mint(), from: from.clone(), to: to.clone() }),
+                // A fabric.delete interrupting a storage change carries it: the delete sends each
+                // mesh-primary `mesh.unblock` onto the provider the change's `commit` record decided
+                // before its teardown.
+                (TopologyChange::DeleteFabric, _) => current.topology.storage_change.clone().filter(|_| matches!(current.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running)),
                 _ => None,
             };
             // Every create names its executable (build-deployment.md §2.1): whatever change compiled it, a
@@ -1371,7 +1374,7 @@ fn settled(current: &crate::build_state::BuildProjection) -> Result<(), Refusal>
 /// The mesh `op` acts in.
 fn op_mesh(op: &crate::build::BuildOperation) -> Option<String> {
     match op {
-        crate::build::BuildOperation::CreateMesh { mesh, .. } | crate::build::BuildOperation::ShutdownMesh { mesh, .. } => Some(mesh.clone()),
+        crate::build::BuildOperation::CreateMesh { mesh, .. } | crate::build::BuildOperation::ShutdownMesh { mesh, .. } | crate::build::BuildOperation::BlockStorage { mesh, .. } | crate::build::BuildOperation::UnblockStorage { mesh, .. } => Some(mesh.clone()),
         other => other.node().map(|n| n.mesh.clone()),
     }
 }

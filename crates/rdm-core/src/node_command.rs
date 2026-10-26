@@ -84,9 +84,10 @@ pub enum NodeCommandRequest {
         /// The operation's declared identity.
         operation: String,
     },
-    /// A step of a storage change (storage.md §2 "Changing it"), carried by the exact birth's
-    /// mesh-primary: answered [`NodeCommandReply::StorageStepped`] once the birth did it, or
-    /// [`NodeCommandReply::RejectedStaleChange`] for a command of a change older than the one it holds.
+    /// A storage change's move of the exact birth to the provider its change decided (storage.md §2
+    /// "Changing it", step 4: "Each mesh-primary moves its nodes to the new provider"), carried by its
+    /// mesh-primary: answered [`NodeCommandReply::StorageStepped`] once the birth writes `provider`, or
+    /// [`NodeCommandReply::RejectedStaleChange`] for a command of a change older than the one it acted on.
     StorageStep {
         /// The commanded node.
         node_id: NodeId,
@@ -96,8 +97,8 @@ pub enum NodeCommandRequest {
         build_id: String,
         /// The change.
         change_id: crate::ChangeId,
-        /// The step.
-        step: crate::build::StorageStep,
+        /// The provider the birth writes from here on.
+        provider: String,
     },
 }
 
@@ -220,16 +221,15 @@ pub enum NodeCommandReply {
         /// The state it holds, named by the refusal.
         current: crate::status::NodeState,
     },
-    /// The storage step is done: the birth blocked, its issued writes finished on the old provider, or
-    /// it unblocked onto `provider`. The command's terminal.
+    /// The birth writes `provider`: it moved onto it, or wrote it already. The command's terminal.
     StorageStepped {
-        /// The provider the birth's owed writes land on: the old one while it is blocked.
+        /// The provider the birth writes.
         provider: String,
     },
-    /// The command names a storage change older than the one the birth holds: refused by name, nothing
-    /// done (storage.md §2 "Changing it").
+    /// The command names a storage change older than the one the birth acted on: refused by name,
+    /// nothing done (storage.md §2 "Changing it").
     RejectedStaleChange {
-        /// The change the birth holds.
+        /// The change the birth acted on last.
         held: crate::ChangeId,
     },
 }

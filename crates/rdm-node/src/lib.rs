@@ -29,7 +29,7 @@ pub mod record_store;
 pub mod owed;
 pub mod storage;
 pub mod storage_backend;
-pub mod storage_block;
+pub mod storage_move;
 #[cfg(feature = "file-backend")]
 pub mod storage_copy;
 pub mod storage_error;

@@ -167,9 +167,10 @@ existing Build execution context across fabric-primary → mesh-primary → node
 |---|---|---|
 | `rdm.node_admin.build.update.via-storage-open` | build_id, change_id, node_id, provider, outcome | unsupported provider test sees its named refusal |
 | `rdm.node_admin.build.update.via-storage-copy` | build_id, change_id, source, destination, source_position, copied, outcome | ordered copy and destination-hole tests |
-| `rdm.node.build.update.via-storage-block` | build_id, change_id, node_id, issued_writes, owed_writes, outcome | a delayed append holds the acknowledgement until it settles |
+| `rdm.node_admin.mesh.update.via-block` | build_id, change_id, mesh, node_id, in_flight, outcome (`blocked`) | a mesh-primary replies `blocked` once its in-flight commands complete, and issues no new command until unblocked |
 | `rdm.node_admin.build.update.via-storage-switch` | build_id, change_id, provider, commit_found, outcome | a lost commit answer resolved by reading the record |
-| `rdm.node.build.update.via-storage-unblock` | build_id, change_id, node_id, provider, owed_writes, outcome | a failed unblock keeps its writes owed and retries |
+| `rdm.node_admin.mesh.update.via-unblock` | build_id, change_id, mesh, node_id, provider, moved, left, outcome (`unblocked`) | a mesh-primary moves its nodes onto the provider the `commit` record decided and replies `unblocked`; a node that does not answer its move is a lost node |
+| `rdm.node.build.update.via-storage-move` | build_id, change_id, node_id, provider, outcome (`moved`, `rejected-stale-change`) | a node refuses by name a command of an older change |
 | `rdm.store.open.via-fold` | provider, bytes, lines, duration, invalid_offset when refused | reopen and history checks |
 
 Absence assertions require a successful control span for the request under test. In particular,
@@ -282,23 +283,27 @@ The epic blocks below are the dispatch briefs; no epics are dispatched by this d
   shared production files with e4 mean e4 follows this epic.
 - **Rows absorbed / state:** R5–R7; BUILD.
 
-### e4 — recover blocked changes and finish the provider switch after executor loss
+### e4 — block the mesh-primaries, switch by the commit record, and unblock (Q198)
 
-- **Goal → gap:** Storage §2 Block/Copy/Switch/Unblock and per-run identity. Build claims exist, but
-  there is no durable storage-migration execution state or restart recovery path.
-- **Detailed requirements:** R8–R12, R17–R19; integrate `build_state.rs:100`, `:124`, `:198`,
-  `build_drive.rs:136`, `admin/boot.rs:296` and `rdm-node/src/node.rs:468`. Record the change_id
-  with its Build before the first command; Block (admission closed, every write owed, never
-  refused; connection events stay on the Q169 queue; the block and both providers recorded in the
-  data dir before acknowledging); Finish outstanding writes to a durable outcome on the old provider;
-  Switch by inserting `commit` with the store's insert-and-fail primitive, then the Fabric row's
-  line; Unblock onto the new provider. Recovery, restart, adoption and fabric.delete read the
-  `commit` record before any ordinary write; a provider that does not answer keeps the block. No
-  Build but fabric.delete is admitted during a change. A step failing before the switch fails the
-  Build once no `commit` is read and unblocks every node on the old provider. A node that will not
-  block or unblock is investigated and re-created (Q182) on the provider of its step. No timer.
-- **Spans:** storage-block, storage-switch and storage-unblock with exact change_id and node.
-- **Testing:** planned estate stem plus functional delayed-provider tests owned by this epic.
+- **Goal → gap:** Storage §2 Block/Copy/Switch/Unblock (Q198) and per-change identity. Build claims
+  exist, but there is no storage change execution or recovery path.
+- **Detailed requirements:** R8–R12, R17–R19 as Storage §2 states them after Q198. Record the
+  change_id with its Build before its first command. Each step is an operation of the change's Build,
+  claimed and dispatched by the fabric-primary (`build.attempt.run`) and ending in its receipt:
+  `mesh.block` at each mesh-primary (it waits until its in-flight commands complete, replies `blocked`,
+  gossips a current aggregate of its mesh and issues no new command until unblocked); the copy and the
+  switch at the fabric-primary once every mesh-primary replied `blocked` (`commit` inserted with the
+  store's insert-and-fail primitive, then the Fabric row's line; recovery reads only that record);
+  `mesh.unblock` at each mesh-primary (it moves its nodes onto the provider the record decided, each
+  node's storage handle replaced on the node command op 0x22, replies `unblocked`, issues commands
+  again). A step failing before the switch fails the Build once no `commit` is read, `mesh.unblock`
+  sent on the old provider. No Build but fabric.delete is admitted during a change; fabric.delete
+  sends `mesh.unblock` onto the provider the record decided before its teardown. A mesh-primary that
+  does not reply is a lost node (Q182). A node refuses by name a command of an older change
+  (`rejected-stale-change`). No timer.
+- **Spans:** `mesh.block` / `mesh.unblock` (`rdm.node_admin.mesh.update.via-block` / `via-unblock`),
+  the switch, and a node's move (`rdm.node.build.update.via-storage-move`), with exact change_id.
+- **Testing:** planned estate stem plus functional tests owned by this epic.
 - **Acceptance names:** `a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read`,
   `a_lost_commit_answer_is_resolved_by_reading_the_commit_record`,
   `a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider`,
@@ -308,9 +313,8 @@ The epic blocks below are the dispatch briefs; no epics are dispatched by this d
   `a_node_that_never_unblocks_is_recreated_on_the_new_provider`,
   `a_delete_resolves_the_storage_change_before_teardown`.
 - **Mesh plan:** multi-mesh, process/container, same shared fixture and test invocation as e1.
-- **Sizing / files:** one implementer; Build state/drive, both boot paths, local own-row and
-  block-state persistence, node command dispatch, and migration implementation. Inventory exact new
-  modules in the epic evidence before dispatch rather than inventing existing API coordinates.
+- **Sizing / files:** one implementer; Build state/drive, the mesh-primaries' command gate, node
+  command dispatch, and the change's operations.
 - **Rows absorbed / state:** R8–R12, R17; BUILD.
 
 ### e5 — prove the customer workflow and preserve continuous verification

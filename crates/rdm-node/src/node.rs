@@ -481,40 +481,6 @@ async fn start_booted(
     // The topology view's current process births: how the held projection judges a Proxy's recorded
     // destination and carrier, and a Direct fact's destination (connections.md section 8).
     connections.held().lock().unwrap().set_topology_view(resolver.clone());
-    // A block of a storage change recorded in this data dir is read before the birth writes anything
-    // (storage.md §2 step 1): held from here until its change's unblock.
-    let mut block_record = crate::storage_block::BlockRecord::read(&launch.data_dir).map_err(|e| anyhow!("refusing to start: {e}"))?;
-    // A block this data dir records is decided by its change's `commit` record before anything is
-    // written: found, this birth writes the new provider; none, the change ended unswitched (a birth is
-    // launched only by a mesh-primary that has unblocked), and it writes the old one; no answer, the
-    // block holds until its change's unblock.
-    if let Some(held) = block_record.held_block().cloned() {
-        let commit = rdm_core::build::StorageCommit { build_id: held.build_id.clone(), change_id: held.change_id.clone() };
-        let found = match providers.named(&held.to) {
-            Ok(backend) => backend.commit(launch, &commit).await,
-            Err(e) => Err(e),
-        };
-        let provider = match found {
-            Ok(true) => Some(held.to.clone()),
-            Ok(false) => Some(held.from.clone()),
-            Err(_) => None,
-        };
-        if let Some(provider) = provider {
-            let outcome = if provider == held.to { "unblocked" } else { "not-switched" };
-            let span = tracing::info_span!(parent: boot, "rdm.node.build.update.via-storage-unblock", build_id = %held.build_id.log(), change_id = %held.change_id, node_id = %launch.node_id, provider = %provider, owed_writes = 0u64, read_from = "data-dir", outcome);
-            block_record.latest = Some(crate::storage_block::HeldChange { blocked: false, provider: provider.clone(), ..held });
-            block_record.write(&launch.data_dir).await.map_err(|e| anyhow!("refusing to start: {e}"))?;
-            topology_storage.replace(&provider).await.map_err(|e| anyhow!("refusing to start: {e}"))?;
-            span.in_scope(|| tracing::info!("this birth decided the block its data dir records by its change's commit record before writing anything"));
-        }
-    }
-    let storage_block = Arc::new(crate::storage_block::StorageBlock::new(
-        launch.data_dir.clone(),
-        launch.node_id.clone(),
-        Arc::new(NodeStorageSteps { handle: topology_storage.clone(), writer: connections.clone(), rows: tokio::sync::Mutex::new(None) }),
-        block_record,
-    ));
-    storage_block.hold_at_start().await;
     connections.hydrate().await.map_err(|e| anyhow!("connections hydrate: {e}"))?;
     drop(step);
     let (data_connections, alpn_handlers) = rdm_transport::connections::ConnectionsRegistry::new(
@@ -739,7 +705,19 @@ async fn start_booted(
                                 )
                             };
                             own.set_connections(connections.clone());
-                            own.set_storage_block(storage_block.clone());
+                            // A storage change's move (storage.md §2 step 4): the provider beneath this birth's one
+                            // storage handle replaced, every caller moving with it.
+                            own.set_storage_moves({
+                                let (writes, moves) = (topology_storage.clone(), topology_storage.clone());
+                                Arc::new(crate::storage_move::StorageMoves::new(
+                                    launch.node_id.clone(),
+                                    Arc::new(move || writes.provider()),
+                                    Arc::new(move |provider: String| {
+                                        let handle = moves.clone();
+                                        Box::pin(async move { handle.replace(&provider).await })
+                                    }),
+                                ))
+                            });
                             own.set_data_plane(data_plane.clone());
                             own.set_data_connections(data_connections.clone());
                             let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
@@ -1655,52 +1633,5 @@ mod authority_tests {
         assert!(!mesh_primary_moved(Some(&told), Some(&primary(&a, &inc_a, 1))), "the same birth holds the seat");
         assert!(mesh_primary_moved(Some(&told), Some(&primary(&b, &inc_b, 2))), "another node holds the seat");
         assert!(mesh_primary_moved(Some(&told), Some(&primary(&a, &inc_b, 2))), "a new incarnation of the same node holds the seat");
-    }
-}
-
-/// An rpc node's steps of a storage change (storage.md §2): its storage handle, and its connections
-/// writer's queue, where a connection event stays owed while the node is blocked (Q169).
-struct NodeStorageSteps {
-    handle: Arc<crate::storage_backend::NodeStorageHandle>,
-    writer: Arc<crate::connections_writer::ConnectionsWriter>,
-    /// The writer's rows held while the node is blocked: no row is built, written or applied.
-    rows: tokio::sync::Mutex<Option<crate::connections_writer::RowsHeld>>,
-}
-
-#[async_trait::async_trait]
-impl crate::storage_block::StorageSteps for NodeStorageSteps {
-    fn provider(&self) -> String {
-        self.handle.provider()
-    }
-
-    async fn open_beside(&self, build_id: &rdm_core::BuildId, change_id: &rdm_core::ChangeId, to: &str) -> Result<(), String> {
-        self.handle.open_beside(to, (build_id, change_id)).await
-    }
-
-    async fn block(&self) -> usize {
-        let issued = self.handle.block();
-        let mut rows = self.rows.lock().await;
-        if rows.is_none() {
-            // Taken once the row being written, if any, has landed: the writer's queue holds every
-            // later event as owed.
-            *rows = Some(self.writer.hold_rows().await);
-        }
-        issued
-    }
-
-    async fn finish_issued(&self) {
-        self.handle.finish_issued().await
-    }
-
-    fn owed(&self) -> usize {
-        self.handle.owed() + self.writer.in_flight()
-    }
-
-    async fn unblock(&self, build_id: &rdm_core::BuildId, change_id: &rdm_core::ChangeId, provider: &str) -> Result<(), String> {
-        self.handle.replace_for(provider, Some((build_id, change_id))).await?;
-        self.handle.close_beside();
-        self.handle.unblock();
-        self.rows.lock().await.take();
-        Ok(())
     }
 }

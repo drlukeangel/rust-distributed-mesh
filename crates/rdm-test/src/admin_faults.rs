@@ -134,16 +134,17 @@ pub enum CutSpec {
         /// The admin's `path.name`.
         #[serde(default)] node: Option<String>,
     },
-    /// A storage change's step (storage.md §2 "Changing it") this admin, as `node`'s mesh-primary, is
-    /// about to carry to `node`: the first matching command is held until the release and carried then,
-    /// its caller answered at once that the step is not done; every later one passes. It models one
-    /// command delayed on its way to the node. `step` narrows the cut to `block` or `unblock`.
+    /// A storage change's move (storage.md §2 "Changing it") this admin, as `node`'s mesh-primary, is
+    /// about to carry to `node` in its `mesh.unblock`: the first matching command is held until the
+    /// release and carried then, the move not done now; every later one passes. It models one command
+    /// delayed on its way to the node.
     StorageStep {
         /// The commanded node's `path.name`.
         #[serde(default)] node: Option<String>,
-        /// `block` or `unblock`.
-        #[serde(default)] step: Option<String>,
     },
+    /// A storage change's copy and switch, about to run on this admin as the fabric-primary: held until
+    /// the release, every mesh-primary having replied `blocked`.
+    StorageSwitch,
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -234,14 +235,17 @@ pub enum Probe {
         /// The admin whose pass it is.
         node: String,
     },
-    /// A storage change's step about to be carried to its node.
+    /// A storage change's move about to be carried to its node.
     StorageStep {
         /// The commanded node.
         node: String,
         /// The change.
         change_id: String,
-        /// `block` or `unblock`.
-        step: &'static str,
+    },
+    /// A storage change's switch about to run.
+    StorageSwitch {
+        /// The change.
+        change_id: String,
     },
 }
 
@@ -263,7 +267,8 @@ impl CutSpec {
             (CutSpec::Declaration { node, state }, Probe::Declaration { node: n, state: s }) => node_is(node, n) && state.as_deref().is_none_or(|w| w == s),
             (CutSpec::ProviderUnproven { pids }, Probe::ProviderInspect { pid }) => pid.is_some_and(|p| pids.contains(&p)),
             (CutSpec::DriftPass { node }, Probe::DriftPass { node: n }) => node_is(node, n),
-            (CutSpec::StorageStep { node, step }, Probe::StorageStep { node: n, step: s, .. }) => node_is(node, n) && step.as_deref().is_none_or(|w| w == *s),
+            (CutSpec::StorageStep { node }, Probe::StorageStep { node: n, .. }) => node_is(node, n),
+            (CutSpec::StorageSwitch, Probe::StorageSwitch { .. }) => true,
             _ => false,
         }
     }
@@ -285,7 +290,8 @@ impl Probe {
             Probe::Declaration { node, state } => Hit::Declaration { node: node.clone(), state: state.clone() },
             Probe::ProviderInspect { pid } => Hit::ProviderInspect { pid: *pid },
             Probe::DriftPass { node } => Hit::DriftPass { node: node.clone() },
-            Probe::StorageStep { node, change_id, step } => Hit::StorageStep { node: node.clone(), change_id: change_id.clone(), step: step.to_string() },
+            Probe::StorageStep { node, change_id } => Hit::StorageStep { node: node.clone(), change_id: change_id.clone() },
+            Probe::StorageSwitch { change_id } => Hit::StorageSwitch { change_id: change_id.clone() },
         }
     }
 }
@@ -674,11 +680,15 @@ impl rdm_admin::wiring::CommandFrameSeam for FaultedCommandFrame {
         self.0.hold(Probe::Event { event: "stopped", op: op.clone() }).await;
     }
 
-    fn hold_storage_step(&self, node: &rdm_core::PathName, change_id: &rdm_core::ChangeId, step: &rdm_core::build::StorageStep) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
-        let probe = Probe::StorageStep { node: node.to_string(), change_id: change_id.to_string(), step: step.name() };
+    fn hold_storage_step(&self, node: &rdm_core::PathName, change_id: &rdm_core::ChangeId) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
+        let probe = Probe::StorageStep { node: node.to_string(), change_id: change_id.to_string() };
         let (id, release) = self.0.hold_at_cut(&probe)?;
         let faults = self.0.clone();
         Some(Box::pin(async move { faults.wait_release(&id, &probe, release).await }))
+    }
+
+    async fn before_storage_switch(&self, change_id: &rdm_core::ChangeId) {
+        self.0.hold(Probe::StorageSwitch { change_id: change_id.to_string() }).await;
     }
 }
 

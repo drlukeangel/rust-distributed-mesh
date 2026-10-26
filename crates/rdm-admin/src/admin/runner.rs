@@ -1272,6 +1272,13 @@ impl AdminRunner {
                 return Err(crate::executor::RunEnd::failed(format!("{me}: {} is not an operation of a node recovery, the only work mesh {mesh}'s drift lane runs (attempt {attempt} of {build_id})", op.key())));
             }
         }
+        // A mesh-primary that replied `blocked` to a storage change runs no other operation until it is
+        // unblocked: an operation issues commands (storage.md §2 step 1).
+        if !matches!(op, BuildOperation::BlockStorage { .. } | BuildOperation::SwitchStorage { .. } | BuildOperation::UnblockStorage { .. } | BuildOperation::FinishStorage { .. }) {
+            if let Some(authority) = self.observer.authority.get() {
+                authority.commands.admitted().await;
+            }
+        }
         let ended: Result<(), crate::executor::RunEnd> = match op {
             BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor(), &me.to_string(), build_id, attempt, op).await.map_err(Into::into),
             // A replacement's create of a replaced member: over its predecessor's kept data dir, launching
@@ -1321,7 +1328,10 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt, operation = %op.key());
                 self.apply_in_place(build_id, attempt, node, op).instrument(span).await
             }
-            BuildOperation::ChangeStorage { change } => {
+            BuildOperation::BlockStorage { mesh, change } => self.storage_changes.block_mesh(&*builds, build_id, attempt, mesh, change, self.observer.authority.get().cloned()).await,
+            BuildOperation::UnblockStorage { mesh, change } => self.storage_changes.unblock_mesh(&*builds, build_id, attempt, mesh, change, self.observer.authority.get().cloned(), self.topology.clone()).await,
+            BuildOperation::FinishStorage { change } => self.storage_changes.finish(&*builds, build_id, attempt, change).await,
+            BuildOperation::SwitchStorage { change } => {
                 // The Fabric row's line once the change is switched: the new provider current, the old
                 // appended to the providers the fabric left (storage.md §2 step 4), written if missing.
                 let (caches, fabric_storage, fabric_id, change_row) = (self.records.caches.clone(), self.fabric_storage.clone(), self.fabric_id.clone(), change.clone());
@@ -1336,7 +1346,7 @@ impl AdminRunner {
                         .await
                         .and_then(|done| done.ok_or_else(|| "this fabric-primary holds no Fabric record".to_string()))
                 };
-                self.storage_changes.run(&*builds, build_id, attempt, change, Some(self.node_rpc.client.clone()), self.observer.authority.get().cloned(), self.topology.clone(), fabric_row).await
+                self.storage_changes.switch(&*builds, build_id, attempt, change, self.observer.authority.get().cloned(), fabric_row).await
             }
         };
         ended

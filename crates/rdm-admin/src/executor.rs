@@ -110,8 +110,10 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } | BuildOperation::DeleteFabric { .. } => fabric(),
         // The fabric-primary terminates a deleted birth heard again (node-investigation.md, Q128).
         BuildOperation::TerminateNode { .. } => fabric(),
-        // The fabric-primary runs a storage change and carries its commands to each mesh-primary.
-        BuildOperation::ChangeStorage { .. } => fabric(),
+        // A storage change's block and unblock of a mesh are its mesh-primary's; its switch and its
+        // verdict the fabric-primary's (storage.md §2: fabric-primary → mesh-primary → node).
+        BuildOperation::BlockStorage { mesh, .. } | BuildOperation::UnblockStorage { mesh, .. } => mesh_executor(mesh, None, t),
+        BuildOperation::SwitchStorage { .. } | BuildOperation::FinishStorage { .. } => fabric(),
         // A property applied in place is written by the node's mesh-primary, the one writer of its
         // mesh's rows (node-rpc-envelope.md "Node properties"; build.md §1), its own row included.
         BuildOperation::UpdateConfig { node } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => mesh_executor(&node.mesh, None, t),
