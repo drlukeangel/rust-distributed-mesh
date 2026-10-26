@@ -85,8 +85,9 @@ That is a defect in the standalone store's location, not in the writer ladder.
 8. **Failure is named, with no fallback.** A missing or unreadable `store_dir` fails the node's
    boot by name, naming the path and the cause. Nothing falls back to the data dir.
 9. **Before state-commit nothing changes:** rows stay in the scratchpad (`fabric-state-sync.md`),
-   except a declared state acknowledged as Applied (Q54) and the Build facts and attempt claims (Q61),
-   which are written to the shared root when they are committed. At commit-state each writer writes
+   except a declared state acknowledged as Applied (Q54), the Build facts and attempt claims (Q61) and a
+   launching admin's runtime row (the launcher's durable map, written once; R-SR1, 2026-10-25), which are
+   written to the shared root when they are committed. At commit-state each writer writes
    what it holds to the shared root; after it, writes go there directly.
 
 ## Answers to the proposal's open questions
