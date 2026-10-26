@@ -280,7 +280,7 @@ impl StorageChanges {
     /// decided, so the delete's acceptance and its teardown are written; every other node is sent its
     /// unblock onto that provider, owed until it answers. A provider that does not answer is read again:
     /// the block holds until it does. Nothing when no change is blocked here.
-    pub async fn resolve_for_delete(self: &Arc<Self>, client: Option<Arc<rdm_transport::NodeRpcClient>>, authority: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>) {
+    pub async fn resolve_for_delete(self: &Arc<Self>, client: Option<Arc<rdm_transport::NodeRpcClient>>, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>) {
         let held = match self.own.get() {
             Some(own) => own.record().await.held_block().cloned(),
             None => None,
@@ -302,18 +302,18 @@ impl StorageChanges {
         let step = StorageStep::Unblock { provider };
         tokio::spawn(async move {
             let paths: Vec<PathName> = topology.read().await.members().filter(|n| n.node_id != me && n.status.is_live()).map(|n| n.name.clone()).collect();
-            let all = paths.iter().map(|p| this.step_until(client.clone(), authority.clone(), topology.clone(), &held.build_id, &held.change_id, p, &step, None));
+            let all = paths.iter().map(|p| this.step_until(client.clone(), status_door.clone(), topology.clone(), &held.build_id, &held.change_id, p, &step, None));
             futures_util::future::join_all(all).await;
         });
     }
 
-    /// While this admin holds the fabric-primary seat, a block it holds of a change it does not run is
+    /// While this admin is the fabric-primary, a block it holds of a change it does not run is
     /// the block of a change it resumes (storage.md §2 step 4: "Whoever resumes the change, a successor
     /// or the fabric-primary after a lost answer, learns the decision only by reading that record"): it
     /// reads the `commit` record and moves onto the provider it decided, so it can claim and run the
     /// change's next attempt; a change not switched resumes from its block, which blocks this admin
     /// again before its copy. A provider that does not answer is read again: the block holds.
-    pub fn resume_when_seated(self: &Arc<Self>, topology: Arc<RwLock<Topology>>) {
+    pub fn resume_as_fabric_primary(self: &Arc<Self>, topology: Arc<RwLock<Topology>>) {
         let this = self.clone();
         tokio::spawn(async move {
             loop {
@@ -363,7 +363,7 @@ impl StorageChanges {
         attempt: u32,
         change: &StorageChange,
         client: Option<Arc<rdm_transport::NodeRpcClient>>,
-        authority: Option<Arc<crate::status_rpc::StatusAuthority>>,
+        status_door: Option<Arc<crate::status_rpc::StatusAuthority>>,
         topology: Arc<RwLock<Topology>>,
         fabric_row: impl std::future::Future<Output = Result<(), String>>,
     ) -> Result<(), crate::executor::RunEnd> {
@@ -371,7 +371,7 @@ impl StorageChanges {
         *self.running.lock().unwrap() = Some(Running { build_id: build_id.clone(), change: change.clone(), interrupted: interrupted.clone() });
         let notified = interrupted.notified();
         let ran = tokio::select! {
-            r = self.run_steps(builds, build_id, attempt, change, client, authority, topology, fabric_row) => r,
+            r = self.run_steps(builds, build_id, attempt, change, client, status_door, topology, fabric_row) => r,
             _ = notified => Err(crate::executor::RunEnd::failed(format!("storage change {} of Build {build_id} is interrupted by fabric.delete, which resolves it", change.change_id))),
         };
         let mut running = self.running.lock().unwrap();
@@ -389,7 +389,7 @@ impl StorageChanges {
         attempt: u32,
         change: &StorageChange,
         client: Option<Arc<rdm_transport::NodeRpcClient>>,
-        authority: Option<Arc<crate::status_rpc::StatusAuthority>>,
+        status_door: Option<Arc<crate::status_rpc::StatusAuthority>>,
         topology: Arc<RwLock<Topology>>,
         fabric_row: impl std::future::Future<Output = Result<(), String>>,
     ) -> Result<(), crate::executor::RunEnd> {
@@ -410,24 +410,24 @@ impl StorageChanges {
             // 1-2. Block, and finish the writes issued before it. This admin first.
             let me_block = own.block_executor(build_id, &change.change_id, &change.from, &change.to).await;
             if let rdm_core::node_command::NodeCommandReply::Failed { reason, .. } | rdm_core::node_command::NodeCommandReply::NotReady { reason } = me_block {
-                return self.fail_before_switch(&own, build_id, change, client, authority, topology, format!("this fabric-primary's block failed: {reason}")).await;
+                return self.fail_before_switch(&own, build_id, change, client, status_door, topology, format!("this fabric-primary's block failed: {reason}")).await;
             }
             let step = StorageStep::Block { from: change.from.clone(), to: change.to.clone() };
             let paths = self.paths(&topology).await;
-            let all = paths.iter().map(|p| self.step_until(client.clone(), authority.clone(), topology.clone(), build_id, &change.change_id, p, &step, Some(())));
+            let all = paths.iter().map(|p| self.step_until(client.clone(), status_door.clone(), topology.clone(), build_id, &change.change_id, p, &step, Some(())));
             let ends = futures_util::future::join_all(all).await;
             if let Some((path, why)) = paths.iter().zip(ends).find_map(|(p, e)| match e {
                 StepEnd::Refused(why) => Some((p.clone(), why)),
                 StepEnd::Done => None,
             }) {
-                return self.fail_before_switch(&own, build_id, change, client, authority, topology, format!("{path} failed its block: {why}")).await;
+                return self.fail_before_switch(&own, build_id, change, client, status_door, topology, format!("{path} failed its block: {why}")).await;
             }
             // 3. Copy.
             let mut backoff = Duration::from_millis(500);
             loop {
                 match copy_stores(&self.providers, &self.fabric_id, build_id, change).await {
                     Copy::Copied => break,
-                    Copy::Refused(why) => return self.fail_before_switch(&own, build_id, change, client, authority, topology, why).await,
+                    Copy::Refused(why) => return self.fail_before_switch(&own, build_id, change, client, status_door, topology, why).await,
                     Copy::NoAnswer(_) => {
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(Duration::from_secs(5));
@@ -466,7 +466,7 @@ impl StorageChanges {
         // 5. Unblock: this admin first, then the Fabric row's line, then every other node.
         let me_step = StorageStep::Unblock { provider: change.to.clone() };
         loop {
-            match self.own_step(&own, authority.as_ref(), build_id, &change.change_id, &me_step).await {
+            match self.own_step(&own, status_door.as_ref(), build_id, &change.change_id, &me_step).await {
                 StepEnd::Done => break,
                 StepEnd::Refused(_) => tokio::time::sleep(Duration::from_secs(1)).await,
             }
@@ -476,7 +476,7 @@ impl StorageChanges {
             return Err(crate::executor::RunEnd::Incomplete(format!("storage change {}: the Fabric row's line naming {} could not be written: {e}", change.change_id, change.to)));
         }
         let paths = self.paths(&topology).await;
-        let all = paths.iter().map(|p| self.step_until(client.clone(), authority.clone(), topology.clone(), build_id, &change.change_id, p, &me_step, None));
+        let all = paths.iter().map(|p| self.step_until(client.clone(), status_door.clone(), topology.clone(), build_id, &change.change_id, p, &me_step, None));
         futures_util::future::join_all(all).await;
         let receipt = crate::build_state::BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation(&change.change_id), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete, output: None, executor: None };
         builds.append_step_receipt(&receipt).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("storage change {}: its Complete could not be recorded: {e}", change.change_id)))?;
@@ -487,17 +487,17 @@ impl StorageChanges {
     /// and every node unblocks on the old provider (storage.md §2). A `commit` found means the change
     /// switched after all: it resumes from its unblock.
     #[allow(clippy::too_many_arguments)]
-    async fn fail_before_switch(&self, own: &Arc<StorageBlock>, build_id: &BuildId, change: &StorageChange, client: Option<Arc<rdm_transport::NodeRpcClient>>, authority: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>, why: String) -> Result<(), crate::executor::RunEnd> {
+    async fn fail_before_switch(&self, own: &Arc<StorageBlock>, build_id: &BuildId, change: &StorageChange, client: Option<Arc<rdm_transport::NodeRpcClient>>, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>, why: String) -> Result<(), crate::executor::RunEnd> {
         let provider = self.decide(build_id, change).await;
         let step = StorageStep::Unblock { provider: provider.clone() };
         loop {
-            match self.own_step(own, authority.as_ref(), build_id, &change.change_id, &step).await {
+            match self.own_step(own, status_door.as_ref(), build_id, &change.change_id, &step).await {
                 StepEnd::Done => break,
                 StepEnd::Refused(_) => tokio::time::sleep(Duration::from_secs(1)).await,
             }
         }
         let paths = self.paths(&topology).await;
-        let all = paths.iter().map(|p| self.step_until(client.clone(), authority.clone(), topology.clone(), build_id, &change.change_id, p, &step, None));
+        let all = paths.iter().map(|p| self.step_until(client.clone(), status_door.clone(), topology.clone(), build_id, &change.change_id, p, &step, None));
         futures_util::future::join_all(all).await;
         if provider == change.to {
             return Err(crate::executor::RunEnd::Incomplete(format!("storage change {}: {why}; its commit record is found, so it is switched and resumes", change.change_id)));
@@ -506,14 +506,14 @@ impl StorageChanges {
     }
 
     /// This admin's own step: in-process, its row recording the provider at its unblock.
-    async fn own_step(&self, own: &Arc<StorageBlock>, authority: Option<&Arc<crate::status_rpc::StatusAuthority>>, build_id: &BuildId, change_id: &ChangeId, step: &StorageStep) -> StepEnd {
+    async fn own_step(&self, own: &Arc<StorageBlock>, status_door: Option<&Arc<crate::status_rpc::StatusAuthority>>, build_id: &BuildId, change_id: &ChangeId, step: &StorageStep) -> StepEnd {
         let reply = match own.serve(build_id, change_id, step).await {
             rdm_core::node_command::NodeCommandReply::StorageStepped { provider } => provider,
             other => return StepEnd::Refused(format!("{other:?}")),
         };
-        if let (StorageStep::Unblock { .. }, Some(authority)) = (step, authority) {
+        if let (StorageStep::Unblock { .. }, Some(status_door)) = (step, status_door) {
             let id = self.node_id.clone();
-            if let Err(e) = authority.caches.nodes.update(&*authority.nodes_storage, &id, None, move |r| r.topology_storage_provider = Some(reply)).await {
+            if let Err(e) = status_door.caches.nodes.update(&*status_door.nodes_storage, &id, None, move |r| r.topology_storage_provider = Some(reply)).await {
                 return StepEnd::Refused(e);
             }
         }
@@ -531,7 +531,7 @@ impl StorageChanges {
     /// birth's successor), or no birth held there. A birth that refuses a block by name (`block` set)
     /// ends it refused; silence is retried, never read as either.
     #[allow(clippy::too_many_arguments)]
-    async fn step_until(&self, client: Option<Arc<rdm_transport::NodeRpcClient>>, authority: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>, build_id: &BuildId, change_id: &ChangeId, path: &PathName, step: &StorageStep, block: Option<()>) -> StepEnd {
+    async fn step_until(&self, client: Option<Arc<rdm_transport::NodeRpcClient>>, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>, build_id: &BuildId, change_id: &ChangeId, path: &PathName, step: &StorageStep, block: Option<()>) -> StepEnd {
         let mut backoff = Duration::from_millis(250);
         loop {
             let view = topology.read().await.clone();
@@ -545,10 +545,10 @@ impl StorageChanges {
             };
             let req = StatusRequest::StorageStep { node_id: birth.node_id.clone(), incarnation, build_id: build_id.to_string(), change_id: change_id.clone(), step: step.clone() };
             let mp = view.node_type_primary(&path.mesh, rdm_core::NodeKind::NodeAdmin).cloned();
-            let reply = match (mp, &authority, &client) {
-                (Some(mp), Some(authority), _) if mp.node_id == self.node_id => {
+            let reply = match (mp, &status_door, &client) {
+                (Some(mp), Some(status_door), _) if mp.node_id == self.node_id => {
                     let StatusRequest::StorageStep { node_id, incarnation, build_id, change_id, step } = &req else { unreachable!() };
-                    Some(authority.carry_storage_step(node_id, incarnation, build_id, change_id, step).await)
+                    Some(status_door.carry_storage_step(node_id, incarnation, build_id, change_id, step).await)
                 }
                 (Some(mp), _, Some(client)) => {
                     let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(45) }, ..Default::default() };

@@ -275,8 +275,8 @@ async fn admin_restart_resolves_the_same_change(test: &str, how: Ended) {
     // The estate enters the fabric again at the restarted birth.
     estate.enter(&restarted).await;
     // The Build is followed at the fabric-primary the fabric names after the restart.
-    let holder = wait_for(&format!("{restarted}'s fabric names a fabric-primary"), SETTLE, || async { estate.fabric_view().await.fabric_primary }).await;
-    estate.enter(&holder).await;
+    let followed_at = wait_for(&format!("{restarted}'s fabric names a fabric-primary"), SETTLE, || async { estate.fabric_view().await.fabric_primary }).await;
+    estate.enter(&followed_at).await;
     let done = estate.follow(stream).await;
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
@@ -659,8 +659,8 @@ async fn a_lost_commit_answer_is_resolved_by_reading_the_commit_record() {
     // The estate enters the fabric again at the restarted birth.
     estate.enter(&restarted).await;
     // The Build is followed at the fabric-primary the fabric names after the restart.
-    let holder = wait_for(&format!("{restarted}'s fabric names a fabric-primary"), SETTLE, || async { estate.fabric_view().await.fabric_primary }).await;
-    estate.enter(&holder).await;
+    let followed_at = wait_for(&format!("{restarted}'s fabric names a fabric-primary"), SETTLE, || async { estate.fabric_view().await.fabric_primary }).await;
+    estate.enter(&followed_at).await;
     let done = estate.follow(stream).await;
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
     assert_eq!(commits().len(), 1, "exactly one commit record for ({build_id}, {change_id}): {:#?}", commits());

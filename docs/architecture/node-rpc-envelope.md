@@ -214,7 +214,7 @@ sees only the catalog.
 | `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts`, `FetchCurrentBuild` |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied` |
-| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
+| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
 | `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
 | `0x13` | snapshot | rafka | live | transitional | mesh digest snapshot |
@@ -335,7 +335,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 
 Codec evidence: `crates/rdm-core/src/status.rs::StatusRequest`
 (DeclareNodeState, ApplyNodeState, ProbeNodeState; StopNode and StartNode are reserved there),
-`crates/rdm-core/src/node_command.rs::NodeCommandRequest` (DeleteConnections, StopNode, StartNode),
+`crates/rdm-core/src/node_command.rs::NodeCommandRequest` (DeleteConnections, StopNode, StartNode, StorageStep),
 `crates/rdm-core/src/join.rs::JoinRequest`,
 `crates/rdm-core/src/topology.rs::TopologyRequest`,
 `crates/rdm-core/src/build_facts.rs::BuildFactsRequest` and
@@ -1527,8 +1527,9 @@ to these frames is `durable format moved`, with byte fixtures.
 ## NodeCommand, op `0x22`, rdm
 
 RDM owns this family. It carries the mesh-primary → exact-node hop of
-[node.connections.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md)
-and [node.start](lifecycles/node-start.md). The caller's hop and Build carrier are unchanged.
+[node.connections.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md),
+[node.start](lifecycles/node-start.md) and a [storage change](storage.md#changing-it)'s block and
+unblock. The caller's hop and Build carrier are unchanged.
 Every call is server-streaming, never forwarded, and served while connections-deleting.
 Births are exact identities, never names. Every earlier byte and enum position stands; requests
 `StopNode` and `StartNode` append at 1 and 2. Replies append after the existing positions 0–10.
@@ -1550,7 +1551,21 @@ after StopNode or StartNode acceptance:
   ← Failed { step, reason, code } (Terminal; appended reply 15)
 before lifecycle acceptance:
   ← RejectedInvalidNodeTransition { current } (Refusal; appended reply 16, FAILED_PRECONDITION)
+StorageStep { node_id, incarnation, build_id, change_id, step: Block { from, to } | Unblock { provider } } (appended request 3)
+  ← CommandAccepted { node_id, incarnation } (Started)
+  ← StorageStepped { provider } (Terminal; appended reply 17)
+  ← Failed { step, reason, code } (Terminal)
+before StorageStep acceptance:
+  ← RejectedStaleChange { held } (Refusal; appended reply 18, ABORTED)
 ```
+
+A storage change's step is the fabric-primary's command, carried to the exact birth's mesh-primary
+on [Status 0x1B](#status-op-0x1b-rdm) (`StorageStep`, answered `StorageStepped`, `RejectedStaleChange`
+or `StorageStepFailed`) and by the mesh-primary to the birth on this op; its own birth's step runs
+in-process. `StorageStepped` answers a block once the birth recorded it in its data dir and finished
+the writes it issued before it, an unblock once the birth writes `provider`; the mesh-primary then
+records `provider` on the birth's row. A command of a change older than the one the birth holds is
+refused `rejected-stale-change`, naming the change it holds.
 
 A refusal before acceptance is one refusal frame. `CommandAccepted` is admission and carries no
 lifecycle state: on a stop it makes the mesh-primary record stopping. `ConnectionsDeleting`

@@ -95,7 +95,7 @@ pub struct ControlPlane {
     /// reads the node's birth and lifecycle from, never the gossip view.
     pub atlas: Arc<crate::fabric_atlas::FabricAtlas>,
     /// This admin's storage changes, the Node RPC client its change commands go out on and its status
-    /// authority: a fabric.delete admitted during a storage change resolves it before it is written
+    /// door: a fabric.delete admitted during a storage change resolves it before it is written
     /// (storage.md §2 "Changing it"). Filled once the admin holds them.
     pub storage_changes: std::sync::OnceLock<(Arc<crate::storage_change::StorageChanges>, Arc<rdm_transport::NodeRpcClient>, crate::status_rpc::AuthoritySlot)>,
 }
@@ -425,8 +425,8 @@ impl ControlPlane {
                 // commit record read, and this fabric-primary unblocked onto the provider it decided
                 // (storage.md §2: fabric.delete "interrupts the change as it interrupts any Build";
                 // i149 R12).
-                if let Some((changes, client, authority)) = self.storage_changes.get() {
-                    changes.resolve_for_delete(Some(client.clone()), authority.get().cloned(), self.topology.clone()).await;
+                if let Some((changes, client, status_door)) = self.storage_changes.get() {
+                    changes.resolve_for_delete(Some(client.clone()), status_door.get().cloned(), self.topology.clone()).await;
                 }
                 if let Some((resumed, _)) = self.fabric_delete_in_force().await? {
                     span.record("build_id", resumed.build_id.as_str());

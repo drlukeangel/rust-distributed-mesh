@@ -1599,7 +1599,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // The drives of the Builds this admin drives (`build_drive`): its executor ends its own
                             // runtime only once its own node.delete's callers read their terminal.
                             let drives = Arc::new(crate::build_drive::Drives::default());
-                            storage_changes.resume_when_seated(control.topology.clone());
+                            storage_changes.resume_as_fabric_primary(control.topology.clone());
                             let runner = Arc::new(AdminRunner {
                                 storage_changes: storage_changes.clone(),
                                 drives: drives.clone(),
