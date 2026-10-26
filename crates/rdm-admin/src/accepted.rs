@@ -864,19 +864,25 @@ pub(crate) fn replacement_operations(topology: &FabricTopology, observed: &Topol
 /// where the entry's `config` differs from the row's, or its `storage` or `placement` from what the row
 /// records (a row written before those fields records none and is not compared); `node.tags.create` of
 /// the labels the entry names and the row does not carry, `node.tags.delete` of those the row carries
-/// and the entry does not. An operation this Build's receipts name `Complete` is not planned again: a
-/// command a caller sends after it is the last write. A path `planned` creates, or whose executable the
-/// row does not record, is the create's or the replacement's, whose claim writes its properties.
+/// and the entry does not. A property this Build already applied to a path is not planned again (the
+/// last write wins: build.md §1; node-config-update.md, admitted at any time): its config (with its
+/// storage and placement) once its `node.config.update` is `Complete`, its labels once its
+/// `node.tags.create` / `node.tags.delete` is, and every property once its plain create claimed the name (`PrepareStorage`, which writes the
+/// entry's onto the row: a create whose path no `node.delete` of this Build began, never a replacement's
+/// successor, which claims its seed's). A write the node or a caller makes after it stands until the
+/// next Build. A path `planned` creates, or whose executable the row does not record, is the create's or
+/// the replacement's, whose claim writes its properties.
 fn properties_owed(topology: &FabricTopology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt], planned: &[BuildOperation]) -> Vec<BuildOperation> {
-    let done = |op: &BuildOperation| {
-        let key = op.key();
-        steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete)
-    };
+    let receipted = |operation: &str, step: &str| steps.iter().any(|r| r.operation == operation && r.step == step && r.outcome == crate::build_state::StepOutcome::Complete);
+    let claimed = |path: &PathName| receipted(&format!("node.create:{path}"), "PrepareStorage") && !steps.iter().any(|r| r.operation == format!("node.delete:{path}"));
     let replacing = paths_owed_replacement(topology, recorded);
     let mut ops = Vec::new();
     for (path, spec) in topology.meshes.values().flat_map(|m| m.spec_by_path.iter()) {
         let Some(row) = recorded.get(path) else { continue };
         if replacing.contains(path) || planned.iter().any(|op| op.node() == Some(path)) {
+            continue;
+        }
+        if claimed(path) {
             continue;
         }
         let config = row.config.as_ref().is_some_and(|c| *c != spec.config) || row.storage.is_some_and(|s| s != spec.storage) || row.placement.is_some_and(|p| p != spec.placement);
@@ -894,7 +900,7 @@ fn properties_owed(topology: &FabricTopology, recorded: &Recorded, steps: &[crat
                 owed.push(BuildOperation::DeleteTags { node: path.clone(), labels: removed });
             }
         }
-        ops.extend(owed.into_iter().filter(|op| !done(op)));
+        ops.extend(owed.into_iter().filter(|op| !receipted(&op.key(), "Complete")));
     }
     ops
 }
@@ -2520,6 +2526,42 @@ mod tests {
         let json = serde_json::to_value(&all).unwrap();
         assert_eq!(json[0]["op"], "update_config");
         assert_eq!(serde_json::from_value::<Vec<BuildOperation>>(json).unwrap(), all);
+    }
+
+    /// CONTRACT (build.md §1, "The Build applies the diff", and its last line: "A node's `config` and
+    /// `tags` change at any time between Builds as well, through `node.config.update` and `node.tags.*`;
+    /// the last write wins"; node-config-update.md: "It is admitted at any time (Q166) ... never refused
+    /// because a Build is running: ... any interleaving with a Build is a serial order of the two"): a
+    /// property this Build already applied to a path is not applied again by a later attempt of it,
+    /// whether its create's claim wrote it (`PrepareStorage` of the path's `node.create`, the entry's
+    /// config, tags, storage and placement onto the row) or its own `node.config.update` /
+    /// `node.tags.*` completed; a write the node or a caller made after it stands. mesh1.rpc.1's entry
+    /// names config {} and no label; its row carries {port: 7} and the label y, the node's own writes
+    /// after this Build created it: no operation. A replacement's successor claims its seed's properties,
+    /// never the entry's: the entry's are still applied. A later Build, whose receipts hold none of these,
+    /// applies the entry's config and tags. Must NOT happen: a later attempt of the Build that created
+    /// the node writing the node's own config back to the entry's.
+    #[test]
+    fn a_property_this_build_applied_is_not_applied_again_and_a_later_write_stands() {
+        let cur = t(&[("mesh1", 1, 1)]);
+        let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
+        let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
+        let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
+        let own: Recorded = [(rpc.clone(), RecordedRow { node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) })].into();
+        let create = "node.create:mesh1.rpc.1";
+        let claimed = vec![receipt(1, create, "AllocateIdentity", None), receipt(1, create, "PrepareStorage", None), receipt(1, create, "Complete", None)];
+        assert_eq!(properties_owed(&cur, &own, &claimed, &[]), vec![], "the create's claim applied the entry: the node's own writes since stand");
+        let cut = vec![receipt(1, create, "AllocateIdentity", None), receipt(1, create, "PrepareStorage", None)];
+        assert_eq!(properties_owed(&cur, &own, &cut, &[]), vec![], "an executor lost after the claim: the claim applied the entry all the same");
+        let unclaimed = vec![receipt(1, create, "AllocateIdentity", None)];
+        let all = vec![BuildOperation::UpdateConfig { node: rpc.clone() }, BuildOperation::DeleteTags { node: rpc.clone(), labels: labels(&["y"]) }];
+        assert_eq!(properties_owed(&cur, &own, &unclaimed, &[]), all, "a create that never claimed the name applied nothing");
+        let untagged = vec![receipt(1, "node.tags.delete:mesh1.rpc.1", "Complete", None)];
+        assert_eq!(properties_owed(&cur, &own, &untagged, &[]), all[..1].to_vec(), "the label this Build deleted, written again since, stands; the config it never applied is applied");
+        let b = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let replaced = vec![deleted_receipt(1, "mesh1.rpc.1", &b), receipt(2, create, "PrepareStorage", None), receipt(2, create, "Complete", None)];
+        assert_eq!(properties_owed(&cur, &own, &replaced, &[]), all, "a replacement's successor carries its seed's properties: the entry's are applied");
+        assert_eq!(properties_owed(&cur, &own, &[], &[]), all, "a later Build applies the entry's config and tags");
     }
 
     /// CONTRACT (Q166, build.md §1: "`config` is the application's map and nothing else (RDM never reads

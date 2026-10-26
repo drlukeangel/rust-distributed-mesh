@@ -1156,10 +1156,15 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
     /// The accepted Build `build_id` as builds.storage records it (the fabric's shared store root, build.md
     /// §5.3), read there whoever reads it: the one record that carries each entry's executable, which the
-    /// Build topic does not (proposal executable-bindings-at-create.md rule 7). `Ok(None)`: no record of it
-    /// there, or a log kept in one process with no store root.
-    async fn stored_accepted(&self, _build_id: &BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
-        Ok(None)
+    /// Build topic does not (proposal executable-bindings-at-create.md rule 7). A log whose own facts are
+    /// the record (one process's, an application's builds.storage) answers the acceptance it holds, the
+    /// topology its fold plans from. `Ok(None)`: no record of it.
+    async fn stored_accepted(&self, build_id: &BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
+        match self.read_build(build_id).await {
+            Ok(p) => Ok(Some(BuildAccepted { build_id: p.build_id, topology: p.topology, submitted_change: p.submitted_change, submitted_at_ms: p.submitted_at_ms })),
+            Err(BuildStateError::UnknownBuild(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
     /// Insert-and-fail on `(build_id, attempt)`. Only the fabric-primary calls this on its own
     /// log to decide a claim (`build_claim::ClaimDoor`); an executor never claims from its own.
@@ -3118,6 +3123,30 @@ mod tests {
         assert_eq!(m.publish_accepted(&other).await, Err(BuildStateError::ConflictingIntent(BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap())));
         m.publish_accepted(&intent("b1")).await.unwrap();
         assert_eq!(m.list_active().await.unwrap().len(), 1);
+    }
+
+    /// CONTRACT (build.md §1, "The Build applies the diff": `config` "in place, as `node.config.update`
+    /// applies a map"; [`BuildStateAdapter::stored_accepted`]: "The accepted Build `build_id` as
+    /// builds.storage records it ... read there whoever reads it"): a log whose own facts are the record
+    /// (one process's, an application's builds.storage) answers the accepted Build it holds, each entry's
+    /// config, tags and executable with it, the topology the planner folds from the same log; a Build it
+    /// holds no fact of is none. Must NOT happen: the executor of the Build's `node.config.update` told the
+    /// accepted Build names no create spec for a path the planner read in it (nothing written, the Build
+    /// failed).
+    #[tokio::test]
+    async fn a_log_that_is_its_own_record_answers_the_accepted_build_it_holds() {
+        let m = MemoryBuildStateAdapter::new();
+        let mut accepted = intent("b1");
+        let rpc: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
+        let mesh = accepted.topology.meshes.get_mut("mesh1").unwrap();
+        mesh.nodes.insert(rpc.clone());
+        let config = [("zone".to_string(), "a".to_string())].into_iter().collect();
+        mesh.set_spec(rdm_core::meta::NodeSpec { config, tags: ["x".to_string()].into(), ..rdm_core::meta::NodeSpec::default_for(rpc.clone()) }).unwrap();
+        m.publish_accepted(&accepted).await.unwrap();
+        let stored = m.stored_accepted(&accepted.build_id).await.unwrap();
+        assert_eq!(stored.as_ref(), Some(&accepted), "the accepted Build as the log holds it");
+        assert_eq!(stored.unwrap().topology, m.read_build(&accepted.build_id).await.unwrap().topology, "the topology the planner folds");
+        assert_eq!(m.stored_accepted(&intent("b9").build_id).await.unwrap(), None, "a Build the log holds no fact of");
     }
 
     #[test]
