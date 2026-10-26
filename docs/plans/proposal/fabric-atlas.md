@@ -10,7 +10,7 @@
 topology state." An external client sends `build.create` to the fabric-primary; the fabric-primary accepts or
 denies it, deciding from the `FabricAtlas`, never from gossip.
 
-**`FabricAtlas` combines command accept or deny, execution progress and gossip observations, and is exposed
+**`FabricAtlas` combines command admission, execution progress and gossip observations, and is exposed
 through `fabrics.atlas.get`.** It updates immediately when commands are accepted and before completion is
 returned; delayed events cannot move it backward.
 
@@ -25,7 +25,7 @@ The fabric-primary accepts a Build from a projection rebuilt per request from th
 view and everything in flight) and the store rows (`control_plane.rs` accept or deny, `boot.rs` `view_now`,
 `projection.rs` `project_with`). A completed stop is already applied before `Complete`, but through the gossip view, which Q197 rules out: `SeatGate::attempt_completed`
 (`admin/reconcile.rs:139-152`, awaited at `build_drive.rs:1306`) takes each completed `node.stop:` receipt into
-the fabric-primarys view (span `rdm.mesh.topology.remove.via-node-stopped`, `publisher=` empty). No other
+the fabric-primary's view (span `rdm.mesh.topology.remove.via-node-stopped`, `publisher=` empty). No other
 receipt is: a completed start leaves the node `leaving` in that view until gossip says otherwise, so a stop sent
 the moment a start completes is refused `node-not-live` (red 5/5 on mesh2s node-admins, fabric-atlas-red
 8d4768946). `DigestView` keeps its name and meaning (Luke, 2026-10-26: \"digest-view is supposed to be the
