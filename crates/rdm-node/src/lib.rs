@@ -31,6 +31,8 @@ pub mod storage;
 pub mod storage_backend;
 pub mod storage_error;
 #[cfg(feature = "file-backend")]
+pub mod store_log;
+#[cfg(feature = "file-backend")]
 pub mod store_root;
 pub mod taskdump;
 pub mod topology_read;
