@@ -95,48 +95,32 @@ is admitted and refused as any Build is, one in progress at a time, and it is a 
 fabric, every mesh and every node stay ready-for-traffic, no node restarts, and no node changes
 state. Acceptance refuses by name a provider the fabric-primary's wiring does not register or cannot
 open. The change has a durable `change_id`, recorded with its Build before its first command; its
-commands carry it, and a node refuses by name a command of an older one. It is five steps, carried
-fabric-primary → mesh-primary → node as the Build's ordinary order:
+commands carry it, and a node refuses by name a command of an older one. It is four steps:
 
-1. **Block.** Each node stops admitting writes and claim operations to its stores. Every write it
-   would make is held as owed, never refused: a caller's command and a node's declaration are
-   answered only once their line has landed, and a connection event stays owed on the node's
-   writer queue (Q169). The node opens the new provider beside the old one and records the block
-   and both providers in its data dir, which a restart reads before it writes anything. A node
-   whose executable does not register the provider fails the step by name, and the Build fails
-   with nothing moved.
-2. **Finish outstanding writes.** Each node brings every write and claim operation it issued before
-   the block to a durable outcome on the old provider, then acknowledges. The copy waits for every
-   node's acknowledgement or node investigation's `exited` verdict on it; silence is neither.
-3. **Copy.** The fabric-primary, the one reader of every store, appends every line of every store
-   on the old provider to the new one in source order, dead births' and deleted nodes' records
-   included, and every name claim and in-flight row with its exact claimant. A copy resumed after
-   a lost answer recognises the lines already there and appends none twice; a new provider holding
-   lines the old one does not is refused by name, and nothing switches.
-4. **Switch.** The decision: the fabric-primary inserts `commit` for `(build_id, change_id)` on the
-   new provider with the store's insert-and-fail primitive, then appends the Fabric row's line: the
-   new provider current, the old appended to `previous_topology_storage_providers`. The insert is
-   the switch, of records and claims alike. Whoever resumes the change, a successor or the
-   fabric-primary after a lost answer, learns the decision only by reading that record: `commit`
-   found is switched, and the row's line is written if missing; no `commit` on a provider that
-   answers is not switched, and the change resumes from its step; a provider that does not answer
-   is neither, and the block holds until it answers. A timeout never means "not switched".
-5. **Unblock.** Each node moves to the new provider, lands its owed writes there in its own order,
-   answers its owed commands and closes the old provider. A node that fails it keeps its writes
-   owed and retries; the Build is in progress until the last node has unblocked.
+1. **Block.** The fabric-primary sends `mesh.block` to every mesh-primary. Each mesh-primary waits
+   until its in-flight commands complete, then replies `blocked` and gossips a current aggregate of
+   its mesh. A mesh-primary that has replied `blocked` issues no new command until it is unblocked.
+2. **Copy.** Once every mesh-primary has replied `blocked`, the fabric-primary appends every line of
+   every store on the old provider to the new one in source order, every name claim and in-flight row
+   with its exact claimant. A copy resumed after a lost answer appends nothing twice; a new provider
+   holding lines the old one does not is refused by name, and nothing switches.
+3. **Switch.** The fabric-primary inserts `commit` for `(build_id, change_id)` on the new provider
+   with the store's insert-and-fail primitive, then appends the Fabric row's line naming the new
+   provider current and the old in `previous_topology_storage_providers`. Whoever resumes the change
+   learns the decision only from that record.
+4. **Unblock.** The fabric-primary sends `mesh.unblock` to every mesh-primary. Each mesh-primary moves
+   its nodes to the new provider, then replies `unblocked` and issues commands again.
 
-A node that does not acknowledge the block or does not unblock is a lost node, as any node is
+A mesh-primary that does not reply `blocked` or `unblocked` is a lost node, as any node is
 ([node investigation](lifecycles/node-investigation.md)): it is investigated, and on any verdict but
-`reached` node recovery re-creates it at its `path.name`, an attempt of the change's own Build. The new birth is launched blocked on the old provider before the switch, so it
-acknowledges at once, and on the new provider after it. After the switch the Build completes once
-every node has unblocked or been re-created; nothing else waits.
+`reached` node recovery re-creates it at its `path.name`, an attempt of the change's own Build. After
+the switch the Build completes once every mesh-primary has replied `unblocked`; nothing else waits.
 
 No Build is admitted while a change is in progress, a change of `topology_storage_provider`
 included; `fabric.delete` alone is admitted, and it interrupts the change as it interrupts any Build,
 the records on both providers kept. A step that fails before the switch fails the Build only once the
-fabric-primary has read that no `commit` exists for `(build_id, change_id)`; each node then unblocks
-on the old provider, its owed writes landing there, the new provider closed and the Fabric row
-unchanged. No timer ends a block. The previous provider is kept as it was at the switch, named on
+fabric-primary has read that no `commit` exists for `(build_id, change_id)`; the fabric-primary then
+sends `mesh.unblock` on the old provider, the new provider closed and the Fabric row unchanged. No timer ends a block. The previous provider is kept as it was at the switch, named on
 the Fabric row, written no more and never deleted by RDM. A later Build naming it again copies into
 it only the lines it lacks.
 
