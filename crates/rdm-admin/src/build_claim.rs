@@ -120,8 +120,10 @@ impl AttemptContexts {
 /// names the attempt, to its verdict; one `Lost` to an executor of another mesh releases the row it took
 /// here, because that attempt's verdict releases only its executor's mesh, and the loser runs nothing
 /// (build.md §5.2). Who may claim is the caller's rule
-/// ([`ClaimDoor`]'s seat check, the recovery door's recoverer), decided before this.
-pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims: &dyn MeshStorage, contexts: &AttemptContexts, claim: &BuildAttemptClaim, mesh: &str) -> BuildClaimReply {
+/// ([`ClaimDoor`]'s seat check, the recovery door's recoverer), decided before this. `executor_birth`
+/// is the claim's executor's exact node id with the node rows it is read on, when the caller knows it.
+pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims: &dyn MeshStorage, contexts: &AttemptContexts, claim: &BuildAttemptClaim, mesh: &str, executor_birth: Option<(&dyn crate::storage::NodesStorage, &NodeId)>) -> BuildClaimReply {
+    let _ = executor_birth;
     let lane = claim.mesh.as_deref();
     let span = tracing::info_span!(
         "rdm.node_admin.build.update.via-claim-decision",
@@ -272,6 +274,7 @@ impl ClaimDoor {
             &self.contexts,
             &claim,
             &mesh,
+            None,
         )
         .await;
         if matches!(reply, BuildClaimReply::Won { .. }) {

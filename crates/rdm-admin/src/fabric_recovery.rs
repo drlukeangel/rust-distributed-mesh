@@ -85,8 +85,9 @@ pub enum DeleteClaim {
 /// takes it only while it names that attempt), and the next attempt is decided as every claim is
 /// ([`crate::build_claim::decide_claim`]): the in-flight row of the lost fabric-primary's mesh taken first,
 /// one row whichever mesh each contender is of, then the claim recorded, so of two executors one wins and
-/// the other is told the winner.
-pub async fn claim_delete_attempt(me: &PathName, builds: &dyn crate::build_state::BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts, delete: &crate::build_state::BuildProjection, lost_at: Option<&PathName>) -> DeleteClaim {
+/// the other is told the winner. `me_birth` is `me`'s exact node id with the node rows it is read on: a
+/// deleted birth claims nothing (Q181).
+pub async fn claim_delete_attempt(me: &PathName, builds: &dyn crate::build_state::BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts, delete: &crate::build_state::BuildProjection, lost_at: Option<&PathName>, me_birth: Option<(&dyn crate::storage::NodesStorage, &NodeId)>) -> DeleteClaim {
     use crate::build_state::BuildState;
     if delete.attempt == 0 {
         return DeleteClaim::First;
@@ -114,7 +115,7 @@ pub async fn claim_delete_attempt(me: &PathName, builds: &dyn crate::build_state
     let attempt = delete.attempt + 1;
     let claim = crate::build_state::BuildAttemptClaim { build_id: delete.build_id.clone(), attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: None };
     let decided_in = lost_at.map(|l| l.mesh.as_str()).unwrap_or(me.mesh.as_str());
-    match crate::build_claim::decide_claim(me, builds, claims, contexts, &claim, decided_in).await {
+    match crate::build_claim::decide_claim(me, builds, claims, contexts, &claim, decided_in, me_birth).await {
         rdm_core::build_claim::BuildClaimReply::Won { .. } => DeleteClaim::Won(attempt),
         rdm_core::build_claim::BuildClaimReply::Lost { holder } => DeleteClaim::Lost(format!("attempt {attempt} of fabric.delete {} was claimed by {holder}", delete.build_id)),
         other => DeleteClaim::NotYet(format!("the claim of attempt {attempt} of fabric.delete {} answered {other:?}", delete.build_id)),
@@ -445,7 +446,8 @@ impl FabricRecoveryDoor {
             return None;
         };
         let control = &door.control;
-        let attempt = match claim_delete_attempt(&me.name, &*control.builds, &*control.claims, &control.contexts, delete, fr.at.as_ref()).await {
+        let me_birth = control.node_rows.get().map(|rows| (&**rows, &me.node_id));
+        let attempt = match claim_delete_attempt(&me.name, &*control.builds, &*control.claims, &control.contexts, delete, fr.at.as_ref(), me_birth).await {
             DeleteClaim::Won(attempt) => Some(attempt),
             DeleteClaim::First => None,
             DeleteClaim::Lost(why) => {
@@ -541,14 +543,14 @@ mod tests {
         let lost_at: PathName = "mesh1.admin.1".parse().unwrap();
         let (a, b, c): (PathName, PathName, PathName) = ("mesh2.admin.1".parse().unwrap(), "mesh3.admin.1".parse().unwrap(), "mesh4.admin.1".parse().unwrap());
         let read = builds.read_build(&id).await.unwrap();
-        let first = claim_delete_attempt(&a, &builds, &claims, &contexts, &read, Some(&lost_at)).await;
-        let second = claim_delete_attempt(&b, &builds, &claims, &contexts, &read, Some(&lost_at)).await;
+        let first = claim_delete_attempt(&a, &builds, &claims, &contexts, &read, Some(&lost_at), None).await;
+        let second = claim_delete_attempt(&b, &builds, &claims, &contexts, &read, Some(&lost_at), None).await;
         assert_eq!(first, DeleteClaim::Won(2), "the first claim of attempt 2 wins");
         assert!(matches!(&second, DeleteClaim::Lost(why) if why.contains("mesh2.admin.1")), "the second claimant is told the winner: {second:?}");
         let now = builds.read_build(&id).await.unwrap();
         assert_eq!((now.attempt, now.executor.as_deref()), (2, Some("mesh2.admin.1")), "one executor holds attempt 2");
-        assert_eq!(claim_delete_attempt(&a, &builds, &claims, &contexts, &now, Some(&lost_at)).await, DeleteClaim::Won(2), "the winner's claim again is its own");
-        assert!(matches!(claim_delete_attempt(&c, &builds, &claims, &contexts, &now, Some(&lost_at)).await, DeleteClaim::Lost(why) if why.contains("mesh2.admin.1")), "an executor never claims past a live executor's attempt");
+        assert_eq!(claim_delete_attempt(&a, &builds, &claims, &contexts, &now, Some(&lost_at), None).await, DeleteClaim::Won(2), "the winner's claim again is its own");
+        assert!(matches!(claim_delete_attempt(&c, &builds, &claims, &contexts, &now, Some(&lost_at), None).await, DeleteClaim::Lost(why) if why.contains("mesh2.admin.1")), "an executor never claims past a live executor's attempt");
         assert_eq!(claims.in_flight("mesh1").await.unwrap().map(|r| (r.attempt, r.claimant)), Some((2, "mesh2.admin.1".to_string())), "the lost executor's row is superseded by the winner's");
     }
 }

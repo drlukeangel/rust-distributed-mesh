@@ -100,6 +100,40 @@ mod tests {
         assert_eq!(written.keys().cloned().collect::<HashSet<_>>(), [kept.node_id.clone()].into(), "the silence memo of a deleted node is retired");
     }
 
+    /// CONTRACT (node-recovery.md step 1: "Each node's pruner marks a member `PendingReconnect` once it is
+    /// unheard past the staleness floor", step 2: "Half a floor after the mark it runs node
+    /// investigation"; node-investigation.md (Q182): "an owed command it leaves unanswered past the
+    /// staleness floor starts node investigation on its birth as silence does"; Q181): a node-admin
+    /// member of the mesh-primary's own mesh that is heard within the floor and leaves no command
+    /// unanswered is not silent: the mesh-primary's tick neither watches it, marks it nor lists it
+    /// silent, and the seat watch does not investigate it. Must NOT happen: a live, heard node-admin
+    /// tickled, investigated or replaced.
+    #[test]
+    fn a_heard_node_admin_member_that_answers_its_commands_is_not_investigated() {
+        let digest_view = DigestView::default();
+        let (primary, member) = (digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), digest("mesh1.admin.2", MemberStatus::ReadyForTraffic));
+        for d in [primary.clone(), member.clone()] {
+            digest_view.record(d);
+        }
+        let mut view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        view.nodes.iter_mut().filter(|n| n.node_id == primary.node.node_id).for_each(|n| {
+            n.is_primary = true;
+            n.is_fabric_primary = true;
+        });
+        let me_id = primary.node.node_id.clone();
+        let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
+        let floor = rdm_transport::topology::staleness_floor();
+        let mut watched = watched_births(&view, &me_id, "mesh1", &[]);
+        let marks = crate::offline::unanswered_marks(&crate::node_commands::CommandView::default(), &view, "mesh1", floor, now, now_ms);
+        crate::offline::watch_marked(&mut watched, &marks, &view, &me_id);
+        assert!(watched.is_empty() && marks.is_empty(), "a heard node-admin that answers its commands is not watched: {watched:?} {marks:?}");
+        let silent = crate::offline::silent_set(view.members().filter(|n| n.node_id == member.node.node_id), &digest_view, now, now_ms, floor);
+        assert!(silent.iter().all(|s| s.marked_at_ms.is_none()), "heard within the floor: no mark: {silent:?}");
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let plan = crate::seat_watch::plan(&view, &me, &(me_id, primary.node.incarnation.clone()), &mut crate::seat_watch::Said::default(), &|_| false, &|_| false);
+        assert_eq!(plan, crate::seat_watch::Plan::default(), "the seat watch investigates no live node-admin");
+    }
+
     #[tokio::test]
     async fn a_recovery_that_ends_failed_is_recorded_as_its_failed_step_never_as_submitted() {
         let failed = RecoveryEnd::Failed { attempt: 3, operation: "node.delete:mesh2.rpc.1".into(), step: "NodeDeleted".into(), reason: "the exit-proof row is missing".into() };

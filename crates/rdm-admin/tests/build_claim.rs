@@ -318,3 +318,35 @@ async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_f
     let build = p_builds.read_build(&id).await.unwrap();
     assert_eq!((build.attempt, build.executor.as_deref()), (2, Some("mesh1.admin.2")), "attempt 2 is claimed for the executor the request names");
 }
+
+/// CONTRACT (node-investigation.md: "A node that comes back after it was re-created is a deleted birth
+/// ... No admit reason exists for it, and none is added"; fabric-recovery.md step 3; Q181, Luke
+/// 2026-10-26: "a node cut off should have been replaced, and so blocked from joining"): a claim whose
+/// executor's exact birth the store's node rows hold deleted is refused by name (`deleted birth`)
+/// before the mesh's in-flight row is taken: nothing is taken, nothing is recorded on the Build log.
+/// The same claim of the live birth wins. Must NOT happen: a deleted birth holding a mesh's in-flight
+/// row or an attempt of the Build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_by_a_deleted_birth_is_refused_by_name_and_takes_nothing() {
+    use rdm_admin::storage::{MeshStorage as _, NodeRow, NodesStorage as _};
+    let id = BuildId::mint();
+    let builds = MemoryBuildStateAdapter::new();
+    settled(&builds, &id, "mesh1.admin.1", 1).await;
+    open(&builds, &id, 2).await;
+    let claims = rdm_admin::storage::MemoryMeshStorage::default();
+    let contexts = AttemptContexts::in_memory();
+    let rows = rdm_admin::storage::MemoryNodesStorage::default();
+    let me: rdm_core::PathName = "mesh1.admin.2".parse().unwrap();
+    let me_id = NodeId::mint();
+    rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::Deleted)).await.unwrap();
+    let claim = BuildAttemptClaim { claimant: Some(me.to_string()), mesh: None, build_id: id.clone(), attempt: 2, executor: me.to_string() };
+    let refused = build_claim::decide_claim(&me, &builds, &claims, &contexts, &claim, "mesh1", Some((&rows, &me_id))).await;
+    assert!(matches!(&refused, BuildClaimReply::NotReady { reason } if reason.contains("deleted birth") && reason.contains("mesh1.admin.2")), "a deleted birth's claim is refused by name: {refused:?}");
+    assert_eq!(claims.in_flight("mesh1").await.unwrap(), None, "a deleted birth takes no in-flight row");
+    let p = builds.read_build(&id).await.unwrap();
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.1")), "nothing of the refused claim is on the Build log: {p:?}");
+
+    rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::ReadyForTraffic)).await.unwrap();
+    let won = build_claim::decide_claim(&me, &builds, &claims, &contexts, &claim, "mesh1", Some((&rows, &me_id))).await;
+    assert!(matches!(won, BuildClaimReply::Won { .. }), "the live birth's claim wins: {won:?}");
+}

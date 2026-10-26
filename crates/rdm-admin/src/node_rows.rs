@@ -992,6 +992,24 @@ pub fn released_its_name(row: &NodeRow) -> bool {
     matches!(row.status, NodeStatus::Deleted | NodeStatus::Withdrawn)
 }
 
+/// Why the birth of `node_id` at `name` is a deleted birth on the store's node rows, if it is one
+/// (node-investigation.md: "A node that comes back after it was re-created is a deleted birth"; Q181):
+/// its own record released its name (`Deleted` or `Withdrawn`), or another node's live claim holds
+/// `name` (a create at the path.name re-created it under a new node.id). `None` while the rows hold it
+/// live, or hold nothing of it (a birth no row was written for yet). Read only: two point reads, nothing
+/// written, no timer.
+pub async fn deleted_birth(storage: &dyn NodesStorage, name: &PathName, node_id: &NodeId) -> Result<Option<String>, crate::storage_error::StorageError> {
+    if let Some(row) = storage.node(node_id).await?.filter(released_its_name) {
+        return Ok(Some(format!("{name} ({node_id}) is a deleted birth: its row at {} is {:?}", row.name, row.status)));
+    }
+    if let Some(by) = storage.name_claim(name).await?.filter(|by| by != node_id) {
+        if !storage.node(&by).await?.is_some_and(|r| released_its_name(&r)) {
+            return Ok(Some(format!("{name} ({node_id}) is a deleted birth: {by} holds the name")));
+        }
+    }
+    Ok(None)
+}
+
 /// Why a `Deleted` record was not written.
 pub enum DeletedRefused {
     /// Another node's live claim holds the name.

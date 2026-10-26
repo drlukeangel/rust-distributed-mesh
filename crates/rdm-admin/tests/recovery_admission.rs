@@ -1059,3 +1059,68 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     assert_eq!((recovery.1["outcome"].as_str(), recovery.1["open_attempt"].as_str()), ("admitted", "held-open"), "{recovery:?}");
     assert!(!capture.spans("rdm.node_admin.build.update.via-departed-claimant").is_empty(), "the departed opener's row, its claim on the store (Q142), is released on its departure before the owed submit claims attempt 2");
 }
+
+/// CONTRACT (node-investigation.md: "A node that comes back after it was re-created is a deleted birth
+/// ... No admit reason exists for it, and none is added"; node-recovery.md step 3 and fabric-recovery.md
+/// step 3: "An old birth that comes back after that is a deleted birth"; Q181, Luke 2026-10-26: "a node
+/// cut off should have been replaced, and so blocked from joining"): an admin whose own birth the
+/// store's node rows hold deleted opens no recovery, whatever its own view says. mesh1.admin.1 opens
+/// the recovery of its exited member mesh1.rpc.2: while its own row is `Deleted`, and again while
+/// another node's live claim holds its path.name (it was re-created at it), the open is refused by
+/// name (`deleted-birth`) before anything is read or written: no attempt opened, mesh1's in-flight row
+/// untaken. The same open by the live birth (its own row live, its name its own) is admitted. Must
+/// NOT happen: a deleted birth opening, claiming or running a recovery attempt.
+#[tokio::test]
+async fn a_recovery_opened_by_a_deleted_birth_is_refused_by_name_and_writes_nothing() {
+    use rdm_admin::storage::{NodeRow, NodesStorage as _};
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rdm_transport::span_capture("q181-deleted-birth-opens-nothing", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let t = view();
+    let me: PathName = "mesh1.admin.1".parse().unwrap();
+    let me_id = t.node(&me).unwrap().node_id.clone();
+    let path: PathName = "mesh1.rpc.2".parse().unwrap();
+    let exited = t.node(&path).unwrap().clone();
+    let (node_id, birth) = (exited.node_id.clone(), exited.incarnation_id.clone().unwrap());
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, me.clone(), t, crate::adopted_time()));
+    let rows = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
+    let _ = cp.node_rows.set(rows.clone());
+    let _ = cp.node_id.set(me_id.clone());
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
+    settle_other(&builds, &b0).await;
+    cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);
+    let before = opened(&builds.facts().await.unwrap());
+
+    // Its own row is Deleted: its node recovery re-created it, and this is the old birth.
+    rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::Deleted)).await.unwrap();
+    let deleted = cp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
+    assert!(matches!(&deleted, Err(Refusal::Conflict(why)) if why.contains("deleted birth") && why.contains("mesh1.admin.1")), "a birth whose own row is Deleted opens nothing, refused by name: {deleted:?}");
+
+    // Its own row reads live, but a new birth's claim holds its path.name: it was re-created there.
+    let successor = NodeId::mint();
+    rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::ReadyForTraffic)).await.unwrap();
+    rows.put_node(&NodeRow::new(me.clone(), successor.clone(), NodeStatus::Pending)).await.unwrap();
+    rows.claim_node_name(&me, &successor).await.unwrap().unwrap();
+    let replaced = cp.open_recovery("fabric-recovery", path.clone(), node_id.clone(), birth.clone()).await;
+    assert!(matches!(&replaced, Err(Refusal::Conflict(why)) if why.contains("deleted birth") && why.contains(successor.as_str())), "a birth whose path.name another node's live claim holds opens nothing, refused by name: {replaced:?}");
+
+    assert_eq!(opened(&builds.facts().await.unwrap()), before, "a deleted birth opens no attempt");
+    assert!(cp.claims.in_flight("mesh1").await.unwrap().is_none(), "a deleted birth takes no in-flight row");
+    let refusals = capture.spans("rdm.node_admin.build.reject.via-deleted-birth");
+    assert_eq!(refusals.len(), 2, "each refusal is spanned by name: {refusals:?}");
+    assert_eq!((refusals[0].1.get("node").map(String::as_str), refusals[0].1.get("node_id").map(String::as_str)), (Some("mesh1.admin.1"), Some(me_id.as_str())), "{:?}", refusals[0].1);
+
+    // The live birth: its own row live and its name its own.
+    rows.release_node_name(&me, &successor).await.unwrap();
+    rows.put_node(&NodeRow::new(me.clone(), successor.clone(), NodeStatus::Deleted)).await.unwrap();
+    rows.claim_node_name(&me, &me_id).await.unwrap().unwrap();
+    let live = cp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
+    assert!(matches!(&live, Ok(Recovery::Opened(o)) if o.mesh.as_deref() == Some("mesh1")), "the live birth opens its member's recovery: {live:?}");
+    for (trace_id, attrs) in refusals {
+        eprintln!("span rdm.node_admin.build.reject.via-deleted-birth trace_id={trace_id} {attrs:?}");
+    }
+}

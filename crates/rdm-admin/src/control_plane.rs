@@ -81,6 +81,10 @@ pub struct ControlPlane {
     /// opens them: a complete-topology request is compiled against what each row records of its
     /// executable (proposal executable-bindings-at-create.md rule 5, R4).
     pub node_rows: std::sync::OnceLock<Arc<dyn crate::storage::NodesStorage>>,
+    /// The node id this admin was born with, set with `node_rows`: a recovery it opens and a claim it
+    /// decides for itself are refused by name while the rows hold this birth deleted (Q181,
+    /// [`crate::node_rows::deleted_birth`]).
+    pub node_id: std::sync::OnceLock<crate::model::NodeId>,
     /// This admin's `RDM_EXECUTABLE_DIRS` (proposal executable-bindings-at-create.md §2): under the
     /// container provider, an executable a request names outside them is refused by name at acceptance.
     pub executable_dirs: Vec<std::path::PathBuf>,
@@ -115,6 +119,7 @@ impl ControlPlane {
             admission: Arc::new(tokio::sync::Mutex::new(())),
             departure: std::sync::OnceLock::new(),
             node_rows: std::sync::OnceLock::new(),
+            node_id: std::sync::OnceLock::new(),
             executable_dirs: Vec::new(),
             topology_storage_providers: vec![rdm_core::launch::TOPOLOGY_STORAGE_FILE.into()],
         }
@@ -972,7 +977,8 @@ impl ControlPlane {
                 return Ok(Recovery::Reported { opened, claimant });
             }
             let claim = crate::build_state::BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: opened.mesh.clone() };
-            match crate::build_claim::decide_claim(&me, &*self.builds, &*self.claims, &self.contexts, &claim, &path.mesh).await {
+            let own = self.node_rows.get().zip(self.node_id.get()).map(|(rows, id)| (&**rows, id));
+            match crate::build_claim::decide_claim(&me, &*self.builds, &*self.claims, &self.contexts, &claim, &path.mesh, own).await {
                 rdm_core::build_claim::BuildClaimReply::Won { .. } => Ok(Recovery::Opened(opened)),
                 // Another attempt took the mesh's row between the read above and this claim: the
                 // attempt stays open, claimed by no one, and the next recovery claims it as it stands.

@@ -1715,6 +1715,34 @@ pub(crate) mod tests {
         assert!(t.is_offline("a"));
     }
 
+    /// CONTRACT (node-recovery.md step 2: "Half a floor after the mark it runs node investigation on the
+    /// exact birth: ... node.tickle direct, the same tickle via up to two eligible live peers ..., then
+    /// node.runtime.inspect"; step 3: "Any other verdict (`running`, `os-stopped`, `exited`, `unproven`):
+    /// the recovery below, at once. Nothing holds, nothing is inspected again"; node-tickle.md "What
+    /// follows": "recovery runs the inspect on `unreached`"; Q111, Q181): the mesh-primary's one ladder,
+    /// half a floor after the mark, that nobody answers is held offline at the tick that folds it, so the
+    /// inspection and the recovery follow on that same tick, whatever kind of member it is (a node-admin
+    /// of the mesh-primary's own mesh included). Must NOT happen: a hold-down opened, a second ladder a
+    /// floor later, or the birth left un-inspected for a floor after its ladder found nobody.
+    // @feature: node-lifecycle
+    #[tokio::test(start_paused = true)]
+    async fn a_ladder_nobody_answers_is_the_verdict_at_its_fold_and_opens_no_hold_down() {
+        let capture = crate::span_capture::Capture::new("q181-one-ladder-no-hold-down");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let mut t = OfflineTickle::observed_by("mesh1.admin.1".into(), crate::stop_gate::StopGate::new());
+        let admin = vec![SilentNode { node_id: "a".into(), path: "mesh1.admin.2".into(), incarnation: None, marked_at_ms: Some(0) }];
+        assert!(tick(&mut t, 0, true, admin.clone(), false, no_path()).await.tickled.is_empty(), "nothing before half a floor after the mark");
+        let r = tick(&mut t, PROBE_DELAY, true, admin.clone(), false, no_path()).await;
+        assert_eq!(r.tickled, vec!["a".to_string()], "the one ladder runs half a floor after the mark");
+        assert_eq!(r.offline, vec!["a".to_string()], "the ladder nobody answered, folded, is the birth offline: its inspection and recovery follow at once: {r:?}");
+        let later = tick(&mut t, PROBE_DELAY + FLOOR, true, admin, false, no_path()).await;
+        assert!(later.tickled.is_empty(), "no second ladder a floor later: nothing holds, nothing is probed again: {later:?}");
+        assert!(capture.named("rdm.node_admin.node.update.via-offline-hold-down-opened").is_empty(), "no hold-down is opened");
+        let offline = capture.named("rdm.node_admin.node.update.via-true-offline");
+        assert_eq!(offline.len(), 1, "one offline mark, at the fold of the one ladder");
+        assert_eq!(offline[0].attributes.get("path").map(String::as_str), Some("mesh1.admin.2"), "{:?}", offline[0].attributes);
+    }
+
     /// CONTRACT (node-recovery.md "Detection and proof" step 2: "No path opens a hold-down; no
     /// path again at least one floor later is TRUE OFFLINE"): the hold-down opens at the instant
     /// ladder 1's no path was known, when its probes ended, carried by the ladder to the tick that

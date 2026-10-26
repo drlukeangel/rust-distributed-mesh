@@ -637,7 +637,7 @@ async fn a_recovery_the_fabric_primary_executes_in_another_mesh_releases_that_me
         .unwrap();
     let claim = BuildAttemptClaim { build_id: r.build.clone(), attempt, executor: "mesh1.admin.1".into(), claimant: Some("mesh1.admin.1".into()), mesh: None };
     let me: PathName = "mesh1.admin.1".parse().unwrap();
-    let won = rdm_admin::build_claim::decide_claim(&me, &*r.builds, &*r.env.door.claims, &r.env.door.contexts, &claim, "mesh2").await;
+    let won = rdm_admin::build_claim::decide_claim(&me, &*r.builds, &*r.env.door.claims, &r.env.door.contexts, &claim, "mesh2", None).await;
     assert!(matches!(won, rdm_core::build_claim::BuildClaimReply::Won { .. }), "{won:?}");
     assert_eq!(r.env.door.claims.in_flight("mesh2").await.unwrap().map(|h| h.attempt), Some(attempt), "the recovery holds mesh2's row");
 

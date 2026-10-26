@@ -1503,6 +1503,46 @@ async fn a_hung_member_whose_runtime_runs_is_terminated_and_recovered_at_once() 
     estate.stop().await;
 }
 
+/// CONTRACT (node-recovery.md: "The mesh-primary is the reconciler for its own members, whatever their
+/// type"; step 2: "Half a floor after the mark it runs node investigation on the exact birth"; step 3:
+/// "Any other verdict (`running`, ...): the recovery below, at once. Nothing holds, nothing is inspected
+/// again"; node-investigation.md Caller: "its mesh-primary for a member of any type"; Q181, Luke
+/// 2026-10-26: "a node cut off should have been replaced"): mesh1 holds two node-admins, mesh1.admin.1
+/// its primary and the fabric-primary, and mesh1.admin.2 a member. mesh1.admin.2 is hung (every task
+/// but the leader held by a tracer: the provider reads it running). Its mesh-primary mesh1.admin.1 runs
+/// the one investigation on it, half a floor after the mark, and on the verdict `running` submits its
+/// recovery at once: mesh1.admin.2 is re-created as a new birth at its path.name. Must NOT happen: the
+/// mesh-primary passing over its own node-admin member, a hold-down opened on it, or a second ladder
+/// before the recovery.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hung_node_admin_member_is_investigated_by_its_mesh_primary_and_re_created_at_once() {
+    let (mut estate, _birth_build) = fabric_of("a_hung_node_admin_member_is_investigated_by_its_mesh_primary_and_re_created_at_once", &[("mesh1", 2, 1)], Duration::from_secs(60)).await;
+    let node = "mesh1.admin.2";
+    let nodes = estate.node_values().await;
+    let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
+    let mesh_primary = s(&primary["name"]);
+    assert_eq!(mesh_primary, "mesh1.admin.1", "the bootstrap admin is mesh1's primary and the fabric-primary");
+    let before = estate.node_value(node).await;
+    let rt = exact_runtime(&estate, node).await;
+    let held = rt.hang().expect("the exact runtime is hung");
+    assert!(!held.held.is_empty(), "every task but the leader is held: the provider sees it running");
+
+    let after = until_new_birth(&estate, node, &before, SETTLE).await;
+    let recovery = recovery_span(&estate, node, &before["node_id"]).await;
+    assert_eq!(s(&recovery["attributes"]["submitter"]), mesh_primary, "the node-admin's own mesh-primary submits its recovery: {recovery}");
+    assert_eq!(s(&recovery["attributes"]["verdict"]), "running", "on the investigation's verdict: {recovery}");
+    let spans = estate.spans();
+    let held_down: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-offline-hold-down-opened").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
+    assert!(held_down.is_empty(), "nothing holds between the ladder nobody answered and the recovery: {held_down:?}");
+    let ladders: Vec<&Value> = named(&spans, "rdm.node.tickle.returns-unknown.via-unreached").into_iter().filter(|sp| sp["attributes"]["caller"] == mesh_primary.as_str() && sp["attributes"]["node_id"] == before["node_id"]).collect();
+    assert_eq!(ladders.len(), 1, "one ladder, then the inspection: {ladders:?}");
+    assert_eq!(s(&ladders[0]["attributes"]["next"]), "inspect", "the ladder nobody answered goes to the inspection: {}", ladders[0]);
+    eprintln!("node-admin member cell: {node} (birth {}) recovered by {mesh_primary}: trace {} | new birth {}", s(&before["node_id"]), s(&recovery["trace_id"]), s(&after["node_id"]));
+    estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
+    estate.settles_to(&[("mesh1", 2, 1)], Duration::from_secs(30)).await;
+    estate.stop().await;
+}
+
 /// CONTRACT (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs it", step 3:
 /// any verdict but `reached`, the recovery at once, and sequence step 1: "for an unheard mesh-primary,
 /// the fabric-primary opens it"; sequence step 3: `TerminateRuntime` first when the verdict was
