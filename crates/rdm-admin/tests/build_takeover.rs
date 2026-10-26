@@ -119,8 +119,7 @@ impl OperationRunner for Runner {
     }
 }
 
-/// The drive's gate over the fixture's view: no seat fence, and the node rows record what each live
-/// node of the view runs, the executable its entry names (the create's claim records it,
+/// The drive's gate over the fixture's view: the node rows record what each live node of the view runs, the executable its entry names (the create's claim records it,
 /// build-deployment.md §2.3), as production rows do.
 struct RowsGate {
     view: Arc<RwLock<Topology>>,
@@ -128,9 +127,6 @@ struct RowsGate {
 
 #[async_trait::async_trait]
 impl rdm_admin::build_drive::Gate for RowsGate {
-    async fn fence(&self) -> Result<Option<String>, rdm_admin::build_state::BuildStateError> {
-        Ok(None)
-    }
     async fn recorded_executables(&self, topology: &FabricTopology) -> Result<rdm_admin::accepted::Recorded, String> {
         let v = self.view.read().await;
         Ok(v.nodes
