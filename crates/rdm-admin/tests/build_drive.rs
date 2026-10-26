@@ -2575,3 +2575,227 @@ async fn a_fabric_ready_for_traffic_while_the_held_run_is_in_flight_completes_th
     assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Build is Complete after its own ready-for-traffic: {done:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran: {:?}", r.ran.0.lock().unwrap());
 }
+
+/// Which backend the Build journal writes to, and the fabric's state, at every write: the application's
+/// `sync_state` switches the backend while it works (Rafka's storage provider), so a fact written between
+/// state-sync's entry and that switch lands on the backend being switched away from.
+struct Ledger {
+    state: Mutex<&'static str>,
+    backend: Mutex<&'static str>,
+    writes: Mutex<Vec<(String, &'static str, &'static str)>>,
+}
+
+impl Ledger {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { state: Mutex::new("pending"), backend: Mutex::new("old"), writes: Mutex::new(Vec::new()) })
+    }
+    fn note(&self, what: String) {
+        let at = (*self.state.lock().unwrap(), *self.backend.lock().unwrap());
+        self.writes.lock().unwrap().push((what, at.0, at.1));
+    }
+    fn written(&self) -> Vec<(String, &'static str, &'static str)> {
+        self.writes.lock().unwrap().clone()
+    }
+}
+
+/// The fabric-primary's Build log over a [`Ledger`]: every write is noted with the fabric's state and the
+/// backend it lands on. The fabric enters state-sync at the claim of the Build's first attempt, the earliest
+/// it can (the change waits only for the accepted Build's attempt to name, fabric-state-sync.md).
+struct LedgerBuilds {
+    inner: Arc<MemoryBuildStateAdapter>,
+    ledger: Arc<Ledger>,
+}
+
+#[async_trait::async_trait]
+impl BuildStateAdapter for LedgerBuilds {
+    async fn publish_accepted(&self, a: &rdm_admin::build_state::BuildAccepted) -> Result<(), BuildStateError> {
+        self.ledger.note(format!("accepted:{}", a.build_id));
+        self.inner.publish_accepted(a).await
+    }
+    async fn open_attempt(&self, o: &rdm_admin::build_state::AttemptOpened) -> Result<(), BuildStateError> {
+        self.ledger.note(format!("opened:{}", o.attempt));
+        self.inner.open_attempt(o).await
+    }
+    async fn read_build(&self, id: &BuildId) -> Result<rdm_admin::build_state::BuildProjection, BuildStateError> {
+        self.inner.read_build(id).await
+    }
+    async fn current_build(&self) -> Result<rdm_admin::build_state::CurrentBuild, BuildStateError> {
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
+    }
+    async fn list_active(&self) -> Result<Vec<rdm_admin::build_state::BuildProjection>, BuildStateError> {
+        self.inner.list_active().await
+    }
+    async fn claim_attempt(&self, c: &rdm_admin::build_state::BuildAttemptClaim) -> Result<rdm_admin::build_state::ClaimOutcome, BuildStateError> {
+        self.ledger.note(format!("claim:{}", c.attempt));
+        let out = self.inner.claim_attempt(c).await;
+        if c.attempt == 1 && matches!(out, Ok(rdm_admin::build_state::ClaimOutcome::Won)) {
+            let mut state = self.ledger.state.lock().unwrap();
+            if *state == "pending" {
+                *state = "state-sync";
+            }
+        }
+        out
+    }
+    async fn adopt_claim(&self, c: &rdm_admin::build_state::BuildAttemptClaim) -> Result<(), BuildStateError> {
+        self.ledger.note(format!("adopted-claim:{}", c.attempt));
+        self.inner.adopt_claim(c).await
+    }
+    async fn append_step_receipt(&self, r: &BuildStepReceipt) -> Result<(), BuildStateError> {
+        self.ledger.note(format!("step:{}:{}:{}", r.attempt, r.operation, r.step));
+        self.inner.append_step_receipt(r).await
+    }
+    async fn append_attempt_receipt(&self, r: &rdm_admin::build_state::BuildAttemptReceipt) -> Result<(), BuildStateError> {
+        let outcome = match &r.outcome {
+            rdm_admin::build_state::AttemptOutcome::Converged => "converged",
+            rdm_admin::build_state::AttemptOutcome::Failed { .. } => "failed",
+            rdm_admin::build_state::AttemptOutcome::HandedOff { .. } => "handed-off",
+        };
+        self.ledger.note(format!("attempt:{}:{outcome}", r.attempt));
+        self.inner.append_attempt_receipt(r).await
+    }
+    async fn facts(&self) -> Result<Vec<rdm_admin::build_state::BuildFact>, BuildStateError> {
+        self.inner.facts().await
+    }
+    async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
+        self.inner.forget(id).await
+    }
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+        self.inner.recovery_of(path, node_id, incarnation).await
+    }
+    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+        self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
+        self.inner.exits_owed(build_id, mesh).await
+    }
+}
+
+/// CONTRACT (states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
+/// ready-for-traffic again from this Build's own change, as fabric.create's is"; fabric-create.md, Completion:
+/// "`fabric.created` when the fabric is ready-for-traffic"; fabric-state-sync.md: "RDM writes none of its own
+/// records during state-sync ... except ... the Build facts"): the Day-0 Build (fabric.create's: the
+/// bootstrap admin alone, no change submitted) claims its first attempt, which the fabric's change names,
+/// and holds its terminal while the fabric is in state-sync, where the application's `sync_state` switches
+/// the backend the Build journal writes to. Its `Converged` receipt is written once the fabric is
+/// ready-for-traffic, on the backend the application switched to, and the Build reads Complete there.
+/// Must NOT happen: the Day-0 Build's terminal written during state-sync, on the backend being switched
+/// away from, leaving the Build Running on the one the application switched to.
+#[tokio::test]
+async fn the_day0_build_writes_its_complete_only_after_its_own_ready_for_traffic_on_the_backend_state_sync_switched_to() {
+    let mesh_id = MeshId::mint();
+    let t = Topology {
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(mesh_id.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        nodes: vec![node("mesh1.admin.1", true, true)],
+    };
+    let inner = Arc::new(MemoryBuildStateAdapter::new());
+    let ledger = Ledger::new();
+    let builds: Arc<dyn BuildStateAdapter> = Arc::new(LedgerBuilds { inner: inner.clone(), ledger: ledger.clone() });
+    let me: PathName = "mesh1.admin.1".parse().unwrap();
+    let day0 = BuildId::mint();
+    let contexts = Arc::new(AttemptContexts::in_memory());
+    contexts.put(&day0, 1, &rdm_admin::build_claim::current_context()).await.unwrap();
+    let accepted = rdm_admin::build_state::BuildAccepted { build_id: day0.clone(), topology: FabricTopology::root("fabric1", "mesh1", mesh_id), submitted_change: None, submitted_at_ms: 1 };
+    rdm_admin::build_state::accept(&*builds, &accepted, None, &me.to_string(), "day-0").await.unwrap();
+    let topology = Arc::new(RwLock::new(t.clone()));
+    let ran = Arc::new(Creates(Mutex::new(Vec::new()), inner.clone()));
+    let dispatch = crate::loopback::Loopback::new(builds.clone(), inner.clone(), topology.clone(), ran.clone());
+    let gate = Arc::new(FabricChange { view: Some(topology.clone()), ..Default::default() });
+    let env = Arc::new(DriveEnv {
+        me: me.clone(),
+        topology: topology.clone(),
+        builds: builds.clone(),
+        door: Arc::new(ClaimDoor {
+            node_id: t.node(&me).unwrap().node_id.clone(),
+            me: me.clone(),
+            topology: topology.clone(),
+            builds: builds.clone(),
+            contexts,
+            claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
+            claimed: Default::default(),
+        }),
+        dispatcher: dispatch.clone(),
+        gate: gate.clone(),
+        departure: Arc::new(crate::loopback::Proofs::default()),
+        verdicts: Arc::new(crate::loopback::NoVerdicts),
+        turns: rdm_admin::stop_gate::StopGate::new(),
+    });
+    let drive = Drive::detached(day0.clone());
+    let mut reader = drive.reader(1);
+    // The fabric is in state-sync from the claim of the first attempt on: the drive waits for its change.
+    let held = tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("the pass ends");
+    let mut frames = Vec::new();
+    while let Some(read) = next_within(&mut reader).await {
+        frames.push(read);
+    }
+    let in_state_sync: Vec<String> = ledger.written().into_iter().filter(|(_, state, _)| *state == "state-sync").map(|(what, _, backend)| format!("{what}@{backend}")).collect();
+    assert!(
+        matches!(&held, DriveEnd::Stalled(why) if why.contains("ready-for-traffic")),
+        "the Day-0 Build waits for the fabric's ready-for-traffic, never Complete in state-sync: {held:?}; written in state-sync: {in_state_sync:?}; frames {frames:?}"
+    );
+    assert!(frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "the Day-0 Build reports Blocked naming the fabric's change: {frames:?}");
+    assert!(!frames.iter().any(|f| matches!(f, Read::Terminal(_) | Read::Frame(BuildReply::Complete { .. } | BuildReply::Failed { .. }))), "never Complete while the fabric changes: {frames:?}");
+    // The application's sync_state switched the Build journal's backend, then answered; the fabric changed
+    // through state-commit to ready-for-traffic.
+    *ledger.backend.lock().unwrap() = "new";
+    *ledger.state.lock().unwrap() = "ready-for-traffic";
+    gate.ready.store(true, Ordering::SeqCst);
+    assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("the drive ends once the fabric is ready-for-traffic"), DriveEnd::Terminal);
+    let written = ledger.written();
+    let terminals: Vec<&(String, &'static str, &'static str)> = written.iter().filter(|(what, _, _)| what.starts_with("attempt:") && (what.ends_with(":converged") || what.ends_with(":failed"))).collect();
+    assert_eq!(terminals.iter().map(|(_, state, backend)| (*state, *backend)).collect::<Vec<_>>(), vec![("ready-for-traffic", "new")], "the Day-0 Build's one terminal is written after ready-for-traffic, on the backend state-sync switched to: {written:?}");
+    let in_state_sync: Vec<&(String, &'static str, &'static str)> = written.iter().filter(|(_, state, _)| *state == "state-sync").collect();
+    assert!(!in_state_sync.iter().any(|(what, _, _)| what.ends_with(":converged") || what.ends_with(":failed")), "no terminal of the Day-0 Build is written in state-sync: {in_state_sync:?}");
+    eprintln!("written between state-sync's entry and its answer: {in_state_sync:?}");
+    let done = builds.read_build(&day0).await.unwrap();
+    assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Day-0 Build is Complete after its own ready-for-traffic: {done:?}");
+    assert!(ran.0.lock().unwrap().is_empty(), "the Day-0 Build has nothing to execute: {:?}", ran.0.lock().unwrap());
+}
+
+/// CONTRACT (build.md §1: fabric.delete "may interrupt the Build in progress"; the teardown opens once every
+/// open attempt of the Builds it interrupts has ended; an attempt "whose executor departed ends on that
+/// departure's exact proof"): an interrupted Build whose attempt is claimed by this fabric-primary itself,
+/// with no run of it in this process, is ended by this fabric-primary at once: its attempt `Failed` naming
+/// the delete, no departure proof asked of its own runtime, which cannot exit while it runs the delete.
+/// While a run of that attempt is live in this process, the attempt is not ended under it: the run stops
+/// at its next operation and hands back. Must NOT happen: the delete waiting on the exit of the process
+/// that runs it.
+#[tokio::test]
+async fn a_fabric_delete_ends_an_attempt_this_fabric_primary_holds_without_waiting_on_its_own_exit() {
+    let r = rig().await;
+    let me: PathName = "mesh1.admin.1".parse().unwrap();
+    let claim = rdm_admin::build_state::BuildAttemptClaim { build_id: r.build.clone(), attempt: 1, executor: me.to_string(), claimant: Some(me.to_string()), mesh: None };
+    assert_eq!(r.builds.claim_attempt(&claim).await.unwrap(), rdm_admin::build_state::ClaimOutcome::Won);
+    let grow = r.builds.read_build(&r.build).await.unwrap();
+    let at = r.builds.newest_accepted_at_ms().await.unwrap().unwrap_or(0) + 1;
+    let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), submitted_change: Some(TopologyChange::DeleteFabric), submitted_at_ms: at };
+    rdm_admin::build_state::accept(&*r.builds, &delete, Some(&r.build), &me.to_string(), "accepted").await.unwrap();
+    // A run of the attempt is live here: it is not ended under the run.
+    let live = rdm_admin::build_drive::Dispatcher::hold(&*r.dispatch, &me, &r.build, 1).expect("no run of the attempt is live before the cell holds one");
+    let drive = Drive::detached(r.build.clone());
+    match tokio::time::timeout(Duration::from_secs(10), r.env.run(&drive)).await {
+        Ok(DriveEnd::Stalled(why)) => assert!(why.contains("runs in this process"), "the live run is named: {why}"),
+        other => panic!("an attempt whose run is live here ends with that run: {other:?}"),
+    }
+    assert_eq!(r.builds.read_build(&r.build).await.unwrap().state, rdm_admin::build_state::BuildState::Running, "nothing is written under the live run");
+    drop(live);
+    // No run is live: this fabric-primary ends its own attempt at once.
+    let mut reader = drive.reader(1);
+    let started = std::time::Instant::now();
+    let end = tokio::time::timeout(Duration::from_secs(10), r.env.run(&drive)).await;
+    assert_eq!(end.ok(), Some(DriveEnd::Terminal), "the interrupted Build ends at once, never waiting on this fabric-primary's own exit");
+    assert!(started.elapsed() < Duration::from_secs(5), "ended within its bound: {:?}", started.elapsed());
+    assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 0, "no departure proof is asked of this fabric-primary's own runtime");
+    let ended = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((ended.state, ended.failed_at), (rdm_admin::build_state::BuildState::Failed, Some(1)), "attempt 1 ended Failed: {ended:?}");
+    assert!(ended.last_failure.as_deref().is_some_and(|f| f.contains(delete.build_id.as_str())), "the failure names the delete: {:?}", ended.last_failure);
+    let mut frames = Vec::new();
+    while let Some(read) = next_within(&mut reader).await {
+        frames.push(read);
+    }
+    assert!(frames.iter().any(|f| matches!(f, Read::Terminal(BuildReply::Failed { step, .. }) if step == "fabric.delete")), "the stream ends Failed naming the delete: {frames:?}");
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing of the interrupted Build ran: {:?}", r.ran.0.lock().unwrap());
+}
