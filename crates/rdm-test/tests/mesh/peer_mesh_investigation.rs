@@ -827,14 +827,16 @@ async fn elected_primary_holds_its_checklist_for_the_killed_primary_then_republi
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "killed_primary": primary, "elected": survivor, "republisher": republisher, "changed_at": before, "held_ms": held_ms, "complete_ms": complete_ms, "first_send_ms": first_send_ms}));
 }
 
-/// CONTRACT (R-S3, same status, fresh proof): a peer mesh loses both node-admins (exact SIGKILL) while
-/// its rpc nodes live, and one of those rpc nodes is frozen (SIGSTOP) so it never checks in. The mesh is
-/// given a node-admin under the same Build and MeshId; its new primary is ready in the fabric's view, a ready
-/// primary of a newer birth. That is not the proof: the new primary's checklist names the frozen
-/// planned birth as missing (a named hold, no timer), republishes nothing, and the fabric stays
-/// `degraded`. After the member is continued it checks in, the checklist completes, the adopted status is
-/// republished and only then does the fabric clear degraded. What must NOT happen: degraded cleared on
-/// the ready newer-birth primary alone, a republish while a planned birth is missing.
+/// CONTRACT (R-S3, same status, fresh proof; node-recovery.md: any verdict but `reached`, `os-stopped`
+/// included, is recovered at once, "Nothing holds"; Q188): a peer mesh loses both node-admins (exact
+/// SIGKILL) while its rpc nodes live, and one of those rpc nodes is frozen (SIGSTOP) so it never checks
+/// in. The mesh is given a node-admin under the same Build and MeshId; its new primary's checklist names
+/// the frozen planned birth as missing (a named hold, no timer), republishes nothing, and the fabric
+/// stays `degraded`. The frozen member is investigated `os-stopped` and re-created at its path.name; the
+/// re-created birth checks in, the checklist completes, the adopted status is republished and only then
+/// does the fabric clear degraded. Continued afterwards, the old birth is a deleted birth: its
+/// mesh-primary reports it. What must NOT happen: degraded cleared on the ready newer-birth primary
+/// alone, a republish while a planned birth is missing, the old birth taken back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does() {
     let cell = "a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does";
@@ -842,7 +844,7 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
     let frozen = format!("{}.rpc.1", f.lost);
-    let lost_births: BTreeMap<String, String> = births(&f.before).into_iter().filter(|(n, _)| n.starts_with(&format!("{}.admin.", f.lost))).collect();
+    let frozen_id = f.before.iter().find(|n| s(&n["name"]) == frozen).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("{frozen} in the view"));
     let (_, frozen_pid) = f.lost_members().into_iter().find(|(n, _)| *n == frozen).unwrap_or_else(|| panic!("{frozen} is running"));
     let admins = f.lost_admins();
     assert_eq!(admins.len(), 2, "both admins of {} are running: {admins:?}", f.lost);
@@ -862,38 +864,36 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
         async move { held.then_some(()) }
     })
     .await;
-    // The stale-ready condition: the fabric's view holds a ready primary of the mesh from a newer birth.
-    wait_for("the mesh shows a ready primary of a newer birth", Duration::from_secs(120), || {
-        let (estate, lost_births, lost) = (&f.estate, lost_births.clone(), lost.clone());
+    // The frozen member is recovered at once: a newer birth at its path.name, ready.
+    wait_for("the frozen member is re-created at its path.name and ready", Duration::from_secs(240), || {
+        let (estate, frozen, frozen_id) = (&f.estate, frozen.clone(), frozen_id.clone());
         async move {
             let nodes = estate.node_values().await;
-            nodes.iter().any(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready-for-traffic" && lost_births.get(&s(&n["name"])).is_some_and(|old| *old != s(&n["incarnation_id"]))).then_some(())
+            nodes.iter().any(|n| s(&n["name"]) == frozen && n["status"] == "ready-for-traffic" && s(&n["node_id"]) != frozen_id).then_some(())
         }
     })
     .await;
-    // Ten backbone publications of the new primary held: its republish would have gone out by then.
-    tokio::time::sleep(rdm_transport::topology::backbone_gossip_interval() * 10).await;
-    let held_status = f.fabric_status().await;
-    let held_spans = f.estate.spans();
-    let sent_while_held = mesh_sends_after(&held_spans, &f.lost, admin_created_at(&held_spans, &f.lost));
-    let cleared_while_held = named(&held_spans, "rdm.node_admin.mesh.update.via-recovered").into_iter().any(|sp| attr(sp, "mesh") == f.lost);
-    let cont_ms = now_ms();
-    signal(frozen_pid, "-CONT");
     wait_for("the fabric is ready again", Duration::from_secs(120), || async { (f.fabric_status().await == "ready-for-traffic").then_some(()) }).await;
+    // Continued, the old birth comes back as a deleted birth: its mesh-primary reports it.
+    signal(frozen_pid, "-CONT");
+    wait_for("the continued old birth is reported as a deleted birth", Duration::from_secs(120), || {
+        let spans = f.estate.spans();
+        let reported = named(&spans, "rdm.node_admin.node.update.via-returned-reported").into_iter().any(|sp| attr(sp, "node_id") == frozen_id);
+        async move { reported.then_some(()) }
+    })
+    .await;
     let fp = f.fabric_primary.clone();
     f.estate.stop().await;
     let spans = f.estate.spans();
-    assert_eq!(held_status, "degraded", "a ready primary of a newer birth does not clear degraded while a planned birth ({frozen}) has not checked in");
-    assert!(!cleared_while_held, "degraded is not cleared while the checklist is held");
-    assert!(sent_while_held.is_empty(), "nothing is republished while a planned birth is missing: {sent_while_held:?}");
-    let republished: Vec<u64> = mesh_sends_after(&spans, &f.lost, admin_created_at(&spans, &f.lost)).values().map(|(_, first)| *first).collect();
-    assert!(!republished.is_empty() && republished.iter().all(|at| *at >= cont_ms), "the adopted status is republished only after {frozen} checks in: {republished:?} vs continued at {cont_ms}");
     let created_ms = admin_created_at(&spans, &f.lost);
+    let rejoined = named(&spans, "rdm.mesh.topology.update.from-node-started").into_iter().filter(|sp| attr(sp, "member") == frozen && attr(sp, "node_id") != frozen_id).map(|sp| at_ns(sp) / 1_000_000).min().expect("the re-created birth started");
     let complete = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= created_ms).map(|sp| at_ns(sp) / 1_000_000).min().expect("the new primary's checklist completed");
-    assert!(complete >= cont_ms, "the checklist completes only after the frozen member checks in: {complete} vs {cont_ms}");
+    assert!(complete >= rejoined, "the checklist completes only after the re-created birth checks in: {complete} vs {rejoined}");
+    let republished: Vec<u64> = mesh_sends_after(&spans, &f.lost, created_ms).values().map(|(_, first)| *first).collect();
+    assert!(!republished.is_empty() && republished.iter().all(|at| *at >= complete), "nothing is republished while a planned birth is missing: {republished:?} vs complete at {complete}");
     let cleared = degraded_cleared_at(&spans, &f.lost);
     assert!(!cleared.is_empty() && cleared.iter().all(|at| *at >= complete), "degraded clears only on the checklist-complete report: {cleared:?} vs {complete}");
-    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "frozen": frozen, "continued_ms": cont_ms, "complete_ms": complete}));
+    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "frozen": frozen, "frozen_node_id": frozen_id, "rejoined_ms": rejoined, "complete_ms": complete}));
 }
 
 /// The instant after which the new primary's sends of `mesh` count: the first node.create of a node-admin
