@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const CELL: &str = "container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_per_path";
-const NODE_CELL: &str = "container_node_unheard_heals_serves_same_birth";
+const NODE_CELL: &str = "container_node_unheard_is_recreated_and_its_old_birth_refused";
 
 /// What is silenced: every container of the peer mesh without the fabric-primary seat, or one rpc
 /// node of it (its mesh-mates stay heard by the rest of the estate).
@@ -365,14 +365,25 @@ async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_pe
     })).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2784): the same cut on ONE rpc node of the peer mesh without the seat. The node alone
-/// is unheard: its mesh-mates, both mesh's admins and the fabric-primary stay ready-for-traffic in
-/// the entry view, no admin and no other node is re-born, the silenced container runs throughout
-/// (same init, no restart), a Direct, ViaPeer and NoActiveRoute call to it end without a reply with
-/// no serve span, and after the release the same birth serves the value stored before the cut.
+/// CONTRACT (#2784; Q111, Q181, Q188): the same silence on ONE rpc node of the peer mesh without the
+/// fabric-primary. The node alone goes unheard; no call reaches it by any route. Its mesh-primary's node
+/// investigation does not reach it, and node-recovery.md step 3 decides: "Any other verdict (`running`,
+/// `os-stopped`, `exited`, `unproven`): the recovery below, at once" (Q181: a silent node is replaced;
+/// Q188: the cell follows the page). So exactly one recovery runs, submitted by that
+/// mesh-primary on a verdict other than `reached`: one node.delete of the exact silent birth, whose
+/// TerminateRuntime ends its container and the provider removes it ("no runtime of a superseded birth
+/// stays on the host"), and one node.create at the same path.name with a new node.id and a new container.
+/// Throughout, its mesh-mates, both meshes' node-admins and the fabric-primary stay ready-for-traffic as
+/// the same births and none is re-created; the fabric-primary stays put and the current build_id is the
+/// Build it was. After the release every admin holds the re-created birth, none holds the old exact birth
+/// (node-investigation.md: "A node that comes back after it was re-created is a deleted birth"; gossip.md:
+/// NodeDeleted, the resolver answers `Gone`), a call to the old birth is not served, and the re-created
+/// birth is reached Direct and ViaPeer and serves a value stored after the re-create. A `running` verdict
+/// creates over a newly allocated data dir (node-recovery.md "New"), so the value stored before the
+/// silence is recorded, never asserted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn container_node_unheard_heals_serves_same_birth() {
-    if crate::own_process::delegated(module_path!(), "container_node_unheard_heals_serves_same_birth") {
+async fn container_node_unheard_is_recreated_and_its_old_birth_refused() {
+    if crate::own_process::delegated(module_path!(), "container_node_unheard_is_recreated_and_its_old_birth_refused") {
         return;
     }
     run_isolation(NODE_CELL, Cut::Node).await;
@@ -448,6 +459,131 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     // another admin heard by gossip (Q104). The cell's setup, not a check of the product's paths.
     estate.until_fabric_ready_at(&Estate::path(&fabric_primary), Duration::from_secs(120)).await;
     let silenced = container_faults::prepare_silence(&estate, &isolated_names, &fabric_primary).await.expect("the exact containers and addresses are resolved before the cut");
+    if cut == Cut::Node {
+        // node-recovery.md step 3 (Q111): the mesh-primary's investigation of the silent birth ends
+        // unreached, and any verdict but `reached` is "the recovery below, at once": node.delete of the
+        // exact birth (TerminateRuntime first) and node.create at the same path.name with a new node.id.
+        // The silence is held until that recovery has run, so the old birth is never heard again first.
+        let mesh_primary = nodes.iter().find(|n| n["mesh"] == cut_mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("the silenced node's mesh names its primary node-admin");
+        let old_container = containers_before[&target_name].clone();
+        let others: BTreeSet<(String, String)> = want_births.iter().filter(|(n, _)| *n != target_name).cloned().collect();
+        let fp_of = |nodes: &[Value]| nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).unwrap_or_default();
+        silenced.install().expect("the silenced node's container is silenced");
+        let cut_at = now_nanos();
+        let silence_started = std::time::Instant::now();
+        let rules_at_cut = silenced.rules().expect("the packet filter is listed");
+        assert!(rules_at_cut.values().all(|r| r.contains(&format!("-A INPUT -j {}", container_faults::SILENCE_CHAIN)) && r.contains(&format!("-A OUTPUT -j {}", container_faults::SILENCE_CHAIN))), "the silence is installed: {rules_at_cut:?}");
+
+        // The silence: the old birth unheard in its mesh-mate admin's view, and no call to it served.
+        let observer = ready_admins(&nodes).into_iter().find(|n| n.starts_with(&format!("{cut_mesh}.")) && !isolated_names.contains(n)).expect("a ready node-admin of the silenced node's own mesh");
+        let silent_view: Vec<Value> = wait_for(&format!("{target_name} unheard in {observer}'s view"), Duration::from_secs(90), || async {
+            let ns = nodes_at(&estate, &observer).await.unwrap_or_default();
+            ns.iter().any(|n| s(&n["node_id"]) == target_id && unheard(n)).then_some(ns)
+        })
+        .await;
+        let silent_legs = legs(&estate, &target_id, &carrier).await;
+        assert!(!replied(&silent_legs["direct"]) && !replied(&silent_legs["via_peer"]) && !replied(&silent_legs["no_active_route"]), "no call reaches the silent birth by any route: {silent_legs}");
+
+        // The recovery: the path.name is ready-for-traffic again as a new node.id in the mesh-primary's
+        // view. Every entry-view sample until then holds every other birth ready-for-traffic as the same
+        // birth, and the fabric-primary where it was.
+        let mut samples = Vec::new();
+        let recovery_deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let recreated = loop {
+            let entry = estate.node_values().await;
+            let still: BTreeSet<(String, String)> = births(&entry).into_iter().filter(|(n, _)| *n != target_name).collect();
+            samples.push(json!({"t_ms": (now_nanos() - cut_at) / 1_000_000, "others_same": still == others, "fabric_primary": fp_of(&entry), "views": entry.iter().map(|n| format!("{}={}/{}", s(&n["name"]), s(&n["status"]), s(&n["node_id"]))).collect::<Vec<_>>()}));
+            assert_eq!(still, others, "while {target_name} is silent and recovered, every other node stays ready-for-traffic as the same birth in the entry view");
+            assert_eq!(fp_of(&entry), fabric_primary, "the fabric-primary stays put while {target_name} is silent and recovered");
+            let theirs = nodes_at(&estate, &mesh_primary).await.unwrap_or_default();
+            if let Some(n) = node_in(&theirs, &target_name).filter(|n| n["status"] == "ready-for-traffic" && s(&n["node_id"]) != target_id) {
+                break n.clone();
+            }
+            assert!(std::time::Instant::now() < recovery_deadline, "{target_name} was not re-created at its path.name by {mesh_primary} within 120 s of the silence; samples: {samples:#?}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        let (new_id, new_inc) = (s(&recreated["node_id"]), s(&recreated["incarnation_id"]));
+        // node-recovery.md step 3: the recovery's TerminateRuntime ends the old runtime, and the provider
+        // removes what it left, "so no runtime of a superseded birth stays on the host".
+        let old_runtime = container_faults::inspect(&old_container);
+        let new_container = estate.container_of(&target_name).await.unwrap_or_default();
+
+        // The release: the old container is gone with its namespace and filter, so there is nothing left
+        // to lift; the lift's answer is recorded.
+        let lift = silenced.lift();
+        let released_at = now_nanos();
+        let silence_ms = silence_started.elapsed().as_millis() as u64;
+
+        // After the release: every admin holds the old births but the re-created one, the same current
+        // Build; the re-created birth serves; the old exact birth is gone (gossip.md: NodeDeleted, "the
+        // resolver answers `Gone`").
+        let want_after: BTreeSet<(String, String)> = others.iter().cloned().chain([(target_name.clone(), new_inc.clone())]).collect();
+        let agreeing = wait_for("every admin holds the re-created birth and every other birth as it was", Duration::from_secs(150), || async { converged(&estate, &want_after, &["mesh1", "mesh2"], &fabric_build).await.ok() }).await;
+        let healed = legs(&estate, &new_id, &carrier).await;
+        let before_value = estate.probe(&["get", "--target", &format!("exact:{new_id}"), "--key", "iso"]);
+        let put_after = estate.probe(&["put", "--target", &format!("exact:{new_id}"), "--key", "iso", "--value", "after-recreate"]);
+        let got_after = estate.probe(&["get", "--target", &format!("exact:{new_id}"), "--key", "iso"]);
+        let old_after = estate.probe(&["get", "--target", &format!("exact:{target_id}"), "--key", "iso"]);
+        let nodes_after = estate.node_values().await;
+        let seats_after = primaries_as_expected(&nodes_after);
+        let fabric_after = fabric_json(&estate).await;
+        let mut views_after = BTreeMap::new();
+        for admin in &agreeing {
+            views_after.insert(admin.clone(), nodes_at(&estate, admin).await.unwrap_or_default());
+        }
+        estate.stop().await;
+        let spans = estate.spans();
+        let after_cut = |name: &str| named(&spans, name).into_iter().filter(|sp| start(sp) >= cut_at).collect::<Vec<&Value>>();
+        let inspections: Vec<&Value> = after_cut("rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(|sp| attr(sp, "node_id") == target_id && attr(sp, "caller").is_empty()).collect();
+        let submits: Vec<&Value> = after_cut("rdm.node_admin.build.update.via-node-recovery");
+        let deletes: Vec<&Value> = after_cut("rdm.node_admin.node.delete.via-build");
+        let creates: Vec<&Value> = after_cut("rdm.node_admin.node.create.via-build");
+        let deleted_applied: Vec<&Value> = after_cut("rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| attr(sp, "node_id") == target_id).collect();
+        let old_signal: Vec<&Value> = after_cut("rdm.mesh.node.delete.via-signal").into_iter().filter(|sp| attr(sp, "incarnation_id") == target_inc).collect();
+        let deleted_birth_refusals: Vec<Value> = spans.iter().filter(|sp| start(sp) >= cut_at && sp["name"].as_str().is_some_and(|n| n.ends_with(".via-deleted-birth"))).map(|sp| span_row(sp, &["node", "node_id", "member", "reason"])).collect();
+        let rows = |v: &[&Value], keys: &[&str]| v.iter().map(|sp| span_row(sp, keys)).collect::<Vec<_>>();
+        std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&json!({
+            "cell": cell, "provider": estate.owner.provider, "network": network, "kept_mesh": kept_mesh, "silenced_mesh": cut_mesh, "mesh_primary": mesh_primary, "fabric_primary": fabric_primary,
+            "target": {"name": target_name, "node_id": target_id, "incarnation_id": target_inc, "container": old_container},
+            "recreated": {"node_id": new_id, "incarnation_id": new_inc, "container": new_container},
+            "old_runtime": match &old_runtime { Ok(i) => json!(i), Err(e) => json!({"removed": e}) },
+            "lift": match &lift { Ok(()) => json!("lifted"), Err(e) => json!({"nothing-to-lift": e}) },
+            "healthy_control": control, "put": put, "rules_at_cut": rules_at_cut, "silenced": silenced,
+            "view_when_unheard": node_in(&silent_view, &target_name), "silent_legs": silent_legs, "samples": samples,
+            "cut_unix_nano": cut_at, "released_unix_nano": released_at, "silence_ms": silence_ms,
+            "heal": {"agreeing_admins": agreeing, "healed_legs": healed, "value_before_put": before_value, "put": put_after, "get": got_after, "old_birth_get": old_after},
+            "seats_after": format!("{seats_after:?}"), "fabric_after": fabric_after,
+            "investigations": rows(&inspections, &["node", "node_id", "incarnation_id", "inspector", "verdict"]),
+            "recovery_submits": rows(&submits, &["node", "node_id", "incarnation_id", "submitter", "verdict", "outcome"]),
+            "deletes": rows(&deletes, &["node", "node_id", "incarnation_id", "build_id", "attempt"]),
+            "creates": rows(&creates, &["node", "build_id", "attempt"]),
+            "node_deleted_applied": rows(&deleted_applied, &["observer", "node", "node_id", "incarnation_id"]),
+            "old_birth_signal": rows(&old_signal, &["node", "incarnation_id"]),
+            "deleted_birth_refusals": deleted_birth_refusals,
+        })).unwrap()).unwrap();
+
+        // The one recovery, by the mesh-primary, on a verdict other than `reached`.
+        assert!(!inspections.is_empty() && inspections.iter().all(|sp| attr(sp, "inspector") == mesh_primary && attr(sp, "verdict") != "reached"), "{mesh_primary}'s investigation of {target_name} ends at the provider's inspection, not `reached`: {:#?}", rows(&inspections, &["inspector", "verdict"]));
+        assert!(!submits.is_empty() && submits.iter().all(|sp| attr(sp, "node") == target_name && attr(sp, "node_id") == target_id && attr(sp, "submitter") == mesh_primary && attr(sp, "verdict") != "reached"), "every recovery submitted after the cut is {mesh_primary}'s, of the exact silent birth, on a verdict other than `reached`: {:#?}", rows(&submits, &["node", "node_id", "submitter", "verdict", "outcome"]));
+        assert!(deletes.len() == 1 && attr(deletes[0], "node") == target_name && attr(deletes[0], "node_id") == target_id && attr(deletes[0], "incarnation_id") == target_inc, "one node.delete after the cut, of the exact silent birth: {:#?}", rows(&deletes, &["node", "node_id", "incarnation_id"]));
+        assert!(creates.len() == 1 && attr(creates[0], "node") == target_name, "one node.create after the cut, at {target_name}: no other node is re-created: {:#?}", rows(&creates, &["node", "build_id", "attempt"]));
+        assert_ne!(new_id, target_id, "the re-created birth has a new node.id");
+        assert!(!deleted_applied.is_empty(), "the old exact birth is held deleted (NodeDeleted applied)");
+        // The old container: terminated by the recovery and removed, never running.
+        assert!(matches!(&old_runtime, Err(e) if e.contains("no such")), "{target_name}'s old container {old_container} is terminated and removed by the recovery: {old_runtime:?}");
+        assert!(!new_container.is_empty() && new_container != old_container, "the re-created birth runs in a new container: {new_container}");
+        // After the release.
+        assert!(!agreeing.is_empty(), "every ready admin agrees on the healed fabric");
+        assert!(views_after.values().all(|v| v.iter().all(|n| s(&n["node_id"]) != target_id)), "no admin's view holds the old exact birth after the release");
+        assert!(replied(&healed["direct"]) && replied(&healed["via_peer"]) && healed["direct"]["reply"]["executing_node"] == new_id.as_str(), "the re-created birth is reached Direct and ViaPeer: {healed}");
+        assert!(put_after["outcome"] == "Reply" && put_after["reply"]["incarnation_id"] == new_inc.as_str(), "the re-created birth stores a value: {put_after}");
+        assert!(got_after["reply"]["result"] == json!({"found": true, "value": "after-recreate"}) && got_after["reply"]["executing_node"] == new_id.as_str() && got_after["reply"]["incarnation_id"] == new_inc.as_str(), "the re-created birth serves the value stored after the re-create: {got_after}");
+        assert_ne!(old_after["outcome"], "Reply", "a call to the old exact birth is not served after the release: {old_after}");
+        assert_eq!(s(&fabric_after["build_id"]), fabric_build, "the current build_id is the Build it was: {fabric_after}");
+        assert_eq!(fp_of(&nodes_after), fabric_primary, "the fabric-primary is where it was");
+        assert!(seats_after.is_ok(), "the advertised seats equal the public candidates' after the release: {seats_after:?}");
+        return;
+    }
     let silence_started = std::time::Instant::now();
     let release_at = silence_started + planned_silence;
     silenced.install().expect("the isolated mesh's containers are silenced");
