@@ -680,6 +680,12 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     for name in &want_later {
         addressed(name.split('.').next().unwrap(), name, &id_of[name]).await;
     }
+    // The originated connection's row is owed on mesh2.rpc.1's writer queue and lands after the open
+    // answered (Q169): the store is read once it stands, within the bound.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !holds(&rows_on(&root), "connections.jsonl#node-connection/mesh2.rpc.1--") && std::time::Instant::now() < until {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     let later = rows_on(&root);
     estate.artifact("rows-after-growth.json", &json!(later));
     for mesh in ["mesh1", "mesh2"] {
