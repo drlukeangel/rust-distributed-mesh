@@ -3119,4 +3119,4 @@ dcfbd6933 (the soak driver resubmits on build-in-progress).
 - Q184 (Luke): topology_storage_provider never rides gossip; it is on the Fabric and node records.
 - Q185 (Luke): the Build gossip channel is removed. Building: q185-build-channel-removal, lane e6s8.
 - Q182 landed aa3967715 (a node answering no command is silent); 141 told.
-- Open: Q177 (the LifecycleTransitionPipeline, build.md §9).
+- Q177 decided by build.md §9: `Wiring.hooks` is no application door; the code conforms (owner: the lead, queued after Q183/Q185).
