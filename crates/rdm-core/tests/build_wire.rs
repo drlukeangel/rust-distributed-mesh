@@ -53,13 +53,13 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
                     nodes: vec![
                         rdm_core::meta::NodeSpec {
                             path: "m.admin.1".parse().unwrap(),
-                            storage: rdm_core::meta::StorageMeta::Persistent { on_retire: rdm_core::meta::PersistentRetireDisposition::Preserve },
+                            storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
                             placement: Default::default(),
                             executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
                             tags: ["t".to_string()].into(),
                             config: Default::default(),
                         },
-                        rdm_core::meta::NodeSpec { path: "m.rpc.1".parse().unwrap(), storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
+                        rdm_core::meta::NodeSpec { path: "m.rpc.1".parse().unwrap(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
                     ],
                     topology_storage_provider: None,
                 }),
@@ -397,7 +397,7 @@ fn a_request_at_a_reserved_count_position_is_an_unknown_variant() {
 }
 
 /// CONTRACT (Q166; node-rpc-envelope.md wire block: `Reconcile { based_on, nodes: Vec<NodeSpec> }`,
-/// `NodeSpec { path, storage, placement, executable, tags, config }`): a create spec with no config
+/// `NodeSpec { path, storage_persistence, placement, executable, tags, config }`): a create spec with no config
 /// writes exactly the bytes the entry wrote before Q166 (`(PathName, { storage, placement, executable,
 /// tags })`, frozen below from the fixture of that shape) plus `00`, the empty map; a spec with a
 /// config appends the map's length and each key and value. A request written before Q166 does not
@@ -411,7 +411,7 @@ fn a_create_spec_is_the_entry_before_q166_with_its_config_appended() {
     ];
     let admin = rdm_core::meta::NodeSpec {
         path: "m.admin.1".parse().unwrap(),
-        storage: rdm_core::meta::StorageMeta::Persistent { on_retire: rdm_core::meta::PersistentRetireDisposition::Preserve },
+        storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
         placement: Default::default(),
         executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
         tags: ["t".to_string()].into(),

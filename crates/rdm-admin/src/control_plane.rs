@@ -1466,7 +1466,7 @@ mod tests {
             let p: PathName = path.parse().unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { path: p.clone(), storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() });
+            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { path: p.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() });
             spec.executable = Some(b);
             m.spec_by_path.insert(p, spec);
             next
@@ -1487,7 +1487,7 @@ mod tests {
         }
         // A held path whose row already records the executable is not hashed again: its file may be gone.
         let gone = rdm_core::binding::Binding { executable: dir.join("gone"), ..admin.clone() };
-        let recorded: crate::accepted::Recorded = [("mesh1.admin.1".parse().unwrap(), crate::accepted::RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
+        let recorded: crate::accepted::Recorded = [("mesh1.admin.1".parse().unwrap(), crate::accepted::RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
         assert_eq!(named_executable_refusal(&current, &with("mesh1.admin.1", gone), &recorded, ProviderKind::Process, &[]).await, None);
         assert_eq!(BuildReject::ExecutableRefused { node: "x".into(), detail: "y".into() }.reason(), "executable-refused");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1522,7 +1522,7 @@ mod tests {
             let p: PathName = "mesh1.rpc.1".parse().unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { path: p, storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b), tags: Default::default(), config: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b), tags: Default::default(), config: Default::default() });
             next
         };
         let rows = crate::accepted::Recorded::new();

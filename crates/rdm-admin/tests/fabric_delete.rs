@@ -168,7 +168,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 births: Vec::new(),
                 predecessor: None,
                 mesh_id: None,
-                storage: None,
+                storage_persistence: None,
                 placement: None,
             })
             .await

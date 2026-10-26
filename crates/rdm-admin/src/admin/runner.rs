@@ -273,7 +273,7 @@ impl AdminRunner {
     /// it ([`BuildStateAdapter::stored_accepted`]), when the topology holds the path.
     async fn entry_storage(&self, build_id: &crate::build::BuildId, node: &PathName) -> Result<Option<rdm_core::meta::StorageMeta>, String> {
         let stored = self.builds.stored_accepted(build_id).await.map_err(|e| format!("node.create:{node}: the accepted Build {build_id} could not be read from builds.storage for the path's storage: {e}"))?;
-        Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).map(|c| c.storage)))
+        Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).map(|c| c.storage_persistence)))
     }
 
     /// The executable binding the row a create of `node` is seeded from records (the claim's seed,
@@ -1348,7 +1348,7 @@ impl AdminRunner {
                     let stored = self.builds.stored_accepted(build_id).await.map_err(|e| format!("{key}: the accepted Build {build_id} could not be read for {node}'s create spec; nothing is written: {e}"))?;
                     let spec = stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).cloned()).ok_or_else(|| format!("{key}: the accepted Build {build_id} names no create spec for {node}; nothing is written"))?;
                     let req = StatusRequest::UpdateNodeConfig { node_id, incarnation, config: spec.config };
-                    match authority.update_config_from_spec(&req, spec.storage, spec.placement).await {
+                    match authority.update_config_from_spec(&req, spec.storage_persistence, spec.placement).await {
                         StatusReply::ConfigUpdated { .. } => return Ok(()),
                         refused => refused,
                     }

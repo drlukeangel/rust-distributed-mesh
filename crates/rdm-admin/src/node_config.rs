@@ -143,13 +143,13 @@ impl NodeConfigs {
             }
         }
         let (row_storage, row_placement) = onto_row.map_or((None, None), |(s, p)| (Some(s), Some(p)));
-        let base = NodeRow { config: config.clone(), storage: row_storage, placement: row_placement, ..NodeRow::new(subject.name.clone(), node_id.clone(), subject.status) };
+        let base = NodeRow { config: config.clone(), storage_persistence: row_storage, placement: row_placement, ..NodeRow::new(subject.name.clone(), node_id.clone(), subject.status) };
         let status = subject.status;
         let refused = match self.written.update(storage, node_id, Some(base), |r| {
             r.status = status;
             r.config = config.clone();
             if onto_row.is_some() {
-                (r.storage, r.placement) = (row_storage, row_placement);
+                (r.storage_persistence, r.placement) = (row_storage, row_placement);
             }
         }).await {
             Ok(_) => None,

@@ -23,7 +23,7 @@ use crate::mesh_delete::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentDisposition, PlacementMeta, StorageMeta};
 use rdm_core::LifecycleOp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -129,7 +129,7 @@ struct WireSpec {
 #[derive(Serialize, Deserialize)]
 enum WireStorage {
     Ephemeral,
-    Persistent { on_retire: PersistentRetireDisposition },
+    Persistent { disposition: PersistentDisposition },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -277,9 +277,9 @@ pub(crate) fn action_round_trip(a: &AttemptAction) -> AttemptAction {
 
 impl From<&NodeSpec> for WireSpec {
     fn from(m: &NodeSpec) -> Self {
-        let storage = match m.storage {
+        let storage = match m.storage_persistence {
             StorageMeta::Ephemeral => WireStorage::Ephemeral,
-            StorageMeta::Persistent { on_retire } => WireStorage::Persistent { on_retire },
+            StorageMeta::Persistent { disposition } => WireStorage::Persistent { disposition },
         };
         Self { storage, placement: m.placement }
     }
@@ -289,11 +289,11 @@ impl WireSpec {
     /// (proposal executable-bindings-at-create.md rule 7; Q166): the store root's record of the accepted
     /// Build is the one that does.
     fn at(self, path: PathName) -> NodeSpec {
-        let storage = match self.storage {
+        let storage_persistence = match self.storage {
             WireStorage::Ephemeral => StorageMeta::Ephemeral,
-            WireStorage::Persistent { on_retire } => StorageMeta::Persistent { on_retire },
+            WireStorage::Persistent { disposition } => StorageMeta::Persistent { disposition },
         };
-        NodeSpec { path, storage, placement: self.placement, executable: None, tags: Default::default(), config: Default::default() }
+        NodeSpec { path, storage_persistence, placement: self.placement, executable: None, tags: Default::default(), config: Default::default() }
     }
 }
 impl From<&FabricTopology> for WireTopology {

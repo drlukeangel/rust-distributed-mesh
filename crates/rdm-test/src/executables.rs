@@ -14,7 +14,7 @@
 use rdm_admin::accepted::FabricTopology;
 use rdm_client::binding::{sha256_file, Binding, BindingSet};
 use rdm_client::{BuildCarrier, BuildId, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeStatus, NodeView, PathName};
-use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentDisposition, PlacementMeta, StorageMeta};
 use rdm_transport::NodeTarget;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -76,11 +76,11 @@ fn sha256_once(path: &Path) -> Result<String, String> {
 /// node-admins keep theirs across a restart and a delete; gateways, compute and proof rpc nodes are
 /// ephemeral), no placement, no tags, no config, and `executable`.
 pub fn created_spec(path: PathName, executable: Binding) -> NodeSpec {
-    let storage = match path.kind {
-        NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve },
+    let storage_persistence = match path.kind {
+        NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { disposition: PersistentDisposition::Preserve },
         NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => StorageMeta::Ephemeral,
     };
-    NodeSpec { path, storage, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
+    NodeSpec { path, storage_persistence, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
 }
 
 /// The counts of `mesh`, by kind, in the compiler's order.

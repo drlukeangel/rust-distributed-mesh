@@ -575,7 +575,7 @@ pub enum StorageDisposition {
         /// The locator the storage was released through.
         locator: String,
     },
-    /// `Persistent { on_retire: Preserve }`: left where it is.
+    /// `Persistent { disposition: Preserve }`: left where it is.
     Preserved {},
     /// The Build holds no create spec for this path: left where it is, never destroyed on missing evidence.
     PreservedNoMeta {},
@@ -1677,7 +1677,7 @@ impl DeploymentPipeline<'_> {
                 let stored = self.builds.stored_accepted(&req.build_id).await.map_err(|e| format!("{}: the accepted Build {} could not be read from builds.storage for the node's create spec; nothing is launched: {e}", req.node, req.build_id))?;
                 done_awaits.push("entry-spec");
                 let spec = stored.and_then(|a| a.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).cloned());
-                let placed = spec.as_ref().map(|s| (s.storage, s.placement));
+                let placed = spec.as_ref().map(|s| (s.storage_persistence, s.placement));
                 let (tags, config) = match (of, spec) {
                     (crate::node_rows::ClaimFor::Create, Some(s)) => (s.tags, s.config),
                     _ => Default::default(),

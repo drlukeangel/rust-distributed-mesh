@@ -10,7 +10,7 @@
 //! JSON frame included; a step output that has no wire shape is refused naming its Build,
 //! attempt and step while the facts around it still travel.
 
-use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
 use rdm_transport::topology::Frame;
@@ -155,8 +155,8 @@ fn topology() -> FabricTopology {
     let mut m2 = MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2), (NodeKind::Broker, 1)]));
     let broker: PathName = "mesh2.broker.1".parse().unwrap();
     let rpc: PathName = "mesh2.rpc.1".parse().unwrap();
-    m2.set_spec(NodeSpec { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, ..NodeSpec::default_for(broker) }).unwrap();
-    m2.set_spec(NodeSpec { storage: StorageMeta::Ephemeral, ..NodeSpec::default_for(rpc) }).unwrap();
+    m2.set_spec(NodeSpec { storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(broker) }).unwrap();
+    m2.set_spec(NodeSpec { storage_persistence: StorageMeta::Ephemeral, ..NodeSpec::default_for(rpc) }).unwrap();
     t.meshes.insert("mesh2".into(), m2);
     t
 }
@@ -469,7 +469,7 @@ fn twelve_node_topology() -> FabricTopology {
             let id = p.kind.name().replace('-', "_");
             let executable = rdm_core::binding::Binding { launch_id: id.clone(), executable: format!("/opt/rafka/candidates/0123456789abcdef/{id}").into(), sha256: "ab".repeat(32), image: Some("rafka-node-runtime:0123456789abcdef".into()) };
             let config = [("zone".to_string(), "a".to_string())].into();
-            m.set_spec(NodeSpec { storage: StorageMeta::Ephemeral, executable: Some(executable), tags: ["zone_a".to_string()].into(), config, ..NodeSpec::default_for(p) }).unwrap();
+            m.set_spec(NodeSpec { storage_persistence: StorageMeta::Ephemeral, executable: Some(executable), tags: ["zone_a".to_string()].into(), config, ..NodeSpec::default_for(p) }).unwrap();
         }
         t.meshes.insert(mesh.into(), m);
     }

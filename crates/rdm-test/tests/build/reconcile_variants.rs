@@ -30,7 +30,7 @@
 
 use rdm_client::{BuildFrame, Change, LaunchKind as NodeKind, NodeView, PathName, ScopeStatus};
 use rdm_core::binding::{sha256_file, Binding};
-use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
 use rdm_test::estate::{Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -164,10 +164,10 @@ async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, Strin
     estate.until_node(&rpc1, &format!("{rpc1} carries the config"), Duration::from_secs(30), |n| n.filter(|n| n.config == zone).map(|_| ())).await;
 
     let (based_on, mut r, _) = verbatim(estate).await;
-    at(&mut r, &rpc1).storage = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve };
+    at(&mut r, &rpc1).storage_persistence = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
     row(estate, &format!("{mesh}: storage only"), based_on, r, Back::Stays, rows).await;
     let (record, node) = node_row(estate, &rpc1).await;
-    assert_eq!(record["storage"], json!({"persistence": "persistent", "on_retire": "preserve"}), "{mesh}: the storage reaches {rpc1}'s row: {record}");
+    assert_eq!(record["storage_persistence"], json!({"persistence": "persistent", "disposition": "preserve"}), "{mesh}: the storage reaches {rpc1}'s row: {record}");
     assert_eq!((record["config"].clone(), node.config), (json!({"zone": "a"}), zone), "{mesh}: a storage-only change leaves the config as it is");
 
     let (based_on, mut r, _) = verbatim(estate).await;

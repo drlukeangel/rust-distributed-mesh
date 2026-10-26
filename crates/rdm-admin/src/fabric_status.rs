@@ -1267,7 +1267,7 @@ mod tests {
         use crate::build::MeshDesired;
         use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
         use crate::node_rows::WriteRecord;
-        use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+        use rdm_core::meta::{NodeSpec, PersistentDisposition, PlacementMeta, StorageMeta};
         type Edit = fn(&mut Vec<NodeSpec>);
         let exe = |id: &str, sha: &str| rdm_core::binding::Binding { launch_id: id.into(), executable: format!("/b/{id}-{sha}").into(), sha256: sha.into(), image: None };
         let admin: PathName = "mesh1.admin.1".parse().unwrap();
@@ -1298,7 +1298,7 @@ mod tests {
                 r.push(NodeSpec { path: "mesh1.rpc.2".parse().unwrap(), ..spec });
             }, Back::ToPending),
             ("a removed path (a resize)", None, |r| r.retain(|s| s.path.to_string() != "mesh1.rpc.1"), Back::ToPending),
-            ("storage only", None, |r| at(r, "mesh1.rpc.1").storage = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }, Back::Stays),
+            ("storage only", None, |r| at(r, "mesh1.rpc.1").storage_persistence = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve }, Back::Stays),
         ];
         let mut red = Vec::new();
         for (what, admin_entry, edit, want) in rows {
@@ -1314,7 +1314,7 @@ mod tests {
                 let mut row = crate::storage::NodeRow::new(path.clone(), node_id.clone(), NodeStatus::ReadyForTraffic);
                 row.executable = Some(exe(id, sha));
                 store.write_record(&row).await.unwrap();
-                recorded.insert(path.clone(), RecordedRow { config: None, tags: None, storage: None, placement: None, node_id, sha256: Some(sha.into()) });
+                recorded.insert(path.clone(), RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id, sha256: Some(sha.into()) });
             }
             let view = projected(vec![fp.clone()]);
             let records = Arc::new(Records::default());

@@ -321,7 +321,7 @@ impl Prepared {
                 births: vec![birth],
                 predecessor: None,
                 mesh_id: Some(mesh_id.clone()),
-                storage: None,
+                storage_persistence: None,
                 placement: None,
             };
             nodes.write_record(&row).await.unwrap();

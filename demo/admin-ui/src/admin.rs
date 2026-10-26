@@ -16,7 +16,7 @@ use rdm_client::{
     MeshDesired, MeshNode, Meshes, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
 };
 use rdm_core::binding::{sha256_file, Binding};
-use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentDisposition, PlacementMeta, StorageMeta};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -296,9 +296,9 @@ struct Current {
 /// The create spec of `path` on `executable`: its storage by kind, written out (node-admins and
 /// brokers keep theirs; gateways, compute and rpc nodes are ephemeral), no placement, no tags, no config.
 fn spec(path: PathName, executable: Binding) -> NodeSpec {
-    let storage = match path.kind {
-        NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve },
+    let storage_persistence = match path.kind {
+        NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { disposition: PersistentDisposition::Preserve },
         NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => StorageMeta::Ephemeral,
     };
-    NodeSpec { path, storage, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
+    NodeSpec { path, storage_persistence, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
 }

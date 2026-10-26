@@ -1065,8 +1065,8 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
     }
     span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
     // The storage and placement the claim is handed (its create spec's), else the seed's.
-    let (storage_meta, placement) = placed.map_or_else(|| (seed.as_ref().and_then(|p| p.storage), seed.as_ref().and_then(|p| p.placement)), |(s, p)| (Some(s), Some(p)));
-    let row = NodeRow { config, tags, allocated: allocated.cloned(), executable, predecessor, storage: storage_meta, placement, ..NodeRow::new(name.clone(), node_id.clone(), status) };
+    let (storage_meta, placement) = placed.map_or_else(|| (seed.as_ref().and_then(|p| p.storage_persistence), seed.as_ref().and_then(|p| p.placement)), |(s, p)| (Some(s), Some(p)));
+    let row = NodeRow { config, tags, allocated: allocated.cloned(), executable, predecessor, storage_persistence: storage_meta, placement, ..NodeRow::new(name.clone(), node_id.clone(), status) };
     span.record("awaiting", "put-node-row");
     let claimed = take_name(storage, name, node_id).await;
     let put = match claimed {
