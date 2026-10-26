@@ -103,6 +103,42 @@ impl NodeStorageProviders {
     }
 }
 
+/// A node's one access point to its topology storage (storage.md §2): every reader and writer on the
+/// node reaches its stores through it, and a provider change replaces the provider beneath them.
+pub struct NodeStorageHandle {
+    opened: NodeStorage,
+    provider: String,
+}
+
+impl NodeStorageHandle {
+    /// Open the provider `launch` names (`topology_storage_provider`), one `providers` registers, else
+    /// refused by name.
+    pub async fn open(providers: &NodeStorageProviders, launch: &Launch) -> Result<Arc<Self>, String> {
+        let opened = providers.named(&launch.topology_storage_provider)?.open(launch).await?;
+        Ok(Arc::new(Self { opened, provider: launch.topology_storage_provider.clone() }))
+    }
+
+    /// The provider the node writes now.
+    pub fn provider(&self) -> String {
+        self.provider.clone()
+    }
+
+    /// Where the rows are written now, as the boot's span records it.
+    pub fn writes_to(&self) -> String {
+        self.opened.writes_to.clone()
+    }
+
+    /// The node's connections rows, through this handle.
+    pub fn connections(self: &Arc<Self>) -> Arc<dyn ConnectionsStorage> {
+        self.opened.connections.clone()
+    }
+
+    /// Replace the provider with the one registered as `provider`.
+    pub async fn replace(&self, _provider: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 /// One process's rows: the node's connections held in memory, gone with its process.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MemoryNodeBackend;

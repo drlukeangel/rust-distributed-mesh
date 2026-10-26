@@ -209,6 +209,73 @@ impl TopologyStorageProviders {
     }
 }
 
+/// A node-admin's one access point to its topology storage (storage.md §2): every reader and writer
+/// on the admin reaches the five stores through it, and a provider change replaces the provider
+/// beneath them.
+pub struct TopologyStorageHandle {
+    opened: StorageBoundaries,
+    provider: String,
+}
+
+impl TopologyStorageHandle {
+    /// Open the provider `providers` registers as `provider` on `scope`, else refused by name.
+    pub async fn open(providers: &TopologyStorageProviders, provider: &str, scope: StorageScope) -> Result<Arc<Self>, String> {
+        let opened = providers.named(provider)?.open(&scope).await?;
+        Ok(Arc::new(Self { opened, provider: provider.to_string() }))
+    }
+
+    /// The provider the admin writes now.
+    pub fn provider(&self) -> String {
+        self.provider.clone()
+    }
+
+    /// Where the boundaries write now, as the boot's storage span records it.
+    pub fn writes_to(&self) -> String {
+        self.opened.writes_to.clone()
+    }
+
+    /// `fabric.storage`, through this handle.
+    pub fn fabric(self: &Arc<Self>) -> Arc<dyn FabricStorage> {
+        self.opened.fabric.clone()
+    }
+
+    /// `mesh.storage`, through this handle.
+    pub fn meshes(self: &Arc<Self>) -> Arc<dyn MeshStorage> {
+        self.opened.meshes.clone()
+    }
+
+    /// `nodes.storage`, through this handle.
+    pub fn nodes(self: &Arc<Self>) -> Arc<dyn NodesStorage> {
+        self.opened.nodes.clone()
+    }
+
+    /// `nodes.storage`'s runtime rows on the fabric's shared store root, through this handle; `None`
+    /// on a provider whose rows no other process reads.
+    pub fn root_runtimes(self: &Arc<Self>) -> Option<Arc<dyn NodesStorage>> {
+        self.opened.root_runtimes.clone()
+    }
+
+    /// The Build journal, through this handle.
+    pub fn builds(self: &Arc<Self>) -> Arc<dyn LocalBuildLog> {
+        self.opened.builds.clone()
+    }
+
+    /// The admin's own connections rows at `name`, through this handle.
+    pub async fn connections(self: &Arc<Self>, name: PathName) -> Result<Arc<dyn ConnectionsStorage>, StorageError> {
+        (self.opened.connections)(name).await
+    }
+
+    /// Finishes every write the provider the admin writes now has issued.
+    pub fn finish_writes(self: &Arc<Self>) -> FinishWrites {
+        self.opened.finish_writes.clone()
+    }
+
+    /// Replace the provider with the one registered as `provider`.
+    pub async fn replace(&self, _provider: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 /// One process's rows: every boundary held in memory, written by this admin alone and gone with its
 /// process. An admin on it is never started on an inherited root.
 #[derive(Debug, Default, Clone, Copy)]
@@ -268,6 +335,195 @@ mod tests {
         assert!(twice.contains("`app` is registered twice"), "{twice}");
     }
     use crate::model::NodeId;
+
+    /// Whether any file under `dir`, by its path or its contents, names `needle`.
+    #[cfg(feature = "file-backend")]
+    fn holds(dir: &Path, needle: &str) -> bool {
+        std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| {
+            let p = e.path();
+            p.to_string_lossy().contains(needle) || if p.is_dir() { holds(&p, needle) } else { std::fs::read_to_string(&p).unwrap_or_default().contains(needle) }
+        })
+    }
+
+    /// The scope of an admin on a new data dir in a new fabric.
+    #[cfg(feature = "file-backend")]
+    fn scope_in(data_dir: PathBuf) -> StorageScope {
+        StorageScope { data_dir, fabric_id: FabricId::mint(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() }
+    }
+
+    /// CONTRACT (storage.md §2, "Changing it", Unblock: "Each node moves to the new provider"; i149 R4:
+    /// "Every active reader and writer uses the same replaceable provider handle on its node"): what a
+    /// node-admin's boot took from its handle, each of the five stores and its own connections rows,
+    /// goes to the new provider for every call once the provider is replaced: every write lands under
+    /// the new provider's store dir and none under the old one's, every read answers the new
+    /// provider's records, and the derivation installed on the Build journal before the change runs
+    /// over the facts the new journal takes. Must NOT happen: an owner holding what the boot handed it
+    /// still reading or writing the old provider after the change.
+    #[cfg(feature = "file-backend")]
+    #[tokio::test]
+    async fn a_node_uses_the_replaced_provider_for_every_storage_call() {
+        use crate::fabric_storage::{FabricIdentity, FabricRecord};
+        use crate::storage::{MeshRecord, NodeRow, RuntimeRow};
+        let (old, new) = (crate::test_support::tempdir("handle-old"), crate::test_support::tempdir("handle-new"));
+        let providers = TopologyStorageProviders::new().register("file", Arc::new(FileBackend::at(&old))).register("file-new", Arc::new(FileBackend::at(&new)));
+        let scope = scope_in(crate::test_support::tempdir("handle-data"));
+        let handle = TopologyStorageHandle::open(&providers, "file", scope.clone()).await.unwrap_or_else(|e| panic!("the admin opens its provider: {e}"));
+        // What the boot hands its owners: taken once, before the change.
+        let (fabric, meshes, nodes, builds) = (handle.fabric(), handle.meshes(), handle.nodes(), handle.builds());
+        let name: PathName = "mesh1.admin.1".parse().unwrap();
+        let connections = handle.connections(name.clone()).await.unwrap();
+        let before = MeshRecord::new(crate::model::MeshId::mint(), "meshbefore");
+        meshes.put_mesh(&before).await.unwrap();
+        assert!(holds(&old, before.mesh_id.as_str()), "before the change the admin writes the provider it opened");
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<crate::build::BuildId>::new()));
+        let derived = seen.clone();
+        builds.derive_on_every_fact(crate::build_state::FactDerivation::new(Vec::new, move |facts| *derived.lock().unwrap() = facts.iter().map(|f| f.build_id().clone()).collect())).await;
+
+        handle.replace("file-new").await.unwrap_or_else(|e| panic!("the provider is replaced: {e}"));
+
+        assert_eq!(meshes.mesh(&before.mesh_id).await.unwrap(), None, "a read after the change answers the new provider's records, which do not hold the old one's");
+        let identity = FabricIdentity { fabric_id: scope.fabric_id.clone(), name: "fabricafter".into() };
+        fabric.put_fabric(&FabricRecord::new(identity.clone())).await.unwrap();
+        fabric.put_name_claim(&identity).await.unwrap();
+        let mesh = MeshRecord::new(crate::model::MeshId::mint(), "meshafter");
+        meshes.put_mesh(&mesh).await.unwrap();
+        meshes.claim_mesh_name("meshafter", &mesh.mesh_id).await.unwrap().unwrap();
+        let row = NodeRow::new("meshafter.rpc.7".parse().unwrap(), NodeId::mint(), crate::model::NodeStatus::ReadyForTraffic);
+        nodes.put_node(&row).await.unwrap();
+        nodes.claim_node_name(&row.name, &row.node_id).await.unwrap().unwrap();
+        let runtime = RuntimeRow { node_id: NodeId::mint(), name: "meshafter.rpc.8".parse().unwrap(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };
+        nodes.put_runtime(&runtime).await.unwrap();
+        let build = crate::build_state::BuildAccepted {
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("after")).unwrap(),
+            topology: crate::accepted::FabricTopology::root("fabric1", "meshafter", mesh.mesh_id.clone()),
+            submitted_change: None,
+            submitted_at_ms: 1,
+        };
+        builds.publish_accepted(&build).await.unwrap();
+        let fact = rdm_core::connections::NodeConnection {
+            id: rdm_core::ConnectionId::mint(),
+            source: rdm_core::connections::ConnectionEnd { name: name.clone(), node_id: scope.node_id.clone(), incarnation: Some(scope.writer.clone()) },
+            destination: rdm_core::connections::ConnectionEnd { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
+            kind: rdm_core::connections::ConnectionKind::Direct,
+            alpn: b"storage-provider/1".to_vec(),
+            state: rdm_core::connections::ConnectionState::Connected,
+            carrier: None,
+            recovery: None,
+            reason: None,
+            logged_at_ms: 1,
+        };
+        connections.put_connection(&fact).await.unwrap();
+
+        assert_eq!(fabric.fabric().await.unwrap().map(|f| f.name), Some("fabricafter".to_string()), "fabric.storage reads the new provider");
+        assert_eq!(fabric.name_claim("fabricafter").await.unwrap(), Some(identity.clone()), "and its name claim");
+        assert_eq!(meshes.mesh_named("meshafter").await.unwrap(), Some(mesh.clone()), "mesh.storage reads the new provider");
+        assert_eq!(nodes.node(&row.node_id).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "nodes.storage reads the new provider");
+        assert_eq!(nodes.name_claim(&row.name).await.unwrap(), Some(row.node_id.clone()), "and its name claims");
+        assert_eq!(nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "and its runtime rows");
+        assert_eq!(builds.read_build(&build.build_id).await.unwrap().build_id, build.build_id, "the Build journal reads the new provider");
+        assert!(seen.lock().unwrap().contains(&build.build_id), "the derivation installed before the change runs over the new journal's facts");
+        assert_eq!(connections.connections().await.unwrap(), vec![fact.clone()], "connections.storage reads the new provider");
+        for (store, needle) in [("fabric", "fabricafter".to_string()), ("mesh", mesh.mesh_id.to_string()), ("mesh name", "meshafter".to_string()), ("nodes", row.node_id.to_string()), ("runtime", runtime.node_id.to_string()), ("builds", build.build_id.to_string()), ("connections", fact.id.to_string())] {
+            assert!(holds(&new, &needle), "the {store} write after the change lands on the new provider");
+            assert!(!holds(&old, &needle), "and nothing of the {store} write after the change on the old one");
+        }
+        assert_eq!(handle.provider(), "file-new", "the handle names the provider the admin writes now");
+    }
+
+    /// A fabric store whose record writes stop at `gate` until it opens, telling `arrived` when one is
+    /// there: a write issued and not yet landed.
+    #[cfg(feature = "file-backend")]
+    struct StalledFabric {
+        inner: Arc<dyn FabricStorage>,
+        gate: tokio::sync::watch::Sender<bool>,
+        arrived: Arc<tokio::sync::Notify>,
+    }
+
+    #[cfg(feature = "file-backend")]
+    #[async_trait]
+    impl FabricStorage for StalledFabric {
+        async fn fabric(&self) -> Result<Option<crate::fabric_storage::FabricRecord>, crate::fabric_storage::FabricStorageError> {
+            self.inner.fabric().await
+        }
+        async fn put_fabric(&self, record: &crate::fabric_storage::FabricRecord) -> Result<(), crate::fabric_storage::FabricStorageError> {
+            self.arrived.notify_one();
+            let _ = self.gate.subscribe().wait_for(|open| *open).await;
+            self.inner.put_fabric(record).await
+        }
+        async fn name_claim(&self, name: &str) -> Result<Option<crate::fabric_storage::FabricIdentity>, crate::fabric_storage::FabricStorageError> {
+            self.inner.name_claim(name).await
+        }
+        async fn put_name_claim(&self, identity: &crate::fabric_storage::FabricIdentity) -> Result<(), crate::fabric_storage::FabricStorageError> {
+            self.inner.put_name_claim(identity).await
+        }
+        async fn remove_name_claim(&self, name: &str) -> Result<(), crate::fabric_storage::FabricStorageError> {
+            self.inner.remove_name_claim(name).await
+        }
+    }
+
+    /// The file provider whose fabric record writes stall at the gate.
+    #[cfg(feature = "file-backend")]
+    struct StalledFile {
+        file: FileBackend,
+        gate: tokio::sync::watch::Sender<bool>,
+        arrived: Arc<tokio::sync::Notify>,
+    }
+
+    #[cfg(feature = "file-backend")]
+    #[async_trait]
+    impl StorageBackend for StalledFile {
+        fn qualify(&self, provider: ProviderKind) -> Result<(), String> {
+            self.file.qualify(provider)
+        }
+        async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
+            self.file.own_row(data_dir, writer).await
+        }
+        async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
+            self.file.put_own_row(data_dir, writer, record).await
+        }
+        async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String> {
+            let opened = self.file.open(scope).await?;
+            Ok(StorageBoundaries { fabric: Arc::new(StalledFabric { inner: opened.fabric.clone(), gate: self.gate.clone(), arrived: self.arrived.clone() }), ..opened })
+        }
+    }
+
+    /// CONTRACT (storage.md §2, "Changing it", Finish outstanding writes: "Each node brings every write
+    /// and claim operation it issued before the block to a durable outcome on the old provider"; i149
+    /// e2: "No replacement succeeds while an unaccounted issued write can complete"): a write issued
+    /// through a node-admin's handle and not yet landed holds the change; the change returns only once
+    /// that write is on the old provider, and the new provider holds none of it. Must NOT happen: the
+    /// change returning while a write issued before it can still land on the old provider.
+    #[cfg(feature = "file-backend")]
+    #[tokio::test]
+    async fn a_provider_change_waits_for_already_issued_writes() {
+        use crate::fabric_storage::{FabricIdentity, FabricRecord};
+        let (old, new) = (crate::test_support::tempdir("handle-wait-old"), crate::test_support::tempdir("handle-wait-new"));
+        let (gate, arrived) = (tokio::sync::watch::channel(false).0, Arc::new(tokio::sync::Notify::new()));
+        let stalled = StalledFile { file: FileBackend::at(&old), gate: gate.clone(), arrived: arrived.clone() };
+        let providers = TopologyStorageProviders::new().register("file", Arc::new(stalled)).register("file-new", Arc::new(FileBackend::at(&new)));
+        let scope = scope_in(crate::test_support::tempdir("handle-wait-data"));
+        let handle = TopologyStorageHandle::open(&providers, "file", scope.clone()).await.unwrap_or_else(|e| panic!("the admin opens its provider: {e}"));
+        let fabric = handle.fabric();
+        let write = tokio::spawn({
+            let (fabric, record) = (fabric.clone(), FabricRecord::new(FabricIdentity { fabric_id: scope.fabric_id.clone(), name: "fabricissued".into() }));
+            async move { fabric.put_fabric(&record).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), arrived.notified()).await.expect("the write reaches the old provider and stalls there");
+
+        let change = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.replace("file-new").await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(!change.is_finished(), "the change waits for the write already issued through the old provider");
+
+        gate.send_replace(true);
+        tokio::time::timeout(std::time::Duration::from_secs(5), change).await.expect("the change returns once the issued write has landed").unwrap().unwrap_or_else(|e| panic!("the provider is replaced: {e}"));
+        assert!(holds(&old, "fabricissued"), "when the change returns the issued write has landed on the old provider");
+        assert!(!holds(&new, "fabricissued"), "and nothing of it on the new one");
+        write.await.unwrap().expect("the issued write is answered once it has landed");
+        assert_eq!(handle.provider(), "file-new");
+    }
 
     /// The same script against any backend that keeps its rows across opens: the admin re-born at the
     /// same path.name over the inherited data dir (a new node.id and incarnation, `inherited = true`)
