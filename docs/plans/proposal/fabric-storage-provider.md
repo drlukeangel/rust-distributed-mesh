@@ -1,4 +1,4 @@
-# The fabric's `storage_provider`: a Fabric property, changed live by a Build
+# The fabric's `topology_storage_provider`: a Fabric property, changed live by a Build
 
 The lead, 2026-10-26, from Luke's direction in conversation (quoted under "Decided"), revised the same
 day with Luke, Architect 1's two reviews and the dev's. A proposal: nothing here is built, and no
@@ -39,10 +39,16 @@ So a running fabric cannot move to another storage, and no node can be asked whi
 - It is made at the fabric level.
 - It travels fabric-primary → mesh-primary → node, each level its own step.
 - The fabric-primary keeps access to the previous storage providers.
-- It is a Build: the Build's topology carries the fabric's `storage_provider` as a new property, the
+- It is a Build: the Build's topology carries the fabric's `topology_storage_provider` as a new property, the
   meshes unchanged.
-- `storage_provider` is a property of the Fabric, written on the Fabric's row, so it can be queried;
+- `topology_storage_provider` is a property of the Fabric, written on the Fabric's row, so it can be queried;
   and of the node's row, the provider the node writes.
+- The name is `topology_storage_provider`, not `storage_provider` (Luke, 2026-10-26): a node has storage
+  of its own, a node-admin's themes and images, a broker's and gateway's WAL, under its
+  `storage_persistence`, and the application may have providers for those; this property names only
+  where RDM's five record stores go, fabric, meshes, nodes, connections and builds, which is what the
+  topology reads read. Not `fabric_storage_provider`: `fabric.storage` is one of the five, the Fabric
+  record's own store. RDM's backend keeps its name, `file`.
 - The fabric-primary does the copy before any node switches; each node then switches with its own
   tail, under a freeze of writes, so that at every instant one provider holds the whole truth and the
   change is reversible until one commit point ("if we don't block it we will have to delete both
@@ -54,16 +60,18 @@ So a running fabric cannot move to another storage, and no node can be asked whi
 
 ### The properties
 
-- **R-SP1. `storage_provider` is a property of the Fabric.** One value for the fabric, flat (Q166): the
+- **R-SP1. `topology_storage_provider` is a property of the Fabric.** One value for the fabric, flat (Q166): the
   name of a storage backend the application's wiring registers. RDM's file backend is registered by
-  every binary as `file`. A topology that carries no `storage_provider` reads as `file`. A name is
+  every binary as `file`. A Build's topology that carries no `topology_storage_provider` reads as the
+  Fabric row's current value, unchanged, as every property a Build omits does (Q166); the only default
+  is Day 0's, the bootstrap admin's environment, `file` when unset. A name is
   bound to its place at registration: `file` is the directory `RDM_STORE_DIR` names, the application's
   backend its own addresses; the node that writes never names a place, it hands the record to the
   trait and the backend behind it knows where (storage-is-persistence-only, Q109). A move between two
   places of one backend is therefore two registered names, or a value that carries the place
   (`file:<dir>`); which, is a line for Luke.
-- **R-SP2. The Fabric's row carries it.** The Fabric record gains `storage_provider` (the current one)
-  and `previous_storage_providers` (each one the fabric left, in order), written by the fabric-primary,
+- **R-SP2. The Fabric's row carries it.** The Fabric record gains `topology_storage_provider` (the current one)
+  and `previous_topology_storage_providers` (each one the fabric left, in order), written by the fabric-primary,
   and the Fabric row's read (`fabrics.get` under Q167's amendment) answers both. The bootstrap admin
   writes the first value on Day 0: the name of the backend it was started on, `file` unless its
   environment names another. build.md §5.3's sentence that `fabric.storage` holds the Fabric "as an
@@ -72,8 +80,8 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   "Pages" for Luke's yes, with this property in it.
 - **R-SP3. The Build's topology carries it, and the application submits the Build that meets the
   requirement.** `FabricTopology` (`accepted.rs:161`, today `fabric` and `meshes`) gains
-  `storage_provider`. A change of storage is a `build.create` of the complete topology with the same
-  meshes and the new `storage_provider`. It is admitted and refused like any Build (one in progress at
+  `topology_storage_provider`. A change of storage is a `build.create` of the complete topology with the same
+  meshes and the new `topology_storage_provider`. It is admitted and refused like any Build (one in progress at
   a time, build.md:174), its attempts claimed, its receipts written and resumed from like any Build's.
   The requirement of "Why" is met by the application: once its own store exists (its brokers run and
   its Day 0 is done), it submits `build.create` naming its backend; nothing in RDM knows when that
@@ -82,18 +90,18 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   not every node's: acceptance refuses by name a provider the fabric-primary's wiring does not
   register or cannot open, nothing moved, and step 1 (R-SP6) is the check on every other node. A
   provider no executable has is an executable replacement, not this Build.
-- **R-SP4. `storage_provider` is a property of the node's row too: the provider it writes.** The
+- **R-SP4. `topology_storage_provider` is a property of the node's row too: the provider it writes.** The
   fabric's value is the intent, the node's is the fact, and during a change they differ, which is the
   progress. The node-properties table gains the row:
 
   | field | set by | changed by | event |
   |---|---|---|---|
-  | `storage_provider` (and, during a change, the step reached) | the launching admin, from the Fabric row and the Build in progress, at the birth | the fabric's storage-change Build, step by step: the node writes its own row before it answers the step; never a put | the step's receipt |
+  | `topology_storage_provider` (and, during a change, the step reached) | the launching admin, from the Fabric row and the Build in progress, at the birth | the fabric's storage-change Build, step by step: the node writes its own row before it answers the step; never a put | the step's receipt |
 
-  A caller reads it with `nodes.get [storage_provider: file]`, every node still on the old provider
+  A caller reads it with `nodes.get [topology_storage_provider: file]`, every node still on the old provider
   during a change. The Build journal is itself in the provider, so a starting node cannot learn its
   provider from a Build; it is told, in this order:
-  - at launch, by the launching admin, in its environment (`RDM_STORAGE_PROVIDER`, the way
+  - at launch, by the launching admin, in its environment (`RDM_TOPOLOGY_STORAGE_PROVIDER`, the way
     `RDM_STORE_DIR` and `RDM_ROOTS` are written), the current provider or, during a change, both
     providers and the step the fabric is at, read from the Fabric row and the Build in progress, since
     the Fabric row's value moves only at the end (R-SP9);
@@ -151,7 +159,7 @@ So a running fabric cannot move to another storage, and no node can be asked whi
     holder, and reads both sets back equal. Only when every writer's last `op` and every held claim
     match on both providers does it commit (Architect 1).
   - **Commit.** When the completeness pass holds, the fabric-primary writes the Fabric row on the new
-    provider: `storage_provider` the new one, the old appended to `previous_storage_providers`, the
+    provider: `topology_storage_provider` the new one, the old appended to `previous_topology_storage_providers`, the
     line's `op` the fabric-primary's own and its record naming the Build. That one row is the commit
     point and the claim cutover: before it nothing but copies, tails and claims has reached the new
     provider, so a failure anywhere reverts (R-SP13); after it every writer's lines and every claim
@@ -174,7 +182,7 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   attempt as any planned birth's.
 - **R-SP11. The previous provider is kept, frozen at the commit, and never deleted by RDM.** After the
   commit the old provider is a complete copy of the fabric as of the freeze, to the last tail, written
-  no more and named on the Fabric row in `previous_storage_providers` ("RDM deletes nothing on disk,
+  no more and named on the Fabric row in `previous_topology_storage_providers` ("RDM deletes nothing on disk,
   ever", deployment-provider.md; never delete, only append). Removing it is the application's own
   work, as a node's storage with the `release` disposition is, or nobody's; RDM gives it the fact,
   the row and the Build's completion receipt, and does nothing further. Every provider the Fabric's
@@ -188,7 +196,7 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   ready-for-traffic." A storage change is a property Build, the meshes unchanged, and is the same kind:
   the fabric, every mesh and every node stay ready-for-traffic through all three steps; the node's
   states are its life and its traffic, and a change of where it writes is neither. The progress is the
-  step receipts and R-SP4's row, not a state. The page's sentence gains `storage_provider` in its list.
+  step receipts and R-SP4's row, not a state. The page's sentence gains `topology_storage_provider` in its list.
 - **R-SP13. Failure.** A failed step fails by name and fails the Build as any step does; there is no
   forward-only exception. Before the commit point nothing but copies and tails has reached the new
   provider, so a failure in step 1, during the copy, or during the freeze and tails reverts: the
@@ -233,17 +241,17 @@ So a running fabric cannot move to another storage, and no node can be asked whi
 - build.md §5.3: the Fabric row's sentence (R-SP2), and a section for the storage change (R-SP3 to
   R-SP13).
 - fabric-mesh-node-lifecycles.md: the storage change's row.
-- node-admin-lifecycle.md §7: the store is the fabric's `storage_provider`, changed by a Build.
-- CLAUDE.md env table: `RDM_STORAGE_PROVIDER` (R-SP4).
+- node-admin-lifecycle.md §7: the store is the fabric's `topology_storage_provider`, changed by a Build.
+- CLAUDE.md env table: `RDM_TOPOLOGY_STORAGE_PROVIDER` (R-SP4).
 - node-rpc-envelope.md: the Fabric row's read carries the two fields (R-SP2); the node-properties
   table gains R-SP4's row and renames R-SP16's.
-- states.md, "Resize and executable replacement": `storage_provider` in the property list (R-SP12).
+- states.md, "Resize and executable replacement": `topology_storage_provider` in the property list (R-SP12).
 
 ## Cells
 
-- **The properties.** `fabrics.get` answers `storage_provider` and `previous_storage_providers`; a
+- **The properties.** `fabrics.get` answers `topology_storage_provider` and `previous_topology_storage_providers`; a
   topology without the field reads as `file`; a Build naming an unregistered provider is refused at
-  acceptance by name, nothing moved; `nodes.get [storage_provider: …]` answers each node's, and during
+  acceptance by name, nothing moved; `nodes.get [topology_storage_provider: …]` answers each node's, and during
   a change the fabric's and a node's differ; a node's own row carries the provider and the step before
   the step's receipt exists.
 - **Step 1.** A node whose executable lacks the provider fails step 1 by name, the Build fails, the old
