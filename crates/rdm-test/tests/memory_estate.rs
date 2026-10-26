@@ -127,7 +127,10 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// Day-0 node-admin started on the memory storage backend comes up ready in both seats, its storage
 /// step spanned `writes_to = "memory"`; `node.create` of two rpc nodes in mesh1 completes and lists
 /// them ready-for-traffic; once the fabric has first reached ready-for-traffic, `node.stop` of the
-/// first stops it (its cohort seat moving to the second) and `node.start` brings it back; `node.restart` completes and it is ready again; `build.get` of the
+/// first stops it (its cohort seat moving to the second) and `node.start` brings it back; before
+/// that, a Reconcile changing mesh1.rpc.1's config alone completes and the node carries the config
+/// (build.md §1, "The Build applies the diff": `config` in place, as `node.config.update` applies a
+/// map; the executor reads the entry in the accepted Build the memory log holds); `node.restart` completes and it is ready again; `build.get` of the
 /// first create's Build answers it Complete with its step receipts. Through all of it the admin
 /// writes nothing of its own to disk:
 /// its data dir holds no store (no `nodes/`, no `attempt-context/`), and every file under the fabric's
@@ -188,6 +191,25 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         Estate::workflow("node.create of a second rpc node in mesh1", nodes.create_named(based_on, request).await).await;
         until_status(&meshes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::ReadyForTraffic).await;
         until_fabric_ready(&fabrics).await;
+        // A Reconcile that changes mesh1.rpc.1's config alone: the Build's `node.config.update` reads the
+        // entry in the accepted Build the admin's own log holds, and the node carries it.
+        let zone: std::collections::BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
+        let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
+        let request = current.held(&executables).unwrap_or_else(|e| panic!("{e}")).into_values().flat_map(|m| m.into_values()).map(|mut s| {
+            if s.path == node {
+                s.config = zone.clone();
+            }
+            s
+        });
+        let mut stream = carrier.create(rdm_core::build::BuildChange::Reconcile { based_on: current.based_on, nodes: request.collect() }).await.unwrap_or_else(|e| panic!("build.create of the config-only Reconcile: {e}"));
+        Estate::until_complete(&mut stream).await;
+        tokio::time::timeout(WRONG, async {
+            while !meshes.nodes(&node.mesh, None).await.unwrap_or_else(|e| panic!("mesh.nodes.get: {e}")).iter().any(|n| n.name == node && n.config == zone) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{node} never carried the config its entry names"));
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
         until_status(&meshes, &node, NodeStatus::ReadyForTraffic).await;

@@ -2617,6 +2617,32 @@ mod tests {
         assert!(created < replaced, "the added admin is created first: {ops:?}");
     }
 
+    /// CONTRACT (build.md §1, "The Build applies the diff" and "the last write wins"; node-config-update.md:
+    /// "It is admitted at any time (Q166) ... never refused because a Build is running"): a Reconcile
+    /// whose attempt 1 created mesh1.rpc.1 (its entry's config {}) and whose rpc node then wrote its own
+    /// bound port into its config through `node.config.update`, plans its attempt 2 with no
+    /// `node.config.update` of mesh1.rpc.1 and no other operation: the node keeps its write, nothing is
+    /// created or deleted. A later Build whose entry names another config applies it. Must NOT happen:
+    /// attempt 2 writing the node's config back to {} (rafka 141, Build 7fzjdqr1sh66).
+    #[test]
+    fn a_later_attempt_of_the_build_that_created_a_node_keeps_the_config_the_node_wrote_since() {
+        use NodeStatus::ReadyForTraffic as R;
+        let cur = t(&[("mesh1", 1, 1)]);
+        let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
+        let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.rpc.1", R, true)], &["mesh1"]);
+        let row = |config: BTreeMap<String, String>| RecordedRow { node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) };
+        let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
+        let mut recorded: Recorded = [(rpc.clone(), row(port))].into();
+        recorded.insert("mesh1.admin.1".parse().unwrap(), RecordedRow { storage: None, placement: None, ..row(BTreeMap::new()) });
+        let create = "node.create:mesh1.rpc.1";
+        let attempt1: Vec<_> = ["AllocateIdentity", "PrepareStorage", "DeployRuntime", "WaitForNodeReady", "Complete"].iter().map(|s| receipt(1, create, s, None)).collect();
+        assert_eq!(replacement_plan(&cur, &o, &recorded, attempt1), vec![], "attempt 2 plans nothing: the node's own config stands");
+        let mut later = cur.clone();
+        let zone = [("zone".to_string(), "b".to_string())].into_iter().collect::<BTreeMap<String, String>>();
+        later.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec { config: zone, ..NodeSpec::default_for(rpc.clone()) }).unwrap();
+        assert_eq!(replacement_plan(&later, &o, &recorded, vec![]), vec![BuildOperation::UpdateConfig { node: rpc }], "a later Build naming another config applies it");
+    }
+
     /// A Build accepted from `request`'s change over `topology` with `steps`, planned against `o` and `recorded`.
     fn replacement_plan(topology: &FabricTopology, o: &Topology, recorded: &Recorded, steps: Vec<crate::build_state::BuildStepReceipt>) -> Vec<BuildOperation> {
         replacement_build_plan(topology, o, recorded, steps, None, Default::default())
