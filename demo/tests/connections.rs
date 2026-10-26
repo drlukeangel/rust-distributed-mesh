@@ -199,16 +199,33 @@ fn alpn_hex(alpn: &[u8]) -> String {
     alpn.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn read_row(path: &Path) -> Option<NodeConnection> {
-    let bytes = std::fs::read(path).ok()?;
-    let val: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    serde_json::from_value(val.get("record")?.clone()).ok()
+/// One connection entry's place on the store root: its key in the root's `connections.jsonl`, where every
+/// fact is a line and the entry is the key's latest line (R-SR1).
+struct RowAt {
+    file: PathBuf,
+    key: String,
 }
 
-async fn wait_for_row(path: &Path, expected: ConnectionState) -> NodeConnection {
+impl RowAt {
+    fn display(&self) -> String {
+        format!("{}#{}", self.file.display(), self.key)
+    }
+}
+
+/// The entry at `at`: the key's latest line, unless that line forgot it (`removed`).
+fn read_row(at: &RowAt) -> Option<NodeConnection> {
+    let lines = rdm_node::store_log::read_file(&at.file).ok()?;
+    let line = lines.into_iter().rev().find(|l| l.kind() == "node-connection" && l.key == at.key)?;
+    if line.record.get("removed").and_then(|r| r.as_bool()) == Some(true) {
+        return None;
+    }
+    serde_json::from_value(line.record).ok()
+}
+
+async fn wait_for_row(at: &RowAt, expected: ConnectionState) -> NodeConnection {
     tokio::time::timeout(BOUND, async {
         loop {
-            if let Some(row) = read_row(path) {
+            if let Some(row) = read_row(at) {
                 if row.state == expected {
                     break row;
                 }
@@ -217,45 +234,27 @@ async fn wait_for_row(path: &Path, expected: ConnectionState) -> NodeConnection 
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {expected:?} at {}", path.display()))
+    .unwrap_or_else(|_| panic!("timed out waiting for {expected:?} at {}", at.display()))
 }
 
-fn direct_index_path(
-    fabric_root: &Path,
-    source: &str,
-    destination: &str,
-    alpn: &[u8],
-) -> PathBuf {
-    fabric_root
-        .join("connections")
-        .join(source)
-        .join(format!("{source}--{destination}--{}--direct.json", alpn_hex(alpn)))
+fn row_at(fabric_root: &Path, source: &str, destination: &str, alpn: &[u8], kind: &str) -> RowAt {
+    RowAt {
+        file: fabric_root.join(rdm_node::store_root::CONNECTIONS_FILE),
+        key: format!("{source}--{destination}--{}--{kind}", alpn_hex(alpn)),
+    }
 }
 
-fn proxy_index_path(
-    fabric_root: &Path,
-    source: &str,
-    destination: &str,
-    alpn: &[u8],
-) -> PathBuf {
-    fabric_root
-        .join("connections")
-        .join(source)
-        .join(format!("{source}--{destination}--{}--proxy.json", alpn_hex(alpn)))
+fn direct_index_path(fabric_root: &Path, source: &str, destination: &str, alpn: &[u8]) -> RowAt {
+    row_at(fabric_root, source, destination, alpn, "direct")
 }
 
+fn proxy_index_path(fabric_root: &Path, source: &str, destination: &str, alpn: &[u8]) -> RowAt {
+    row_at(fabric_root, source, destination, alpn, "proxy")
+}
+
+/// The raw connection log of the node at `source`: every fact it wrote, oldest first.
 fn read_history(fabric_root: &Path, source: &str) -> Vec<NodeConnection> {
-    let path = fabric_root
-        .join("connections")
-        .join(source)
-        .join("history.jsonl");
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect()
+    rdm_node::storage::connection_history(fabric_root, source).unwrap_or_default()
 }
 
 async fn open_pair(

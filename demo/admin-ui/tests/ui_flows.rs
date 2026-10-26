@@ -53,12 +53,17 @@ async fn node_admin(dir: &std::path::Path) -> (Running, Arc<Admin>) {
     // The admin takes the UI's commands once its view names it the fabric-primary and the initial fabric
     // first reached ready-for-traffic (before that every command is refused fabric-not-ready).
     let until = std::time::Instant::now() + Duration::from_secs(20);
-    loop {
+    let day0 = loop {
         match admin.fabric().await {
-            Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::ReadyForTraffic => break,
+            Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::ReadyForTraffic => break f.build_id,
             other => assert!(std::time::Instant::now() < until, "the Day-0 admin never named itself the fabric-primary: {other:?}"),
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    // The Day-0 Build is Complete from its own ready-for-traffic, one Build at a time: the UI's Builds are
+    // submitted once it is.
+    if let Some(day0) = day0 {
+        until_complete(&admin, "the Day-0 Build", &BuildId::parse(&day0).expect("the Day-0 Build's id")).await;
     }
     (running, admin)
 }
@@ -259,12 +264,17 @@ impl ConsumerEstate {
         let executables = [(rdm_core::NodeKind::NodeAdmin, bin.join("rshape-node-admin")), (rdm_core::NodeKind::Gateway, bin.join("rshape-gateway"))].into_iter().collect();
         let admin = Arc::new(Admin::at(&birth).await.expect("the admin's birth").with_executables(executables));
         let until = std::time::Instant::now() + Duration::from_secs(60);
-        loop {
+        let day0 = loop {
             match admin.fabric().await {
-                Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::ReadyForTraffic => break,
+                Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::ReadyForTraffic => break f.build_id,
                 other => assert!(std::time::Instant::now() < until, "the Day-0 admin never named itself the fabric-primary of a ready fabric: {other:?}"),
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        // The Day-0 Build is Complete from its own ready-for-traffic, one Build at a time: the UI's Builds are
+        // submitted once it is.
+        if let Some(day0) = day0 {
+            until_complete(&admin, "the Day-0 Build", &BuildId::parse(&day0).expect("the Day-0 Build's id")).await;
         }
         (estate, admin)
     }
