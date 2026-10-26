@@ -30,6 +30,7 @@ pub mod owed;
 pub mod storage;
 pub mod storage_backend;
 pub mod storage_error;
+pub mod storage_handle;
 #[cfg(feature = "file-backend")]
 pub mod store_log;
 #[cfg(feature = "file-backend")]

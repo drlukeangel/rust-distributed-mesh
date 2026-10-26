@@ -104,38 +104,87 @@ impl NodeStorageProviders {
 }
 
 /// A node's one access point to its topology storage (storage.md §2): every reader and writer on the
-/// node reaches its stores through it, and a provider change replaces the provider beneath them.
+/// node reaches its stores through it, and a provider change replaces the provider beneath them
+/// ("Each node moves to the new provider"), whatever each caller took from it at the node's open.
 pub struct NodeStorageHandle {
-    opened: NodeStorage,
-    provider: String,
+    current: crate::storage_handle::StorageHandle<NodeStorage>,
+    /// The providers the node's executable registers: a replacement opens one of them.
+    providers: NodeStorageProviders,
+    /// The launch the node's storage is opened for.
+    launch: Launch,
+    /// One replacement at a time.
+    replacing: tokio::sync::Mutex<()>,
 }
 
 impl NodeStorageHandle {
-    /// Open the provider `launch` names (`topology_storage_provider`), one `providers` registers, else
-    /// refused by name.
+    /// Open the provider `launch` names (`topology_storage_provider`), one `providers` registers, else the
+    /// node's start is refused by name.
     pub async fn open(providers: &NodeStorageProviders, launch: &Launch) -> Result<Arc<Self>, String> {
-        let opened = providers.named(&launch.topology_storage_provider)?.open(launch).await?;
-        Ok(Arc::new(Self { opened, provider: launch.topology_storage_provider.clone() }))
+        let opened = providers.named(&launch.topology_storage_provider).map_err(|e| format!("refusing to start: {e}"))?.open(launch).await?;
+        Ok(Arc::new(Self {
+            current: crate::storage_handle::StorageHandle::new(&launch.topology_storage_provider, opened),
+            providers: providers.clone(),
+            launch: launch.clone(),
+            replacing: tokio::sync::Mutex::new(()),
+        }))
     }
 
     /// The provider the node writes now.
     pub fn provider(&self) -> String {
-        self.provider.clone()
+        self.current.read().provider().to_string()
     }
 
     /// Where the rows are written now, as the boot's span records it.
     pub fn writes_to(&self) -> String {
-        self.opened.writes_to.clone()
+        self.current.read().stores().writes_to.clone()
     }
 
-    /// The node's connections rows, through this handle.
+    /// The node's connections rows, through this handle: every call goes to the provider the node
+    /// writes at that call.
     pub fn connections(self: &Arc<Self>) -> Arc<dyn ConnectionsStorage> {
-        self.opened.connections.clone()
+        Arc::new(ConnectionsThroughHandle(self.clone()))
     }
 
-    /// Replace the provider with the one registered as `provider`.
-    pub async fn replace(&self, _provider: &str) -> Result<(), String> {
+    /// Replace the provider with the one this executable registers as `provider`, opened now, off the
+    /// node's boot: from the swap every call goes to it, and this returns once every write admitted to
+    /// the old provider has been answered there ("Finish outstanding writes"). A name the executable
+    /// does not register, or a provider that does not open, is refused by name and nothing moves.
+    pub async fn replace(&self, provider: &str) -> Result<(), String> {
+        let _one = self.replacing.lock().await;
+        let opened = self.providers.named(provider)?.open(&Launch { topology_storage_provider: provider.to_string(), ..self.launch.clone() }).await?;
+        self.current.replace(provider, opened).await;
         Ok(())
+    }
+}
+
+/// `connections.storage` through a node's [`NodeStorageHandle`].
+struct ConnectionsThroughHandle(Arc<NodeStorageHandle>);
+
+#[async_trait]
+impl ConnectionsStorage for ConnectionsThroughHandle {
+    async fn put_connection(&self, fact: &rdm_core::connections::NodeConnection) -> Result<(), crate::storage_error::StorageError> {
+        let w = self.0.current.write();
+        w.connections.put_connection(fact).await
+    }
+    async fn connections(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().connections.connections().await
+    }
+    async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), crate::storage_error::StorageError> {
+        let w = self.0.current.write();
+        w.connections.remove_connection(index).await
+    }
+    async fn append_history(&self, fact: &rdm_core::connections::NodeConnection) -> Result<(), crate::storage_error::StorageError> {
+        let w = self.0.current.write();
+        w.connections.append_history(fact).await
+    }
+    async fn history(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().connections.history().await
+    }
+    async fn connections_to(&self, destination: &crate::model::NodeId) -> Result<Vec<rdm_core::connections::NodeConnection>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().connections.connections_to(destination).await
+    }
+    async fn fleet_directs(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().connections.fleet_directs().await
     }
 }
 

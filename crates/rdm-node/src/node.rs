@@ -467,10 +467,12 @@ async fn start_booted(
     // The storage fault the originate door arms (testkit only): the backend's storage, decorated.
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name, writes_to = tracing::field::Empty);
     // The topology storage provider this birth writes, the one its launch names (storage.md §2): one its
-    // executable registers, else the start is refused by name.
-    let node_storage = providers.named(&launch.topology_storage_provider).map_err(|e| anyhow!("refusing to start: {e}"))?.open(launch).await.map_err(|e| anyhow!("{e}"))?;
-    step.record("writes_to", node_storage.writes_to.as_str());
-    let base_storage = node_storage.connections.clone();
+    // executable registers, else the start is refused by name. The node reaches it through its one
+    // handle, never a store held from here, so a provider change moves every caller ("Each node moves
+    // to the new provider").
+    let topology_storage = crate::storage_backend::NodeStorageHandle::open(&providers, launch).await.map_err(|e| anyhow!("{e}"))?;
+    step.record("writes_to", topology_storage.writes_to().as_str());
+    let base_storage = topology_storage.connections();
     let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
         rdm_core::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         decorate_storage(base_storage),

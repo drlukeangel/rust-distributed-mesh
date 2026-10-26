@@ -378,8 +378,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // opens, so every store line this process appends names it (R-SR3).
     let minted_node_id = cfg.launch.as_ref().map(|l| l.node_id.clone()).unwrap_or_else(NodeId::mint);
     let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone(), node_id: minted_node_id.clone() };
-    let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, root_runtimes, connections: open_connections, builds: journal, finish_writes, writes_to } = storage.open(&scope).await?;
-    storage_step.record("writes_to", writes_to.as_str());
+    // Every store this admin reads and writes is reached through its one handle, never a store held
+    // from here, so a provider change moves every owner at once ("Each node moves to the new
+    // provider", storage.md §2).
+    let topology_storage = crate::storage_backend::TopologyStorageHandle::open(&providers, &cfg.topology_storage_provider, scope).await?;
+    let (fabric_backed, mesh_storage, nodes_storage, root_runtimes, journal, finish_writes) = (topology_storage.fabric(), topology_storage.meshes(), topology_storage.nodes(), topology_storage.root_runtimes(), topology_storage.builds(), topology_storage.finish_writes());
+    storage_step.record("writes_to", topology_storage.writes_to().as_str());
     // The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
     // starts from its copy here (storage-whole-records.md, "The rule"), its first writes at boot too.
     let caches = crate::record_cache::Caches::default();
@@ -605,7 +609,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
 
     // This node's own connections rows: `connections/<its path.name>/` of the store root (R14).
-    let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> = open_connections(name.clone()).await.map_err(storage_err)?;
+    let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> = topology_storage.connections(name.clone()).await.map_err(storage_err)?;
     boot.record("node", tracing::field::display(&name));
     boot.record("node_id", tracing::field::display(&node_id));
     boot.record("incarnation_id", tracing::field::display(&incarnation.as_str()));
