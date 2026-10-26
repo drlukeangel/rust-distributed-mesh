@@ -24,10 +24,10 @@
 //! `system.ops.meshes` do not exist"). A node that opens a root holding no Fabric row yet holds
 //! every row it writes in its [`Scratchpad`] until its commit-state action publishes them; a node
 //! that opens a root the fabric-primary already published the Fabric row to writes to it directly.
-//! Three stores write to the root from their open, before state-commit too, opening their
-//! [`FileRecords`] directly rather than through [`StoreRoot::records`]: `status/<mesh>/declared`
-//! (an Applied declaration, Q54), the Build lanes and the meshes' attempt claims (a committed Build
-//! fact, Q61, build.md §5.2).
+//! Four writes reach the root from their store's open, before state-commit too, never held: a node's
+//! record with its declared states (an Applied declaration, Q54), a birth's runtime row (its
+//! launching admin's durable map, written once), both lines of `nodes.jsonl`; the Build facts and the
+//! meshes' attempt claims (a committed Build fact, Q61, build.md §5.2).
 
 use crate::model::{FabricId, IncarnationId, PathName};
 use crate::record_store::{FileRecords, Scratchpad};

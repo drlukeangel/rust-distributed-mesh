@@ -806,6 +806,12 @@ impl Estate {
         }
     }
 
+    /// The latest record of `node_id` in the root's `nodes.jsonl` (R-SR1), as
+    /// `{"format", "key", "record"}`; `None` while there is none, or while the file cannot be read whole.
+    pub fn node_record(&self, node_id: &str) -> Option<serde_json::Value> {
+        rdm_admin::store_log::read_record(&self.fabric_store_root().join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id))
+    }
+
     /// The node's own connections rows and raw log on the fabric's store root: `connections/<node>/`.
     pub fn connections_dir_of(&self, node: &str) -> PathBuf {
         self.fabric_store_root().join("connections").join(node)

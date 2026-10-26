@@ -298,7 +298,7 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_r
 /// which node id the path.name's name is held by (`None`: released).
 fn stored_birth(root: &std::path::Path, mesh: &str, node: &str, node_id: &str) -> (Option<String>, Option<String>) {
     let read = |p: std::path::PathBuf| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-    let status = read(root.join("nodes").join(mesh).join("records").join(format!("{node_id}.json"))).map(|r| s(&r["record"]["status"]));
+    let status = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id)).map(|r| s(&r["record"]["status"]));
     let name = read(root.join("nodes").join(mesh).join("names").join(format!("{node}.json"))).map(|r| s(&r["record"]["node_id"]));
     (status, name)
 }

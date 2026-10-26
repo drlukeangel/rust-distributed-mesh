@@ -479,7 +479,7 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         let root = rdm_admin::store_root::StoreRoot::at(&d.join("store"));
         let open = |data: &str| {
             let (data, root) = (d.join(data), root.clone());
-            async move { Arc::new(rdm_admin::storage::FileNodesStorage::open(&data, &root, "mesh1", &IncarnationId::mint()).await.unwrap()) as Arc<dyn NodesStorage> }
+            async move { Arc::new(rdm_admin::storage::FileNodesStorage::open(&data, &root, "mesh1", &rdm_admin::store_log::LogWriter::mint()).await.unwrap()) as Arc<dyn NodesStorage> }
         };
         let (p_store, n_store) = (open("mesh1.admin.2").await, open("mesh1.admin.1").await);
         let mut before = view();
@@ -566,7 +566,7 @@ fn a_node_lets_go_only_of_its_own_row() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let dir = std::env::temp_dir().join(format!("node-rows-claim-{}", NodeId::mint()));
-        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rdm_admin::storage::FileNodesStorage::open(&dir, &rdm_admin::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap()))];
+        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rdm_admin::storage::FileNodesStorage::open(&dir, &rdm_admin::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()))];
         for (kind, store) in stores {
             let id = NodeId::mint();
             let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage: None, placement: None };

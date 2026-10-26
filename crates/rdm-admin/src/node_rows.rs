@@ -941,7 +941,7 @@ pub async fn take_name(storage: &dyn NodesStorage, name: &PathName, node_id: &No
     match storage.claim_node_name(name, node_id).await? {
         Ok(()) => Ok(Ok(())),
         Err(held) => {
-            if !storage.node(&held.by).await?.is_some_and(|r| r.status == NodeStatus::Deleted) {
+            if !storage.node(&held.by).await?.is_some_and(|r| released_its_name(&r)) {
                 return Ok(Err(held));
             }
             storage.release_node_name(name, &held.by).await?;
@@ -950,19 +950,33 @@ pub async fn take_name(storage: &dyn NodesStorage, name: &PathName, node_id: &No
     }
 }
 
-/// `node_id` lets go of `name`: its claim there goes, and its record with it when the record is still
-/// at `name` (a create's withdrawn claim: the node never ran). Returns whether it held the name.
+/// `node_id` lets go of `name`: when its record is still at `name` (a create's withdrawn claim: the
+/// node never ran), the record is appended `Withdrawn` (R-SR2: nothing is removed), then its claim
+/// there goes; a claim whose release a crash cut off is released by the next claimant over the
+/// `Withdrawn` record ([`take_name`]). Returns whether it held the name.
 pub async fn release_record(storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId) -> Result<bool, crate::storage_error::StorageError> {
     let _one = written.lock(node_id).await;
     if storage.name_claim(name).await? != Some(node_id.clone()) {
         return Ok(false);
     }
-    storage.release_node_name(name, node_id).await?;
-    if written.row_of(node_id).map_or(true, |r| r.name == *name) {
-        storage.remove_node(&name.mesh, node_id).await?;
+    let held = match written.row_of(node_id) {
+        Some(r) => Some(r),
+        None => storage.node(node_id).await?,
+    };
+    if held.as_ref().map_or(true, |r| r.name == *name) {
+        let mut row = held.unwrap_or_else(|| NodeRow::new(name.clone(), node_id.clone(), NodeStatus::Withdrawn));
+        row.status = NodeStatus::Withdrawn;
+        storage.put_node(&row).await?;
         written.forget(node_id);
     }
+    storage.release_node_name(name, node_id).await?;
     Ok(true)
+}
+
+/// Whether `row`'s node released its name: its record is `Deleted`, or `Withdrawn` (a create withdrawn
+/// before its node ran), so another node's claim takes the name over it.
+pub fn released_its_name(row: &NodeRow) -> bool {
+    matches!(row.status, NodeStatus::Deleted | NodeStatus::Withdrawn)
 }
 
 /// Why a `Deleted` record was not written.
@@ -981,7 +995,7 @@ pub async fn write_deleted(storage: &dyn NodesStorage, written: &WrittenRows, na
     let unwritten = |e: crate::storage_error::StorageError| DeletedRefused::Unwritten(e.to_string());
     let _one = written.lock(node_id).await;
     if let Some(by) = storage.name_claim(name).await.map_err(unwritten)?.filter(|by| by != node_id) {
-        if !storage.node(&by).await.map_err(unwritten)?.is_some_and(|r| r.status == NodeStatus::Deleted) {
+        if !storage.node(&by).await.map_err(unwritten)?.is_some_and(|r| released_its_name(&r)) {
             return Err(DeletedRefused::NameHeld(NameHeld { name: name.clone(), by }));
         }
     }

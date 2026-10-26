@@ -461,11 +461,10 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     // is left, never when a span says so; the fabric is stopped only after.
     let Followed { first, broke, onward, kind, accepted } = tokio::time::timeout(Duration::from_secs(120), outer).await.expect("the caller read the recipe to its terminal within 120 s").expect("the caller's stream task");
     // Step 5: H, the mesh's writer from its answer on, records both primaries on its own row.
-    let record = estate.fabric_store_root().join("nodes").join(&mesh).join("records").join(format!("{h_id}.json"));
     let last = std::sync::Mutex::new(None::<Value>);
     let recorded = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let row = std::fs::read(&record).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            let row = estate.node_record(&h_id);
             if let Some(b) = row.as_ref().and_then(|r| r["record"]["births"].as_array().and_then(|b| b.last()).cloned()).filter(|b| b["is_primary"].as_u64().is_some() && b["is_fabric_primary"].as_u64().is_some()) {
                 break b;
             }
@@ -474,7 +473,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("{h_name} records is_primary and is_fabric_primary on its own row within 30 s; the row at {} last read: {:?}", record.display(), last.lock().unwrap()));
+    .unwrap_or_else(|_| panic!("{h_name} records is_primary and is_fabric_primary on its own row within 30 s; its row in nodes.jsonl last read: {:?}", last.lock().unwrap()));
     estate.stop().await;
     let spans = estate.spans();
     let one = |name: &str, f: &dyn Fn(&Value) -> bool| -> Value {

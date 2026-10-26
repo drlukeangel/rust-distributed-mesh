@@ -98,8 +98,7 @@ fn another_build(estate: &Estate, b: &Binding, tag: &str) -> Binding {
 /// The record of the live node at `path` on the fabric's store root, and its view (`fabric.nodes.get`).
 async fn node_row(estate: &Estate, path: &str) -> (Value, NodeView) {
     let node = estate.fabrics_obj().await.nodes(None).await.unwrap_or_else(|e| panic!("fabric.nodes.get: {e}")).into_iter().find(|n| n.name.to_string() == path).unwrap_or_else(|| panic!("fabric.nodes.get answers {path}"));
-    let file = estate.fabric_store_root().join(format!("nodes/{}/records/{}.json", node.mesh, node.node_id.as_str()));
-    let stored: Value = serde_json::from_slice(&std::fs::read(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()))).unwrap();
+    let stored: Value = estate.node_record(node.node_id.as_str()).unwrap_or_else(|| panic!("the record of {path} is not in nodes.jsonl"));
     (stored["record"].clone(), node)
 }
 

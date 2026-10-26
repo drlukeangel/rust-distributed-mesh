@@ -843,6 +843,7 @@ fn silence_word(status: Option<crate::model::NodeStatus>) -> &'static str {
         Some(Restarting) => "restarting",
         Some(Dead) => "dead",
         Some(Deleted) => "deleted",
+        Some(Withdrawn) => "withdrawn",
     }
 }
 
@@ -1846,9 +1847,6 @@ pub(crate) mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
-        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node(mesh, node_id).await
-        }
         async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.index_path(name, node_id).await
         }
@@ -1926,9 +1924,6 @@ pub(crate) mod tests {
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: format!("nodes/{}/records/{}", row.name.mesh, row.node_id), reason: "No space left on device (os error 28)".into() })
-        }
-        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node(mesh, node_id).await
         }
         async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.index_path(name, node_id).await

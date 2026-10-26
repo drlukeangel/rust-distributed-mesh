@@ -239,14 +239,12 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     }
     // R-MN1 (mesh-delete.md "Rows", steps 3 and 7): every birth of mesh1 is deleted and no row is
     // removed. Each mesh1 birth's Node record stays on the fabric's store root at its node id
-    // (`nodes/mesh1/records/<node_id>`, storage-whole-records.md), written Deleted: the members' by
+    // (its lines in `nodes.jsonl` at its node id, R-SR1; storage-whole-records.md), written Deleted: the members' by
     // mesh1's primary, the final primary's by the fabric-primary in its node.delete. A departed birth
     // never answers, so mesh-left takes the address of every birth its proof set names off its record.
     assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/self.json")).exists(), "mesh1.admin.1's own Node row remains in {mesh1_dir}");
-    let shared = estate.fabric_store_root().join("nodes").join("mesh1");
     for (name, id) in mesh1_ids.iter() {
-        let at = shared.join("records").join(format!("{id}.json"));
-        let row: Value = std::fs::read(&at).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("the Node row of {name} ({id}) remains at {}", at.display()));
+        let row: Value = estate.node_record(id).unwrap_or_else(|| panic!("the Node row of {name} ({id}) remains in nodes.jsonl"));
         assert_eq!((s(&row["record"]["node_id"]), s(&row["record"]["status"])), (id.clone(), "deleted".to_string()), "{name}'s Node row is written Deleted: {row}");
         let newest = row["record"]["births"].as_array().and_then(|b| b.last()).cloned().unwrap_or_default();
         assert!(newest["transport_addr"].is_null() && newest["is_primary"].is_null(), "mesh-left took {name}'s ({id}) address and primaries off its record: {row}");

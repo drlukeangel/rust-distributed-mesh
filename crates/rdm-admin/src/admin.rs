@@ -208,7 +208,7 @@ mod tests {
         {
             let d = crate::test_support::tempdir(name);
             let root = crate::store_root::StoreRoot::at(&d.join("root"));
-            stores.push(("file", Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap()), Arc::new(crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap())));
+            stores.push(("file", Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap()), Arc::new(crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap())));
         }
         let _ = name;
         stores
@@ -505,9 +505,6 @@ mod tests {
             self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.0.put_node(row).await
         }
-        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_node(mesh, node_id).await
-        }
         async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.0.index_path(name, node_id).await
         }
@@ -565,9 +562,6 @@ mod tests {
             self.inner.put_node(row).await?;
             self.acknowledged.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
-        }
-        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node(mesh, node_id).await
         }
         async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.index_path(name, node_id).await
@@ -669,7 +663,7 @@ mod tests {
     async fn a_row_the_store_refused_is_written_on_the_writers_own_clock_once_the_store_recovers_on_the_file_backend() {
         let d = crate::test_support::tempdir("rows-owed");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
-        rows_written_over(Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap())).await;
+        rows_written_over(Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap())).await;
     }
 
     /// CONTRACT (R14 item 2, the writer ladder node-identity-and-state.md §4.3; #3070 "the contacts
@@ -689,7 +683,7 @@ mod tests {
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let store = |data: &str| {
             let (data, root) = (d.join(data), root.clone());
-            async move { Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&data, &root, "mesh1", &IncarnationId::mint()).await.unwrap()), Default::default())) }
+            async move { Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&data, &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap()), Default::default())) }
         };
         let (p_nodes, q_nodes, claims) = (store("mesh1.admin.1").await, store("mesh1.admin.2").await, store("claims").await);
         let (p_meshes, q_meshes): (Arc<dyn crate::storage::MeshStorage>, Arc<dyn crate::storage::MeshStorage>) =
@@ -753,7 +747,7 @@ mod tests {
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let store = |data: &str| {
             let (data, root) = (d.join(data), root.clone());
-            async move { Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&data, &root, "mesh2", &IncarnationId::mint()).await.unwrap()), Default::default())) }
+            async move { Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&data, &root, "mesh2", &crate::store_log::LogWriter::mint()).await.unwrap()), Default::default())) }
         };
         let (a_nodes, b_nodes, claims) = (store("a.admin").await, store("b.admin").await, store("claims").await);
         let (a_meshes, b_meshes): (Arc<dyn crate::storage::MeshStorage>, Arc<dyn crate::storage::MeshStorage>) =
@@ -1188,7 +1182,7 @@ mod tests {
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let store = |data: &str| {
             let (data, root) = (d.join(data), root.clone());
-            async move { Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&data, &root, "mesh2", &IncarnationId::mint()).await.unwrap()), Default::default())) }
+            async move { Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&data, &root, "mesh2", &crate::store_log::LogWriter::mint()).await.unwrap()), Default::default())) }
         };
         let (a_nodes, b_nodes, claims) = (store("a.admin").await, store("b.admin").await, store("claims").await);
         let meshes: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
@@ -1308,9 +1302,6 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_node(row).await
         }
-        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_node(mesh, node_id).await
-        }
         async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.0.index_path(name, node_id).await
         }
@@ -1366,9 +1357,6 @@ mod tests {
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
-        }
-        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node(mesh, node_id).await
         }
         async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.index_path(name, node_id).await
@@ -2887,8 +2875,8 @@ mod tests {
     async fn a_stopped_birth_whose_row_another_admin_moved_is_listed_at_the_rows_name() {
         let d = crate::test_support::tempdir("row-name-view");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
-        let primary = crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap();
-        let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).await.unwrap());
+        let primary = crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
+        let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap());
         let digest_view = DigestView::default();
         let held = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
         digest_view.record(held.clone());
@@ -2942,7 +2930,7 @@ mod tests {
     async fn a_stopped_birth_whose_row_cannot_be_read_is_not_listed_and_the_refusal_is_spanned() {
         let d = crate::test_support::tempdir("row-name-unreadable");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
-        let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).await.unwrap());
+        let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap());
         let digest_view = DigestView::default();
         let held = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
         digest_view.record(held.clone());
@@ -2955,9 +2943,8 @@ mod tests {
             name: held.node.name.clone(),
             event_at_rafka_ms: 1,
         }));
-        let file = root.nodes("mesh1").join("records").join(format!("{}.json", held.node.node_id));
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, b"not an index entry").unwrap();
+        let file = root.dir().join(crate::store_root::NODES_FILE);
+        std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&file).unwrap(), b"\nnot a record line\n").unwrap();
         let records = Arc::new(Records::default());
         let _ = records.contacts.set(mine);
         let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestView::default(), &Records::default())));
@@ -3176,9 +3163,6 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
-        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node(mesh, node_id).await
-        }
         async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.index_path(name, node_id).await
         }
@@ -3206,7 +3190,7 @@ mod tests {
     async fn renamed_twice(cell: &str) -> (std::path::PathBuf, MeshDigest, Arc<ProbedRows>, Arc<RwLock<Topology>>, Arc<Records>, DigestView) {
         let d = crate::test_support::tempdir(cell);
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
-        let primary = crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap();
+        let primary = crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
         let digest_view = DigestView::default();
         let held = digest("mesh1.rpc.7", MemberStatus::ReadyForTraffic);
         digest_view.record(held.clone());
@@ -3230,7 +3214,7 @@ mod tests {
         crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &base, &base.renamed()).await.unwrap();
         let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestView::default(), &Records::default())));
         let probed = Arc::new(ProbedRows {
-            inner: Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).await.unwrap()),
+            inner: Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap()),
             view: view.clone(),
             key_reads: Default::default(),
             id_reads: Default::default(),

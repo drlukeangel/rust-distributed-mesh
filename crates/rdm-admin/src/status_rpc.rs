@@ -1772,7 +1772,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
         S::ReadyForTraffic => NodeState::ReadyForTraffic,
         S::ConnectionsDeleting => NodeState::ConnectionsDeleting,
         // A birth under restart is leaving; the frozen status vocabulary has no Restarting.
-        S::Leaving | S::Restarting | S::PendingReconnect | S::Dead | S::Deleted => NodeState::Stopped,
+        S::Leaving | S::Restarting | S::PendingReconnect | S::Dead | S::Deleted | S::Withdrawn => NodeState::Stopped,
     }
 }
 
@@ -2570,9 +2570,6 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             self.inner.put_node(row).await
-        }
-        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node(mesh, node_id).await
         }
         async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.index_path(name, node_id).await

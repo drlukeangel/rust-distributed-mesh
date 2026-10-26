@@ -713,11 +713,10 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
         assert_eq!(primary, vec![na2_name.clone()], "{} names {na2_name} mesh2's primary once the stop is complete", admin.name);
     }
     // Step 5: NA2 records `is_primary` on its own row, a local write of the mesh's writer.
-    let record = estate.fabric_store_root().join("nodes").join("mesh2").join("records").join(format!("{na2_id}.json"));
-    let recorded = |at: &std::path::Path| -> Option<u64> { std::fs::read(at).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|r| r["record"]["births"].as_array().and_then(|b| b.last()).and_then(|b| b["is_primary"].as_u64())) };
+    let recorded = || -> Option<u64> { estate.node_record(&na2_id).and_then(|r| r["record"]["births"].as_array().and_then(|b| b.last()).and_then(|b| b["is_primary"].as_u64())) };
     let deadline = std::time::Instant::now() + SETTLE;
-    while recorded(&record).is_none() {
-        assert!(std::time::Instant::now() < deadline, "NA2 recorded is_primary on its own row at {} within {SETTLE:?}", record.display());
+    while recorded().is_none() {
+        assert!(std::time::Instant::now() < deadline, "NA2 recorded is_primary on its own row in nodes.jsonl within {SETTLE:?}");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 

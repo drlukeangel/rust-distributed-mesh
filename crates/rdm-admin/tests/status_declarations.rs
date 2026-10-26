@@ -95,9 +95,6 @@ impl NodesStorage for Rows {
     async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_node(row).await
     }
-    async fn remove_node(&self, mesh: &str, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node(mesh, node_id).await
-    }
     async fn index_path(&self, name: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.index_path(name, node_id).await
     }
@@ -688,9 +685,6 @@ impl NodesStorage for RefusingRows {
     }
     async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/records/{}", row.node_id), reason: "disk refused the write".into() })
-    }
-    async fn remove_node(&self, mesh: &str, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.remove_node(mesh, node_id).await
     }
     async fn index_path(&self, name: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.index_path(name, node_id).await

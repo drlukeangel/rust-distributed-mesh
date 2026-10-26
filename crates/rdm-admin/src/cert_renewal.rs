@@ -562,9 +562,6 @@ mod tests {
             }
             self.inner.put_node(row).await
         }
-        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node(mesh, node_id).await
-        }
         async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.index_path(name, node_id).await
         }

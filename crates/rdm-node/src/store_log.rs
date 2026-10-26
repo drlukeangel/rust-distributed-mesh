@@ -460,7 +460,13 @@ struct Inner {
     /// One append at a time, holding this store's pending append.
     append: Arc<tokio::sync::Mutex<Option<Pending>>>,
     held: Option<Held>,
+    /// Shown every line the fold reads, once each, in file order: an index the store folds beside
+    /// the latest line per key.
+    observer: Option<Observer>,
 }
+
+/// What a store folds from each line it reads beside the latest line per key ([`StoreLog::open_observed`]).
+pub type Observer = Arc<dyn Fn(&Line) + Send + Sync>;
 
 impl std::fmt::Debug for StoreLog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -473,21 +479,26 @@ impl StoreLog {
     /// blocking pool, recorded on the [`OPEN_SPAN`] span. A file this build cannot fold whole is
     /// refused by name.
     pub async fn open(path: &Path, formats: Formats) -> Result<Self, StorageError> {
-        Self::opened(path, formats, Arc::new(DiskIo), None).await
+        Self::opened(path, formats, Arc::new(DiskIo), None, None).await
+    }
+
+    /// [`Self::open`], showing `observer` every line the fold reads, once each, in file order.
+    pub async fn open_observed(path: &Path, formats: Formats, observer: Observer) -> Result<Self, StorageError> {
+        Self::opened(path, formats, Arc::new(DiskIo), None, Some(observer)).await
     }
 
     /// [`Self::open`], holding every write in `scratchpad` until it is published, named `store` in
     /// the publication. A scratchpad already published opens the store straight to the disk.
     pub async fn open_held(path: &Path, formats: Formats, scratchpad: &crate::record_store::Scratchpad, store: String) -> Result<Self, StorageError> {
         let held = Held { store, holding: Mutex::new(true), lines: Mutex::new(Vec::new()) };
-        let log = Self::opened(path, formats, Arc::new(DiskIo), Some(held)).await?;
+        let log = Self::opened(path, formats, Arc::new(DiskIo), Some(held), None).await?;
         if !scratchpad.enrol(Arc::new(log.clone())) {
             *log.0.held.as_ref().expect("opened held").holding.lock().unwrap_or_else(|e| e.into_inner()) = false;
         }
         Ok(log)
     }
 
-    async fn opened(path: &Path, formats: Formats, io: Arc<dyn AppendIo>, held: Option<Held>) -> Result<Self, StorageError> {
+    async fn opened(path: &Path, formats: Formats, io: Arc<dyn AppendIo>, held: Option<Held>, observer: Option<Observer>) -> Result<Self, StorageError> {
         let span = tracing::info_span!("rdm.store.open.via-fold", file = %path.display(), bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, fold_ms = tracing::field::Empty, outcome = tracing::field::Empty, offset = tracing::field::Empty, cause = tracing::field::Empty);
         let began = std::time::Instant::now();
         let p = path.to_path_buf();
@@ -509,7 +520,7 @@ impl StoreLog {
                 return Err(e);
             }
         };
-        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: tokio::sync::Mutex::new(()), append: Arc::new(tokio::sync::Mutex::new(None)), held }));
+        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: tokio::sync::Mutex::new(()), append: Arc::new(tokio::sync::Mutex::new(None)), held, observer }));
         match log.advance().await {
             Ok(()) => {
                 let f = log.0.fold.lock().unwrap_or_else(|e| e.into_inner());
@@ -560,6 +571,11 @@ impl StoreLog {
         let from = self.consumed();
         let inner = self.0.clone();
         let lines = blocking_io(move || inner.read_whole(from)).await?;
+        if let Some(observe) = &self.0.observer {
+            for l in &lines.0 {
+                observe(l);
+            }
+        }
         self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).take(lines.0);
         self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).consumed = lines.1;
         Ok(())
@@ -651,7 +667,7 @@ impl StoreLog {
 
     #[cfg(test)]
     pub(crate) async fn open_with(path: &Path, formats: Formats, io: Arc<dyn AppendIo>) -> Result<Self, StorageError> {
-        Self::opened(path, formats, io, None).await
+        Self::opened(path, formats, io, None, None).await
     }
 
     /// Forget the `seq`s this process handed out for `path`: what a restart of the process is.

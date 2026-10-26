@@ -97,10 +97,9 @@ async fn exe_of(estate: &Estate, node: &str) -> std::path::PathBuf {
     std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node} (pid {pid}): /proc exe: {e}"))
 }
 
-/// The Node record of `node_id` in `mesh` on the estate's store root, as written.
-fn record_of(estate: &Estate, mesh: &str, node_id: &str) -> Value {
-    let file = estate.fabric_store_root().join(format!("nodes/{mesh}/records/{node_id}.json"));
-    serde_json::from_slice(&std::fs::read(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()))).unwrap()
+/// The Node record of `node_id` on the estate's store root, as written.
+fn record_of(estate: &Estate, node_id: &str) -> Value {
+    estate.node_record(node_id).unwrap_or_else(|| panic!("the record of {node_id} is not in nodes.jsonl"))
 }
 
 /// Every node `fabric.nodes.get` answers, by `path.name`.
@@ -184,7 +183,7 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let b = followed(&estate, estate.submit_change(Change::Reconcile { based_on: b_based_on, nodes: b_nodes }).await).await.build_id.to_string();
     let created = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).cloned()).await;
     assert_eq!(exe_of(&estate, "mesh1.rpc.2").await, next.executable, "the created node runs the executable its request named");
-    let row = record_of(&estate, "mesh1", created.node_id.as_str());
+    let row = record_of(&estate, created.node_id.as_str());
     assert_eq!(row["record"]["executable"]["sha256"], json!(next.sha256), "its row records it: {row}");
     let read = fabric_nodes(&estate).await;
     assert_eq!(read["mesh1.rpc.2"].executable.as_ref(), Some(&next), "fabric.nodes.get returns it from the row");
@@ -231,7 +230,7 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: request }).await).await;
     assert_eq!(estate.node_value("mesh1.rpc.2").await["node_id"], json!(created.node_id), "the re-read request changes nothing");
     // The bootstrap admin is the estate's own process, launched by no pipeline: its row records the binary it starts.
-    let day0 = record_of(&estate, "mesh1", &s(&estate.node_value("mesh1.admin.1").await["node_id"]));
+    let day0 = record_of(&estate, &s(&estate.node_value("mesh1.admin.1").await["node_id"]));
     let started = rdm_test::estate::binary("rdm-node-admin");
     assert_eq!(day0["record"]["executable"]["sha256"], json!(sha256_file(&started).unwrap()), "the bootstrap admin's row records the hash of {} it runs: {day0}", started.display());
     estate.shutdown().await;
@@ -740,7 +739,7 @@ async fn an_executor_lost_inside_a_replaced_brokers_delete_has_its_successor_cre
     build_log::build_fact(&estate.carrier_at(&fp).await, &build, &format!("{BROKER}'s TerminateRuntime"), SETTLE, |b| b.steps.iter().any(|r| r.operation == format!("node.delete:{BROKER}") && r.step == "TerminateRuntime"))
         .await
         .unwrap_or_else(|end| panic!("{end}"));
-    let record = record_of(&estate, "mesh2", before[BROKER].view.node_id.as_str());
+    let record = record_of(&estate, before[BROKER].view.node_id.as_str());
     assert_eq!(record["record"]["status"], "deleted", "{BROKER}'s row is written Deleted inside the held step: {record}");
     estate.kill_node(&p).await;
 
@@ -812,7 +811,7 @@ async fn a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_ex
     let inside = Binding { executable: inside_path, ..outside.clone() };
     followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: naming(request, "mesh2.rpc.1", Some(&inside)) }).await).await;
     let created = estate.until_node("mesh2.rpc.1", "mesh2.rpc.1 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).cloned()).await;
-    let row = record_of(&estate, "mesh2", created.node_id.as_str());
+    let row = record_of(&estate, created.node_id.as_str());
     assert_eq!(row["record"]["executable"]["executable"], json!(inside.executable.display().to_string()), "mesh2's launched admin launched the executable from the added directory: {row}");
     estate.shutdown().await;
     let _ = std::fs::remove_dir_all(&added);

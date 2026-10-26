@@ -39,6 +39,10 @@ pub enum NodeStatus {
     /// by the fabric-primary from the exit proof; the record and its config stay for the next node
     /// created at the same `path.name`.
     Deleted,
+    /// Withdrawn: the create that claimed the name was withdrawn before its node ran (R-SR2). Only the
+    /// node's record carries it, appended where the record was once removed, and a name claim wins
+    /// over it as over a `Deleted` one. Appended last: no variant before it moves.
+    Withdrawn,
 }
 
 impl NodeStatus {

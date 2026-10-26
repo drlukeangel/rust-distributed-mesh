@@ -135,8 +135,9 @@ impl StorageBackend for FileBackend {
         let state_actions: Arc<dyn StateActions> = Arc::new(crate::fabric_status::StorePublication::new(root.scratchpad().cloned(), embedding));
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
-        let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
-        let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(Arc::new(crate::storage::FileNodesStorage::open_with_root_runtimes(&root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?));
+        let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.log_writer()).await.map_err(storage_err)?);
+        // Every runtime row is a line of the root's nodes.jsonl: the root's rows are the nodes store's.
+        let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(nodes.clone() as Arc<dyn NodesStorage>);
         let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.writer).await.map_err(|e| e.to_string())?);
         let finish_writes: FinishWrites = {
             let (meshes, nodes, fabric) = (meshes.clone(), nodes.clone(), fabric.clone());
@@ -215,10 +216,11 @@ mod tests {
     use super::*;
     use crate::model::NodeId;
 
-    /// The same script against any backend that keeps its rows across opens: a birth's runtime rows
-    /// and attempt contexts are the data dir's, so the admin re-born at the same path.name over the
-    /// inherited data dir (a new node.id and incarnation, `inherited = true`) reads its predecessor's;
-    /// an admin over another data dir reads none of them.
+    /// The same script against any backend that keeps its rows across opens: the admin re-born at the
+    /// same path.name over the inherited data dir (a new node.id and incarnation, `inherited = true`)
+    /// reads its predecessor's runtime rows and attempt contexts. The attempt contexts are the data
+    /// dir's, so an admin over another data dir reads none of them; the runtime rows are the fabric's
+    /// lines in its store root's `nodes.jsonl` (R-SR1), so it reads them too.
     async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(backend: &dyn StorageBackend, first: &StorageScope, reborn: &StorageScope, other: &StorageScope) {
         let runtime = crate::storage::RuntimeRow {
             node_id: NodeId::mint(),
@@ -239,7 +241,7 @@ mod tests {
         assert_eq!(b.nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "a point read by the birth finds it");
         assert_eq!(b.builds.attempt_context(&build, Some("mesh1"), 2).await.unwrap(), Some(context.clone()), "and its predecessor's attempt context");
         let o = backend.open(other, None).await.unwrap_or_else(|e| panic!("another admin opens over its own data dir: {e}"));
-        assert!(o.nodes.runtimes().await.unwrap().is_empty(), "another data dir holds none of them");
+        assert_eq!(o.nodes.runtimes().await.unwrap(), vec![runtime.clone()], "the runtime rows are the fabric's, on its store root");
         assert_eq!(o.builds.attempt_context(&build, Some("mesh1"), 2).await.unwrap(), None, "nor the attempt context");
     }
 

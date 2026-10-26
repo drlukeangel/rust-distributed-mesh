@@ -47,8 +47,7 @@ fn mesh_with_gateways(gateways: u32) -> FabricDesired {
 
 /// The record of `node` on the fabric's store root, as its mesh-primary wrote it.
 fn row_of(estate: &Estate, node: &NodeView) -> Value {
-    let path = estate.fabric_store_root().join("nodes").join(&node.mesh).join("records").join(format!("{}.json", node.node_id));
-    serde_json::from_slice(&std::fs::read(&path).unwrap_or_else(|e| panic!("{}: its row {}: {e}", node.name, path.display()))).unwrap_or_else(|e| panic!("{}: its row: {e}", node.name))
+    estate.node_record(node.node_id.as_str()).unwrap_or_else(|| panic!("{}: its row is not in nodes.jsonl", node.name))
 }
 
 /// The listeners the row's facts of `node`'s current birth carry.

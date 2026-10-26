@@ -580,13 +580,13 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     let before = rows_on(&root);
     estate.artifact("rows-before-state-commit.json", &json!(before));
     // Q54 with whole records (storage-whole-records.md, "Durability"): a Node record is written straight
-    // to the store, before state-commit too, with its name claim and its path.name entry; Q97: every
+    // to the store, before state-commit too, with its name claim (its path.name entry is the fold of its line); Q97: every
     // birth that made a join holds the Pending its join report's acceptance recorded beside its
     // ReadyForTraffic, the Day-0 root joined nobody, each on its node's record.
     let mut declarations: Vec<String> = nodes.iter().flat_map(|n| {
         let name = s(&n["name"]);
         let mesh = name.split('.').next().unwrap().to_string();
-        vec![format!("nodes/{mesh}/names/{name}.json"), format!("nodes/{mesh}/paths/{name}.json"), format!("nodes/{mesh}/records/{}.json", s(&n["node_id"]))]
+        vec![format!("nodes/{mesh}/names/{name}.json"), format!("nodes.jsonl#node-record/{}", s(&n["node_id"]))]
     }).collect();
     declarations.sort();
     for n in &nodes {
@@ -596,7 +596,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
         // A mesh-primary's own ReadyForTraffic has no Applied reply to be durable before (states.md:51): its
         // writer records it on its own record after the view shows it, so the cell reads until it is there.
         let read = || {
-            let record: Value = serde_json::from_slice(&std::fs::read(root.join(format!("nodes/{mesh}/records/{}.json", s(&n["node_id"])))).unwrap()).unwrap();
+            let record: Value = estate.node_record(&s(&n["node_id"])).unwrap_or_else(|| panic!("{mesh}: the record of {name} is in nodes.jsonl"));
             let birth = record["record"]["births"].as_array().into_iter().flatten().find(|b| b["incarnation_id"] == n["incarnation_id"]).cloned().unwrap_or_default();
             (birth["declared"].clone(), record)
         };
@@ -613,6 +613,10 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     // Q61: a committed Build fact stands on the root when it is committed: the lanes' keys and the
     // meshes' attempt claims are there before state-commit, beside the declarations.
     let (build_facts, rows): (Vec<String>, Vec<String>) = before.iter().cloned().partition(|r| r.starts_with("fabric/builds/") || (r.starts_with("meshes/") && (r.contains("/builds/") || r.contains("/claims/"))));
+    // A birth's runtime row is its launching admin's durable map, appended at once, before
+    // state-commit too (R-SR1: the fourth writer to the root before it).
+    let (runtimes, rows): (Vec<String>, Vec<String>) = rows.into_iter().partition(|r| r.starts_with("nodes.jsonl#node-runtime/"));
+    assert!(runtimes.len() <= want.len(), "at most one runtime row per launched birth before state-commit: {runtimes:#?}");
     assert!(build_facts.iter().any(|r| r.starts_with("fabric/builds/")), "Q61: the two-mesh Build's committed facts stand on {} before state-commit: {before:#?}", root.display());
     assert_eq!(rows, declarations, "Q54, Q97: of every other row, only the four births' node records, each with its name claim and its path.name entry, reach {} before state-commit; the rest stay held", root.display());
     // R-FN1: the fabric's claim of its name sits beside the per-fabric roots, at
@@ -642,13 +646,12 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     assert_eq!(after.iter().filter(|r| r.starts_with("meshes.jsonl#mesh-record/")).count(), 2, "each mesh's record stands on the root: {after:#?}");
     for name in &want {
         let mesh = name.split('.').next().unwrap();
-        let path = root.join(format!("nodes/{mesh}/records/{}.json", id_of[name]));
-        let addressed = || serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap_or_default()).ok().filter(|r| r["record"]["births"].as_array().and_then(|b| b.last()).is_some_and(|b| b["transport_addr"].is_string()));
+        let addressed = || estate.node_record(&id_of[name]).filter(|r| r["record"]["births"].as_array().and_then(|b| b.last()).is_some_and(|b| b["transport_addr"].is_string()));
         let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while addressed().is_none() && std::time::Instant::now() < until {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        assert!(addressed().is_some(), "{mesh}'s primary recorded {name}'s address on its Node record: {}", String::from_utf8_lossy(&std::fs::read(&path).unwrap_or_default()));
+        assert!(addressed().is_some(), "{mesh}'s primary recorded {name}'s address on its Node record: {:?}", estate.node_record(&id_of[name]));
     }
     assert!(holds("connections/mesh1.rpc.1/"), "mesh1.rpc.1 published the connection it originated and held: {after:#?}");
     for name in want.iter().filter(|n| *n != "mesh1.rpc.1") {
