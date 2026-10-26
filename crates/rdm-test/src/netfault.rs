@@ -116,6 +116,13 @@ pub fn partition_rules(a: &[u16], b: &[u16]) -> Vec<String> {
     vec![format!("iifname \"lo\" udp sport {a} udp dport {b} drop"), format!("iifname \"lo\" udp sport {b} udp dport {a} drop")]
 }
 
+/// The rules that drop every UDP datagram on loopback from or to `ports`, whatever port is on the other end, so
+/// a node born after the cut is cut from them too. An empty set cuts nothing.
+pub fn isolation_rules(ports: &[u16]) -> Vec<String> {
+    let _ = ports;
+    Vec::new()
+}
+
 /// UDP between two sets of loopback ports dropped, until dropped itself or its installer ends.
 pub struct Partition {
     held: Held,
@@ -151,5 +158,12 @@ mod tests {
         let rules = partition_rules(&[40002, 40001, 40001], &[40003]);
         assert_eq!(rules, vec![r#"iifname "lo" udp sport { 40001, 40002 } udp dport { 40003 } drop"#, r#"iifname "lo" udp sport { 40003 } udp dport { 40001, 40002 } drop"#]);
         assert!(partition_rules(&[], &[40003]).is_empty() && partition_rules(&[40001], &[]).is_empty());
+    }
+
+    #[test]
+    fn an_isolation_drops_every_datagram_to_or_from_the_isolated_ports_whatever_the_other_port() {
+        let rules = isolation_rules(&[40002, 40001]);
+        assert_eq!(rules, vec![r#"iifname "lo" udp sport { 40001, 40002 } drop"#, r#"iifname "lo" udp dport { 40001, 40002 } drop"#]);
+        assert!(isolation_rules(&[]).is_empty());
     }
 }
