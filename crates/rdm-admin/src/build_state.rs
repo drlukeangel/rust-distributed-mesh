@@ -3141,7 +3141,7 @@ mod tests {
         let mesh = accepted.topology.meshes.get_mut("mesh1").unwrap();
         mesh.nodes.insert(rpc.clone());
         let config = [("zone".to_string(), "a".to_string())].into_iter().collect();
-        mesh.set_spec(rdm_core::meta::NodeSpec { config, tags: ["x".to_string()].into(), ..rdm_core::meta::NodeSpec::default_for(rpc.clone()) }).unwrap();
+        mesh.set_spec(rdm_core::meta::NodeSpec { path: rpc.clone(), storage: rdm_core::meta::StorageMeta::Ephemeral, placement: rdm_core::meta::PlacementMeta::default(), executable: None, tags: ["x".to_string()].into(), config }).unwrap();
         m.publish_accepted(&accepted).await.unwrap();
         let stored = m.stored_accepted(&accepted.build_id).await.unwrap();
         assert_eq!(stored.as_ref(), Some(&accepted), "the accepted Build as the log holds it");
