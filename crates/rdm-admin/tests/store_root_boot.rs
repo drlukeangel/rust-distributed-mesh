@@ -308,7 +308,7 @@ impl Prepared {
             // them: the name is held by this node.id.
             let mut birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.name.clone());
             (birth.endpoint_id, birth.transport_addr) = (Some(own.endpoint_id.clone()), Some(own.transport_addr));
-            let row = rdm_admin::storage::NodeRow {
+            let row = rdm_admin::storage::NodeRow { topology_storage_provider: None,
                 name: own.name.clone(),
                 node_id: node_id.clone(),
                 status: rdm_admin::model::NodeStatus::ReadyForTraffic,
@@ -952,7 +952,7 @@ impl Prepared {
             let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &self.dir.join("fixture"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
             let delete = rdm_admin::build_state::BuildAccepted {
                 build_id: rdm_admin::build::BuildId::mint(),
-                topology: rdm_admin::accepted::FabricTopology { fabric: "fabric1".into(), meshes: Default::default() },
+                topology: rdm_admin::accepted::FabricTopology { topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
                 submitted_change: Some(rdm_admin::accepted::TopologyChange::DeleteFabric),
                 submitted_at_ms: now_ms(),
             };

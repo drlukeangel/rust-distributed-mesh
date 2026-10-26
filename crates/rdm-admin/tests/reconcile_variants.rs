@@ -272,7 +272,7 @@ async fn row(variant: Variant, timing: Timing) -> Row {
     let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), path("mesh1.admin.1"), t.clone(), crate::adopted_time());
     cp.topology = topology.clone();
     let _ = cp.node_rows.set(store);
-    let change = TopologyChange::Reconcile { based_on: builds.current().await.unwrap().expect("day 0's Build is current").build_id, nodes: variant.request(&held) };
+    let change = TopologyChange::Reconcile { topology_storage_provider: None, based_on: builds.current().await.unwrap().expect("day 0's Build is current").build_id, nodes: variant.request(&held) };
     let opened = cp.submit("test", change).await.unwrap_or_else(|e| panic!("{variant:?}: the door accepts the request: {e:?}"));
     let recorded = Arc::new(Mutex::new(recorded));
     let fabric = Arc::new(Readiness { ready: AtomicBool::new(timing == Timing::Before), recorded: recorded.clone() });

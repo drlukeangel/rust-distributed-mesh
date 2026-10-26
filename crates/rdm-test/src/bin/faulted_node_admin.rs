@@ -10,7 +10,7 @@ use rdm_test::test_app;
 
 #[tokio::main]
 async fn main() {
-    rdm_admin::entry::run_with("faulted-node-admin", |cfg| {
+    rdm_admin::entry::run_on("faulted-node-admin", test_app::topology_storage_providers, |cfg| {
         // The path.name this admin is: the launch's, an adoption launch's given name, or the Day-0 admin's first.
         let name = cfg.launch.as_ref().map(|l| l.name.to_string()).or_else(|| cfg.adopt.as_ref().map(PathName::to_string)).unwrap_or_else(|| PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1).to_string());
         // The directory that holds every node's data dir of this fabric: where its boot cuts are listed.

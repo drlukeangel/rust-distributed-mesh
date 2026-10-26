@@ -186,7 +186,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
     let _ = std::fs::remove_dir_all(&data_dir);
     std::fs::create_dir_all(&data_dir).unwrap();
     let key = SecretKey::generate();
-    let launch = Launch {
+    let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),
         name: "mesh1.rpc.1".parse().unwrap(),

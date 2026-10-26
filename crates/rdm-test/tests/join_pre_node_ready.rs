@@ -26,7 +26,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let fabric = FabricId::mint();
         let admin = admin_side_deaf_to_joins("127.0.0.1".parse().unwrap(), &fabric).await;
-        let launch = Launch {
+        let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric.clone(),
             name: "mesh1.rpc.1".parse().unwrap(),
@@ -74,7 +74,7 @@ fn node_launched_with_no_launcher_is_refused_at_start_by_name() {
         let dir = std::env::temp_dir().join(format!("join-pre-node-ready-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
-        let launch = Launch {
+        let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             name: "mesh1.rpc.1".parse().unwrap(),

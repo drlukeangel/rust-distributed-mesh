@@ -189,6 +189,13 @@ product_id!(
     /// attempt, claim and receipt of it. Ordered only so a set of Builds has a stable iteration.
     BuildId, "build id", PartialOrd, Ord
 );
+product_id!(
+    /// One run of a storage change (storage.md §2 "Changing it"): minted and recorded with its Build
+    /// before any of the run's commands, carried by every command, freeze acknowledgement, copy position
+    /// and the decision of the run, and reused by the recovery of an unfinished run. A resubmission after
+    /// a confirmed abort mints a new one. Equality only.
+    ChangeId, "change id"
+);
 
 /// The log and span rendering of a [`BuildId`] (`R-BI5a`): `bid_xxxx-xxxx-xxxx`. Never stored,
 /// wired or parsed; [`BuildId`]'s own [`fmt::Display`] stays the bare 12 lowercase Crockford

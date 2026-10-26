@@ -382,7 +382,7 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
 /// executable-bindings-at-create.md rule 1: the complete-topology request, the count expanded at the
 /// door), over `nodes`, built from what `served`'s door reads.
 async fn create_rpc(nodes: &Nodes, served: &Served) -> Result<WorkflowStream, CallEnd> {
-    let rdm_admin::accepted::TopologyChange::Reconcile { based_on, nodes: entries } = crate::named_request(&served.door.control, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await else {
+    let rdm_admin::accepted::TopologyChange::Reconcile { based_on, nodes: entries, .. } = crate::named_request(&served.door.control, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await else {
         unreachable!("a create is named as the complete topology")
     };
     nodes.create_named(based_on, entries).await

@@ -481,6 +481,15 @@ pub enum BuildReject {
     /// A complete-topology request that lists no node: a fabric with no mesh is fabric.delete, never a
     /// request read as "delete everything".
     NoNodeListed,
+    /// A complete-topology request naming a `topology_storage_provider` the fabric-primary's wiring
+    /// does not register (storage.md §2 "Changing it": "Acceptance refuses by name a provider the
+    /// fabric-primary's wiring does not register"): nothing is accepted and nothing moved.
+    TopologyStorageProviderNotRegistered {
+        /// The provider the request names.
+        provider: String,
+        /// The providers the fabric-primary's wiring registers.
+        registered: Vec<String>,
+    },
     /// A complete-topology request naming one `path.name` twice.
     NodeNamedTwice {
         /// The `path.name` named twice.
@@ -547,6 +556,7 @@ impl BuildReject {
             Self::RecipeNodeUnknown { .. } => "recipe-node-unknown",
             Self::BasedOnNotCurrent { .. } => "based-on-not-current",
             Self::NoNodeListed => "no-node-listed",
+            Self::TopologyStorageProviderNotRegistered { .. } => "topology-storage-provider-not-registered",
             Self::NodeNamedTwice { .. } => "node-named-twice",
             Self::ExecutableMissing { .. } => "executable-missing",
             Self::ExecutableRefused { .. } => "executable-refused",
@@ -587,6 +597,7 @@ impl fmt::Display for BuildReject {
             Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
             Self::BasedOnNotCurrent { based_on, current } => write!(f, "the request is based on Build {based_on}, and the current Build is {current}: nothing is accepted; read the topology again and submit from it"),
             Self::NoNodeListed => write!(f, "the request lists no node: a fabric with no mesh is fabric.delete, never a topology request; nothing is accepted"),
+            Self::TopologyStorageProviderNotRegistered { provider, registered } => write!(f, "the request names topology_storage_provider `{provider}`, which the fabric-primary's wiring does not register (it registers: {}): nothing is accepted and nothing moved", registered.join(", ")),
             Self::NodeNamedTwice { node } => write!(f, "the request names `{node}` twice: each node is listed once"),
             Self::ExecutableMissing { node } => write!(f, "`{node}` is created by the request and its create spec names no executable: every created node names the executable it runs; nothing is accepted"),
             Self::ExecutableRefused { node, detail } => write!(f, "the executable the request names for `{node}` is refused: {detail}; nothing is accepted"),

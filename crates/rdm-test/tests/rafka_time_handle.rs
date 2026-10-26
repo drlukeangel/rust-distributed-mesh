@@ -25,7 +25,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let fabric = FabricId::mint();
         let admin = admin_side_on_rafka_time("127.0.0.1".parse().unwrap(), &fabric, AUTHORITY_REFERENCE_MS).await;
-        let launch = Launch {
+        let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric.clone(),
             name: "mesh1.rpc.1".parse().unwrap(),

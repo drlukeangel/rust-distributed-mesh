@@ -161,6 +161,54 @@ pub fn file_backend(store_dir: impl Into<PathBuf>) -> Arc<dyn StorageBackend> {
     Arc::new(FileBackend::at(store_dir))
 }
 
+/// The topology storage providers a node-admin executable registers in its wiring, by name (storage.md
+/// §2): each a backend of the five record stores, its name bound to its place at registration. The
+/// admin opens the one its `topology_storage_provider` names (`RDM_TOPOLOGY_STORAGE_PROVIDER` on Day 0,
+/// its launch's when launched); as the fabric-primary it refuses at acceptance a Build naming one this
+/// registry does not hold.
+#[derive(Clone, Default)]
+pub struct TopologyStorageProviders {
+    registered: Vec<(String, Arc<dyn StorageBackend>)>,
+}
+
+impl TopologyStorageProviders {
+    /// No provider registered.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// RDM's file backend on the shared store dir `store_dir`, registered as `file`: what every RDM
+    /// node-admin executable registers.
+    #[cfg(feature = "file-backend")]
+    pub fn file(store_dir: impl Into<PathBuf>) -> Self {
+        Self::new().register(rdm_core::launch::TOPOLOGY_STORAGE_FILE, file_backend(store_dir))
+    }
+
+    /// These providers with `backend` registered as `name`. A name registered twice refuses the
+    /// admin's start by name ([`Self::named`]).
+    pub fn register(mut self, name: &str, backend: Arc<dyn StorageBackend>) -> Self {
+        self.registered.push((name.to_string(), backend));
+        self
+    }
+
+    /// The registered names, in registration order.
+    pub fn names(&self) -> Vec<String> {
+        self.registered.iter().map(|(n, _)| n.clone()).collect()
+    }
+
+    /// The backend registered as `name`, refused by name when none is, or when a name is registered
+    /// twice.
+    pub fn named(&self, name: &str) -> Result<Arc<dyn StorageBackend>, String> {
+        let names = self.names();
+        if let Some(twice) = names.iter().enumerate().find(|(i, n)| names[..*i].contains(n)).map(|(_, n)| n) {
+            return Err(format!("the topology storage provider `{twice}` is registered twice: each name is bound to one place"));
+        }
+        self.registered.iter().find(|(n, _)| n == name).map(|(_, b)| b.clone()).ok_or_else(|| {
+            format!("{} names topology storage provider `{name}`, which this executable does not register (it registers: {})", rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER, names.join(", "))
+        })
+    }
+}
+
 /// One process's rows: every boundary held in memory, written by this admin alone and gone with its
 /// process. An admin on it is never started on an inherited root.
 #[derive(Debug, Default, Clone, Copy)]
@@ -205,6 +253,20 @@ impl StorageBackend for MemoryBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CONTRACT (storage.md §2: a provider is "registered in its wiring by name"; a name is bound to its
+    /// place at registration): the registry answers the backend a name was registered with, and refuses
+    /// by name a name it does not register (naming the ones it does) and a name registered twice.
+    #[test]
+    fn a_provider_is_opened_by_its_registered_name_and_an_unregistered_one_is_refused_by_name() {
+        let providers = TopologyStorageProviders::new().register("file", Arc::new(MemoryBackend)).register("app", Arc::new(MemoryBackend));
+        assert_eq!(providers.names(), ["file", "app"]);
+        assert!(providers.named("app").is_ok());
+        let refused = providers.named("other").err().expect("an unregistered name is refused");
+        assert!(refused.contains("`other`") && refused.contains("file, app") && refused.contains(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER), "{refused}");
+        let twice = providers.register("app", Arc::new(MemoryBackend)).named("file").err().expect("a name registered twice is refused");
+        assert!(twice.contains("`app` is registered twice"), "{twice}");
+    }
     use crate::model::NodeId;
 
     /// The same script against any backend that keeps its rows across opens: the admin re-born at the

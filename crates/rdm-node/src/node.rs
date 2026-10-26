@@ -374,15 +374,16 @@ pub async fn start_with_rafka_time_pre_node_ready_alpns_and(
     types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
 ) -> Result<RunningNode> {
-    start_on(launch, crate::storage_backend::file_node_backend(), rafka_time, node_hooks, decorate_storage, knob_fn, register, types, alpns).await
+    start_on(launch, crate::storage_backend::NodeStorageProviders::file(), rafka_time, node_hooks, decorate_storage, knob_fn, register, types, alpns).await
 }
 
-/// [`start_with_rafka_time_pre_node_ready_alpns_and`] on `storage`: the node's connections rows are the
-/// ones it opens.
+/// [`start_with_rafka_time_pre_node_ready_alpns_and`] on the topology storage `providers` its executable
+/// registers (storage.md §2): the node's connections rows are the ones the provider its launch names
+/// opens.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_on(
     launch: &Launch,
-    storage: Arc<dyn crate::storage_backend::NodeStorageBackend>,
+    providers: crate::storage_backend::NodeStorageProviders,
     rafka_time: rdm_transport::clock::RafkaTime,
     node_hooks: crate::node_hooks::NodeHooks,
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
@@ -395,7 +396,7 @@ pub async fn start_on(
     rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
     rdm_transport::connections::validate_alpns(alpns).map_err(|e| anyhow!("{e}"))?;
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.name.kind.name());
-    let started = crate::taskdump::watched("start", start_booted(launch, storage, rafka_time, node_hooks, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot)).await;
+    let started = crate::taskdump::watched("start", start_booted(launch, providers, rafka_time, node_hooks, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot)).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
     }
@@ -405,7 +406,7 @@ pub async fn start_on(
 #[allow(clippy::too_many_arguments)]
 async fn start_booted(
     launch: &Launch,
-    storage: Arc<dyn crate::storage_backend::NodeStorageBackend>,
+    providers: crate::storage_backend::NodeStorageProviders,
     rafka_time: rdm_transport::clock::RafkaTime,
     node_hooks: crate::node_hooks::NodeHooks,
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
@@ -465,7 +466,9 @@ async fn start_booted(
     // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
     // The storage fault the originate door arms (testkit only): the backend's storage, decorated.
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name, writes_to = tracing::field::Empty);
-    let node_storage = storage.open(launch).await.map_err(|e| anyhow!("{e}"))?;
+    // The topology storage provider this birth writes, the one its launch names (storage.md §2): one its
+    // executable registers, else the start is refused by name.
+    let node_storage = providers.named(&launch.topology_storage_provider).map_err(|e| anyhow!("refusing to start: {e}"))?.open(launch).await.map_err(|e| anyhow!("{e}"))?;
     step.record("writes_to", node_storage.writes_to.as_str());
     let base_storage = node_storage.connections.clone();
     let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(

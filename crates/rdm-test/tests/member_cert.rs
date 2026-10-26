@@ -18,7 +18,7 @@ use std::time::Duration;
 const AUTHORITY_REFERENCE_MS: u64 = 7_000_000_000;
 
 fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide, incarnation: IncarnationId, supersedes: Option<IncarnationId>, node_id: NodeId) -> Launch {
-    Launch {
+    Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: fabric.clone(),
         name: "mesh1.rpc.1".parse().unwrap(),

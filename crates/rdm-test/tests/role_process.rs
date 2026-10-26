@@ -35,7 +35,7 @@ async fn born(name: &str) -> RoleProcess {
     // The admin that deployed this birth: it takes the node's JoinNode and serves its topology.
     let fabric_id = FabricId::mint();
     let launcher = admin_side("127.0.0.1".parse().unwrap(), &fabric_id).await;
-    let launch = Launch {
+    let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id,
         name: name.parse().unwrap(),

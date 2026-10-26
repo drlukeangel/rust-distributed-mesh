@@ -64,7 +64,13 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
                     topology_storage_provider: None,
                 }),
             },
-            "00 00 0f 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00 07 6d2e7270632e31 00 00 00 01 01 6b 01 76",
+            // the fabric's topology_storage_provider appended last (storage.md §2): `00`, none named.
+            "00 00 0f 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00 07 6d2e7270632e31 00 00 00 01 01 6b 01 76 00",
+        ),
+        // a complete topology naming the provider `file`: `01`, then the name.
+        (
+            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { based_on: rdm_core::BuildId::parse("0123456789ab").unwrap(), nodes: vec![], topology_storage_provider: Some("file".into()) }) },
+            "00 00 0f 0c 303132333435363738396162 00 01 04 66696c65",
         ),
         (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into(), from_attempt: 3 } }, "00 01 01 62 03"),
         (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), intent: vec![vec![0xAA, 0xBB], vec![]], operations: vec![b"{}".to_vec()], hand_off_to: Some("n".into()), mesh: None }, "01 01 62 02 01 65 00 00 00 00 02 02 aabb 00 01 02 7b7d 01 01 6e 00"),
@@ -355,7 +361,7 @@ fn a_request_at_the_removed_change_position_is_an_unknown_variant() {
     let removed = bytes("00 00 0e 01 63 01 62 01 0a 6e6f64655f61646d696e 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00");
     assert_eq!(Build::decode_request(&removed), Err(DecodeFailure::UnknownVariant));
     assert_eq!(Build::decode_request(&bytes("00 00 0e")), Err(DecodeFailure::UnknownVariant), "the bare position too");
-    let reconcile = bytes("00 00 0f 0c 303132333435363738396162 00");
+    let reconcile = bytes("00 00 0f 0c 303132333435363738396162 00 00");
     assert!(matches!(Build::decode_request(&reconcile), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
 }
 
@@ -393,7 +399,7 @@ fn a_request_at_a_reserved_count_position_is_an_unknown_variant() {
     }
     assert!(matches!(Build::decode_request(&bytes("00 00 03 07 6d2e7270632e31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { .. }) })), "RemoveNode keeps position 3");
     assert!(matches!(Build::decode_request(&bytes("00 00 05 01 6d")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveMesh { .. }) })), "RemoveMesh keeps position 5");
-    assert!(matches!(Build::decode_request(&bytes("00 00 0f 0c 303132333435363738396162 00")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
+    assert!(matches!(Build::decode_request(&bytes("00 00 0f 0c 303132333435363738396162 00 00")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
 }
 
 /// CONTRACT (Q166; node-rpc-envelope.md wire block: `Reconcile { based_on, nodes: Vec<NodeSpec> }`,

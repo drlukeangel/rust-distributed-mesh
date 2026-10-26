@@ -41,6 +41,12 @@ pub const ENV_STORE_DIR: &str = "RDM_STORE_DIR";
 /// bootstrap admin reads it from its environment; the launching admin writes its own value into every
 /// node-admin launch.
 pub const ENV_EXECUTABLE_DIRS: &str = "RDM_EXECUTABLE_DIRS";
+/// The fabric's `topology_storage_provider` (storage.md §2): the registered name of the backend RDM's
+/// five record stores are written to. The bootstrap admin reads it from its environment, [`TOPOLOGY_STORAGE_FILE`]
+/// when unset; the launching admin writes it into every node's launch.
+pub const ENV_TOPOLOGY_STORAGE_PROVIDER: &str = "RDM_TOPOLOGY_STORAGE_PROVIDER";
+/// The name every RDM binary registers its own file backend under (storage.md §2).
+pub const TOPOLOGY_STORAGE_FILE: &str = "file";
 /// The id of the node's mesh.
 pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
 /// A launched node-admin's mesh issuing key (fabric-certs.md "Where a node-admin's signing material
@@ -195,6 +201,9 @@ pub struct Launch {
     pub data_dir: PathBuf,
     /// The fabric's shared store root (R14).
     pub store_dir: PathBuf,
+    /// The `topology_storage_provider` this birth writes ([`ENV_TOPOLOGY_STORAGE_PROVIDER`]): the name its
+    /// executable's wiring registers the backend under, written by the launching admin.
+    pub topology_storage_provider: String,
     /// The id of the node's mesh: it names the mesh's topology channel.
     pub mesh_id: Option<MeshId>,
     /// The issuing material of its mesh a node-admin is launched with. `None` for every other birth
@@ -350,6 +359,16 @@ pub fn decode_executable_dirs(s: &str) -> Result<Vec<std::path::PathBuf>> {
     Ok(dirs)
 }
 
+/// [`ENV_TOPOLOGY_STORAGE_PROVIDER`] as given: [`TOPOLOGY_STORAGE_FILE`] when unset (a launch written
+/// before the variable was, or a bootstrap admin given none); a value that is empty is refused by name.
+pub fn decode_topology_storage_provider(v: Option<String>) -> Result<String> {
+    match v {
+        None => Ok(TOPOLOGY_STORAGE_FILE.into()),
+        Some(v) if v.trim().is_empty() => Err(format!("{ENV_TOPOLOGY_STORAGE_PROVIDER} is set and empty: it names a registered topology storage provider, `{TOPOLOGY_STORAGE_FILE}` when unset")),
+        Some(v) => Ok(v.trim().to_string()),
+    }
+}
+
 /// `<public key>@<addr>,...`
 pub fn decode_seeds(s: &str) -> Result<Vec<(String, SocketAddr)>> {
     s.split(',')
@@ -382,6 +401,7 @@ impl Launch {
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
         m.insert(ENV_DATA_DIR.into(), self.data_dir.display().to_string());
         m.insert(ENV_STORE_DIR.into(), self.store_dir.display().to_string());
+        m.insert(ENV_TOPOLOGY_STORAGE_PROVIDER.into(), self.topology_storage_provider.clone());
         if let Some(id) = &self.mesh_id {
             m.insert(ENV_MESH_ID.into(), id.to_string());
         }
@@ -418,6 +438,7 @@ impl Launch {
             seeds: decode_seeds(&get(ENV_SEEDS).unwrap_or_default())?,
             data_dir: PathBuf::from(req(ENV_DATA_DIR)?),
             store_dir: PathBuf::from(req(ENV_STORE_DIR)?),
+            topology_storage_provider: decode_topology_storage_provider(get(ENV_TOPOLOGY_STORAGE_PROVIDER))?,
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
             issuing: decode_issuing(get(ENV_ISSUING_KEY), get(ENV_ISSUING_CERT), get(ENV_CA_SECRET), get(ENV_FABRIC_CA_KEY))?,
             roots: decode_roots(get(ENV_ROOTS).as_deref())?,
@@ -430,6 +451,16 @@ impl Launch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CONTRACT (storage.md §2 Day 0: "`RDM_TOPOLOGY_STORAGE_PROVIDER`, `file` when unset"; "every launch:
+    /// the launching admin, into the node's environment"): unset reads `file`, a name reads as given, an
+    /// empty value is refused by name.
+    #[test]
+    fn the_topology_storage_provider_is_file_when_unset_and_refused_when_empty() {
+        assert_eq!(decode_topology_storage_provider(None).unwrap(), TOPOLOGY_STORAGE_FILE);
+        assert_eq!(decode_topology_storage_provider(Some("app".into())).unwrap(), "app");
+        assert!(decode_topology_storage_provider(Some(" ".into())).unwrap_err().contains(ENV_TOPOLOGY_STORAGE_PROVIDER));
+    }
 
     /// A node-admin's launch environment with `custody` as its `RDM_DECLARED_SECRETS`.
     fn admin_env_with_custody(custody: &str) -> BTreeMap<String, String> {
@@ -481,7 +512,7 @@ mod tests {
 
     #[test]
     fn launch_round_trips_through_the_environment() {
-        let l = Launch {
+        let l = Launch { topology_storage_provider: TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             name: "mesh1.rpc.2".parse().unwrap(),
@@ -566,7 +597,7 @@ mod tests {
     #[test]
     fn a_launch_carries_its_root_set_as_rdm_roots_and_refuses_one_that_is_no_key_by_name() {
         let (a, b) = (crate::certs::mint_key().verifying_key(), crate::certs::mint_key().verifying_key());
-        let base = Launch {
+        let base = Launch { topology_storage_provider: TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             name: "mesh1.rpc.2".parse().unwrap(),

@@ -93,6 +93,10 @@ pub struct AdminConfig {
     /// bootstrap admin. A launched admin's is the defaults here: it takes the fabric's from its entry
     /// pull, never from its environment.
     pub cert_policy: rdm_core::certs::CertPolicy,
+    /// The `topology_storage_provider` this admin writes (storage.md §2): the registered name of the
+    /// backend its five record stores open on. The bootstrap admin's from `RDM_TOPOLOGY_STORAGE_PROVIDER`,
+    /// `file` when unset, and written on the Fabric row on Day 0; a launched admin's from its launch.
+    pub topology_storage_provider: String,
 }
 
 impl AdminConfig {
@@ -168,7 +172,12 @@ impl AdminConfig {
             Some(_) => rdm_core::certs::CertPolicy::default(),
             None => rdm_core::certs::CertPolicy::from_env(&get)?,
         };
+        let topology_storage_provider = match &launch {
+            Some(l) => l.topology_storage_provider.clone(),
+            None => rdm_core::launch::decode_topology_storage_provider(get(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER))?,
+        };
         Ok(Self {
+            topology_storage_provider,
             stopped_node_ttl,
             connections_delete_deadline,
             cert_policy,

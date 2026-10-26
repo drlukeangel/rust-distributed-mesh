@@ -44,6 +44,9 @@ impl Drop for Launched {
 
 /// A Day-0 node-admin whose data dir is `<dir>/admin` and whose fabric's store dir is `<dir>/store`,
 /// launching the built node executables of `bin_dir` on the process provider.
+/// The name this cell registers the memory backend under (storage.md §2).
+const MEMORY: &str = "memory";
+
 fn day0_config(dir: &Path) -> AdminConfig {
     let (data, store) = (dir.join("admin"), dir.join("store"));
     std::fs::create_dir_all(&data).unwrap();
@@ -54,6 +57,7 @@ fn day0_config(dir: &Path) -> AdminConfig {
         "RDM_STORE_DIR" => Some(store.display().to_string()),
         "RDM_BIN_DIR" => Some(bins.clone()),
         "MESH_SPAWN_TYPE" => Some("process".into()),
+        rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER => Some(MEMORY.into()),
         _ => None,
     })
     .expect("a readable environment")
@@ -152,7 +156,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
     let launched = Launched(store_dir.clone());
     let started = std::time::Instant::now();
     rt.block_on(async {
-        let running = start_on(cfg, Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, Arc::new(MemoryBackend)).await.expect("the Day-0 admin comes up on the memory backend");
+        let running = start_on(cfg, Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, rdm_admin::storage_backend::TopologyStorageProviders::new().register(MEMORY, Arc::new(MemoryBackend))).await.expect("the Day-0 admin comes up on the memory backend");
         let me = running.digest.lock().unwrap().clone();
         tokio::time::timeout(WRONG, async {
             while !running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary) {

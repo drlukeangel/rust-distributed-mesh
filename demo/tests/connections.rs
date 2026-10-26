@@ -126,7 +126,7 @@ async fn spawn_member_with_time(
         Some((nid, prev_inc)) => (nid, IncarnationId::mint(), Some(prev_inc)),
         None => (NodeId::mint(), IncarnationId::mint(), None),
     };
-    let launch = rdm_core::launch::Launch {
+    let launch = rdm_core::launch::Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: config(shared).fabric,
         fabric_id: d.fabric_id.clone(),
         name: name.parse().unwrap(),

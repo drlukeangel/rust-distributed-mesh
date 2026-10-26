@@ -95,7 +95,7 @@ async fn boot_root(dir: &Path, policy: &[(&'static str, String)]) -> Running {
 /// testkit's root set, on the fabric's shared `store`.
 fn launch_by(by: &Running, store: &Path, dir: &Path, name: &str) -> Launch {
     let d = by.digest.lock().unwrap().clone();
-    Launch {
+    Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
         name: name.parse().unwrap(),

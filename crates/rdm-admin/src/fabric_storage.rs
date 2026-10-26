@@ -118,12 +118,28 @@ pub struct FabricRecord {
     /// it was carried names none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<crate::model::ProviderKind>,
+    /// The fabric's `topology_storage_provider` (storage.md §2): the registered name of the backend
+    /// RDM's five record stores are written to, the fabric's intent. Written by the bootstrap admin on
+    /// Day 0 from `RDM_TOPOLOGY_STORAGE_PROVIDER`, and by the fabric-primary at a storage change's
+    /// commit. A record written before the field read as `file`, the one backend there was; `None`
+    /// (written as `null`) while no Day 0 has named one.
+    #[serde(default = "file_provider")]
+    pub topology_storage_provider: Option<String>,
+    /// Each provider the fabric left, in order (storage.md §2): kept, frozen at its commit, never
+    /// deleted by RDM.
+    #[serde(default)]
+    pub previous_topology_storage_providers: Vec<String>,
+}
+
+/// The `topology_storage_provider` of a record written before the field: RDM's file backend.
+pub(crate) fn file_provider() -> Option<String> {
+    Some(rdm_core::launch::TOPOLOGY_STORAGE_FILE.into())
 }
 
 impl FabricRecord {
     /// The record of `identity`, no event applied yet.
     pub fn new(identity: FabricIdentity) -> Self {
-        Self { fabric_id: identity.fabric_id, name: identity.name, events: Vec::new(), provider: None }
+        Self { fabric_id: identity.fabric_id, name: identity.name, events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new() }
     }
 
     /// The fabric's identity.
@@ -266,6 +282,19 @@ fn name_key<'a>(records: &crate::record_store::FileRecords, name: &'a str) -> Re
 #[cfg(all(test, feature = "file-backend"))]
 mod tests {
     use super::*;
+
+    /// CONTRACT (storage.md §2 "The property": `topology_storage_provider` is on the Fabric row beside
+    /// `previous_topology_storage_providers`): a record written before the fields reads `file` and no
+    /// previous provider; a record written with them reads back as written, an unnamed one as none.
+    #[test]
+    fn a_fabric_record_written_before_the_provider_reads_file() {
+        let old: FabricRecord = serde_json::from_value(serde_json::json!({"fabric_id": FabricId::mint().to_string(), "name": "fabric1", "events": []})).unwrap();
+        assert_eq!((old.topology_storage_provider.as_deref(), old.previous_topology_storage_providers.len()), (Some("file"), 0));
+        let mut moved = FabricRecord::new(old.identity());
+        assert_eq!(serde_json::from_value::<FabricRecord>(serde_json::to_value(&moved).unwrap()).unwrap().topology_storage_provider, None, "a record naming none reads none, never file");
+        (moved.topology_storage_provider, moved.previous_topology_storage_providers) = (Some("app".into()), vec!["file".into()]);
+        assert_eq!(serde_json::from_value::<FabricRecord>(serde_json::to_value(&moved).unwrap()).unwrap(), moved);
+    }
 
     /// CONTRACT (R-SR2, R-SR3): every write of the Fabric record is a line of `fabric.jsonl`, the latest
     /// the record a reopen reads; a line in a format this build does not read, or a line that is not

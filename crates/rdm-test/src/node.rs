@@ -66,13 +66,22 @@ pub async fn start_with_seams(
     .await
 }
 
-/// The storage backend a testkit node runs on: RDM standalone's file backend, or, in a build without
-/// it (the memory estate's), one process's memory.
-fn node_backend() -> Arc<dyn rdm_node::storage_backend::NodeStorageBackend> {
+/// The topology storage providers a testkit node registers (storage.md §2): RDM's `file` backend and
+/// the testkit's [`crate::test_app::TOPOLOGY_STORAGE_TARGET`] at its place beside `launch`'s store dir
+/// (made here when absent), or, in a build without the file backend (the memory estate's), one
+/// process's memory as `memory`, the name the memory estate's admin registers its own under.
+fn node_backend(launch: &Launch) -> rdm_node::storage_backend::NodeStorageProviders {
     #[cfg(feature = "file-backend")]
-    return rdm_node::storage_backend::file_node_backend();
+    {
+        let target = crate::test_app::topology_storage_dir(&launch.store_dir);
+        let _ = std::fs::create_dir_all(&target);
+        rdm_node::storage_backend::NodeStorageProviders::file().register(crate::test_app::TOPOLOGY_STORAGE_TARGET, Arc::new(rdm_node::storage_backend::FileNodeBackend::at(target)))
+    }
     #[cfg(not(feature = "file-backend"))]
-    return Arc::new(rdm_node::storage_backend::MemoryNodeBackend);
+    {
+        let _ = launch;
+        rdm_node::storage_backend::NodeStorageProviders::new().register("memory", Arc::new(rdm_node::storage_backend::MemoryNodeBackend))
+    }
 }
 
 /// The testkit's app protocol: a registered ALPN (fabric-certs.md §On a connection) an estate's rpc
@@ -166,7 +175,7 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
     let knob_fn: RafkaTimeKnobFn = Box::new(|launch, rt, boot| rafka_time_knob(launch, rt, boot));
     rdm_node::node::start_on(
         launch,
-        node_backend(),
+        node_backend(launch),
         rafka_time,
         node_hooks,
         move |base| Arc::new(crate::faults::FaultedConnectionsStorage::new(base, fault_for_storage)),

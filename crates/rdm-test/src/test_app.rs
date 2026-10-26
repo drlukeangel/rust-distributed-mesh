@@ -45,6 +45,16 @@ pub fn topology_storage_dir(store_dir: &std::path::Path) -> std::path::PathBuf {
     store_dir.with_file_name(format!("{name}-{TOPOLOGY_STORAGE_TARGET}"))
 }
 
+/// The topology storage providers the testkit's node-admin registers (storage.md §2): RDM's `file`
+/// backend on the fabric's store dir, and [`TOPOLOGY_STORAGE_TARGET`] on its own place beside it
+/// ([`topology_storage_dir`]), made here when absent.
+#[cfg(feature = "file-backend")]
+pub fn topology_storage_providers(cfg: &rdm_admin::admin::AdminConfig) -> rdm_admin::storage_backend::TopologyStorageProviders {
+    let target = topology_storage_dir(&cfg.store_dir);
+    let _ = std::fs::create_dir_all(&target);
+    rdm_admin::storage_backend::TopologyStorageProviders::file(cfg.store_dir.clone()).register(TOPOLOGY_STORAGE_TARGET, rdm_admin::storage_backend::file_backend(target))
+}
+
 /// The testkit application's listener declarations, as its wiring registers them.
 pub fn listeners() -> Vec<rdm_core::launch::DeclaredListeners> {
     vec![rdm_core::launch::DeclaredListeners { kind: LISTENER_KIND, names: LISTENERS.iter().map(|n| n.to_string()).collect() }]

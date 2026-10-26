@@ -954,9 +954,20 @@ impl StatusAuthority {
                 if matches!(req, StatusRequest::GetFabric) {
                     // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
                     // a read that fails is named, never answered as no Build.
+                    // Its topology_storage_provider and the providers it left are the Fabric row's (storage.md §2),
+                    // read from fabric.storage: a read that fails is named, never answered as none.
+                    let record = match self.fabric_storage.fabric().await {
+                        Ok(r) => r,
+                        Err(e) => return rdm_core::reply::status::bounded_source_failed("fabric.storage", "fabric.get", &format!("{me_name} could not read the Fabric record: {e}")),
+                    };
                     return match self.builds.current_build().await {
                         Ok(current) => {
-                            crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.nodes_storage, self.certs.as_ref().and_then(|c| c.now_ms())).await
+                            let mut reply = crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.nodes_storage, self.certs.as_ref().and_then(|c| c.now_ms())).await;
+                            if let (StatusReply::Fabric { fabric }, Some(r)) = (&mut reply, record) {
+                                fabric.topology_storage_provider = r.topology_storage_provider;
+                                fabric.previous_topology_storage_providers = r.previous_topology_storage_providers;
+                            }
+                            reply
                         }
                         Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", "fabric.get", &format!("{me_name} could not read its current Build: {e}")),
                     };

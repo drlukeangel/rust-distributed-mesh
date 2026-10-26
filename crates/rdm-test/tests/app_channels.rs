@@ -151,7 +151,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
                 .unwrap();
         runtime.write_record(&joiner_dir).unwrap();
         let key = rdm_test::node::load_or_mint_key(&joiner_dir).unwrap();
-        let launch = rdm_core::launch::Launch {
+        let launch = rdm_core::launch::Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: config(&root_dir).fabric,
             fabric_id: root_digest.fabric_id.clone(),
             name: "mesh1.admin.2".parse().unwrap(),
@@ -277,7 +277,7 @@ fn a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receive
         let runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("app-held-watch")).unwrap();
         runtime.write_record(&member_dir).unwrap();
         let key = rdm_test::node::load_or_mint_key(&member_dir).unwrap();
-        let launch = rdm_core::launch::Launch {
+        let launch = rdm_core::launch::Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: config(&dir).fabric,
             fabric_id: d.fabric_id.clone(),
             name: "mesh1.rpc.1".parse().unwrap(),

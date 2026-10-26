@@ -227,6 +227,31 @@ impl RecipeStep {
     }
 }
 
+/// The decision of one storage change run (storage.md §2 "Decision"): one durable, mutually exclusive
+/// record on the new provider at `(build_id, change_id)`, inserted with the store's insert-and-fail
+/// primitive. Inserting `Commit` is the commit point and the claim cutover; a revert is permitted only
+/// by a successful `Abort` insert. A provider that does not answer is neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StorageDecision {
+    /// The run commits: the new provider is current.
+    Commit,
+    /// The run aborts: the freeze lifts on the old provider.
+    Abort,
+}
+
+/// The record of a storage change run's decision, keyed by `(build_id, change_id)` (storage.md §2
+/// "Decision"): written once and never rewritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageDecisionRecord {
+    /// The storage change's Build.
+    pub build_id: crate::BuildId,
+    /// The run.
+    pub change_id: crate::ChangeId,
+    /// What was decided.
+    pub decision: StorageDecision,
+}
+
 /// What `Create` asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildSubmit {

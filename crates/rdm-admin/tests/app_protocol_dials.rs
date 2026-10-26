@@ -82,7 +82,7 @@ fn launched_by(launcher: &Running, name: &str, launcher_dir: &std::path::Path) -
     let runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("app-dials")).unwrap();
     runtime.write_record(&dir).unwrap();
     let key = rdm_node::node::load_or_mint_key(&dir).unwrap();
-    let launch = rdm_core::launch::Launch {
+    let launch = rdm_core::launch::Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
         name: name.parse().unwrap(),

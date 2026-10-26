@@ -31,12 +31,13 @@ pub fn material_or_exit(service: &str, cfg: &AdminConfig) -> crate::certs::CertC
 /// called once with the configuration the environment produced, inside the runtime, before the
 /// admin starts.
 pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
-    run_on(service, |cfg| crate::storage_backend::file_backend(cfg.store_dir.clone()), wiring).await
+    run_on(service, |cfg| crate::storage_backend::TopologyStorageProviders::file(cfg.store_dir.clone()), wiring).await
 }
 
-/// [`run_with`] on the backend `storage` makes from the configuration: every durable read and write
-/// of the node-admin goes through the six boundaries it opens.
-pub async fn run_on(service: &str, storage: impl FnOnce(&AdminConfig) -> std::sync::Arc<dyn crate::storage_backend::StorageBackend>, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
+/// [`run_with`] on the topology storage providers `providers` registers from the configuration
+/// (storage.md §2): every durable read and write of the node-admin goes through the six boundaries the
+/// one its `topology_storage_provider` names opens.
+pub async fn run_on(service: &str, providers: impl FnOnce(&AdminConfig) -> crate::storage_backend::TopologyStorageProviders, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
     // Heard from the first line: a stop that arrives while the admin boots ends the boot by name.
     listen_for_stop();
     let _telemetry = rdm_transport::init_evidence_telemetry(service);
@@ -50,7 +51,7 @@ pub async fn run_on(service: &str, storage: impl FnOnce(&AdminConfig) -> std::sy
         }
     };
     let wiring = wiring(&cfg);
-    let storage = storage(&cfg);
+    let storage = providers(&cfg);
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
         node = tracing::field::Empty,

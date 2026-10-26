@@ -165,6 +165,11 @@ pub struct FabricTopology {
     pub fabric: String,
     /// The accepted meshes, by name.
     pub meshes: BTreeMap<String, MeshTopology>,
+    /// The fabric's `topology_storage_provider` the Build realizes (storage.md §2): the request's, or,
+    /// when it names none, the Fabric row's at acceptance (Q166). The journal's record of the accepted
+    /// Build carries it, a record written before the field read as `file`; the Build topic does not
+    /// carry it, so a copy heard there holds `None`.
+    pub topology_storage_provider: Option<String>,
 }
 
 /// A [`FabricTopology`] as the journal holds it: a record written before the executable was each
@@ -175,6 +180,8 @@ struct StoredTopology {
     meshes: BTreeMap<String, MeshTopology>,
     #[serde(default)]
     bindings: Option<StoredSet>,
+    #[serde(default = "crate::fabric_storage::file_provider")]
+    topology_storage_provider: Option<String>,
 }
 
 /// The per-kind set an old record carries: only its bindings are read.
@@ -198,17 +205,23 @@ impl From<StoredTopology> for FabricTopology {
                 }
             }
         }
-        Self { fabric: t.fabric, meshes }
+        Self { fabric: t.fabric, meshes, topology_storage_provider: t.topology_storage_provider }
     }
 }
 
 impl FabricTopology {
-    /// Day 0: the bootstrap admin's own mesh `mesh_id`, one node-admin. The mesh's id is the one the
-    /// bootstrap admin was born with, never minted here.
+    /// Day 0: the bootstrap admin's own mesh `mesh_id`, one node-admin, on RDM's file backend. The
+    /// mesh's id is the one the bootstrap admin was born with, never minted here.
     pub fn root(fabric: &str, mesh: &str, mesh_id: MeshId) -> Self {
+        Self::root_on(fabric, mesh, mesh_id, rdm_core::launch::TOPOLOGY_STORAGE_FILE)
+    }
+
+    /// [`Self::root`] on the `topology_storage_provider` the bootstrap admin was started on
+    /// (`RDM_TOPOLOGY_STORAGE_PROVIDER`, storage.md §2 Day 0).
+    pub fn root_on(fabric: &str, mesh: &str, mesh_id: MeshId, topology_storage_provider: &str) -> Self {
         let mut meshes = BTreeMap::new();
         meshes.insert(mesh.to_string(), MeshTopology::with_id(&MeshDesired::of(mesh, [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 0)]), mesh_id));
-        Self { fabric: fabric.into(), meshes }
+        Self { fabric: fabric.into(), meshes, topology_storage_provider: Some(topology_storage_provider.into()) }
     }
 
     /// The accepted mesh named `name`.
@@ -260,7 +273,7 @@ impl FabricTopology {
             mesh.spec_by_path.insert(n.name.clone(), NodeSpec::default_for(n.name.clone()));
             mesh.nodes.insert(n.name.clone());
         }
-        Self { fabric: observed.fabric.name.clone(), meshes }
+        Self { fabric: observed.fabric.name.clone(), meshes, topology_storage_provider: None }
     }
 
     /// The topology as per-mesh counts (the view's convenience shape).
@@ -326,6 +339,10 @@ pub enum TopologyChange {
         /// Every node of the fabric, each by its create spec.
         #[serde(deserialize_with = "stored_nodes")]
         nodes: Vec<NodeSpec>,
+        /// The `topology_storage_provider` the request names (storage.md §2); `None` leaves the
+        /// fabric's unchanged (Q166). A change stored before the field names none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        topology_storage_provider: Option<String>,
     },
 }
 
@@ -1371,6 +1388,12 @@ impl AcceptedStore {
         Ok(held.or_else(|| self.learned.lock().unwrap().clone()))
     }
 
+    /// The fabric's `topology_storage_provider` as its Fabric row names it (storage.md §2); `None` while
+    /// the store holds no Fabric record.
+    pub async fn topology_storage_provider(&self) -> Result<Option<String>, FabricStorageError> {
+        Ok(self.storage.fabric().await?.and_then(|r| r.topology_storage_provider))
+    }
+
     /// A Fabric identity heard in an entry answer (`from`), taken as this
     /// admin's runtime state (nothing is written: the fabric-primary writes `fabric/`). One naming
     /// another Fabric than the one held is not taken.
@@ -1437,7 +1460,7 @@ mod tests {
     }
 
     fn t(meshes: &[(&str, u32, u32)]) -> FabricTopology {
-        FabricTopology { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() }
+        FabricTopology { topology_storage_provider: None, fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() }
     }
 
     fn paths(m: &MeshTopology) -> Vec<String> {
@@ -2186,7 +2209,7 @@ mod tests {
         assert_eq!(m.spec(&"mesh1.admin.1".parse().unwrap()).unwrap().storage_persistence, preserve);
         assert_eq!(m.spec(&"mesh1.gateway.1".parse().unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
         assert_eq!(m.spec(&"mesh1.rpc.1".parse().unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
-        let mut topology = FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
+        let mut topology = FabricTopology { topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
         assert_eq!(topology.validate(), Ok(()));
         // Grow and shrink keep the create specs in step with the paths.
         let observed = Topology {
@@ -2390,7 +2413,7 @@ mod tests {
     }
 
     fn reconcile(nodes: Vec<NodeSpec>) -> TopologyChange {
-        TopologyChange::Reconcile { based_on: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b0")).unwrap(), nodes }
+        TopologyChange::Reconcile { topology_storage_provider: None, based_on: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b0")).unwrap(), nodes }
     }
 
     /// What the rows record: every live member of `o` on `tag`'s executable of its kind.
@@ -2691,7 +2714,7 @@ mod tests {
     fn only_the_paths_whose_entry_differs_from_their_row_are_replaced_and_a_resume_finishes_the_rest() {
         use NodeStatus::ReadyForTraffic as R;
         let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 2), (NodeKind::Compute, 1)]);
-        let cur = FabricTopology { fabric: "fabric1".into(), meshes: ["mesh1", "mesh2"].iter().map(|m| (m.to_string(), MeshTopology::of(&mesh(m)))).collect() };
+        let cur = FabricTopology { topology_storage_provider: None, fabric: "fabric1".into(), meshes: ["mesh1", "mesh2"].iter().map(|m| (m.to_string(), MeshTopology::of(&mesh(m)))).collect() };
         let mut nodes = Vec::new();
         for m in ["mesh1", "mesh2"] {
             nodes.extend([n(&format!("{m}.admin.1"), R, true), n(&format!("{m}.admin.2"), R, false), n(&format!("{m}.broker.1"), R, true), n(&format!("{m}.gateway.1"), R, true), n(&format!("{m}.gateway.2"), R, false), n(&format!("{m}.compute.1"), R, true)]);
@@ -2761,6 +2784,18 @@ mod tests {
             vec![BuildOperation::RetireNode { node: path.clone(), exited: None }, BuildOperation::CreateNode { node: path, over: Some(birth), executable: Some(exe("b", NodeKind::RpcNode)) }],
             "the replacement follows as the next attempt's"
         );
+    }
+
+    /// CONTRACT (storage.md §2: the Build's topology carries `topology_storage_provider`; i149 e1: a
+    /// record written before the field reads `file`): the journal's accepted topology written before the
+    /// field reads `file`; one written with it reads back as written; the Build topic's copy carries none.
+    #[test]
+    fn an_accepted_topology_written_before_the_provider_reads_file() {
+        let old = serde_json::json!({"fabric": "fabric1", "meshes": {}});
+        assert_eq!(serde_json::from_value::<FabricTopology>(old).unwrap().topology_storage_provider.as_deref(), Some("file"));
+        let named = FabricTopology::root_on("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap(), "app");
+        assert_eq!(serde_json::from_value::<FabricTopology>(serde_json::to_value(&named).unwrap()).unwrap(), named);
+        assert_eq!(named.topology_storage_provider.as_deref(), Some("app"));
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1: "a Build decoded from the journal whose

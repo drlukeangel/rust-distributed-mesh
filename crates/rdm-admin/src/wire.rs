@@ -216,7 +216,7 @@ impl From<&TopologyChange> for WireChange {
             TopologyChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh: mesh.clone() },
             TopologyChange::DeleteFabric => Self::DeleteFabric,
             TopologyChange::Reserved {} => Self::Reserved7,
-            TopologyChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on: based_on.clone(), nodes: nodes.iter().map(|s| (s.path.clone(), s.into())).collect() },
+            TopologyChange::Reconcile { based_on, nodes, .. } => Self::Reconcile { based_on: based_on.clone(), nodes: nodes.iter().map(|s| (s.path.clone(), s.into())).collect() },
         }
     }
 }
@@ -231,7 +231,7 @@ impl From<WireChange> for TopologyChange {
             WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },
             WireChange::DeleteFabric => Self::DeleteFabric,
             WireChange::Reserved7 => Self::Reserved {},
-            WireChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on, nodes: nodes.into_iter().map(|(p, w)| w.at(p)).collect() },
+            WireChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on, nodes: nodes.into_iter().map(|(p, w)| w.at(p)).collect(), topology_storage_provider: None },
         }
     }
 }
@@ -324,7 +324,9 @@ impl From<WireTopology> for FabricTopology {
                 (k, mesh)
             })
             .collect();
-        Self { fabric: t.fabric, meshes }
+        // The Build topic carries no topology_storage_provider: the journal's record of the accepted
+        // Build is the one that does.
+        Self { fabric: t.fabric, meshes, topology_storage_provider: None }
     }
 }
 

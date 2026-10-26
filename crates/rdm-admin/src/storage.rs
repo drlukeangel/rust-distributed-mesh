@@ -738,6 +738,13 @@ pub struct NodeRow {
     /// §1's rename carries it as `storage` (durable format moved).
     #[serde(default, alias = "storage", skip_serializing_if = "Option::is_none")]
     pub storage_persistence: Option<rdm_core::meta::StorageMeta>,
+    /// The `topology_storage_provider` the node writes (storage.md §2): the fact, beside the Fabric
+    /// row's intent, recorded by RDM at the node's name claim from the provider the claiming admin
+    /// writes, the one it writes into the node's launch; never put by a caller. A row written before
+    /// the field read as `file`, the one backend there was; `None` (written as `null`) on a row no claim
+    /// recorded it on.
+    #[serde(default = "crate::fabric_storage::file_provider")]
+    pub topology_storage_provider: Option<String>,
     /// The node's placement as its create spec names it, beside `storage_persistence` and written as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<rdm_core::meta::PlacementMeta>,
@@ -772,7 +779,7 @@ pub struct Allocation {
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
     pub fn new(name: PathName, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }
+        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None }
     }
 
     /// The facts of the node's newest birth, if the record keeps any.

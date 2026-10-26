@@ -45,7 +45,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         let key = node::load_or_mint_key(&dir).unwrap();
         let born: PathName = "mesh1.rpc.7".parse().unwrap();
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
-        let launch = Launch {
+        let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric,
             name: born.clone(),

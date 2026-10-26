@@ -67,7 +67,7 @@ async fn gateway(root: &Running, dir: &std::path::Path, shared: &std::path::Path
     let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("demo-hooks")).unwrap();
     fact.write_record(dir).unwrap();
     let key = rdm_node::node::load_or_mint_key(dir).unwrap();
-    let launch = rdm_core::launch::Launch {
+    let launch = rdm_core::launch::Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: config(shared).fabric,
         fabric_id: d.fabric_id.clone(),
         name: "mesh1.gateway.1".parse().unwrap(),

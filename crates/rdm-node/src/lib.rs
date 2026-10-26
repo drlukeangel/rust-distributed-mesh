@@ -127,13 +127,14 @@ pub async fn run_with_alpns(
     node_hooks: crate::node_hooks::NodeHooks,
     serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
 ) -> Result<()> {
-    run_on(role, crate::storage_backend::file_node_backend(), types, alpns, node_hooks, serve_app).await
+    run_on(role, crate::storage_backend::NodeStorageProviders::file(), types, alpns, node_hooks, serve_app).await
 }
 
-/// [`run_with_alpns`] on `storage`: the node's connections rows are the ones it opens.
+/// [`run_with_alpns`] on the topology storage `providers` its executable registers (storage.md §2): the
+/// node's connections rows are the ones the provider its launch names opens.
 pub async fn run_on(
     role: Role,
-    storage: std::sync::Arc<dyn crate::storage_backend::NodeStorageBackend>,
+    providers: crate::storage_backend::NodeStorageProviders,
     types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
     node_hooks: crate::node_hooks::NodeHooks,
@@ -156,7 +157,7 @@ pub async fn run_on(
     }
     let running = {
         use tracing::Instrument;
-        let started = crate::node::start_on(&launch, storage, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, |s| s, None, |b, _seams| serve_app(b), types, alpns)
+        let started = crate::node::start_on(&launch, providers, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, |s| s, None, |b, _seams| serve_app(b), types, alpns)
             .instrument(tracing::Span::none());
         let started = tokio::select! {
             r = started => r,

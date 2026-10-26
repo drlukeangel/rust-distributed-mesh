@@ -35,7 +35,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
     std::fs::create_dir_all(&data).unwrap();
     let (admin, target, router) = rt.block_on(async {
         let key = SecretKey::generate();
-        let launch = Launch {
+        let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             name: "mesh1.rpc.1".parse().unwrap(),

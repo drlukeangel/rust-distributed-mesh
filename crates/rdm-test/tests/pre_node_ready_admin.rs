@@ -132,7 +132,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         std::fs::create_dir_all(&joiner_dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&joiner_dir).unwrap();
         let key = rdm_test::node::load_or_mint_key(&joiner_dir).unwrap();
-        let launch = Launch {
+        let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric,
             fabric_id,
             name: "mesh1.admin.2".parse().unwrap(),

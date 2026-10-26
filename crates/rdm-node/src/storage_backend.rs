@@ -24,16 +24,28 @@ pub trait NodeStorageBackend: Send + Sync {
 }
 
 /// RDM standalone's backend: the node's connection facts, its lines of the fabric's store root's
-/// `connections.jsonl` (R14, R-SR1), written there from its open.
+/// `connections.jsonl` (R14, R-SR1), written there from its open. Its place is the launch's store dir
+/// (`RDM_STORE_DIR`), or the one it was registered at ([`Self::at`]).
 #[cfg(feature = "file-backend")]
-#[derive(Debug, Default, Clone, Copy)]
-pub struct FileNodeBackend;
+#[derive(Debug, Default, Clone)]
+pub struct FileNodeBackend {
+    store_dir: Option<std::path::PathBuf>,
+}
+
+#[cfg(feature = "file-backend")]
+impl FileNodeBackend {
+    /// The file backend at the store dir `store_dir`, whatever the launch's.
+    pub fn at(store_dir: impl Into<std::path::PathBuf>) -> Self {
+        Self { store_dir: Some(store_dir.into()) }
+    }
+}
 
 #[cfg(feature = "file-backend")]
 #[async_trait]
 impl NodeStorageBackend for FileNodeBackend {
     async fn open(&self, launch: &Launch) -> Result<NodeStorage, String> {
-        let root = crate::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
+        let store_dir = self.store_dir.as_ref().unwrap_or(&launch.store_dir);
+        let root = crate::store_root::StoreRoot::open(store_dir, &launch.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
         let connections = crate::storage::FileConnectionsStorage::open(&root, &launch.name, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
@@ -45,7 +57,50 @@ impl NodeStorageBackend for FileNodeBackend {
 #[cfg(feature = "file-backend")]
 /// RDM standalone's node storage backend: the one a node's `start` variants and `run` construct.
 pub fn file_node_backend() -> Arc<dyn NodeStorageBackend> {
-    Arc::new(FileNodeBackend)
+    Arc::new(FileNodeBackend::default())
+}
+
+/// The topology storage providers a node executable registers in its wiring, by name (storage.md §2):
+/// the node opens the one its launch names (`RDM_TOPOLOGY_STORAGE_PROVIDER`, written by its launching
+/// admin), and a name it does not register refuses its start by name.
+#[derive(Clone, Default)]
+pub struct NodeStorageProviders {
+    registered: Vec<(String, Arc<dyn NodeStorageBackend>)>,
+}
+
+impl NodeStorageProviders {
+    /// No provider registered.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// RDM's file backend registered as `file`: what every RDM node executable registers.
+    #[cfg(feature = "file-backend")]
+    pub fn file() -> Self {
+        Self::new().register(rdm_core::launch::TOPOLOGY_STORAGE_FILE, file_node_backend())
+    }
+
+    /// These providers with `backend` registered as `name`.
+    pub fn register(mut self, name: &str, backend: Arc<dyn NodeStorageBackend>) -> Self {
+        self.registered.push((name.to_string(), backend));
+        self
+    }
+
+    /// The registered names, in registration order.
+    pub fn names(&self) -> Vec<String> {
+        self.registered.iter().map(|(n, _)| n.clone()).collect()
+    }
+
+    /// The backend registered as `name`, refused by name when none is or a name is registered twice.
+    pub fn named(&self, name: &str) -> Result<Arc<dyn NodeStorageBackend>, String> {
+        let names = self.names();
+        if let Some(twice) = names.iter().enumerate().find(|(i, n)| names[..*i].contains(n)).map(|(_, n)| n) {
+            return Err(format!("the topology storage provider `{twice}` is registered twice: each name is bound to one place"));
+        }
+        self.registered.iter().find(|(n, _)| n == name).map(|(_, b)| b.clone()).ok_or_else(|| {
+            format!("{} names topology storage provider `{name}`, which this executable does not register (it registers: {})", rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER, names.join(", "))
+        })
+    }
 }
 
 /// One process's rows: the node's connections held in memory, gone with its process.

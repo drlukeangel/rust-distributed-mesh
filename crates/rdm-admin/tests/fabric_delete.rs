@@ -155,7 +155,7 @@ fn live_roster(records: &[Node]) -> Result<Vec<RosterBirth>, String> {
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
         storage
-            .write_record(&NodeRow {
+            .write_record(&NodeRow { topology_storage_provider: None,
                 name: n.name.clone(),
                 node_id: n.node_id.clone(),
                 status: NodeStatus::ReadyForTraffic,

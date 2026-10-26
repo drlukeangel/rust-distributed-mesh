@@ -53,7 +53,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
             std::fs::create_dir_all(&dir).unwrap();
             RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
             let key = node::load_or_mint_key(&dir).unwrap();
-            let launch = Launch {
+            let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
                 fabric: "fabric1".into(),
                 fabric_id: fabric.clone(),
                 name: name.clone(),
@@ -218,7 +218,7 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
-        let renamed = Launch {
+        let renamed = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric.clone(),
             name: born.clone(),

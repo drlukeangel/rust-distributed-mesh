@@ -502,7 +502,7 @@ fn the_accepted_fact_on_the_build_topic_carries_no_executable_and_a_twelve_node_
     let named = twelve_node_topology();
     assert_eq!(named.meshes.values().map(|m| m.nodes.len()).sum::<usize>(), 12);
     let nodes: Vec<NodeSpec> = named.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
-    let fact = |t: FabricTopology, nodes: Vec<NodeSpec>| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, submitted_change: Some(TopologyChange::Reconcile { based_on: bid("2qcfk1kq47m8"), nodes }), submitted_at_ms: 1_700_000_000_000 });
+    let fact = |t: FabricTopology, nodes: Vec<NodeSpec>| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, submitted_change: Some(TopologyChange::Reconcile { topology_storage_provider: None, based_on: bid("2qcfk1kq47m8"), nodes }), submitted_at_ms: 1_700_000_000_000 });
     let stripped_nodes: Vec<NodeSpec> = nodes.iter().map(|s| NodeSpec { executable: None, tags: Default::default(), config: Default::default(), ..s.clone() }).collect();
     let with = fact(named.clone(), nodes);
     let without = fact(without_executables(&named), stripped_nodes);

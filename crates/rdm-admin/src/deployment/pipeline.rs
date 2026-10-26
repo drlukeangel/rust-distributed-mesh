@@ -1718,6 +1718,9 @@ impl DeploymentPipeline<'_> {
         // container provider's network exists per fabric: nothing per node.
         self.step(run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;
         let launch = Launch {
+            // The provider the launching admin writes (storage.md §2 "every launch"): the one its own
+            // template names, as `RDM_MESH_ID` is taken from it.
+            topology_storage_provider: self.template.env.get(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER).cloned().unwrap_or_else(|| rdm_core::launch::TOPOLOGY_STORAGE_FILE.into()),
             fabric: self.template.fabric.clone(),
             fabric_id: self.template.fabric_id.clone(),
             name: req.node.clone(),

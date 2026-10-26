@@ -68,7 +68,8 @@ async fn main() {
     };
     rdm_admin::entry::run_on(
         SERVICE,
-        |cfg| Arc::new(ConsumerBackend(rdm_admin::storage_backend::file_backend(cfg.store_dir.clone()))),
+        // Its backend wraps RDM's file backend, registered under that backend's name (storage.md §2).
+        |cfg| rdm_admin::storage_backend::TopologyStorageProviders::new().register(rdm_core::launch::TOPOLOGY_STORAGE_FILE, Arc::new(ConsumerBackend(rdm_admin::storage_backend::file_backend(cfg.store_dir.clone())))),
         |cfg| Wiring { fabric_hooks: FabricHooks::no_app_work(), certs: rdm_admin::entry::material_or_exit(SERVICE, cfg), hooks: vec![(ready, Arc::new(ReadyHook))], ..Wiring::default() },
     )
     .await

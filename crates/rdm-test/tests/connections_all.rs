@@ -39,7 +39,7 @@ async fn live_node(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId) 
 async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId, register: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder) -> (Launch, node::RunningNode, Seams) {
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     let key = node::load_or_mint_key(dir).unwrap();
-    let launch = Launch {
+    let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: fabric.clone(),
         name: "mesh1.rpc.7".parse().unwrap(),

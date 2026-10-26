@@ -131,7 +131,7 @@ impl BuildDoor {
             BuildChange::Reserved0 | BuildChange::Reserved1 | BuildChange::Reserved2 | BuildChange::Reserved4 | BuildChange::Reserved6 | BuildChange::Reserved14 => return Err(rdm_core::reply::build::malformed(rdm_core::outcome::MalformedKind::UnknownVariant)),
             // The complete topology (proposal executable-bindings-at-create.md rule 1): a topology Build,
             // its `based_on` checked against the current Build at the door.
-            BuildChange::Reconcile { based_on, nodes, .. } => topology(TopologyChange::Reconcile { based_on: based_on.clone(), nodes: nodes.clone() }).await,
+            BuildChange::Reconcile { based_on, nodes, topology_storage_provider } => topology(TopologyChange::Reconcile { based_on: based_on.clone(), nodes: nodes.clone(), topology_storage_provider: topology_storage_provider.clone() }).await,
             BuildChange::DeleteConnections { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::DeleteConnections, node.clone(), ActionKind::DeleteConnections).await,
             BuildChange::Stop { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Stop, node.clone(), ActionKind::Stop).await,
             BuildChange::Start { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Start, node.clone(), ActionKind::Start).await,

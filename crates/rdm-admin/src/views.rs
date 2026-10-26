@@ -187,6 +187,10 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
         let mut v = node_view(n, load, gossip, row.as_ref().map(|r| r.tags.clone()).unwrap_or_default());
         // What this birth runs, as its row records it (proposal executable-bindings-at-create.md rule 7).
         v.executable = row.as_ref().and_then(|r| r.executable.clone());
+        // Its storage_persistence and the topology_storage_provider it writes, as its row records them
+        // (storage.md §1, §2): two properties under two names.
+        v.storage_persistence = row.as_ref().and_then(|r| r.storage_persistence);
+        v.topology_storage_provider = row.as_ref().and_then(|r| r.topology_storage_provider.clone());
         if let Some(declared) = row.as_ref().and_then(|r| r.app_types.clone()).filter(|t| Some(&t.incarnation) == n.incarnation_id.as_ref()) {
             v.types = declared.types;
             v.held = v.types.clone();
@@ -230,6 +234,8 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             n.config = r.config.clone();
             let mut v = node_view(&n, None, None, r.tags.clone());
             v.executable = r.executable.clone();
+            v.storage_persistence = r.storage_persistence;
+            v.topology_storage_provider = r.topology_storage_provider.clone();
             v.data_dir_unreadable = Some(DataDirUnreadable { path: unreadable.path, cause: unreadable.cause });
             out.push(v);
         }

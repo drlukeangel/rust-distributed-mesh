@@ -273,24 +273,28 @@ fn route_app_alpns(
 /// from, on RDM standalone's storage backend ([`crate::storage_backend::file_backend`]).
 #[cfg(feature = "file-backend")]
 pub async fn start_with(cfg: AdminConfig, wiring: crate::wiring::Wiring) -> Result<Running, String> {
-    let storage = crate::storage_backend::file_backend(cfg.store_dir.clone());
-    start_on(cfg, wiring, storage).await
+    let providers = crate::storage_backend::TopologyStorageProviders::file(cfg.store_dir.clone());
+    start_on(cfg, wiring, providers).await
 }
 
-/// [`start_with`] on `storage`: every durable read and write of the admin goes through the six
-/// boundaries it opens.
-pub async fn start_on(cfg: AdminConfig, wiring: crate::wiring::Wiring, storage: Arc<dyn crate::storage_backend::StorageBackend>) -> Result<Running, String> {
+/// [`start_with`] on the topology storage `providers` its executable registers (storage.md §2): every
+/// durable read and write of the admin goes through the six boundaries the one its
+/// `topology_storage_provider` names opens.
+pub async fn start_on(cfg: AdminConfig, wiring: crate::wiring::Wiring, providers: crate::storage_backend::TopologyStorageProviders) -> Result<Running, String> {
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step is a child that lives exactly as long as the step, and `via-ready` closes it.
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = tracing::field::Empty, node_id = tracing::field::Empty, incarnation_id = tracing::field::Empty, kind = "node-admin");
-    let started = start_booted(cfg, wiring, storage, boot.clone()).await;
+    let started = start_booted(cfg, wiring, providers, boot.clone()).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
     }
     started
 }
 
-pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, storage: Arc<dyn crate::storage_backend::StorageBackend>, boot: tracing::Span) -> Result<Running, String> {
+pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, providers: crate::storage_backend::TopologyStorageProviders, boot: tracing::Span) -> Result<Running, String> {
+    // The topology storage provider this admin writes (storage.md §2): one its executable registers, or
+    // the start is refused by name before anything opens.
+    let storage = providers.named(&cfg.topology_storage_provider).map_err(|e| format!("refusing to start: {e}"))?;
     // Every task this admin runs is spawned behind this gate: a stop holds it, and a start opens it again.
     let stop_gate = crate::stop_gate::StopGate::new();
     // The app's declared secrets (Q150): a name RDM sets or passes through, or a name declared twice,
@@ -333,7 +337,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
     let key = load_or_mint_key(&cfg.data_dir).await?;
     drop(step);
-    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = tracing::field::Empty, inherited_root = tracing::field::Empty, writes_to = tracing::field::Empty, mesh_id = tracing::field::Empty, error = tracing::field::Empty);
+    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), topology_storage_provider = %cfg.topology_storage_provider, fabric_id = tracing::field::Empty, inherited_root = tracing::field::Empty, writes_to = tracing::field::Empty, mesh_id = tracing::field::Empty, error = tracing::field::Empty);
     // The node-admin storage boundaries: its own row, the runtimes it started, its Build journal and
     // attempt contexts in its own data dir; the fabric, mesh, nodes, connections and status stores
     // under the fabric's shared store root (R14). An admin that finds its own row in nodes.storage was
@@ -379,6 +383,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
     // starts from its copy here (storage-whole-records.md, "The rule"), its first writes at boot too.
     let caches = crate::record_cache::Caches::default();
+    // A name claim this admin writes records the provider it writes on the claimed row (storage.md §2).
+    caches.nodes.writes_to(&cfg.topology_storage_provider);
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_backed.clone());
     let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::on(journal.clone()));
     // Each mesh's in-flight row (R-BI7 caveat 3): the one set of rows the claim door, the drive's
@@ -1113,7 +1119,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let b0 = crate::build_state::BuildAccepted {
                                             build_id: crate::build::BuildId::mint(),
                                             // Day 0's shape is the bootstrap admin alone; its row records what it runs.
-                                            topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh, mesh_id.clone()),
+                                            topology: crate::accepted::FabricTopology::root_on(&cfg.fabric, &cfg.mesh, mesh_id.clone(), &cfg.topology_storage_provider),
                                             submitted_change: None,
                                             submitted_at_ms: rafka_time.now_ms(),
                                         };
@@ -1125,7 +1131,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // The fabric's provider, fixed by Day 0's MESH_SPAWN_TYPE, is the Fabric record's: an
                                         // adoption launch takes it from there (Q156).
                                         let provider = FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?.provider;
-                                        caches.update_fabric(&*fabric_storage, &cfg.fabric_id, None, |r| r.provider = Some(provider)).await.map_err(|e| format!("refusing to start: {e}"))?;
+                                        // So is its topology_storage_provider, Day 0's `RDM_TOPOLOGY_STORAGE_PROVIDER` (storage.md §2).
+                                        let topology_storage_provider = cfg.topology_storage_provider.clone();
+                                        caches
+                                            .update_fabric(&*fabric_storage, &cfg.fabric_id, None, |r| {
+                                                r.provider = Some(provider);
+                                                r.topology_storage_provider = Some(topology_storage_provider);
+                                            })
+                                            .await
+                                            .map_err(|e| format!("refusing to start: {e}"))?;
                                         attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
                                         crate::build_state::accept(&*builds, &b0, None, &name.to_string(), "day-0").await.map_err(|e| e.to_string())?;
                                     }
@@ -1194,7 +1208,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     )
                                     .with_contexts(attempt_contexts.clone())
                                     .with_claims(mesh_claims.clone())
-                                    .with_executable_dirs(cfg.executable_dirs.clone()),
+                                    .with_executable_dirs(cfg.executable_dirs.clone())
+                                    .with_topology_storage_providers(providers.names()),
                                 );
                                 // The claim door: this admin decides a fabric-lane claim only while it holds the fabric-primary
                                 // seat, and its own mesh's drift-lane claim only while it holds its mesh's primary seat (R-BI7).
@@ -1423,6 +1438,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 admin_env.insert(rdm_core::launch::ENV_EXECUTABLE_DIRS.to_string(), cfg.executable_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(","));
                             }
                             let data_root = cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
+                            // Every node this admin launches is written the topology storage provider it writes itself
+                            // (storage.md §2 "every launch").
+                            let mut env = cfg.passthrough.clone();
+                            env.insert(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER.to_string(), cfg.topology_storage_provider.clone());
                             let template = LaunchTemplate { fabric: cfg.fabric.clone(),
                                 fabric_id: cfg.fabric_id.clone(),
                                 executable: PathBuf::new(),
@@ -1431,7 +1450,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // container fabric).
                                 seeds: vec![(key.public().to_string(), mesh_addr)],
                                 launcher: rdm_core::launch::Launcher { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() },
-                                env: cfg.passthrough.clone(),
+                                env,
                                 data_root,
                                 store_dir: cfg.store_dir.clone(),
                                 issuing: None,
