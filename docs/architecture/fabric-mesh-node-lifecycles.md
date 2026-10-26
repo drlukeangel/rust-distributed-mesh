@@ -25,6 +25,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | [Fabric primary](fabric-primary.md) | the fabric-primary: the mesh roster from the accepted Build, takeover as hydration, the complete-view gate, fabric identity hydration, the event-distinction table |
 | [Node identity and state](node-identity-and-state.md) | node identity (ids, endpoint_id, path.name, incarnation, prefixes), node/mesh/fabric rows and their writers, the NodeState liveness enum, the hydration roster, local eviction, the stopped-node collector |
 | [Connections](connections.md) | connections, routes, reach and reroute |
+| [Storage](storage.md) | the two things called storage: `storage_persistence`, a node's own data dir across its births and once it is gone, and `topology_storage_provider`, the backend RDM's five record stores are written to and how a fabric changes it live |
 | [Telemetry](telemetry.md) | span export, and how one W3C trace crosses processes: Node RPC calls and workflows, gossip frames, a launch, data-plane connections, the fabric's change; where a trace starts; what is joined by identity |
 
 ## Three mechanisms
