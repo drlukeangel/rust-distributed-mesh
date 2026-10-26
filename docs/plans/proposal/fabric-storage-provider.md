@@ -66,8 +66,10 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   bound to its place at registration: `file` is the directory `RDM_STORE_DIR` names, the application's
   backend its own addresses; the node that writes never names a place, it hands the record to the
   trait and the backend behind it knows where (storage-is-persistence-only, Q109). A move between two
-  places of one backend is therefore two registered names, or a value that carries the place
-  (`file:<dir>`); which, is a line for Luke.
+  places of one backend is therefore two registered names; storage.md §2 settles it ("A name is
+  bound to its place at registration"), and no value carries its place (`file:<dir>` is not a
+  provider name). Built so in i149 e1: the testkit registers `file` and `test-target`, one file
+  backend at two places.
 - **R-SP2. The Fabric's row carries it.** The Fabric record gains `topology_storage_provider` (the current one)
   and `previous_topology_storage_providers` (each one the fabric left, in order), written by the fabric-primary,
   and the Fabric row's read (`fabrics.get` under Q167's amendment) answers both. The bootstrap admin
