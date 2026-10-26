@@ -10,7 +10,10 @@ the fabric-primary moves and is brought back without a person
 launches one node-admin at the fabric-primary's path.name: the adoption launch ([Nothing alive](#nothing-alive),
 Q156), or a launch on the fabric-primary's data dir
 ([who starts recovery](../node-admin-lifecycle.md#44-fabric-primary-recovery-and-who-starts-it)); the
-adoption launch's `RDM_NODE_NAME` or the durable topology selects recovery, never Day 0. No surviving maker
+adoption launch's `RDM_NODE_NAME` or the durable topology selects recovery, never Day 0. Before its first
+mutation the launch on the fabric-primary's data dir asks, as the adoption launch does, whether any node-admin
+answers: a launch that finds a living admin is refused NameHeld, never an ordinary admin at the primary's name,
+and that admin's fabric recovery re-creates the birth (Q156, Q199). No surviving maker
 exists, so there are no maker JoinNode/GetTopology calls. The launched node-admin is a new node at the same
 path.name: a new node.id and incarnation and a new port, with the same endpoint key over the inherited data
 dir and a new one over a new data dir. The person's steps are in the
