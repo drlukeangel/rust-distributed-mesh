@@ -652,7 +652,7 @@ impl FabricStates {
         // worked (a restart opened an attempt), the application is asked again for the current one.
         if change.sync.as_ref().is_some_and(|run| run.sent.build_id != build.build_id.to_string() || run.sent.attempt != build.attempt) {
             if let Some(run) = change.sync.take() {
-                tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-sync-state-reissued", node = %me, was_build_id = %run.sent.build_id, was_attempt = run.sent.attempt, build_id = %build.build_id.log(), attempt = build.attempt, "otel.kind" = "internal")
+                tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-sync-state-reissued", node = %me, was_build_id = %run.sent.build_id, was_attempt = run.sent.attempt, build_id = %build.build_id.log(), submitted_at_ms = build.submitted_at_ms, attempt = build.attempt, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the accepted attempt moved: sync_state is called again for the current one"));
                 run.task.abort();
             }
@@ -665,7 +665,7 @@ impl FabricStates {
                     return;
                 }
             };
-            let sent = StateSyncHandoff { fabric_id: self.env.fabric_id.clone(), build_id: build.build_id.to_string(), attempt: build.attempt, operation: format!("state-sync:{}", self.env.fabric_id), context };
+            let sent = StateSyncHandoff { fabric_id: self.env.fabric_id.clone(), build_id: build.build_id.to_string(), submitted_at_ms: build.submitted_at_ms, attempt: build.attempt, operation: format!("state-sync:{}", self.env.fabric_id), context };
             let progress = Arc::new(Mutex::new(Progress::Waiting));
             let (this, hook, me_for_task, sent_for_task, progress_for_task, parent_for_task) = (self.clone(), self.env.hooks.sync_state.clone(), me.clone(), sent.clone(), progress.clone(), parent.clone());
             let task = tokio::spawn(async move {
@@ -707,6 +707,7 @@ impl FabricStates {
         let refusal = [
             (answer.fabric_id != sent.fabric_id).then(|| format!("fabric_id: sent {}, answered {}", sent.fabric_id, answer.fabric_id)),
             (answer.build_id != sent.build_id).then(|| format!("build_id: sent {}, answered {}", sent.build_id, answer.build_id)),
+            (answer.submitted_at_ms != sent.submitted_at_ms).then(|| format!("submitted_at_ms: sent {}, answered {}", sent.submitted_at_ms, answer.submitted_at_ms)),
             (answer.attempt != sent.attempt).then(|| format!("attempt: sent {}, answered {}", sent.attempt, answer.attempt)),
             (answer.operation != sent.operation).then(|| format!("operation: sent {}, answered {}", sent.operation, answer.operation)),
         ]
@@ -725,7 +726,7 @@ impl FabricStates {
         if !self.may_advance() {
             return;
         }
-        tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-state-synced", node = %me, build_id = %sent.build_id, attempt = sent.attempt, operation = %sent.operation, "otel.kind" = "internal")
+        tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-state-synced", node = %me, build_id = %sent.build_id, submitted_at_ms = sent.submitted_at_ms, attempt = sent.attempt, operation = %sent.operation, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the application's state-synced matches this state-sync: state-commit begins"));
         if let Some(run) = change.sync.take() {
             run.task.abort();
@@ -855,7 +856,7 @@ impl FabricStates {
     /// The one notice to the application: after the open-traffic checklist completed and the fabric
     /// is ready-for-traffic. It gates nothing.
     fn notify_traffic_opened(&self, key: &StateKey, parent: tracing::Span, me: PathName) {
-        let (hook, contexts) = (self.env.hooks.traffic_opened.clone(), self.env.contexts.clone());
+        let (hook, contexts, builds) = (self.env.hooks.traffic_opened.clone(), self.env.contexts.clone(), self.env.builds.clone());
         let state_key = (key.fabric_id.clone(), key.build_id.clone(), key.attempt);
         tokio::spawn(async move {
             let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-traffic-opened-hook", node = %me, build_id = %state_key.1, attempt = state_key.2, bound = hook.is_some(), "otel.kind" = "internal");
@@ -864,14 +865,26 @@ impl FabricStates {
                     tracing::info!("no traffic_opened notice is registered");
                     return;
                 };
-                let context = match crate::build::BuildId::parse(&state_key.1) {
-                    Ok(build) => contexts.get(&build, state_key.2).await.ok().flatten().unwrap_or_default(),
+                let (context, submitted_at_ms) = match crate::build::BuildId::parse(&state_key.1) {
+                    Ok(build) => {
+                        let context = contexts.get(&build, state_key.2).await.ok().flatten().unwrap_or_default();
+                        // The Build's acceptance stamp, as the state-sync handoff carried it (Q168): an
+                        // unreadable one is named and sent as 0, older than every accepted Build.
+                        let submitted_at_ms = match builds.read_build(&build).await {
+                            Ok(b) => b.submitted_at_ms,
+                            Err(e) => {
+                                tracing::info!(build_id = %state_key.1, error = %e, "the checklist's Build is unreadable: its acceptance stamp is sent as 0");
+                                0
+                            }
+                        };
+                        (context, submitted_at_ms)
+                    }
                     Err(e) => {
-                        tracing::info!(build_id = %state_key.1, error = %e, "the checklist's Build id is not a Crockford id: no call context is held for it");
-                        Default::default()
+                        tracing::info!(build_id = %state_key.1, error = %e, "the checklist's Build id is not a Crockford id: no call context or acceptance stamp is held for it");
+                        (Default::default(), 0)
                     }
                 };
-                hook(StateSyncHandoff { fabric_id: state_key.0.clone(), build_id: state_key.1.clone(), attempt: state_key.2, operation: StateCommand::OpenTraffic.operation(&state_key.0), context }).await;
+                hook(StateSyncHandoff { fabric_id: state_key.0.clone(), build_id: state_key.1.clone(), submitted_at_ms, attempt: state_key.2, operation: StateCommand::OpenTraffic.operation(&state_key.0), context }).await;
                 tracing::info!("the application was told the fabric opened traffic");
             }
             .instrument(span)
@@ -1399,7 +1412,7 @@ fn mesh_blockers(view: &Topology, meshes: &[String], planned: &std::collections:
 /// failure it reports by name, Q158) held for the fabric's change to judge. No application work answers at once, naming why.
 async fn run_sync_state(hook: Option<SyncState>, me: PathName, sent: StateSyncHandoff, progress: Arc<Mutex<Progress>>, parent: tracing::Span) {
     let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-sync-state-hook", node = %me, build_id = %sent.build_id, attempt = sent.attempt, operation = %sent.operation, reason = tracing::field::Empty, outcome = tracing::field::Empty, "otel.kind" = "internal");
-    tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-sync-state-called", node = %me, build_id = %sent.build_id, attempt = sent.attempt, operation = %sent.operation, bound = matches!(hook, Some(SyncState::Hook(_))), "otel.kind" = "internal")
+    tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-sync-state-called", node = %me, build_id = %sent.build_id, submitted_at_ms = sent.submitted_at_ms, attempt = sent.attempt, operation = %sent.operation, bound = matches!(hook, Some(SyncState::Hook(_))), "otel.kind" = "internal")
         .in_scope(|| tracing::info!("sync_state is called with the state fields"));
     let answer = async {
         match hook {
@@ -1610,6 +1623,66 @@ mod tests {
         drop(change);
         tokio::task::yield_now().await;
         assert_eq!(calls.load(Ordering::SeqCst), 0, "the application was asked to sync nothing");
+    }
+
+    /// CONTRACT (Q168 arm A, "the handoff gains `submitted_at_ms`"; node-rpc-envelope.md, "Application
+    /// state-sync handoff"): `sync_state` is called with the accepted Build's acceptance stamp beside its
+    /// id and attempt, and an answer naming another stamp is not this state-sync's completion: it is
+    /// refused by name, field `submitted_at_ms`, and the fabric stays in state-sync.
+    #[tokio::test]
+    async fn the_state_sync_handoff_carries_the_accepted_builds_acceptance_stamp_and_an_answer_naming_another_is_refused() {
+        use crate::accepted::MeshTopology;
+        use crate::build::MeshDesired;
+        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
+        let builds = Arc::new(MemoryBuildStateAdapter::new());
+        let topology = FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])))].into() };
+        let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: 7_000 }).await.unwrap();
+        claim(&builds, &id, 1).await;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<StateSyncHandoff>::new()));
+        let hook = {
+            let seen = seen.clone();
+            SyncState::Hook(Arc::new(move |handoff: StateSyncHandoff| {
+                seen.lock().unwrap().push(handoff.clone());
+                Box::pin(async move { Ok(StateSyncHandoff { submitted_at_ms: handoff.submitted_at_ms + 1, ..handoff }) })
+            }))
+        };
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let records = Arc::new(Records::default());
+        let fabric_states = FabricStates::new(StatesEnv {
+            me: "mesh1.admin.1".parse().unwrap(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            fabric_id: FabricId::mint(),
+            topology: Arc::new(RwLock::new(projected(Vec::new()))),
+            client: Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new()))),
+            builds: builds.clone(),
+            contexts: Arc::new(AttemptContexts::in_memory()),
+            declarer: Declarer::new(),
+            wake: records.wake.clone(),
+            records: records.clone(),
+            hooks: FabricHooks { sync_state: Some(hook), traffic_opened: None },
+            actions: Arc::new(NoScratchpad),
+            acted: Arc::default(),
+        });
+        records.set_published_fabric_state(Some(FabricState::StateSync));
+        records.set_fabric_state(FabricState::StateSync);
+        let mut change = fabric_states.change.lock().await;
+        change.tracked = Some(topology.clone());
+        change.tracked_build = Some(id.clone());
+        fabric_states.step_state_sync(&mut change, &fabric_states.env.builds.current().await).await;
+        let sent = change.sync.as_ref().expect("sync_state is called for the accepted Build's attempt").sent.clone();
+        assert_eq!((sent.build_id.as_str(), sent.submitted_at_ms, sent.attempt), (id.as_str(), 7_000, 1), "the handoff names the Build, its acceptance stamp and the attempt");
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while matches!(*change.sync.as_ref().unwrap().progress.lock().unwrap(), Progress::Waiting) {
+            assert!(tokio::time::Instant::now() < until, "the hook answered within 10 s");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(seen.lock().unwrap().iter().map(|h| h.submitted_at_ms).collect::<Vec<_>>(), vec![7_000], "the application was handed the acceptance stamp");
+        fabric_states.step_state_sync(&mut change, &fabric_states.env.builds.current().await).await;
+        assert_eq!(records.fabric_state(), FabricState::StateSync, "an answer naming another acceptance stamp does not start state-commit");
+        let blocker = records.fabric_blocker().unwrap_or_default();
+        assert!(blocker.contains("submitted_at_ms: sent 7000, answered 7001") && blocker.contains("state-synced-refused"), "the refusal names the field: {blocker}");
     }
 
     /// The checklists of the admin `me`, as `view` holds it, over `builds` and `records`: a client on an

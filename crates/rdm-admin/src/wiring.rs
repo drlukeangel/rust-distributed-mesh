@@ -94,15 +94,20 @@ pub struct DriftHold {
 /// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
 pub type ServeApp = Box<dyn FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder + Send>;
 
-/// The state fields of the application hand-off: `fabric_id`, `build_id`, `attempt`,
-/// `operation = state-sync:<fabric_id>` and the observability context (fabric-state-sync.md).
-/// `SyncState` carries them to the application and `StateSynced` carries them back.
+/// The state fields of the application hand-off: `fabric_id`, `build_id`, `submitted_at_ms`,
+/// `attempt`, `operation = state-sync:<fabric_id>` and the observability context
+/// (fabric-state-sync.md). `SyncState` carries them to the application and `StateSynced` carries
+/// them back. Every application operation the hook sends carries `build_id`, `submitted_at_ms` and
+/// `attempt`, and the node that serves it admits it by `admit_attempt` (Q168).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateSyncHandoff {
     /// The fabric.
     pub fabric_id: rdm_core::FabricId,
     /// The accepted Build the checklist belongs to.
     pub build_id: String,
+    /// The accepted Build's acceptance stamp (R-BI3: `max(now, newest accepted + 1)`): with
+    /// `attempt`, the order `admit_attempt` admits by (Q168).
+    pub submitted_at_ms: u64,
     /// The Build attempt that holds the checklist.
     pub attempt: u32,
     /// `state-sync:<fabric_id>`.

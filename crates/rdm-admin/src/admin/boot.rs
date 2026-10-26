@@ -57,6 +57,11 @@ pub struct Running {
     /// its inherited data dir, an adoption launch), issued by its own issuer. `None` for a recovery
     /// start on neither.
     pub member_cert: Option<Vec<u8>>,
+    /// This admin's admitted state-sync attempt (Q168; fabric-node-hooks.md, `sync_state`), read back
+    /// from beside its data dir at its start: an app op served on this admin that does work for a
+    /// state-sync attempt calls its `admit_attempt` under its resource's serialization before it
+    /// mutates.
+    pub attempts: Arc<crate::admitted_attempt::AdmittedAttempt>,
     /// This admin's status authority, once it holds a view.
     pub(crate) authority: crate::status_rpc::AuthoritySlot,
     /// The app's protocols on this admin's endpoint ([`crate::wiring::Wiring::alpns`]).
@@ -344,6 +349,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
     let key = load_or_mint_key(&cfg.data_dir).await?;
     drop(step);
+    // The state-sync attempt this admin admitted, read back before anything serves (Q168).
+    let attempts_dir = cfg.data_dir.clone();
+    let attempts = Arc::new(crate::blocking::blocking_io(move || crate::admitted_attempt::AdmittedAttempt::open(&attempts_dir)).await.map_err(|e| format!("refusing to start: {e}"))?);
     let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = tracing::field::Empty, inherited_root = tracing::field::Empty, writes_to = tracing::field::Empty, mesh_id = tracing::field::Empty, error = tracing::field::Empty);
     // The node-admin storage boundaries: its own row, the runtimes it started, its Build journal and
     // attempt contexts in its own data dir; the fabric, mesh, nodes, connections and status stores
@@ -3087,7 +3095,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         }));
                                     }
-                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), before_ready_cancel, before_ready: before_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone(), data_connections: data_connections.clone() });
+                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), before_ready_cancel, before_ready: before_ready_cell.clone(), member_cert, attempts: attempts.clone(), gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone(), data_connections: data_connections.clone() });
                                     Ok::<_, String>(())
                                 })
                             });
