@@ -37,7 +37,8 @@ fn holds_fabric_identity_row(store_root: &Path) -> bool {
 /// CONTRACT: the node-admin an estate restarted on its own data dir is the estate's process like the
 /// bootstrap admin; dropping the estate (as a panicking cell does) stops it and whatever it launched,
 /// at once, not when the test binary exits. The bootstrap admin hands off its seats via `node.stop`
-/// (`node.primary.update` to `mesh1.admin.2`) once the Fabric row is durable, and is restarted on its data dir.
+/// (`node.primary.update` to `mesh1.admin.2`) once the Fabric row is durable; every node-admin is then
+/// lost and it is restarted on its data dir (a launch while a node-admin lives is refused, Q156, Q199).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dropped_estate_leaves_no_process_of_its_root() {
     let mut estate = Estate::bootstrap(owner("drop", "a_dropped_estate_leaves_no_process_of_its_root"), "fabric1", "mesh1").await;
@@ -53,6 +54,11 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.kill_bootstrap();
+    for (path, pid) in estate.live_runtimes() {
+        if path.file_name().is_some_and(|n| n.to_string_lossy().contains(".admin.")) {
+            estate.kill_pid(pid);
+        }
+    }
     estate.restart_admin_with(&data_dir, &[]);
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(!processes_of(&root).is_empty(), "the restarted node-admin runs under the estate's root");

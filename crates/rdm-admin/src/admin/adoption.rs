@@ -404,10 +404,9 @@ pub async fn check(c: &Claimed, answers: &dyn Answers) -> Result<Finding, Refuse
             tracing::Span::current().record("answered", c.lost.name.to_string().as_str());
             return Err(Refused { reason: format!("NameHeld: the lost birth {} ({}) at {} answered node investigation: it is alive, and {} is held by it", c.lost.node_id, c.lost.incarnation_id.as_str(), c.lost.name, c.lost.name), answered: c.lost.name.to_string() });
         }
-        let answering = answers.admins_answering().await;
-        if !answering.is_empty() {
-            tracing::Span::current().record("answered", answering.join(",").as_str());
-            return Err(Refused { reason: format!("NameHeld: node-admin {} answered before this launch's first mutation: the fabric has a live admin, and {} is held by {}", answering.join(", "), c.lost.name, c.lost.node_id), answered: answering[0].clone() });
+        if let Some(refused) = admin_answered(&c.lost, answers).await {
+            tracing::Span::current().record("answered", refused.answered.as_str());
+            return Err(refused);
         }
         Ok(finding)
     }
@@ -416,6 +415,17 @@ pub async fn check(c: &Claimed, answers: &dyn Answers) -> Result<Finding, Refuse
     span.record("outcome", if decided.is_ok() { "clear" } else { "name-held" });
     span.in_scope(|| tracing::info!("the adoption launch's checks before its first mutation"));
     decided
+}
+
+/// The last check before a launch's first mutation, the adoption launch's and the launch on an
+/// inherited data dir's alike (Q156: "a launch that finds a living admin is refused, never an ordinary
+/// admin at the primary's name"; Q199): whether any node-admin the store records answers a probe now.
+/// `Some` refusal, `NameHeld` naming who answered, when one does: the fabric has a live admin, and the
+/// lost birth `lost`'s path.name is its fabric recovery's to re-create.
+pub async fn admin_answered(lost: &crate::storage::NodeRecord, answers: &dyn Answers) -> Option<Refused> {
+    let answering = answers.admins_answering().await;
+    let first = answering.first()?.clone();
+    Some(Refused { reason: format!("NameHeld: node-admin {} answered before this launch's first mutation: the fabric has a live admin, and {} is held by {}", answering.join(", "), lost.name, lost.node_id), answered: first })
 }
 
 /// Why the checks refused the launch, and the admin that answered.

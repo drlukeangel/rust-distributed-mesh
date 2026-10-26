@@ -494,6 +494,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // The adoption launch's own runtime, adopted at its claim (deployment-provider.md §3, the externally
     // started Day-0 adoption): its last step, the publication, runs with the bootstrap's digest below.
     let mut adopted_at_claim: Option<CurrentRuntimeAdoption> = None;
+    // The launch on an inherited data dir, its step and the inherited birth, until its check before its
+    // first mutation decides it (below).
+    let mut inherited_launch: Option<(tracing::Span, crate::storage::NodeRecord)> = None;
     let (name, node_id, incarnation, supersedes, mesh_addr, seeds) = match (&cfg.launch, &inherited) {
         (Some(l), _) => (l.name.clone(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, l.seeds.clone()),
         (None, Some(lost)) if adoption.is_some() => {
@@ -549,34 +552,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 inherited_incarnation_id = %own.incarnation_id,
                 fabric_id = %cfg.fabric_id,
                 contacts = tracing::field::Empty,
+                answered = tracing::field::Empty,
+                outcome = tracing::field::Empty,
             );
-            // The inherited birth is re-created through node recovery, never waited for (fabric-recovery.md
-            // "Nothing alive"): a boot on an inherited data dir proceeds as recovery, `TerminateRuntime`
-            // first on every read of the old runtime but os-stopped (node-runtime-inspect.md "What
-            // follows", Q145). An old process that comes back is refused at admission and terminated.
-            let provider = match &early {
-                Some((_, p)) => p.as_ref(),
-                None => return Err(format!("refusing to start: {}: no deployment provider prepared for the inherited birth {} at {}", cfg.data_dir.display(), own.node_id, own.name)),
-            };
-            let own_runtime = nodes_storage.runtime(&own.node_id, &own.incarnation_id).await.map_err(storage_err)?;
-            if let Some(handle) = own_runtime.as_ref().and_then(|r| crate::deployment::provider::adopt(provider, &r.runtime).ok()) {
-                let mode = crate::deployment::provider::TerminationMode::Graceful { grace: crate::deployment::pipeline::Timeouts::default().stop_grace };
-                crate::deployment::provider::terminate_unless_os_stopped(provider, &handle, mode)
-                    .instrument(step.clone())
-                    .await
-                    .map_err(|e| format!("refusing to start: {}: {} cannot terminate the inherited birth {} ({}) at {}: {e}", cfg.data_dir.display(), node_id, own.node_id, own.incarnation_id.as_str(), own.name))?;
-            }
-            // The inherited birth's node.delete, then this node's claim of its path.name: the first writes
-            // of this birth (`take_inherited_name`). A name another node holds refuses the start by name.
-            crate::node_rows::take_inherited_name(&*nodes_storage, &caches.nodes, own, &node_id)
-                .instrument(step.clone())
-                .await
-                .map_err(|e| format!("refusing to start: {}: {} takes {} over the inherited birth {}: {e}", cfg.data_dir.display(), node_id, own.name, own.node_id))?;
+            // Nothing is written here: the launch first asks whether any node-admin of the fabric answers,
+            // once its endpoint can call (below, before its first mutation; Q156, Q199).
             let mut contacts = super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &own.name.mesh).await.map_err(storage_err)?;
             contacts.sort_by_key(|c| (c.name.mesh != own.name.mesh, c.name.to_string()));
             let seeds = contacts.iter().filter_map(|c| c.gossip_addr().and_then(|a| a.ip_addrs().next().map(|ip| (a.id.to_string(), *ip)))).collect();
             step.record("contacts", contacts.len());
-            step.in_scope(|| tracing::info!("fabric recovery: a new node over the inherited data dir, at its path.name"));
+            inherited_launch = Some((step, own.clone()));
             (
                 own.name.clone(),
                 node_id,
@@ -783,6 +768,53 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             }
             return Err(format!("refusing to start: {refusal}"));
         }
+    }
+    // The launch on an inherited data dir (fabric-recovery.md; node-admin-lifecycle.md §4.4): before its
+    // first mutation it asks whether any node-admin the store records answers, the adoption launch's check
+    // (Q156: "a launch that finds a living admin is refused, never an ordinary admin at the primary's name";
+    // Q199). An answer refuses it `NameHeld` by name, having written nothing: the fabric has a live admin,
+    // whose fabric recovery re-creates the birth at this path.name. Otherwise the inherited birth is
+    // re-created through node recovery, never waited for (fabric-recovery.md "Nothing alive"):
+    // `TerminateRuntime` first on every read of the old runtime but os-stopped (node-runtime-inspect.md
+    // "What follows", Q145), then its node.delete and this node's claim of its path.name, the first writes
+    // of this birth (`take_inherited_name`). An old process that comes back is refused at admission and
+    // terminated.
+    if let Some((step, own)) = inherited_launch.take() {
+        let provider = match &early {
+            Some((_, p)) => p.clone(),
+            None => return Err(format!("refusing to start: {}: no deployment provider prepared for the inherited birth {} at {}", cfg.data_dir.display(), own.node_id, own.name)),
+        };
+        let answers = super::adoption::ProbeAnswers {
+            me: name.clone(),
+            me_id: node_id.clone(),
+            client: node_rpc.client.clone(),
+            resolver: node_rpc_resolver.clone(),
+            provider: provider.clone(),
+            nodes: nodes_storage.clone(),
+            meshes: mesh_storage.clone(),
+            fabric: crate::model::Fabric { id: cfg.fabric_id.clone(), name: cfg.fabric.clone(), status: crate::model::ScopeStatus::Pending, provider: provider.kind() },
+        };
+        if let Some(refused) = super::adoption::admin_answered(&own, &answers).instrument(step.clone()).await {
+            step.record("answered", refused.answered.as_str());
+            step.record("outcome", "name-held");
+            step.in_scope(|| tracing::info!("the launch on an inherited data dir is refused: a node-admin of the fabric answered before its first mutation"));
+            return Err(format!("refusing to start: {}: {refused}", cfg.data_dir.display()));
+        }
+        let own_runtime = nodes_storage.runtime(&own.node_id, &own.incarnation_id).await.map_err(storage_err)?;
+        if let Some(handle) = own_runtime.as_ref().and_then(|r| crate::deployment::provider::adopt(&*provider, &r.runtime).ok()) {
+            let mode = crate::deployment::provider::TerminationMode::Graceful { grace: crate::deployment::pipeline::Timeouts::default().stop_grace };
+            crate::deployment::provider::terminate_unless_os_stopped(&*provider, &handle, mode)
+                .instrument(step.clone())
+                .await
+                .map_err(|e| format!("refusing to start: {}: {} cannot terminate the inherited birth {} ({}) at {}: {e}", cfg.data_dir.display(), node_id, own.node_id, own.incarnation_id.as_str(), own.name))?;
+        }
+        // A name another node holds refuses the start by name.
+        crate::node_rows::take_inherited_name(&*nodes_storage, &caches.nodes, &own, &node_id)
+            .instrument(step.clone())
+            .await
+            .map_err(|e| format!("refusing to start: {}: {} takes {} over the inherited birth {}: {e}", cfg.data_dir.display(), node_id, own.name, own.node_id))?;
+        step.record("outcome", "taken");
+        step.in_scope(|| tracing::info!("fabric recovery: a new node over the inherited data dir, at its path.name"));
     }
     // No crate of RDM serves a route or opens an HTTP listener (rdm-crate-and-test-layout.md §2): the
     // admin's application contact (`admin_api_base`, config, never checked) names this admin's node id.
