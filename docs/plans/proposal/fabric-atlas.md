@@ -21,35 +21,37 @@ through gossip and the store's records; the atlas takes those results in (Luke, 
 
 ## What it replaces
 
-The fabric-primary accepts a Build from a projection rebuilt per request from the `DigestView` (the gossip
-view and everything in flight) and the store rows (`control_plane.rs` accept or deny, `boot.rs` `view_now`,
-`projection.rs` `project_with`). A completed stop is already applied before `Complete`, but through the gossip view, which Q197 rules out: `SeatGate::attempt_completed`
-(`admin/reconcile.rs:139-152`, awaited at `build_drive.rs:1306`) takes each completed `node.stop:` receipt into
-the fabric-primary's view (span `rdm.mesh.topology.remove.via-node-stopped`, `publisher=` empty). No other
-receipt is: a completed start leaves the node `leaving` in that view until gossip says otherwise, so a stop sent
-the moment a start completes is refused `node-not-live` (red 5/5 on mesh2s node-admins, fabric-atlas-red
-8d4768946). `DigestView` keeps its name and meaning (Luke, 2026-10-26: \"digest-view is supposed to be the
-gossip-view and everything that is inflight\").
+The fabric-primary accepts or denies a request from a projection rebuilt per request from the `DigestView`
+(the gossip view and everything in flight) and the store rows (`control_plane.rs`, `boot.rs` `view_now`,
+`projection.rs` `project_with`). A completed stop is already applied before `Complete`, but through the gossip
+view, which Q197 rules out: `SeatGate::attempt_completed` (`admin/reconcile.rs:139-152`, awaited at
+`build_drive.rs:1306`) takes each completed `node.stop:` receipt into the fabric-primary's view (span
+`rdm.mesh.topology.remove.via-node-stopped`, `publisher=` empty). No other receipt is: a completed start leaves
+the node `leaving` in that view until gossip says otherwise, so a stop sent the moment a start completes is
+refused `node-not-live` (red 5/5 on mesh2's node-admins, fabric-atlas-red 8d4768946). `DigestView` keeps its
+name and meaning (Luke, 2026-10-26: "digest-view is supposed to be the gossip-view and everything that is
+inflight").
 
 ## Requirements
 
-- **R-FA1.** The fabric-primary holds one `FabricAtlas`. The fabric-primary accepts or denies every request (Stop, Start,
-  Delete, Reconcile, the rest) reads it, and nothing else. Its accept and progress entries are the
-  fabric-primary's own ops (what it accepted, the receipts its commands returned, directly or through
-  `build.attempt.run` for a peer mesh), never a gossip frame.
-- **R-FA2.** Accepting a request writes it; execution progress writes it from each attempts
-  receipts as they stream up `build.attempt.run`, before the caller is answered `Complete`.
-- **R-FA3.** Gossip observations are context in the atlas and decide no accept or deny; they merge in only what the fabric-primary did not do itself, each under the
-  receiver rules ordering (gossip.md §3.1: a frame older than the newest held for its key is ignored; a
-  births `digest_seq`; a Builds attempt number), so a delayed event never moves it backward.
-- **R-FA4.** `fabrics.atlas.get` returns it (Q167s read naming); `fabrics.get` is unchanged.
-- **R-FA5.** Both directions are accepted: a `node.start` sent the moment the nodes `node.stop` streams
+- **R-FA1.** The fabric-primary holds one `FabricAtlas` and accepts or denies every request (Stop, Start,
+  Delete, Reconcile, the rest) from it, and from nothing else. Its entries are the fabric-primary's own ops
+  (what it accepted, the receipts its commands returned, directly or through `build.attempt.run` for a peer
+  mesh) and the results of other admins' self-healing ops it observes, never a gossip frame as a decision.
+- **R-FA2.** Accepting a request writes it; execution progress writes it from each attempt's receipts as they
+  stream up `build.attempt.run`, before the caller is answered `Complete`.
+- **R-FA3.** Gossip observations are context in the atlas and decide no accept or deny; they merge in only what
+  the fabric-primary did not do itself, each under the receiver rules' ordering (gossip.md §3.1: a frame older
+  than the newest held for its key is ignored; a birth's `digest_seq`; a Build's attempt number), so a delayed
+  event never moves it backward.
+- **R-FA4.** `fabrics.atlas.get` returns it (Q167's read naming); `fabrics.get` is unchanged.
+- **R-FA5.** Both directions are accepted: a `node.start` sent the moment the node's `node.stop` streams
   `Complete` (passes today, through the stop receipt) and a `node.stop` sent the moment its `node.start`
-  streams `Complete` (red today, `a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_accepted`).
+  streams `Complete` (red today, `a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_admitted`).
 
 ## Open
 
-- Its page: node-identity-and-state.md beside the `DigestView` text, or build.md §4 accept or deny; the exact
+- Its page: node-identity-and-state.md beside the `DigestView` text, or build.md §4; the exact
   text goes to Luke before landing.
-- The existing `FabricState` (`fabric_state.rs`, the fabrics pending / ready-for-traffic state) keeps
+- The existing `FabricState` (`fabric_state.rs`, the fabric's pending / ready-for-traffic state) keeps
   its name.
