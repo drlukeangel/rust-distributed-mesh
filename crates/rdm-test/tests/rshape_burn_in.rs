@@ -1963,6 +1963,8 @@ impl Run {
         let attempt = v["attempt"].as_u64().unwrap_or_else(|| panic!("Started names the attempt it opened: {v}"));
         self.attempts.insert(build_id.to_string(), attempt);
         self.actions.push(json!({"t_ms": now_ms(), "action": format!("node.start of {node}"), "via": "node.start", "subject": node, "attempt": attempt, "build_id": build_id, "accepted_by": st.fp["name"]}));
+        // The start is an accepted write of its own: it opens the Build's next attempt, as the stop did (Q183).
+        self.writes.push(json!({"what": format!("node.start of {node}"), "op": "node.start", "subject": node, "accepted_by": st.fp["name"], "accepted_by_node_id": st.fp["node_id"], "build_id": build_id, "attempt": attempt, "t_ms": now_ms()}));
         attempt
     }
 
@@ -2026,6 +2028,8 @@ impl Run {
                     assert_eq!(v["reply"], "started", "the restart's node.start of {node} at {fp}: {v}");
                     attempt = v["attempt"].as_u64().unwrap_or_else(|| panic!("Started names the attempt it opened: {v}"));
                     self.actions.push(json!({"t_ms": now_ms(), "action": format!("node.start of {node}"), "via": "node.start", "subject": node, "attempt": attempt, "build_id": build_id, "accepted_by": fp}));
+                    // The start is an accepted write of its own: it opens the Build's next attempt, as the stop did (Q183).
+                    self.writes.push(json!({"what": format!("node.start of {node}"), "op": "node.start", "subject": node, "accepted_by": fp, "build_id": build_id, "attempt": attempt, "t_ms": now_ms()}));
                     start_sent = true;
                     continue;
                 }
@@ -2360,7 +2364,7 @@ fn check_one_executor_per_attempt(claims: &[Value], inv: &mut Invariants) -> Val
 fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mut Invariants) -> Value {
     let creates = named(spans, "rdm.node_admin.build.create.via-node-rpc");
     let updates = named(spans, "rdm.node_admin.build.update.via-node-rpc");
-    let opens_attempt = |w: &Value| w["op"].as_str() == Some("node.stop") || (w["op"] == "node.delete" && s(&w["subject"]).ends_with(".old"));
+    let opens_attempt = |w: &Value| matches!(w["op"].as_str(), Some("node.stop") | Some("node.start")) || (w["op"] == "node.delete" && s(&w["subject"]).ends_with(".old"));
     let accepted_creates: Vec<String> = creates.iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     let want_creates: BTreeSet<String> = std::iter::once(f.build_id.clone()).chain(a.writes.iter().filter(|w| !opens_attempt(w)).map(|w| s(&w["build_id"]))).collect();
     let got_creates: BTreeSet<String> = accepted_creates.iter().cloned().collect();
@@ -2768,7 +2772,8 @@ async fn recovery_run(cell: &str, shape: Shape) {
         let node = s(&victim["name"]);
         let ev = restart_via_build(&mut f, &mut a, &st, &node, &format!("R{round}: a Build-executed restart")).await;
         assert_eq!(ev["build_id"], json!(b0), "R{round}: the restart is an attempt of the accepted Build, not a new one");
-        assert_eq!(ev["attempt_after"].as_u64(), ev["attempt_before"].as_u64().map(|x| x + 1), "R{round}: the attempt advanced by exactly one: {ev}");
+        // A restart is node.stop then node.start (Q183): two attempts of the accepted Build.
+        assert_eq!(ev["attempt_after"].as_u64(), ev["attempt_before"].as_u64().map(|x| x + 2), "R{round}: the attempt advanced by exactly two, the stop's and the start's: {ev}");
         st = a.stable(&mut f, &format!("R{round}: {node} restarted"), &both(2), &mut inv).await;
         assert_eq!(s(&st.fabric["build_id"]), b0, "R{round}: the current build_id stays the formation Build");
         trail.push(json!({"after": format!("R{round}"), "fabric_build_id": st.fabric["build_id"], "attempt": ev["attempt_after"]}));
