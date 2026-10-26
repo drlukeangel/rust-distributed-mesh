@@ -50,6 +50,10 @@ are source anchors rather than assertions that the missing capability already ex
 | R16 | Publish usable instructions and recovery procedures with the final implementation evidence | BUILD | `docs/eng/consumer-guide.md:1`, `docs/architecture/storage.md:54` | e6 |
 | R17 | Ordinary Build execution retains its existing exclusive attempt and receipt model | HOLDS | `docs/architecture/build.md:405`, `crates/rdm-admin/src/mesh_claims.rs:1`; migration-specific extensions are R7–R12 | e4 |
 
+## § Inventory
+
+The e2/e3 inventory, read at 7d0b316eb: [i149-inventory](i149-inventory.md) (every storage handle owner, write path, claim, finish-writes gap, copy fact and cross-writer reader, with file:line). Its §7 lists 16 places today's code differs from Storage §2; e2–e4 resolve each with a cell. Four were checked by the lead against the code: the fabric name claim is read-then-put (`fabric_storage.rs:73-89`), Build claims are decided under a process-local mutex (`build_state.rs:2444-2476`), observed connection writes are queued in memory (`connections_writer.rs:342-346`), and finish-writes only takes and drops the append mutex (`store_log.rs:637-639`).
+
 ## § Open forks
 
 No new product ruling is requested by this PRD. The accompanying architecture changes settle ordered
