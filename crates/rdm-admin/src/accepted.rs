@@ -738,8 +738,10 @@ impl ActionProgress {
     pub(crate) fn of(build: &crate::build_state::BuildProjection) -> Self {
         // A standalone drain, stop, start or stopped delete: the receipts of its operation in an
         // attempt that carried this exact action (its `Opened` fact fenced the attempt to the birth)
-        // are this birth's. Its first step's receipt says the operation began; its `Complete`, that
-        // it completed for the birth.
+        // are this birth's, from the attempt the request opened on (`opened`): an earlier request's run
+        // of the same action (a stop, a start, then a second stop of one birth, Q183) is not this
+        // run's progress. Its first step's receipt says the operation began; its `Complete`, that it
+        // completed for the birth.
         if let Some(action @ (AttemptAction::DeleteConnections { path, .. } | AttemptAction::Stop { path, .. } | AttemptAction::Start { path, .. } | AttemptAction::Delete { path, .. })) = &build.action {
             let (operation, first) = match action {
                 AttemptAction::DeleteConnections { .. } => (format!("node.connections.delete:{path}"), "DeleteConnections"),
@@ -748,7 +750,7 @@ impl ActionProgress {
                 AttemptAction::Delete { .. } => (format!("node.delete:{path}"), "NodeDeleting"),
                 _ => (format!("node.stop:{path}"), "StopNode"),
             };
-            let done = |step: &str| build.steps.iter().any(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action));
+            let done = |step: &str| build.steps.iter().any(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= build.opened && build.carried(s.attempt, action));
             return Self { started: done(first), finished: done("Complete"), ..Self::default() };
         }
         // A termination of a deleted birth heard again: its one operation's receipts in an attempt that
