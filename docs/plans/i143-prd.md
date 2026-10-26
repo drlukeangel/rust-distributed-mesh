@@ -3089,3 +3089,11 @@ the replacement: `storage_provider` is a property of the Fabric, on the Fabric's
 changed live by a Build that carries it fabric-primary → mesh-primary → node, the fabric-primary
 keeping access to previous providers. Proposal:
 [fabric-storage-provider](proposal/fabric-storage-provider.md). Revised the same day with Luke, Architect 1's two reviews and the dev's: the fabric-primary copies every store first and closes claims with one row, each node then switches with its own tail, no dual write and no restart (R-SP6 to R-SP9, R-SP13); `topology_storage_provider` (renamed from `storage_provider`, the node's own storage being another thing) is a node-row property too (R-SP4); the fabric stays ready-for-traffic (R-SP12); the node's `storage` is renamed `storage_persistence` (R-SP16); nine mechanisms considered, the first shape among them. Owner: the lead. State: proposed, nothing built.
+
+## e12.s96 — 2026-10-26: i149 (topology_storage_provider) recorded as an i143 dependency
+
+Luke's i149 plan ([i149-topology-storage-provider](i149-topology-storage-provider.md), ebf2ba3f1, with
+storage.md §2's final contract, ba3d50631 and 4b984a779) restores the requirement Q171 dropped: a
+fabric moves RDM's five record stores to the application's provider while it serves. i143's
+remaining work depends on it. State: plan pushed; e1–e6 not dispatched; the dispatch and landing SHAs
+are recorded here as they happen.
