@@ -6,7 +6,7 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 
 | Port | Service |
 |---|---|
-| 19090 | the demo admin UI (`demo/admin-ui`) REST + HTML |
+| 0     | the demo admin UI (`demo/admin-ui`) REST + HTML: the port it bound is on its admin's row config as `admin_ui_port` |
 | 16686 | Jaeger UI (`http://localhost:16686`) |
 | 4318  | OTLP/HTTP ingest |
 | 0     | rafka-* iroh endpoint (random ephemeral; override with `RDM_NODE_BIND_ADDR`) |
@@ -34,7 +34,7 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 
 | Env var | Default | Effect |
 |---|---|---|
-| `RDM_ADMIN_UI_BIND_ADDR` | `127.0.0.1:19090` | HTTP listen addr |
+| `RDM_ADMIN_UI_BIND_ADDR` | `127.0.0.1:0` | HTTP listen addr; the bound port goes on the admin's row config as `admin_ui_port` |
 | `JAEGER_QUERY_URL` | `http://localhost:16686` | Where to ask "what's in the traces" |
 | `CARGO_TARGET_DIR` | derived from own exe path | Where the node binaries it spawns live |
 

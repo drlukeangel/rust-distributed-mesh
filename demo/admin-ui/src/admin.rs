@@ -166,6 +166,23 @@ impl Admin {
         Fabrics::new(self.carrier()).nodes(None).await
     }
 
+    /// Put `key` = `value` on the config of the entry admin's own row, beside what the row holds: one
+    /// `node.config.update` to its mesh's primary for its exact birth. Refused `fabric-not-ready` before
+    /// the fabric first reaches ready-for-traffic; the caller puts it again then.
+    pub async fn put_own_config(&self, key: &str, value: &str) -> Result<rdm_core::status::StatusReply, String> {
+        let rows = self.rows().await.map_err(|e| format!("fabric.nodes.get: {e:?}"))?;
+        let own = rows.iter().find(|n| n.name == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds {}", self.entry))?;
+        let primary = rows
+            .iter()
+            .find(|n| n.mesh == own.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary)
+            .ok_or_else(|| format!("no row names {}'s mesh-primary", own.mesh))?;
+        let mut config = own.config.clone();
+        config.insert(key.to_string(), value.to_string());
+        let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(own.node_id.clone()), node_id: own.node_id.clone(), incarnation: own.incarnation_id.clone().expect("checked above") };
+        let carrier = self.carrier();
+        rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, config, &rdm_transport::CallOptions::default()).await.map_err(|e| format!("node.config.update: {e:?}"))
+    }
+
     /// `node.connections.get` of `n`'s exact birth.
     pub async fn connections(&self, n: &NodeView) -> Option<Result<ConnectionsView, CallEnd>> {
         let incarnation = n.incarnation_id.clone()?;

@@ -1,7 +1,8 @@
 //! The demo admin UI server. `RDM_NODE_ADMIN_BIRTH` (the birth a node-admin printed at start) names the
 //! node-admin it reads and drives over Node RPC,
 //! `RDM_EVIDENCE_DIR` the estate's evidence folder the Timeline reads, `RDM_UI_STATIC_DIR` the
-//! built React app, `RDM_ADMIN_UI_BIND_ADDR` where it listens (default 127.0.0.1:19090).
+//! built React app, `RDM_ADMIN_UI_BIND_ADDR` where it listens (default 127.0.0.1:0: the operating system picks the port, and
+//! the UI puts the port it bound on its admin's own row config as `admin_ui_port`).
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -223,10 +224,25 @@ async fn boot_trace(State(s): State<AppState>, Query(q): Query<BootQuery>) -> Re
     }
 }
 
+/// Put the port the UI bound on its admin's own row config (`admin_ui_port`), once the fabric takes it:
+/// a refusal before the first ready-for-traffic is put again a second later.
+async fn put_ui_port(admin: Arc<Admin>, port: u16) {
+    loop {
+        match admin.put_own_config("admin_ui_port", &port.to_string()).await {
+            Ok(rdm_core::status::StatusReply::ConfigUpdated { .. }) => {
+                tracing::info!(port, "the UI's port is on its admin's row config as admin_ui_port");
+                return;
+            }
+            other => tracing::info!(port, ?other, "the UI's port is not on its admin's row config yet"),
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _telemetry = rdm_transport::telemetry::init_telemetry("rafka-admin-ui");
-    let bind = std::env::var("RDM_ADMIN_UI_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:19090".into());
+    let bind = std::env::var("RDM_ADMIN_UI_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:0".into());
     let static_dir = std::env::var("RDM_UI_STATIC_DIR").unwrap_or_else(|_| format!("{}/web/dist", env!("CARGO_MANIFEST_DIR")));
     let state = AppState {
         http: reqwest::Client::builder().timeout(Duration::from_secs(4)).build()?,
@@ -238,6 +254,7 @@ async fn main() -> anyhow::Result<()> {
         ui_events: Arc::new(Mutex::new(Vec::new())),
         submitted: Arc::new(Mutex::new(Vec::new())),
     };
+    let own_admin = state.admin.clone();
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/overview", get(overview))
@@ -255,6 +272,10 @@ async fn main() -> anyhow::Result<()> {
         .merge(tests::router());
     tracing::info!(%bind, %static_dir, "admin-ui listening");
     let listener = tokio::net::TcpListener::bind(&bind).await?;
+    let port = listener.local_addr()?.port();
+    if let Some(admin) = own_admin {
+        tokio::spawn(put_ui_port(admin, port));
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }

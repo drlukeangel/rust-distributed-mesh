@@ -1,7 +1,10 @@
 #!/bin/bash
 # demo-estate.sh: the R-shape consumer estate, live, by hand (no test harness): the Day-0 node-admin from
-# the consumer's four executables, the Admin UI entered at its birth, and the shape (mesh1 and mesh2, each
+# the consumer's four executables, the Admin UI entered at its birth, and the shape (two meshes, each
 # 2 node-admins / 2 computes / 3 gateways / 3 brokers) as one Build through the UI's own /api/bootstrap.
+# Every `up` names a new fabric and new meshes (fabric-<tag>, mesh-<tag>-1, mesh-<tag>-2, the tag minted
+# per run), recorded in <root>/names, so no run reuses another's names; Day 0 is the fabric-primary and
+# its own mesh, and the second mesh comes from the bootstrap Build (Q170).
 # Every process exports to the collector OTEL_EXPORTER_OTLP_ENDPOINT names (default: the .99 collector);
 # the UI reads flames from JAEGER_QUERY_URL (default: Jaeger on .99).
 #
@@ -19,28 +22,51 @@
 # rshape-broker and rafka-admin-ui, built from demo/ against this tree: `cargo build --bins` in the
 # consumer workspace and `cargo build --bin rafka-admin-ui` in demo/admin-ui), RDM_DEMO_PROBE (the
 # rdm-rpc-probe of this tree's build, default target/debug/rdm-rpc-probe), RDM_DEMO_WEB (the built web
-# bundle, default demo/admin-ui/web/dist), RDM_DEMO_UI_BIND (default 127.0.0.1:19090).
+# bundle, default demo/admin-ui/web/dist), RDM_DEMO_UI_BIND (default 127.0.0.1:0: the operating system picks
+# the UI's port, and the UI puts it on the Day-0 admin's row config as admin_ui_port, where `up` reads it).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 CMD=${1:-}; ROOT=${2:-}
 BIN=${RDM_DEMO_BIN:?set RDM_DEMO_BIN to the directory holding the consumer executables}
 PROBE=${RDM_DEMO_PROBE:-$HERE/target/debug/rdm-rpc-probe}
 WEB=${RDM_DEMO_WEB:-$HERE/demo/admin-ui/web/dist}
-UI_BIND=${RDM_DEMO_UI_BIND:-127.0.0.1:19090}
+UI_BIND=${RDM_DEMO_UI_BIND:-127.0.0.1:0}
 export OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://192.168.68.99:5318}
 JAEGER=${JAEGER_QUERY_URL:-http://192.168.68.99:16687}
 CURRENT=$HERE/target/demo-estate.current
+
+# The port the UI put on `$1`'s row config (admin_ui_port): the row's latest line in the store root's nodes.jsonl.
+ui_port() {
+  python3 - "$ROOT/store" "$1" <<'PY'
+import glob, json, sys
+store, name = sys.argv[1], sys.argv[2]
+port = ""
+for f in glob.glob(f"{store}/*/nodes.jsonl"):
+    for line in open(f):
+        try:
+            r = json.loads(line)["record"]
+        except Exception:
+            continue
+        if r.get("name") == name:
+            port = (r.get("config") or {}).get("admin_ui_port", port)
+print(port)
+PY
+}
 
 up() {
   ROOT=${ROOT:-$HERE/target/demo-estate-$(date -u +%Y%m%dT%H%M%S)}
   mkdir -p "$ROOT/evidence" "$ROOT/store"
   echo "$ROOT" > "$CURRENT"
+  local tag; tag=$(head -c 64 /dev/urandom | tr -dc 'a-z0-9' | head -c 6)
+  FABRIC=fabric-$tag; M1=mesh-$tag-1; M2=mesh-$tag-2
+  printf 'FABRIC=%s\nM1=%s\nM2=%s\n' "$FABRIC" "$M1" "$M2" > "$ROOT/names"
+  echo "fabric $FABRIC, meshes $M1 and $M2"
   # The Day-0 node-admin is the consumer's and records what it runs; every other node is created by a Build
   # the UI submits naming each path's executable (the consumer's, beside the UI in $BIN, by sha256).
   # RDM_BIN_DIR is where the node-admin itself is found, never a launch source.
   export RDM_EVIDENCE_DIR=$ROOT/evidence
-  MESH_SPAWN_TYPE=process RDM_FABRIC=fabric1 RDM_MESH=mesh1 \
-  RDM_DATA_DIR=$ROOT/mesh1.admin.1 RDM_STORE_DIR=$ROOT/store RDM_ESTATE_ROOT=$ROOT \
+  MESH_SPAWN_TYPE=process RDM_FABRIC=$FABRIC RDM_MESH=$M1 \
+  RDM_DATA_DIR=$ROOT/$M1.admin.1 RDM_STORE_DIR=$ROOT/store RDM_ESTATE_ROOT=$ROOT \
   RDM_BIN_DIR=$BIN \
   RDM_NODE_ADMIN_API_BIND=127.0.0.1:0 \
     setsid nohup "$BIN/rshape-node-admin" > "$ROOT/admin1.log" 2>&1 < /dev/null &
@@ -57,14 +83,26 @@ up() {
   RDM_NODE_ADMIN_BIRTH="$birth" RDM_ADMIN_UI_BIND_ADDR=$UI_BIND RDM_UI_STATIC_DIR=$WEB JAEGER_QUERY_URL=$JAEGER \
     setsid nohup "$BIN/rafka-admin-ui" > "$ROOT/ui.log" 2>&1 < /dev/null &
   echo $! > "$ROOT/ui.pid"
-  for _ in $(seq 1 60); do curl -sf "http://$UI_BIND/api/health" >/dev/null 2>&1 && break; sleep 0.5; done
-  curl -sf "http://$UI_BIND/api/health" >/dev/null || { echo "the UI never answered /api/health; see $ROOT/ui.log"; exit 1; }
+  # The UI's port is the one it bound, as its admin's row config holds it (admin_ui_port).
+  local port=""
+  for _ in $(seq 1 120); do
+    port=$(ui_port "$M1.admin.1")
+    [ -n "$port" ] && curl -sf "http://${UI_BIND%:*}:$port/api/health" >/dev/null 2>&1 && break; sleep 0.5
+  done
+  [ -n "$port" ] || { echo "the UI's port is not on $M1.admin.1's row config; see $ROOT/ui.log"; exit 1; }
+  UI_BIND=${UI_BIND%:*}:$port; echo "$UI_BIND" > "$ROOT/ui_bind"
   echo "UI up: http://$UI_BIND"
   for _ in $(seq 1 120); do
     curl -s "http://$UI_BIND/api/overview" 2>/dev/null | grep -q '"ready-for-traffic"' && break; sleep 0.5
   done
-  local shape='{"meshes":[{"name":"mesh1","node_admin":2,"compute":2,"gateway":3,"broker":3},{"name":"mesh2","node_admin":2,"compute":2,"gateway":3,"broker":3}]}'
-  local acc; acc=$(curl -s -X POST "http://$UI_BIND/api/bootstrap" -H 'content-type: application/json' -d "$shape")
+  local shape="{\"meshes\":[{\"name\":\"$M1\",\"node_admin\":2,\"compute\":2,\"gateway\":3,\"broker\":3},{\"name\":\"$M2\",\"node_admin\":2,\"compute\":2,\"gateway\":3,\"broker\":3}]}"
+  # The Day-0 Build is Complete from its own ready-for-traffic, one Build at a time: while the admin
+  # refuses the bootstrap build-in-progress naming it, the bootstrap is submitted again once it is.
+  local acc
+  for _ in $(seq 1 120); do
+    acc=$(curl -s -X POST "http://$UI_BIND/api/bootstrap" -H 'content-type: application/json' -d "$shape")
+    echo "$acc" | grep -q '"build-in-progress"' || break; sleep 1
+  done
   echo "bootstrap: $acc"; echo "$acc" > "$ROOT/bootstrap.json"
   local t0 ready total; t0=$(date +%s)
   for _ in $(seq 1 600); do
@@ -82,16 +120,18 @@ stream() {
   ROOT=${ROOT:-$(cat "$CURRENT")}
   export RDM_EVIDENCE_DIR=$ROOT/evidence
   local birth; birth=$(cat "$ROOT/birth.json")
+  # shellcheck disable=SC1091
+  . "$ROOT/names"
   one() {
     local out; out=$("$PROBE" --admin-birth "$birth" stream --target "path:$1" --destination "path:$2" --value "$3" 2>/dev/null)
     echo "$1 -> $2: $(echo "$out" | python3 -c 'import sys,json
 d=json.load(sys.stdin); print({k: d.get(k) for k in ("outcome","streamed","kind","peer","answered","reason","refused")}, "trace", (d.get("traceparent") or "")[3:35])')"
   }
-  one mesh1.compute.1 mesh2.broker.1  "hello from mesh1.compute.1"
-  one mesh1.compute.1 mesh2.gateway.2 "hello again from mesh1.compute.1"
-  one mesh2.compute.2 mesh1.broker.3  "hello from mesh2.compute.2"
-  one mesh2.gateway.1 mesh1.compute.2 "hello from mesh2.gateway.1"
-  one mesh1.gateway.1 mesh1.broker.2  "same mesh, gateway to broker"
+  one "$M1.compute.1" "$M2.broker.1"  "hello from $M1.compute.1"
+  one "$M1.compute.1" "$M2.gateway.2" "hello again from $M1.compute.1"
+  one "$M2.compute.2" "$M1.broker.3"  "hello from $M2.compute.2"
+  one "$M2.gateway.1" "$M1.compute.2" "hello from $M2.gateway.1"
+  one "$M1.gateway.1" "$M1.broker.2"  "same mesh, gateway to broker"
 }
 
 down() {
