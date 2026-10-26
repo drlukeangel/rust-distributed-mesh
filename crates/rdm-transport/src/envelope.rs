@@ -442,6 +442,16 @@ mod tests {
         let (mut attrs, _) = parts(); attrs.iter_mut().find(|(n, _)| n == "type").unwrap().1 = "rdm.unknown".into();
         assert!(matches!(decode(&wire::encode(&(attrs, vec![255u8])).unwrap()), Err(DecodeError::Unknown(k)) if k == "rdm.unknown"));
     }
+    /// CONTRACT (Q183, Luke 2026-10-26: node.restart and its NodeRestarting notice are removed):
+    /// `rdm.node.restarting` keeps its historical page position, 7, and is refused before its data is
+    /// decoded, as the other reserved types are. Must NOT happen: a NodeRestarting frame decoded.
+    #[test]
+    fn the_node_restarting_type_is_refused_before_its_data_is_decoded() {
+        let (mut attrs, _) = parts(); attrs.retain(|(n, _)| n != "sequence");
+        attrs.iter_mut().find(|(n, _)| n == "type").unwrap().1 = "rdm.node.restarting".into();
+        let refused = decode(&wire::encode(&(attrs, vec![255u8, 255])).unwrap());
+        assert!(matches!(&refused, Err(DecodeError::Reserved(k, 7)) if k == "rdm.node.restarting"), "rdm.node.restarting is reserved at position 7: {refused:?}");
+    }
     #[test]
     fn malformed_required_context_never_reaches_domain_data() {
         for name in ["specversion", "id", "source", "type", "subject", "time", "datacontenttype", "sequence"] {

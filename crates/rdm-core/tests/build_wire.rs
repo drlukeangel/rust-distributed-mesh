@@ -359,6 +359,19 @@ fn a_request_at_the_removed_change_position_is_an_unknown_variant() {
     assert!(matches!(Build::decode_request(&reconcile), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
 }
 
+/// CONTRACT (Q183, Luke 2026-10-26: node.restart is removed; callers run node.stop then node.start):
+/// a request a caller of the removed restart sends (change position 6, its node after it) decodes as
+/// `UnknownVariant`, never a change, and so does the bare position; the changes after it keep their
+/// positions (`DeleteConnections` = 07, `Stop` = 08, `Start` = 09).
+#[test]
+fn a_request_at_the_removed_restart_position_is_an_unknown_variant() {
+    assert_eq!(Build::decode_request(&bytes("00 00 06 0b 6d657368312e7270632e31")), Err(DecodeFailure::UnknownVariant), "a node.restart of mesh1.rpc.1");
+    assert_eq!(Build::decode_request(&bytes("00 00 06")), Err(DecodeFailure::UnknownVariant), "the bare position too");
+    assert!(matches!(Build::decode_request(&bytes("00 00 07 0b 6d657368312e7270632e31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteConnections { .. }) })), "DeleteConnections keeps position 7");
+    assert!(matches!(Build::decode_request(&bytes("00 00 08 0b 6d657368312e7270632e31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Stop { .. }) })), "Stop keeps position 8");
+    assert!(matches!(Build::decode_request(&bytes("00 00 09 0b 6d657368312e7270632e31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Start { .. }) })), "Start keeps position 9");
+}
+
 /// CONTRACT (proposal executable-bindings-at-create.md §3.10(a): "the count forms `ReconcileFabric`,
 /// `ReconcileMesh`, `AddNode` and `CreateMesh` are reserved (positional, no format move)"): a request a
 /// caller of a count form sends (change positions 0, 1, 2 and 4, with the counts after them, or the bare

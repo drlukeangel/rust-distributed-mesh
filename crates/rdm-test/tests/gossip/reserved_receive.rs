@@ -12,10 +12,10 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol
 }
 
 #[derive(Clone, Copy)]
-enum Kind { ConnectionsDeleting, ConnectionsDeleted, Leaving, Left, FabricPrimary }
+enum Kind { ConnectionsDeleting, ConnectionsDeleted, Leaving, Left, FabricPrimary, Restarting }
 impl Kind {
-    fn type_name(self) -> &'static str { match self { Self::ConnectionsDeleting => "rdm.node.connections.deleting", Self::ConnectionsDeleted => "rdm.node.connections.deleted", Self::Leaving => "rdm.node.leaving", Self::Left => "rdm.node.left", Self::FabricPrimary => "rdm.fabric.primary.new" } }
-    fn named(self) -> (&'static str, u8) { match self { Self::ConnectionsDeleting => ("node-connections-deleting", 11), Self::ConnectionsDeleted => ("node-connections-deleted", 14), Self::Leaving => ("node-leaving", 12), Self::Left => ("node-left", 13), Self::FabricPrimary => ("new-fabric-primary", 15) } }
+    fn type_name(self) -> &'static str { match self { Self::ConnectionsDeleting => "rdm.node.connections.deleting", Self::ConnectionsDeleted => "rdm.node.connections.deleted", Self::Leaving => "rdm.node.leaving", Self::Left => "rdm.node.left", Self::FabricPrimary => "rdm.fabric.primary.new", Self::Restarting => "rdm.node.restarting" } }
+    fn named(self) -> (&'static str, u8) { match self { Self::ConnectionsDeleting => ("node-connections-deleting", 11), Self::ConnectionsDeleted => ("node-connections-deleted", 14), Self::Leaving => ("node-leaving", 12), Self::Left => ("node-left", 13), Self::FabricPrimary => ("new-fabric-primary", 15), Self::Restarting => ("node-restarting", 7) } }
 }
 fn reserved(kind: Kind) {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance");
@@ -59,6 +59,7 @@ fn reserved(kind: Kind) {
             Kind::ConnectionsDeleted => Frame::NodeConnectionsDeleted { op, forwarded_by: None },
             Kind::Leaving => Frame::NodeLeaving { op, forwarded_by: None },
             Kind::Left => Frame::NodeLeft { op, forwarded_by: None },
+            Kind::Restarting => Frame::NodeRestarting { op: LifecycleOp { operation: "node.restart:mesh1.admin.2".into(), ..op }, forwarded_by: None, publisher: { let a = crate::gossip_author(&fabric); rdm_core::PublisherId { node: "mesh1.admin.1".into(), incarnation: a.incarnation, node_id: a.node } }, topology_version: 2 },
             Kind::FabricPrimary => Frame::NewFabricPrimary { holder: Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 99 }, endpoint_id: unknown.to_string(), transport_addr: "127.0.0.1:12009".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:9".into()) },
         };
         assert_eq!(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).context().unwrap().kind, kind.type_name(), "the reserved frame travels as its reserved type");
@@ -102,3 +103,6 @@ fn reserved(kind: Kind) {
 #[test] fn reserved_left() { reserved(Kind::Left); }
 /// CONTRACT: reserved position 15 installs no seat or endpoint.
 #[test] fn reserved_fabric_primary() { reserved(Kind::FabricPrimary); }
+/// CONTRACT (Q183, Luke 2026-10-26: node.restart and its NodeRestarting notice are removed): reserved
+/// position 7 holds no birth, opens no overlay and changes no routing.
+#[test] fn reserved_node_restarting() { reserved(Kind::Restarting); }
