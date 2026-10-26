@@ -43,7 +43,12 @@ So a running fabric cannot move to another storage, and no node can be asked whi
 
 - **R-SP1. `storage_provider` is a property of the Fabric.** One value for the fabric, flat (Q166): the
   name of a storage backend the application's wiring registers. RDM's file backend is registered by
-  every binary as `file`. A topology that carries no `storage_provider` reads as `file`.
+  every binary as `file`. A topology that carries no `storage_provider` reads as `file`. A name is
+  bound to its place at registration: `file` is the directory `RDM_STORE_DIR` names, the application's
+  backend its own addresses; the node that writes never names a place, it hands the record to the
+  trait and the backend behind it knows where (storage-is-persistence-only, Q109). A move between two
+  places of one backend is therefore two registered names, or a value that carries the place
+  (`file:<dir>`); which, is a line for Luke.
 - **R-SP2. The Fabric's row carries it.** The Fabric record gains `storage_provider` (the current one)
   and `previous_storage_providers` (each one the fabric left, in order), written by the fabric-primary,
   and `fabric.get` answers both. The bootstrap admin writes the first value on Day 0: the name of the
@@ -56,14 +61,35 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   with the same meshes and the new `storage_provider`. It is admitted and refused like any Build (one
   in progress at a time, Q170), its attempts claimed, its receipts written and resumed from like any
   Build's. A Build that names a provider the fabric-primary's wiring does not register, or one the
-  fabric-primary cannot open, is refused by name at acceptance, nothing moved.
-- **R-SP4. A node knows its provider before it reads.** The Build journal is itself in the provider,
-  so a starting node cannot learn its provider from a Build. Each node is written it:
-  - at launch, by the launching admin, in its environment, the way `RDM_STORE_DIR` and `RDM_ROOTS` are
-    (an env var, named in the build; `RDM_STORAGE_PROVIDER` is the proposed name), with the step of a
-    change in progress when it is born during one (R-SP9);
-  - on its own row in its data dir (`put_own_row`), which its restart reads first.
-  Each step of a change (R-SP6 to R-SP8) updates the node's own row before it answers.
+  fabric-primary cannot open, is refused by name at acceptance, nothing moved. A provider is code,
+  compiled into an executable and registered in its wiring, so a node can move only between the
+  providers its own executable registers, and the fabric-primary's wiring is not every node's. Step 1
+  is the check on every other node: a node whose executable does not register the named provider
+  fails step 1 by name, naming the node and the provider, and the Build fails before step 2 with the
+  old provider whole (R-SP12). A provider no executable has is an executable replacement, not this
+  Build.
+- **R-SP4. `storage_provider` is a property of the node's row too: the provider it writes.** The
+  fabric's value is the intent, the node's is the fact, and during a change they differ, which is the
+  progress. The node-properties table gains the row:
+
+  | field | set by | changed by | event |
+  |---|---|---|---|
+  | `storage_provider` (and, during a change, the step reached) | the launching admin, from the Fabric row and the Build in progress, at the birth | the fabric's storage-change Build, step by step: the node writes its own row before it answers the step; never a put | the step's receipt |
+
+  A caller reads it with `nodes.get [storage_provider: file]`, every node still on the old provider
+  during a change. The Build journal is itself in the provider, so a starting node cannot learn its
+  provider from a Build; it is told, in this order:
+  - at launch, by the launching admin, in its environment (`RDM_STORAGE_PROVIDER`, the way
+    `RDM_STORE_DIR` and `RDM_ROOTS` are written), the current provider or, during a change, both
+    providers and the step the fabric is at, read from the Fabric row and the Build in progress, since
+    the Fabric row's value moves only at the end of step 3 (R-SP8);
+  - from its own row in its data dir, beside `node-key` and its held name, which it reads second; a
+    start with no launcher, the adoption launch, reads only this.
+  A running node never re-reads its environment: a change reaches it as the step's command, it does
+  the step's work, writes its own row with the provider or providers it now writes and the step
+  completed, and only then answers; the receipt exists only after the row does. A node that crashes
+  inside a step comes back one step behind at most, the launcher's value is the fabric's and wins, and
+  the node runs the step it missed before it answers its join (R-SP9).
 - **R-SP5. Every node's storage can be replaced while it runs.** The handles a node's storage opens
   (an admin's fabric, meshes, nodes, connections and Build journal; every other node's connections)
   are held behind one handle per node that a step replaces, so every reader and writer of that node
@@ -104,6 +130,28 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   a record without them reads as `file` and no previous provider. The landing carries
   `durable format moved`.
 
+- **R-SP15. The fabric stays ready-for-traffic and no node changes state.** states.md, "Resize and
+  executable replacement": "A Build that changes only a node's `config`, `tags`, `storage` or
+  `placement` is neither: it applies them as build.md §1 states, and the fabric stays
+  ready-for-traffic." A storage change is a property Build, the meshes unchanged, and is the same kind:
+  the fabric, every mesh and every node stay ready-for-traffic through all three steps; the node's
+  states are its life and its traffic, and a change of where it writes is neither. The progress is the
+  step receipts and R-SP4's row, not a state. The page's sentence gains `storage_provider` in its list.
+- **R-SP16. The node's `storage` is renamed `storage_persistence`, and `on_retire` `reclaim`** (Luke,
+  2026-10-26). `StorageMeta` is `Ephemeral` or `Persistent { on_retire }`: the node's data-dir
+  persistence, nothing to do with the fabric's backend, and with a provider on the node's row the
+  name `storage` would mean two things. The property is `storage_persistence`, values `ephemeral` and
+  `persistent { reclaim: retain | delete }`, the Kubernetes pair by another spelling
+  (`storageClassName`, `persistentVolumeReclaimPolicy: Retain | Delete`); `retire` is a banned word
+  and goes with it. `storage` and `on_retire` are JSON field names on every node record and every
+  Build's `NodeSpec`, so this is a descriptor field moved: its landing carries `durable format moved`,
+  and a fabric born before it is a new fabric; the positional wire carries no names and is untouched.
+  Pages: the node-properties table, build.md §1 and §5.3, build-deployment.md §2, node-replace.md,
+  node-recovery.md and states.md where they say "storage or placement", the consumer guide's
+  examples; Q166's row gains `storage` → `storage_persistence` as one amendment line. Its own landing,
+  before or after this proposal's; this proposal's one requirement of it is that the provider field is
+  never called `storage`.
+
 ## Pages (text for Luke's yes, written with the build)
 
 - build.md §5.3: the Fabric row's sentence (R-SP2), and a section for the storage change (R-SP3 to
@@ -111,7 +159,9 @@ So a running fabric cannot move to another storage, and no node can be asked whi
 - fabric-mesh-node-lifecycles.md: the storage change's row.
 - node-admin-lifecycle.md §7: the store is the fabric's `storage_provider`, changed by a Build.
 - CLAUDE.md env table: `RDM_STORAGE_PROVIDER` (R-SP4).
-- node-rpc-envelope.md: `fabric.get`'s answer carries the two fields (R-SP2).
+- node-rpc-envelope.md: the Fabric row's read (`fabrics.get` under Q167's amendment) carries the two
+  fields (R-SP2); the node-properties table gains R-SP4's row and renames R-SP16's.
+- states.md, "Resize and executable replacement": `storage_provider` in the property list (R-SP15).
 
 ## The mechanisms considered before this one
 
