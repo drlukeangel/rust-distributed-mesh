@@ -557,7 +557,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             );
             // Nothing is written here: the launch first asks whether any node-admin of the fabric answers,
             // once its endpoint can call (below, before its first mutation; Q156, Q199).
+            // Its contacts are the births the store records, its own mesh first, the inherited birth not
+            // among them: its row stands until this launch's node.delete, and it is no other node.
             let mut contacts = super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &own.name.mesh).await.map_err(storage_err)?;
+            contacts.retain(|c| c.node_id != own.node_id);
             contacts.sort_by_key(|c| (c.name.mesh != own.name.mesh, c.name.to_string()));
             let seeds = contacts.iter().filter_map(|c| c.gossip_addr().and_then(|a| a.ip_addrs().next().map(|ip| (a.id.to_string(), *ip)))).collect();
             step.record("contacts", contacts.len());
@@ -736,6 +739,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             nodes: nodes_storage.clone(),
             meshes: mesh_storage.clone(),
             fabric: crate::model::Fabric { id: cfg.fabric_id.clone(), name: cfg.fabric.clone(), status: crate::model::ScopeStatus::Pending, provider: provider.kind() },
+            inherited: None,
         };
         let checked = super::adoption::check(claimed, &answers).instrument(boot.clone()).await;
         let released: Result<(), super::adoption::Refused> = match checked {
@@ -793,6 +797,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             nodes: nodes_storage.clone(),
             meshes: mesh_storage.clone(),
             fabric: crate::model::Fabric { id: cfg.fabric_id.clone(), name: cfg.fabric.clone(), status: crate::model::ScopeStatus::Pending, provider: provider.kind() },
+            inherited: Some(own.node_id.clone()),
         };
         if let Some(refused) = super::adoption::admin_answered(&own, &answers).instrument(step.clone()).await {
             step.record("answered", refused.answered.as_str());

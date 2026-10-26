@@ -541,6 +541,9 @@ pub struct ProbeAnswers {
     pub meshes: Arc<dyn crate::storage::MeshStorage>,
     /// The fabric, as the empty view names it.
     pub fabric: crate::model::Fabric,
+    /// The inherited birth a launch on its data dir is over, never asked: it holds this launch's own
+    /// endpoint key, so it is no other node. `None` for the adoption launch, which asks the lost birth too.
+    pub inherited: Option<NodeId>,
 }
 
 impl ProbeAnswers {
@@ -578,7 +581,7 @@ impl Answers for ProbeAnswers {
             Err(e) => return vec![format!("(the node rows could not be read: {e})")],
         };
         let calls = self.calls();
-        let probes = rows.iter().filter(|r| r.name.kind == NodeKind::NodeAdmin && r.node_id != self.me_id).filter_map(|r| {
+        let probes = rows.iter().filter(|r| r.name.kind == NodeKind::NodeAdmin && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)).filter_map(|r| {
             let b = r.newest_birth()?;
             let (endpoint, addr) = (b.endpoint_id.clone()?, b.transport_addr?);
             self.resolve(&r.node_id, &r.name, &endpoint, addr, &b.incarnation_id).then(|| {
