@@ -1456,9 +1456,23 @@ impl DeploymentPipeline<'_> {
         let operation = run.operation.clone();
         let r = self.create_to_ready_claimed(run, req, claim_for, pre_node_ready, before_launch, &mut claimed).await;
         if let (Err(e), Some(node_id), Some(rows)) = (&r, &claimed, self.sink.node_rows()) {
+            // Under a fabric.delete that interrupts this Build, the claim is the launch evidence the
+            // delete retains (build.md §1, Q179): the teardown's roster, read from the node rows, holds
+            // the birth, and its node.delete ends the runtime this create launched.
+            if let Some(delete) = self.interrupting_delete(&req.build_id).await {
+                tracing::info_span!("rdm.node_admin.node.update.via-claim-kept", node = %req.node, subject_id = %node_id, operation = %operation, delete_build_id = %delete.log(), failed_step = e.step, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("the create failed under a fabric.delete: its claim stays for the teardown, which deletes the birth it launched"));
+                return r;
+            }
             rows.withdraw(&req.node, node_id, &operation, &format!("the create failed at {}: {}", e.step, e.reason)).await;
         }
         r
+    }
+
+    /// The fabric.delete accepted after the Build `build_id` that interrupts it (build.md §1), when one does.
+    async fn interrupting_delete(&self, build_id: &crate::build::BuildId) -> Option<crate::build::BuildId> {
+        let build = self.builds.read_build(build_id).await.ok()?;
+        crate::build_state::interrupted_by(self.builds, &build).await.ok().flatten().map(|d| d.build_id)
     }
 
     /// An earlier attempt's birth that is decided afresh lets go of the name its create claimed.

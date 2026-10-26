@@ -182,8 +182,10 @@ fn torn_down(receipts: &rdm_client::BuildReceipts, meshes: usize) {
 
 /// CONTRACT (build.md §1: "The one exception is fabric.delete, which may interrupt the Build in progress";
 /// fabric-delete.md "Receipts"; fabric-node-hooks.md "A node never reaches ReadyForTraffic while its hook
-/// has not returned `Ok`"): a Build adding mesh1.rpc.1, whose `pre_node_ready` never passes, puts the
-/// fabric back to pending and keeps it there. A standalone mesh.delete of mesh1 and node.delete of
+/// has not returned `Ok`"; build.md §1: operations admitted before the delete "finish or fail within their
+/// existing bounds and their launch evidence is retained", Q179): a Build adding mesh1.rpc.1, whose
+/// `pre_node_ready` never passes, puts the fabric back to pending and keeps it there; mesh1.rpc.1 is
+/// launched and held when the delete is accepted, and its create fails within its bound under it. A standalone mesh.delete of mesh1 and node.delete of
 /// mesh1.admin.1 are refused build-in-progress naming that Build; fabric.delete is admitted, and a second
 /// fabric.delete answers the same Build. The held Build reads `Failed` naming the delete; the teardown
 /// deletes mesh1, the held node with it, reports fabric.deleted, and leaves no runtime the fabric
@@ -195,8 +197,18 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
     let mut estate = estate_with("a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_deleted_with_every_receipt").await;
     // mesh1.rpc.1's hook is Blocked from its first attempt and never passes: its mesh, and the fabric, stay pending.
     rdm_test::write_pre_node_ready_knob(&estate.root, "mesh1.rpc.1", "held by the cell").unwrap();
-    let held = estate.carrier().await.create(estate.shape_change(&rdm_client::FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])] }).await).await.unwrap_or_else(|end| panic!("the fabric-primary accepts the growth: {end}"));
+    let mut held = estate.carrier().await.create(estate.shape_change(&rdm_client::FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])] }).await).await.unwrap_or_else(|end| panic!("the fabric-primary accepts the growth: {end}"));
     let first = held.build_id().to_string();
+    // mesh1.rpc.1 is launched and held: the growth reports it Blocked at its pre_node_ready.
+    let until = tokio::time::Instant::now() + SETTLE;
+    loop {
+        match tokio::time::timeout_at(until, held.next()).await {
+            Ok(Some(Ok(BuildFrame::Blocked { reason, .. }))) if reason.contains("mesh1.rpc.1") => break,
+            Ok(Some(Ok(frame @ (BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::FabricPrimaryMoved { .. })))) => panic!("the growth {first} ended {frame:?} before mesh1.rpc.1 was held"),
+            Ok(Some(Ok(_))) => {}
+            other => panic!("the growth {first} reported no Blocked naming mesh1.rpc.1 within {SETTLE:?}: {other:?}"),
+        }
+    }
     drop(held);
     held_pending(&estate, &first).await;
 
