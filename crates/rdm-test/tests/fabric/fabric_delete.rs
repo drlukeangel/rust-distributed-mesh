@@ -186,28 +186,27 @@ fn torn_down(receipts: &rdm_client::BuildReceipts, meshes: usize) {
 /// CONTRACT (states.md "The initial fabric before ready-for-traffic": "fabric.delete is admitted before
 /// the first ready-for-traffic ... its own mesh.delete and node.delete steps, and only those, run exempt
 /// from this refusal"; build.md §1: "a checklist the fabric-primary drives itself ends at the acceptance, its
-/// hook's future dropped"; fabric-delete.md "Receipts"): a two-mesh fabric whose application takes
-/// `sync_state` and never answers is held in state-sync. A standalone mesh.delete of mesh2 and node.delete
-/// of mesh2.rpc.1 are refused `fabric-not-ready`; fabric.delete is admitted, and a second fabric.delete
-/// answers the same Build. The teardown deletes both meshes, mesh2's primary by its node.delete, reports
-/// fabric.deleted, and leaves no runtime the fabric launched running; the application is never called
-/// again after the acceptance. What must NOT happen: the stalled fabric left undeletable, a checklist of
-/// state-sync opened for the delete, or a runtime left running.
+/// hook's future dropped"; fabric-delete.md "Receipts"): the initial fabric, the Day-0 Build's (its one
+/// mesh, mesh1, and that mesh's one node-admin, the fabric-primary: fabric-create.md step 3), whose
+/// application takes Day 0's `sync_state` and never answers, is held in state-sync. A standalone
+/// mesh.delete of mesh1 and node.delete of mesh1.admin.1 are refused `fabric-not-ready`; fabric.delete is
+/// admitted during the Day-0 Build (build.md §1), and a second fabric.delete answers the same Build. The
+/// Day-0 Build reads `Failed` naming the delete; the teardown deletes mesh1, reports fabric.deleted, and
+/// leaves no runtime the fabric launched running; the application is never called again after the
+/// acceptance. What must NOT happen: the stalled fabric left undeletable, a checklist of state-sync opened
+/// for the delete, or a runtime left running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_held_in_state_sync_by_an_application_that_never_answers_is_deleted_with_every_receipt() {
-    let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
     let mut estate = estate_with("a_fabric_held_in_state_sync_by_an_application_that_never_answers_is_deleted_with_every_receipt", Some("never")).await;
-    // The first Build is Complete only once the fabric's ready-for-traffic state is set (Q154), which the
-    // application never lets happen: it is followed by its stream, never awaited to its end.
-    let first_stream = estate.submit_shape("fabric1", &shape).await;
-    let first = first_stream.build_id().to_string();
-    estate.settled_views(&shape).await;
+    // The Day-0 Build is Complete only once the fabric's ready-for-traffic state is set (Q154), which the
+    // application never lets happen; no other Build is accepted before it.
+    let first = estate.accepted_build_id().await;
     held_in_state_sync(&estate, &first).await;
 
     let carrier = estate.carrier().await;
     let standalone: Vec<(&str, Result<(), CallEnd>)> = vec![
-        ("mesh.delete mesh2", carrier.create(Change::RemoveMesh { mesh: "mesh2".into() }).await.map(|_| ())),
-        ("node.delete mesh2.rpc.1", estate.nodes_obj().await.delete(&path("mesh2.rpc.1")).await.map(|_| ())),
+        ("mesh.delete mesh1", carrier.create(Change::RemoveMesh { mesh: "mesh1".into() }).await.map(|_| ())),
+        ("node.delete mesh1.admin.1", estate.nodes_obj().await.delete(&path("mesh1.admin.1")).await.map(|_| ())),
     ];
     for (workflow, end) in standalone {
         match end {
@@ -224,8 +223,10 @@ async fn a_fabric_held_in_state_sync_by_an_application_that_never_answers_is_del
     drop(again);
     let frames = terminal_of("fabric.delete", &mut delete, SETTLE).await;
     assert!(matches!(frames.last(), Some(BuildFrame::Complete { .. })), "fabric.delete {id} completes: {frames:?}");
+    failed_naming(&receipts_at(&estate, "mesh1.admin.1", &first).await, &id);
     let receipts = receipts_at(&estate, "mesh1.admin.1", &id).await;
-    torn_down(&receipts, 2);
+    assert_eq!(count(&receipts, |o| o.starts_with("mesh.delete:"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh1 is deleted once: {:?}", listed(&receipts));
+    assert_eq!(count(&receipts, |o| o.starts_with("fabric.delete:"), "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
     assert_eq!(estate.live_runtimes(), vec![], "no runtime the fabric launched is left running");
     estate.stop().await;
 
@@ -238,15 +239,16 @@ async fn a_fabric_held_in_state_sync_by_an_application_that_never_answers_is_del
 
 /// CONTRACT (build.md §1: "Operations already admitted at an executor finish or fail within their
 /// existing bounds and their launch evidence is retained ... When every open attempt of the interrupted
-/// Build has ended, its run receives `Failed { step, reason }` naming the delete"): before the fabric
-/// first reaches ready-for-traffic, a Build growing mesh1 by two rpc nodes is held by the fabric-primary's
+/// Build has ended, its run receives `Failed { step, reason }` naming the delete"): on a fabric the Day-0
+/// Build brought to ready-for-traffic (the Day-0 Build launches no node, and no other Build is accepted
+/// before its ready-for-traffic), a Build growing mesh1 by two rpc nodes is held by the fabric-primary's
 /// fault door inside the launch of the first, and fabric.delete is accepted. Released, the launch ends
 /// within its bound and its create's receipts stand; the second rpc node is never launched; the growth's
 /// run receives `Failed` naming the delete, and the teardown deletes the launched runtime with the rest.
 /// What must NOT happen: a launch opened after the acceptance, the growth resumed, or its runtime left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after() {
-    let mut estate = estate_with("a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after", Some("never")).await;
+    let mut estate = estate_with("a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after", None).await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
     door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create:mesh1.rpc.1"})).await;
     let grown = [MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2)])];

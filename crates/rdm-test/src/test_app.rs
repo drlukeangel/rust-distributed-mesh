@@ -10,6 +10,12 @@
 //! - `hold`: takes the checklist and holds its answer at the admin's fault cut `state-sync` (armed at
 //!   boot) until the fault door releases it, then answers `StateSynced` for the checklist.
 //! - `fail:<reason>`: holds like `hold`, then reports its work failed naming `<reason>` (Q158).
+//! - `after-day0:<mode>`: answers Day 0's `sync_state` at once, never consulting the fault cut, and
+//!   takes every later Build's in `<mode>` (`hold`, `fail:<reason>`, ...): the bootstrap admin's first
+//!   checklist is Day 0's, the Build it accepts at its start before any other (fabric-create.md step 3);
+//!   a launched admin never takes Day 0's. A scenario about a resize's state-sync arms it so, since the
+//!   Day-0 Build is Complete only from its own ready-for-traffic (states.md "Resize and executable
+//!   replacement": "as fabric.create's is") and no other Build is accepted before it.
 //!
 //! `traffic_opened` is the one notice after the open-traffic checklist; it only records a span.
 //!
@@ -64,6 +70,8 @@ pub enum Mode {
     Hold,
     /// Hold like [`Mode::Hold`], then report the work failed, naming the reason (Q158).
     Fail(String),
+    /// Answer Day 0's checklist at once; every later Build's in the inner mode.
+    AfterDayZero(Box<Mode>),
 }
 
 /// The fault cut a `hold` application holds its answers at.
@@ -73,7 +81,17 @@ impl Mode {
     /// The mode `RDM_TEST_APP` names (unset: answer at once), refused by name when malformed.
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let Some(v) = get("RDM_TEST_APP").filter(|v| !v.trim().is_empty()) else { return Ok(Self::Answer(Duration::ZERO)) };
-        match v.split_once(':').unwrap_or((v.as_str(), "")) {
+        Self::parse(&v)
+    }
+
+    fn parse(v: &str) -> Result<Self, String> {
+        if let Some(inner) = v.strip_prefix("after-day0:") {
+            return match Self::parse(inner)? {
+                Self::AfterDayZero(_) => Err(format!("RDM_TEST_APP `{v}`: after-day0 names a mode, not another after-day0")),
+                inner => Ok(Self::AfterDayZero(Box::new(inner))),
+            };
+        }
+        match v.split_once(':').unwrap_or((v, "")) {
             ("answer", "") => Ok(Self::Answer(Duration::ZERO)),
             ("answer", ms) => ms.parse().map(|ms| Self::Answer(Duration::from_millis(ms))).map_err(|e| format!("RDM_TEST_APP `{v}`: {e}")),
             ("never", "") => Ok(Self::Never),
@@ -81,7 +99,7 @@ impl Mode {
             ("old-attempt", "") => Ok(Self::OldAttempt),
             ("hold", "") => Ok(Self::Hold),
             ("fail", reason) if !reason.trim().is_empty() => Ok(Self::Fail(reason.into())),
-            _ => Err(format!("RDM_TEST_APP `{v}` is not answer[:<ms>], never, foreign-build, old-attempt, hold or fail:<reason>")),
+            _ => Err(format!("RDM_TEST_APP `{v}` is not answer[:<ms>], never, foreign-build, old-attempt, hold, fail:<reason> or after-day0:<mode>")),
         }
     }
 
@@ -93,6 +111,7 @@ impl Mode {
             Self::OldAttempt => "old-attempt".into(),
             Self::Hold => "hold".into(),
             Self::Fail(reason) => format!("fail:{reason}"),
+            Self::AfterDayZero(inner) => format!("after-day0:{}", inner.label()),
         }
     }
 }
@@ -100,12 +119,28 @@ impl Mode {
 /// The hooks of this application in `mode`, held at the cuts of `faults` (the admin's own). A `hold`
 /// application arms its cut here, at boot, before any checklist can reach it.
 pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String> {
-    if matches!(mode, Mode::Hold | Mode::Fail(_)) {
+    let applied = match &mode {
+        Mode::AfterDayZero(inner) => inner.as_ref(),
+        other => other,
+    };
+    if matches!(applied, Mode::Hold | Mode::Fail(_)) {
         faults.arm(STATE_SYNC_CUT, CutSpec::StateSync)?;
     }
+    // An `after-day0` application in the bootstrap admin (no `RDM_NODE_NAME`: CLAUDE.md, a
+    // `rdm-node-admin` without one is its fabric's bootstrap admin) keeps the Build of the first
+    // checklist it takes, Day 0's, and answers that Build's checklists at once.
+    let day_zero: Arc<std::sync::Mutex<Option<Option<String>>>> =
+        Arc::new(std::sync::Mutex::new(if std::env::var_os("RDM_NODE_NAME").is_some() { Some(None) } else { None }));
     let sync_mode = mode.clone();
     let sync_state = SyncState::hook(move |handoff: StateSyncHandoff| {
-        let mode = sync_mode.clone();
+        let mode = match &sync_mode {
+            Mode::AfterDayZero(inner) => {
+                let mut first = day_zero.lock().unwrap();
+                let day_zero_build = first.get_or_insert_with(|| Some(handoff.build_id.clone()));
+                if day_zero_build.as_deref() == Some(handoff.build_id.as_str()) { Mode::Answer(Duration::ZERO) } else { inner.as_ref().clone() }
+            }
+            other => other.clone(),
+        };
         let faults = faults.clone();
         let span = tracing::info_span!("rdm.testkit.app.update.via-sync-state", mode = %mode.label(), fabric_id = %handoff.fabric_id, build_id = %handoff.build_id, attempt = handoff.attempt, operation = %handoff.operation, "otel.kind" = "internal");
         tracing::info_span!(parent: &span, "rdm.testkit.app.update.via-sync-state-taken", mode = %mode.label(), build_id = %handoff.build_id, attempt = handoff.attempt, "otel.kind" = "internal").in_scope(|| tracing::info!("the application took the checklist"));
@@ -138,6 +173,7 @@ pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String
                     tracing::info!(reason = %reason, "the fault door released the held call: the application reports its work failed");
                     Err(StateSyncFailed { reason })
                 }
+                Mode::AfterDayZero(_) => unreachable!("an after-day0 application takes each checklist in Day 0's answer or its inner mode"),
             };
             answer
         }

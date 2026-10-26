@@ -8,7 +8,7 @@
 //! wrote.
 
 use crate::build_log;
-use rdm_client::{BuildFrame, BuildStream, CallEnd, Change, ExactBirth, FabricDesired, Fabrics, FabricView, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
+use rdm_client::{BuildFrame, BuildStream, CallEnd, Change, ExactBirth, FabricDesired, FabricView, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
 use rdm_test::typed::BuildSpec;
 use rdm_core::status::StatusReply;
 use rdm_test::estate::{named, wait_for, Estate, Owner};
@@ -406,7 +406,8 @@ async fn followed(estate: &Estate, stream: BuildStream, what: &str, within: Dura
 /// CONTRACT (Q154; states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
 /// ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes,
 /// the Build reports Blocked naming the change, never Complete"; build.md §10: "A Build that put the
-/// fabric back to pending completes when its ready-for-traffic state is set, not with its last step"): a resize whose change the
+/// fabric back to pending completes when its ready-for-traffic state is set, not with its last step"): the application answers
+/// Day 0's state-sync, so the Day-0 Build is Complete from its own ready-for-traffic; a resize whose change the
 /// application holds in state-sync reports Blocked naming `fabric-change`, and while `fabric.get` says
 /// state-sync under it neither its stream nor `build.get` says Complete; released, it is Complete only
 /// after the fabric entered ready-for-traffic under it. Must NOT happen: a Build Complete while the
@@ -414,7 +415,7 @@ async fn followed(estate: &Estate, stream: BuildStream, what: &str, within: Dura
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_resize_is_blocked_on_the_fabric_change_and_complete_only_after_its_own_ready_for_traffic_state_is_set() {
     let test = "a_resize_is_blocked_on_the_fabric_change_and_complete_only_after_its_own_ready_for_traffic_state_is_set";
-    let mut estate = estate_with(test, "hold").await;
+    let mut estate = estate_with(test, "after-day0:hold").await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
     let shape = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]);
     let mut stream = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1"), shape("mesh2")] })).await;
@@ -458,7 +459,8 @@ async fn a_resize_is_blocked_on_the_fabric_change_and_complete_only_after_its_ow
 
 /// CONTRACT (Q158; states.md "Resize and executable replacement": "a state's check-in or a hook that reports failure fails
 /// the Build on that step"; build.md: hooks "report failure through the lifecycle receipt path"): a
-/// resize whose `sync_state` the application answers with its failure by name ends `Failed` on the step
+/// resize whose `sync_state` the application answers with its failure by name (Day 0's it answered, so the
+/// Day-0 Build is Complete from its own ready-for-traffic) ends `Failed` on the step
 /// it was Blocked on, `fabric-change`, its operation `state-sync:<fabric_id>`, its reason carrying the
 /// application's; `build.get` reads it Failed with that reason, and the fabric never reaches
 /// ready-for-traffic under it. Must NOT happen: a reported failure leaving the Build Blocked with no end,
@@ -467,7 +469,7 @@ async fn a_resize_is_blocked_on_the_fabric_change_and_complete_only_after_its_ow
 async fn a_resize_whose_sync_state_reports_failure_fails_on_the_fabric_change_step_with_the_reason() {
     let test = "a_resize_whose_sync_state_reports_failure_fails_on_the_fabric_change_step_with_the_reason";
     let named_reason = "seed-image-unreadable";
-    let mut estate = estate_with(test, &format!("fail:{named_reason}")).await;
+    let mut estate = estate_with(test, &format!("after-day0:fail:{named_reason}")).await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
     let shape = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]);
     let mut stream = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1"), shape("mesh2")] })).await;
@@ -829,15 +831,17 @@ fn refused<T>(what: &str, call: Result<T, CallEnd>) -> CallEnd {
 
 /// CONTRACT (R-PB1, R-PC1; states.md "The initial fabric before ready-for-traffic"; node-rpc-envelope.md
 /// "Build refusals": "the existing `Rejected { reason, detail }` reply with reason `fabric-not-ready` ... A
-/// refused Build claims no attempt and sends no call"): while the initial fabric is held in state-sync,
-/// `build.create` of every Build that would move a seat (a restart, stop or drain of the
-/// fabric-primary, a replace of mesh2's primary) and of every caller workflow that writes a row (a node
-/// stop, a node delete, mesh.delete) answers `Rejected { reason: "fabric-not-ready", detail }`, the detail
-/// naming the workflow and `state-sync`; and `node.tags.create` at mesh2's primary answers
-/// `RejectedFabricNotReady` naming the workflow and `state-sync`. The Build log of the initial Build,
-/// read from the admin's own journal over `FetchBuildFacts`, holds the attempt it held before: none is
-/// claimed. Once the application answers and the fabric is ready-for-traffic the same kind of workflow is
-/// accepted, and its one attempt is the only one the Build gains. One
+/// refused Build claims no attempt and sends no call"): while the initial fabric, the Day-0 Build's (its
+/// one mesh, mesh1, and that mesh's one node-admin, the fabric-primary and mesh1's primary: fabric-create.md
+/// step 3), is held in state-sync, `build.create` of every Build that would move a seat (a restart, stop or
+/// node.connections.delete of the fabric-primary, a recipe deleting its connections) and of every caller
+/// workflow that writes a row (a node delete, mesh.delete) answers `Rejected { reason: "fabric-not-ready",
+/// detail }`, the detail naming the workflow and `state-sync`; and `node.tags.create` at mesh1's primary
+/// answers `RejectedFabricNotReady` naming the workflow and `state-sync`. The Build log of the Day-0
+/// Build, read from the admin's own journal over `FetchBuildFacts`, holds the attempt it held before: none
+/// is claimed. Once the application answers and the fabric is ready-for-traffic the same kind of workflow
+/// is accepted: a Build grows mesh1 by two rpc nodes, and the restart of the one holding no seat has one
+/// attempt, the only one the current Build gains. One
 /// `rdm.node_admin.build.reject.via-fabric-not-ready` span per refused Build and one
 /// `rdm.node_admin.node.reject.via-fabric-not-ready` for the refused node.tags.create say the same, and no
 /// node.primary.update span is ever written (lifecycles/node-primary-update.md "Precondition": "Before
@@ -852,22 +856,16 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
     let test = "a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt";
     let mut estate = estate_with(test, "hold").await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
-    // mesh2 holds two rpc nodes: the restart the cell admits once the fabric is ready is of the one holding no
-    // seat, so no seat moves (a seat holder's restart runs node.primary.update first, and a cohort of one
-    // node has no successor, Q7).
-    let shape = [("mesh1", 1, 1), ("mesh2", 1, 2)];
-    // The initial Build is Complete only once its ready-for-traffic state is set (Q154), which the application holds: it is
-    // followed to its Complete once the hold is released.
-    let mut first_stream = estate.submit_shape("fabric1", &shape).await;
-    let first = first_stream.build_id().to_string();
-    estate.settled_views(&shape).await;
+    // The initial Build is the Day-0 Build (fabric-create.md): no other Build is accepted before its own
+    // ready-for-traffic, which the application holds. It is Complete only once its ready-for-traffic state
+    // is set (Q154): it is followed from its first attempt to its Complete once the hold is released.
+    let first = estate.accepted_build_id().await;
+    let first_id = rdm_client::BuildId::parse(&first).unwrap_or_else(|e| panic!("fabric.get names the Day-0 Build {first}, not a Build id: {e}"));
+    let mut first_stream = estate.carrier().await.resubmit(&first_id, 1).await.unwrap_or_else(|e| panic!("the fabric-primary does not stream the Day-0 Build {first}: {e}"));
     let path = |n: &str| -> PathName { n.parse().unwrap() };
-    let held_in_state_sync = |f: &FabricView| f.status == ScopeStatus::StateSync && f.build_id.as_deref() == Some(first.as_str()) && f.meshes.len() == 2 && f.meshes.iter().all(|m| m.status == ScopeStatus::ReadyForTraffic);
-    estate.fabrics_obj().await.fact("state-sync under the initial Build, both meshes ready", Duration::from_secs(60), held_in_state_sync).await.unwrap_or_else(|end| panic!("{end}"));
+    let held_in_state_sync = |f: &FabricView| f.status == ScopeStatus::StateSync && f.build_id.as_deref() == Some(first.as_str()) && f.meshes.len() == 1 && f.meshes.iter().all(|m| m.status == ScopeStatus::ReadyForTraffic);
+    estate.fabrics_obj().await.fact("state-sync under the Day-0 Build, its mesh ready", Duration::from_secs(60), held_in_state_sync).await.unwrap_or_else(|end| panic!("{end}"));
     door.wait_held("state-sync").await;
-    // mesh2's primary holds the fabric's state too: the node.tags.create below is decided from its own view.
-    let mesh2_primary = path("mesh2.admin.1");
-    Fabrics::new(estate.carrier_at(&mesh2_primary).await).fact("mesh2's primary holds the fabric in state-sync", Duration::from_secs(30), |f| f.status == ScopeStatus::StateSync).await.unwrap_or_else(|end| panic!("{end}"));
     // The Build's run ended, handed back for the fabric's change: no attempt of it is in flight, and none is claimed
     // while the fabric changes (Q154).
     until_blocked_on_the_fabric_change(&estate, &mut first_stream, Duration::from_secs(60)).await;
@@ -883,10 +881,9 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
         ("node.restart mesh1.admin.1", refused("restart", nodes.restart(&path("mesh1.admin.1")).await)),
         ("node.stop mesh1.admin.1", refused("stop", nodes.stop(&path("mesh1.admin.1")).await)),
         ("node.connections.delete mesh1.admin.1 (a seat holder)", refused("node.connections.delete", carrier.create(Change::DeleteConnections { node: path("mesh1.admin.1") }).await)),
-        ("recipe (node.connections.delete:mesh2.admin.1)", refused("recipe", carrier.create(Change::Recipe { steps: vec![rdm_core::build::RecipeStep::DeleteConnections { node: path("mesh2.admin.1") }] }).await)),
-        ("node.stop mesh2.rpc.1", refused("stop", nodes.stop(&path("mesh2.rpc.1")).await)),
-        ("node.delete mesh2.rpc.1", refused("delete", nodes.delete(&path("mesh2.rpc.1")).await)),
-        ("mesh.delete mesh2", refused("mesh.delete", carrier.create(Change::RemoveMesh { mesh: "mesh2".into() }).await)),
+        ("recipe (node.connections.delete:mesh1.admin.1)", refused("recipe", carrier.create(Change::Recipe { steps: vec![rdm_core::build::RecipeStep::DeleteConnections { node: path("mesh1.admin.1") }] }).await)),
+        ("node.delete mesh1.admin.1", refused("delete", nodes.delete(&path("mesh1.admin.1")).await)),
+        ("mesh.delete mesh1", refused("mesh.delete", carrier.create(Change::RemoveMesh { mesh: "mesh1".into() }).await)),
     ];
     for (workflow, end) in &refusals {
         match end {
@@ -898,13 +895,12 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
         }
     }
 
-    // node.tags.create at mesh2's primary: the Status op's own refusal, nothing written.
-    let rpc2 = estate.node_view("mesh2.rpc.1").await;
-    let primary2 = estate.node_view("mesh2.admin.1").await;
-    let birth2 = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(rpc2.node_id.clone()), node_id: rpc2.node_id.clone(), incarnation: rpc2.incarnation_id.clone().expect("mesh2.rpc.1 has a known birth") };
-    let created = nodes.tags_create(&birth2, &primary2.node_id, &rdm_transport::RouteChoice::Direct, &["rabbit".to_string()].into()).await.unwrap_or_else(|end| panic!("node.tags.create at {mesh2_primary}: {end}"));
-    assert_eq!(created, StatusReply::RejectedFabricNotReady { workflow: "node.tags.create mesh2.rpc.1".into(), status: "state-sync".into() });
-    assert!(estate.node_view("mesh2.rpc.1").await.tags.is_empty(), "a refused node.tags.create writes no tags");
+    // node.tags.create at mesh1's primary: the Status op's own refusal, nothing written.
+    let primary1 = estate.node_view("mesh1.admin.1").await;
+    let birth1 = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(primary1.node_id.clone()), node_id: primary1.node_id.clone(), incarnation: primary1.incarnation_id.clone().expect("mesh1.admin.1 has a known birth") };
+    let created = nodes.tags_create(&birth1, &primary1.node_id, &rdm_transport::RouteChoice::Direct, &["rabbit".to_string()].into()).await.unwrap_or_else(|end| panic!("node.tags.create at mesh1.admin.1: {end}"));
+    assert_eq!(created, StatusReply::RejectedFabricNotReady { workflow: "node.tags.create mesh1.admin.1".into(), status: "state-sync".into() });
+    assert!(estate.node_view("mesh1.admin.1").await.tags.is_empty(), "a refused node.tags.create writes no tags");
 
     // Nothing moved: no attempt was claimed, the fabric is still held, every seat is where it was.
     let log_after = build_log::build_value(&carrier, &first).await;
@@ -913,19 +909,26 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
     assert_eq!(estate.fabric_view().await.status, ScopeStatus::StateSync, "the fabric is still held in state-sync");
     let held_seats = seats(&estate.node_views().await);
     assert_eq!(held_seats, seats_before, "every seat is where it was");
-    assert!(held_seats.contains(&("mesh1.admin.1".to_string(), true, true)) && held_seats.contains(&("mesh2.admin.1".to_string(), true, false)), "{held_seats:?}");
+    assert_eq!(held_seats, vec![("mesh1.admin.1".to_string(), true, true)], "{held_seats:?}");
 
     // The application answers: the fabric changes, and the same kind of workflow is accepted.
     door.release("state-sync").await;
-    followed(&estate, first_stream, &format!("the initial Build {first} after its state-sync was released"), Duration::from_secs(90)).await;
-    estate.fabrics_obj().await.fact("ready-for-traffic under the initial Build", Duration::from_secs(90), |f| f.status == ScopeStatus::ReadyForTraffic && f.build_id.as_deref() == Some(first.as_str())).await.unwrap_or_else(|end| panic!("{end}"));
-    // The attempt that completed the initial Build after its change is the last before the restart.
-    let log_done = build_log::build_value(&carrier, &first).await;
-    let member = estate.node_views().await.into_iter().filter(|n| n.name.to_string().starts_with("mesh2.rpc.") && !n.is_primary).map(|n| n.name.to_string()).min().expect("an rpc node of mesh2 holding no seat");
+    followed(&estate, first_stream, &format!("the Day-0 Build {first} after its state-sync was released"), Duration::from_secs(90)).await;
+    estate.fabrics_obj().await.fact("ready-for-traffic under the Day-0 Build", Duration::from_secs(90), |f| f.status == ScopeStatus::ReadyForTraffic && f.build_id.as_deref() == Some(first.as_str())).await.unwrap_or_else(|end| panic!("{end}"));
+    // mesh1 grows by two rpc nodes: the restart admitted is of the one holding no seat, so no seat moves (a
+    // seat holder's restart runs node.primary.update first, and a node type of one node in its mesh has no
+    // successor, Q7). The fault cut was spent by its release: the application answers this Build at once.
+    let shape = [("mesh1", 1, 2)];
+    let grown = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
+    estate.settled_views(&shape).await;
+    ready_under(&estate, &grown).await;
+    // The attempt that completed the growth after its change is the last before the restart.
+    let log_done = build_log::build_value(&carrier, &grown).await;
+    let member = estate.node_views().await.into_iter().filter(|n| n.name.to_string().starts_with("mesh1.rpc.") && !n.is_primary).map(|n| n.name.to_string()).min().expect("an rpc node of mesh1 holding no seat");
     let mut admitted = estate.nodes_obj().await.restart(&path(&member)).await.unwrap_or_else(|end| panic!("once the fabric is ready-for-traffic a restart is accepted: {end}"));
     let accepted = Estate::complete(&mut admitted).await;
-    assert_eq!((accepted.build_id.as_str(), accepted.attempt), (first.as_str(), log_done["attempt"].as_u64().unwrap() as u32 + 1), "the admitted restart is the next attempt of the initial Build");
-    let log_end = build_log::build_value(&carrier, &first).await;
+    assert_eq!((accepted.build_id.as_str(), accepted.attempt), (grown.as_str(), log_done["attempt"].as_u64().unwrap() as u32 + 1), "the admitted restart is the next attempt of the current Build");
+    let log_end = build_log::build_value(&carrier, &grown).await;
     assert_eq!(log_end["attempt"].as_u64(), Some(u64::from(accepted.attempt)), "the admitted restart is the only attempt the Build gained: {log_end}");
     estate.stop().await;
 
@@ -938,7 +941,7 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
     }
     let node_rejects = named(&spans, "rdm.node_admin.node.reject.via-fabric-not-ready");
     assert_eq!(node_rejects.len(), 1, "one refusal span for the refused node.tags.create: {node_rejects:?}");
-    assert_eq!((s(&node_rejects[0]["attributes"]["workflow"]).as_str(), s(&node_rejects[0]["attributes"]["status"]).as_str()), ("node.tags.create mesh2.rpc.1", "state-sync"));
+    assert_eq!((s(&node_rejects[0]["attributes"]["workflow"]).as_str(), s(&node_rejects[0]["attributes"]["status"]).as_str()), ("node.tags.create mesh1.admin.1", "state-sync"));
     for update_span in [
         "rdm.node_admin.primary.update.via-command",
         "rdm.node_admin.primary.update.via-update-primary",
@@ -951,7 +954,7 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
     for r in &rejects {
         eprintln!("trace {}: rdm.node_admin.build.reject.via-fabric-not-ready workflow={} status=state-sync", s(&r["trace_id"]), s(&r["attributes"]["workflow"]));
     }
-    eprintln!("trace {}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.tags.create mesh2.rpc.1 status=state-sync", s(&node_rejects[0]["trace_id"]));
+    eprintln!("trace {}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.tags.create mesh1.admin.1 status=state-sync", s(&node_rejects[0]["trace_id"]));
 }
 
 

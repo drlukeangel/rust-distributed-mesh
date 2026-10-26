@@ -751,10 +751,11 @@ impl Estate {
         // work is done before a cell submits anything: a cell's first build.create is never refused
         // for a Build in progress it did not start. The Day-0 Build is Complete only from its own
         // ready-for-traffic (states.md "Resize and executable replacement": "as fabric.create's is"): an
-        // application that answers `sync_state` is followed to that Complete; one that holds or refuses
-        // Day 0's state-sync (`RDM_TEST_APP` other than `answer`) to the Blocked frame naming the fabric's
-        // change, its attempt handed back with nothing left and nothing of it in flight.
-        let answers = extra_env.iter().find(|(k, _)| *k == "RDM_TEST_APP").is_none_or(|(_, v)| v.trim().is_empty() || v.starts_with("answer"));
+        // application that answers Day 0's `sync_state` (`RDM_TEST_APP` unset, `answer[:<ms>]` or
+        // `after-day0:<mode>`) is followed to that Complete; one that holds or refuses Day 0's state-sync
+        // (any other) to the Blocked frame naming the fabric's change, its attempt handed back with nothing
+        // left and nothing of it in flight.
+        let answers = extra_env.iter().find(|(k, _)| *k == "RDM_TEST_APP").is_none_or(|(_, v)| v.trim().is_empty() || v.starts_with("answer") || v.starts_with("after-day0:"));
         let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
         let id = rdm_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
         let mut stream = estate.carrier().await.resubmit(&id, 1).await.unwrap_or_else(|e| panic!("the bootstrap admin does not stream its Day-0 Build {id}: {e}"));
