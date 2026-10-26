@@ -1063,7 +1063,11 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
     let build_id = estate.reconcile_shape("fabric1", &[(survivor_mesh.as_str(), 2, 3)]).await.build_id.to_string();
     let build_complete = now_nanos();
     // mesh-delete.md steps 5–7: mesh.deleted leaves its reporting primary alive.
-    // The caller deletes that exact held final primary in a separate node.delete.
+    // The caller deletes that exact held final primary in a separate node.delete, once the view it
+    // enters through has every other node of the deleted mesh gone: the delete's door reads that view.
+    for name in containers_before.keys().filter(|n| n.starts_with(&format!("{lost_mesh}.")) && **n != holder) {
+        estate.until_node(name, &format!("{name} gone from the view after mesh.deleted"), Duration::from_secs(30), |n| n.is_none().then_some(())).await;
+    }
     let delete = estate.submit_change(rdm_client::Change::RemoveNode { node: Estate::path(&holder) }).await;
     let delete_build_id = estate.follow(delete).await.build_id.to_string();
     // The former holder's containers: terminal at the daemon (not running, or removed).

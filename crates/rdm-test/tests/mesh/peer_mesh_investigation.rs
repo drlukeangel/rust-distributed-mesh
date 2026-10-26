@@ -100,6 +100,16 @@ async fn fixture(cell: &str) -> Fixture {
     // The fault falls on an established fabric, so the cells that assert the fabric stays ready start
     // from ready-for-traffic.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
+    // The fault falls on a mesh whose status is published: the fabric is ready-for-traffic at the
+    // fabric-primary's apply of the mesh's ready, the moment the mesh's primary sends it (states.md), so
+    // the fixture waits for that send and its first repeat in the primary's own spans.
+    let primary = before.iter().find(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("the lost mesh has a primary node-admin");
+    wait_for("the lost mesh's primary has sent its ready-for-traffic status and repeated it", Duration::from_secs(60), || {
+        let spans = estate.spans();
+        let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == format!("mesh:{lost}") && attr(sp, "node") == primary && attr(sp, "status") == "ready-for-traffic").count();
+        async move { (sends >= 2).then_some(()) }
+    })
+    .await;
     Fixture { estate, accepted, attempt_before, fabric_primary, lost, lost_mesh_id, before }
 }
 

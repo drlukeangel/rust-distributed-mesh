@@ -290,6 +290,9 @@ async fn in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_
     let ordinary = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && !n.is_primary).map(|n| n.name.to_string()).expect("mesh2's other admin");
     let pid = pid_of(&estate, &ordinary).await;
     let replies = deleted_inside_the_bound(&mut estate, &ordinary, pid).await;
+    // node.deleted is mesh2's primary's; the fabric-primary's view drops the node once mesh2's
+    // publication reaches it.
+    estate.until_node(&ordinary, &format!("{ordinary} gone from the fabric-primary's view"), Duration::from_secs(30), |n| n.is_none().then_some(())).await;
     let mp_refused = refused_by_name("node.delete of mesh2's primary, its mesh's only admin", "would-leave-mesh-without-admin", estate.nodes_obj().await.delete(&path(&primary)).await);
     assert!(mp_refused.contains("mesh2"), "the refusal names mesh2: {mp_refused}");
     for now in estate.mesh_node_views("mesh2").await.iter().filter(|n| n.kind == NodeKind::NodeAdmin) {

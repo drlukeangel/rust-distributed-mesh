@@ -40,7 +40,7 @@ for a in "$@"; do
 done
 
 PLAN=$(python3 - "$REG" "$N" "$SOAKS" <<'PY'
-import datetime, json, os, sys
+import datetime, json, os, re, sys
 reg_path, n, soaks = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
 if n < 1:
     sys.exit(f"I143_EXPORT_BATCH={n}: a batch runs at least one job")
@@ -67,12 +67,20 @@ for section in ("jobs", "rshape_jobs"):
                 held.append((job, layer))
             continue
         consumer = any("RDM_RSHAPE_CONSUMER_BIN_DIR" in c.get("command", "") for c in v.get("cells", []))
-        jobs.append((job, consumer, wall(section, job, layer)))
+        # The cargo package a job's cells build: jobs of two packages in one batch relink the same
+        # target/debug binaries under each other's running cells (a node-admin hashed at a cell's
+        # start no longer the file its Build launches), so a batch holds one package's jobs.
+        shape = next((m.group(1) for c in v.get("cells", []) for m in [re.search(r"cargo \w+ -p (\S+)", c.get("command", ""))] if m), "")
+        jobs.append((job, consumer, wall(section, job, layer), shape))
 build = [j for j in jobs if j[0] == "i143-rshape-consumer-build"]
 others = sorted((j for j in jobs if j not in build), key=lambda j: -j[2])
-first = build + [j for j in others if not j[1]][: n - len(build)]
+lead = next((j[3] for j in others if not j[1]), "")
+first = build + [j for j in others if not j[1] and j[3] == lead][: n - len(build)]
 rest = [j for j in others if j not in first]
-batches = [first] + [rest[i:i + n] for i in range(0, len(rest), n)]
+batches = [first]
+for shape in dict.fromkeys(j[3] for j in rest):
+    same = [j for j in rest if j[3] == shape]
+    batches += [same[i:i + n] for i in range(0, len(same), n)]
 for i, b in enumerate(x for x in batches if x):
     print(f"batch {i + 1}: " + " ".join(j[0] for j in b))
 for job, layer in held:
