@@ -119,8 +119,15 @@ pub(crate) fn marked_from(mut s: SilentNode, marks: &std::collections::HashMap<c
 /// the command passed the floor, on the local clock. A birth that keeps gossiping is marked all the
 /// same: it does not answer commands, so it is silent whatever it gossips.
 pub(crate) fn unanswered_marks(commands: &crate::node_commands::CommandView, view: &crate::topology::Topology, mesh: &str, floor: std::time::Duration, now: std::time::Instant, now_ms: u64) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
-    let _ = (commands, view, mesh, floor, now, now_ms);
-    std::collections::HashMap::new()
+    view.births()
+        .filter(|n| n.mesh == mesh)
+        .filter_map(|n| {
+            let incarnation = n.incarnation_id.clone()?;
+            let passed = commands.unanswered_since(&n.node_id, &incarnation, floor, now)? + floor;
+            let at_ms = now_ms.saturating_sub(now.saturating_duration_since(passed).as_millis() as u64);
+            Some((n.node_id.clone(), UnreachableMark { incarnation, at: passed, at_ms, reason: "command-unanswered" }))
+        })
+        .collect()
 }
 
 /// How many live peers the via-peer step asks.
@@ -378,6 +385,11 @@ impl TickleCalls for TickleClient {
         eligible_carriers(view, node, Some(&self.me_id)).cloned().collect()
     }
 
+    fn command_unanswered(&self, node: &crate::model::Node) -> bool {
+        let (Some(commands), Some(incarnation)) = (&self.commands, &node.incarnation_id) else { return false };
+        commands.unanswered_since(&node.node_id, incarnation, rdm_transport::topology::staleness_floor(), std::time::Instant::now()).is_some()
+    }
+
     async fn leads(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Result<Vec<crate::model::Node>, String> {
         let Some(store) = &self.connections else { return Ok(Vec::new()) };
         let rows = store.connections_to(&node.node_id).await.map_err(|e| format!("the by-destination connections index of {} ({}) could not be read: {e}", node.name, node.node_id))?;
@@ -428,8 +440,12 @@ pub async fn tickle<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &c
     said(&span, &direct);
     if let ProbeEnd::Reply(answer) = &direct {
         if birth_answered(Some(answer), &node.node_id, &incarnation) {
-            span.in_scope(|| tracing::info!("the birth answered the direct probe: reached"));
-            return Ok(Tickle::Reached { answer: answer.clone(), carrier: None });
+            if calls.command_unanswered(node) {
+                span.in_scope(|| tracing::info!("the birth answered the direct probe but left a command unanswered past the staleness floor: not reached (Q182)"));
+            } else {
+                span.in_scope(|| tracing::info!("the birth answered the direct probe: reached"));
+                return Ok(Tickle::Reached { answer: answer.clone(), carrier: None });
+            }
         }
     }
     drop(span);
@@ -457,9 +473,13 @@ pub async fn tickle<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &c
     while let Some((i, carrier, end, span)) = running.next().await {
         if let ProbeEnd::Reply(answer) = &end {
             if birth_answered(Some(answer), node_id, &incarnation) {
-                span.in_scope(|| tracing::info!(carrier = %carrier, "the birth answered through the carrier: reached, the other probes cancelled"));
-                // Dropping `running` cancels the probes still running (step 4).
-                return Ok(Tickle::Reached { answer: answer.clone(), carrier: Some(carrier) });
+                if calls.command_unanswered(node) {
+                    span.in_scope(|| tracing::info!(carrier = %carrier, "the birth answered through the carrier but left a command unanswered past the staleness floor: not reached (Q182)"));
+                } else {
+                    span.in_scope(|| tracing::info!(carrier = %carrier, "the birth answered through the carrier: reached, the other probes cancelled"));
+                    // Dropping `running` cancels the probes still running (step 4).
+                    return Ok(Tickle::Reached { answer: answer.clone(), carrier: Some(carrier) });
+                }
             }
         }
         peers.push((i, PeerProbe { carrier, end }));

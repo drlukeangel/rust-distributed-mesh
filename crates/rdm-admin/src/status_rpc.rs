@@ -1413,7 +1413,7 @@ impl StatusAuthority {
         // The command is over with its carry, admitted or not: its step receipt is the record
         // (node-recovery.md step 2 reads "open" as from the send to the completion).
         if let Some(incarnation) = node.incarnation_id.clone() {
-            self.commands.close(&crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation, build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() });
+            self.commands.close_with(&crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation, build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() }, &admission);
         }
         (admission, unreachable)
     }

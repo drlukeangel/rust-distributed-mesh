@@ -124,6 +124,8 @@ impl CommandView {
         let open = self.open.lock().unwrap();
         match open.get(key) {
             Some((tx, _)) => {
+                // The birth sent a completion: it answers commands.
+                self.unanswered.lock().unwrap().remove(&(key.node_id.clone(), key.incarnation.clone()));
                 if tx.send_replace(true) {
                     Accepted::Again
                 } else {
@@ -170,20 +172,33 @@ impl CommandView {
     /// the birth answers commands again.
     pub fn close_answered(&self, key: &CommandKey) {
         self.close(key);
+        self.unanswered.lock().unwrap().remove(&(key.node_id.clone(), key.incarnation.clone()));
     }
 
     /// Forget the command, which ended with no answer from the birth (Q182): the birth has a command
-    /// unanswered since the instant it was sent.
+    /// unanswered since the instant it was sent, the earliest such command's.
     pub fn close_unanswered(&self, key: &CommandKey) {
-        self.close(key);
+        let sent = self.open.lock().unwrap().remove(key).map_or_else(Instant::now, |(_, sent)| sent);
+        self.unanswered.lock().unwrap().entry((key.node_id.clone(), key.incarnation.clone())).and_modify(|since| *since = (*since).min(sent)).or_insert(sent);
+    }
+
+    /// Forget the command, which ended as `admission`: an `Indeterminate` end is no answer from the
+    /// birth ([`Self::close_unanswered`]); a command never sent says nothing of it (`close`); any
+    /// other end is the birth's own answer ([`Self::close_answered`]).
+    pub fn close_with(&self, key: &CommandKey, admission: &CommandAdmission) {
+        match admission {
+            CommandAdmission::Indeterminate { .. } => self.close_unanswered(key),
+            CommandAdmission::NotSent { .. } => self.close(key),
+            _ => self.close_answered(key),
+        }
     }
 
     /// The instant the earliest command the exact birth left unanswered was sent, when that is a
     /// staleness `floor` or more before `now` (node-investigation.md, Q182); `None` when the birth
-    /// has none, or none that old.
+    /// has none, or none that old. Read from this admin's own record of its commands: no timer runs.
     pub fn unanswered_since(&self, node_id: &NodeId, incarnation: &IncarnationId, floor: Duration, now: Instant) -> Option<Instant> {
-        let _ = (node_id, incarnation, floor, now, &self.unanswered);
-        None
+        let since = *self.unanswered.lock().unwrap().get(&(node_id.clone(), incarnation.clone()))?;
+        (now.saturating_duration_since(since) >= floor).then_some(since)
     }
 }
 
@@ -268,7 +283,7 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandVie
         let _ = commands.complete(&CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("checked above") });
     }
     // The command is over with its reply, admitted or not: its step receipt is the record.
-    commands.close(&key);
+    commands.close_with(&key, &admission);
     // A command not admitted names why on its span (the reply, or why no reply came), as its step's
     // receipt does: the refusal is read where it happened.
     let detail = match &admission {

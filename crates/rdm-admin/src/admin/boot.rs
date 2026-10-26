@@ -1476,7 +1476,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 decisions: builds.decisions(),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, digest_view.clone(), records.clone()),
                                 finish_writes: finish_writes.clone(),
-                                looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: None },
+                                looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: Some(commands.clone()) },
                             });
                             let _ = handover_slot.set(handover.clone());
                             // The drives of the Builds this admin drives (`build_drive`): its executor ends its own
@@ -2301,7 +2301,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             connections: Some(
                                                                 connections_storage.clone(),
                                                             ),
-                                                            commands: None,
+                                                            commands: Some(commands.clone()),
                                                         },
                                                         recovery.clone(),
                                                         handover_slot.clone(),
@@ -2341,6 +2341,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // The ladder's leads: the by-destination index of the store (Q107 item 1).
                                                     let ladder_connections =
                                                         connections_storage.clone();
+                                                    // The commands this admin sent: a member that left one unanswered past the
+                                                    // floor is silent whatever it gossips (Q182).
+                                                    let ladder_commands = commands.clone();
                                                     tasks.push(tokio::spawn(async move {
                                             // The births whose inspection or submitted recovery is in flight. The tick never waits
                                             // on it.
@@ -2371,7 +2374,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
                                                 // node-tickle.md step 1: a birth a command never reached for a reachability reason is
                                                 // PendingReconnect from that instant, so its ladder runs now.
-                                                let marks = crate::offline::held_marks(&records.unreachable, &view, &mesh, &recovery.digest_view, now);
+                                                let mut marks = crate::offline::held_marks(&records.unreachable, &view, &mesh, &recovery.digest_view, now);
+                                                // node-investigation.md (Q182): a member that left a command unanswered past the floor is
+                                                // silent whatever it gossips, marked from the instant the command passed the floor. The
+                                                // commands' own record decides, each tick: an answer ends the mark.
+                                                for (id, mark) in crate::offline::unanswered_marks(&ladder_commands, &view, &mesh, floor, now, now_ms) {
+                                                    marks.entry(id).or_insert(mark);
+                                                }
                                                 crate::offline::watch_marked(&mut watched, &marks, &view, &me_id);
                                                 // The topology decides who is tickled (Luke, Q87): a mesh-primary's view comes from the
                                                 // fabric-primary and is current, so a member it holds ready-for-traffic there is not
@@ -2414,10 +2423,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             // RPC client, runs no ladder, by name.
                                                             let (client, node, view) = (client.clone(), watched.get(&id).cloned(), ladder_view.clone());
                                                             let (me_id, me, connections) = (me_id.clone(), me.to_string(), Some(ladder_connections.clone()));
+                                                            let commands = Some(ladder_commands.clone());
                                                             async move {
                                                                 let Some(node) = node else { return Err(format!("{id} is not in the topology")) };
                                                                 let Some(client) = client else { return Err("this admin has no Node RPC client".to_string()) };
-                                                                crate::offline::tickle(&node, &view, &crate::offline::TickleClient { client, me_id, me, connections, commands: None }).await
+                                                                crate::offline::tickle(&node, &view, &crate::offline::TickleClient { client, me_id, me, connections, commands }).await
                                                             }
                                                         },
                                                         |id| {
@@ -2626,7 +2636,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             topology_view: topology_view.clone(),
                                             topology: control.topology.clone(),
                                             records: records.clone(),
-                                            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: None },
+                                            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: Some(commands.clone()) },
                                             builds: builds.clone(),
                                             recovery: Some(recovery.clone()),
                                             fabric_recovery: fabric_recovery.clone(),
