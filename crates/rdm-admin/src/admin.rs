@@ -233,6 +233,57 @@ mod tests {
         assert_eq!(mesh1(&t), Some((Some(id), ScopeStatus::Dead)), "a deleted mesh whose last admin is stopped stays deleted, under its id");
     }
 
+    /// CONTRACT (node-identity-and-state.md §6 "Re-born": "the predecessor is deleted by the recovery
+    /// Build, so the projection holds one entry per `path.name`"; §2.3: "the deleted row releases the
+    /// `path.name`"): the birth at a path is the one the records say is current, stopped or not. A
+    /// recovery re-created mesh1.rpc.2 under a new node id; the predecessor's row is `Deleted`, and its
+    /// digest is still held, silent past the staleness floor (its `NodeDeleted` never reached this
+    /// view). The successor was then stopped. The projection lists the successor, stopped, at
+    /// mesh1.rpc.2. Must NOT happen: the predecessor's held digest taking the path from the stopped
+    /// successor (release red at 31666a3c3: `node.start:mesh2.admin.1 is fenced to birth ptkpqdd24s4x,
+    /// the view holds z8pb1w7gckwy at that path`).
+    #[tokio::test]
+    async fn a_stopped_birth_keeps_its_path_from_an_older_birth_whose_row_is_deleted() {
+        for (backend, nodes, _meshes) in record_stores("current-birth-at-path").await {
+            let digest_view = DigestView::default();
+            let records = Records::default();
+            let _ = records.contacts.set(nodes.clone());
+            let predecessor = digest("mesh1.rpc.2", MemberStatus::ReadyForTraffic);
+            let mut successor = digest("mesh1.rpc.2", MemberStatus::ReadyForTraffic);
+            successor.node.endpoint_id = EndpointId("key-mesh1.rpc.2-successor".into());
+            // The records: the predecessor's node deleted by the recovery, the successor's claim at the name.
+            claimed(&*nodes, &predecessor).await;
+            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &predecessor.node.name, &predecessor.node.node_id, None).await.ok().expect("the predecessor's Deleted record");
+            claimed(&*nodes, &successor).await;
+            // The view: the predecessor's digest held, the successor heard and then stopped.
+            assert!(digest_view.record(predecessor.clone()));
+            assert!(digest_view.record(successor.clone()));
+            assert!(digest_view.stopped(rdm_core::LifecycleOp {
+                build_id: "b9".into(),
+                attempt: 9,
+                operation: "node.stop:mesh1.rpc.2".into(),
+                node_id: successor.node.node_id.clone(),
+                incarnation: successor.node.incarnation.clone(),
+                name: successor.node.name.clone(),
+                event_at_rafka_ms: 1,
+            }));
+            // Past the staleness floor: the predecessor publishes nothing, and both births are named by their rows.
+            let at = std::time::Instant::now() + digest_view.staleness_floor() + std::time::Duration::from_secs(1);
+            let me: PathName = "mesh1.admin.1".parse().unwrap();
+            let reads = ViewReads { at, rows: super::projection::RowNames::read(&me, &digest_view, &records, &fabric1(), at).await };
+            let t = project_with("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &reads);
+            let n = t.node(&successor.node.name).expect("a birth is listed at mesh1.rpc.2");
+            assert_eq!(
+                n.incarnation_id.as_ref().map(|i| i.as_str()),
+                Some(successor.node.incarnation.as_str()),
+                "{backend}: mesh1.rpc.2 lists the successor {} (the birth its row names), not the deleted predecessor {}: {n:?}",
+                successor.node.incarnation.as_str(),
+                predecessor.node.incarnation.as_str()
+            );
+            assert!(n.stopped, "{backend}: listed stopped: {n:?}");
+        }
+    }
+
     /// A memory and a file nodes store, each beside its own mesh store, on a root of its own: the two
     /// backends a cell over the records runs on.
     async fn record_stores(name: &str) -> Vec<(&'static str, Arc<dyn crate::storage::NodesStorage>, Arc<dyn crate::storage::MeshStorage>)> {
