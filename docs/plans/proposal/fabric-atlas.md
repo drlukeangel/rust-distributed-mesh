@@ -4,7 +4,11 @@
 `node-not-live`). **State:** proposed; built after i149 lands. **Name:** `FabricAtlas`, read through
 `fabrics.atlas.get`.
 
-## The requirement (Lukes words)
+## The requirement (Luke's words)
+
+**What it is (Luke, 2026-10-26):** "fabric atlas is the union of what ops are currently executing and the current
+topology state." An external client sends `build.create` to the fabric-primary; the fabric-primary accepts or
+denies it, deciding from the `FabricAtlas`, never from gossip.
 
 **`FabricAtlas` combines command accept or deny, execution progress and gossip observations, and is exposed
 through `fabrics.atlas.get`.** It updates immediately when commands are accepted and before completion is
