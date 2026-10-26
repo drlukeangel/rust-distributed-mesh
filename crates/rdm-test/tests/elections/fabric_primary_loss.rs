@@ -100,3 +100,52 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     assert!(installed >= 1, "the restored node installed both roles on the workflow's call");
     assert_ne!(s(&restored["node_id"]), before.node_id.to_string(), "a new node id at the same path.name");
 }
+
+/// CONTRACT (fabric-recovery.md intro: "while any node-admin lives, the fabric-primary moves and is
+/// brought back without a person"; "The launched node-admin is a new node at the same path.name: a new
+/// node.id and incarnation and a new port, with the same endpoint key over the inherited data dir";
+/// node-admin-lifecycle.md §4.4, "fabric-primary is launched again into its own mesh"; elections §4.3:
+/// "the node-admin at the fabric-primary's path.name is re-created and is mesh-primary and
+/// fabric-primary again when it is ReadyForTraffic"): mesh1 has two node-admins; the fabric-primary
+/// mesh1.admin.1's process is killed (SIGKILL) and a person starts a node-admin again over its data dir,
+/// as the topology-storage restart canaries do, while mesh1.admin.2 lives. Read through mesh1.admin.2,
+/// within the bound of the held-primary cell above, `fabric.get` names the fabric-primary at
+/// mesh1.admin.1, and the views name exactly one birth at mesh1.admin.1, ready-for-traffic, mesh-primary
+/// and fabric-primary. What must NOT happen: two births contending for mesh1.admin.1 (a node.delete of
+/// the lost birth refused `name-held` by the started one, again and again), or mesh1 left with no
+/// fabric-primary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives_ends_with_one_birth_at_its_path_that_is_fabric_primary() {
+    let test = "a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives_ends_with_one_birth_at_its_path_that_is_fabric_primary";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await;
+    estate.settled_views(&[("mesh1", 2, 1)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let floor = rdm_transport::topology::staleness_floor();
+    let fp = "mesh1.admin.1";
+    let standby = "mesh1.admin.2";
+    let before = estate.node_view(fp).await;
+    let nodes0 = estate.node_values().await;
+    assert_eq!(primaries(&nodes0), Some((fp.to_string(), true)), "the Day-0 admin holds both roles: {nodes0:#?}");
+    // Control is read through the standby from here: the killed admin answers nothing.
+    estate.enter(&Estate::path(standby)).await;
+    let killed_at = now_ns();
+    estate.kill_bootstrap();
+    let started = estate.restart_admin(&estate.bootstrap_data_dir("mesh1"));
+    assert_eq!(started.to_string(), fp, "the node-admin started on the fabric-primary's data dir is at its path.name");
+    let within = floor * 12 + Duration::from_secs(120);
+    let one = estate
+        .until_view_at(&Estate::path(standby), &format!("one birth at {fp}, ready-for-traffic, mesh-primary and fabric-primary"), within, |views| {
+            let ns = Estate::values(views);
+            let at_fp: Vec<&Value> = ns.iter().filter(|n| n["name"] == fp && n["status"] != "deleted").collect();
+            (at_fp.len() == 1 && at_fp[0]["status"] == "ready-for-traffic" && at_fp[0]["is_fabric_primary"] == true && at_fp[0]["is_primary"] == true).then(|| at_fp[0].clone())
+        })
+        .await;
+    let named_fp = estate.fabric_view_at(&Estate::path(standby)).await.and_then(|f| f.fabric_primary).map(|p| p.to_string());
+    assert_eq!(named_fp.as_deref(), Some(fp), "fabric.get at {standby} names the fabric-primary at {fp}");
+    assert_ne!(s(&one["node_id"]), before.node_id.to_string(), "the birth at {fp} is not the killed one");
+    estate.stop().await;
+    let spans = estate.spans();
+    let refused: Vec<&Value> = spans.iter().filter(|sp| at(sp) >= killed_at && s(&sp["attributes"]["error"]).contains("name-held")).collect();
+    assert!(refused.len() < 3, "no node.delete of the lost birth is refused name-held again and again: {} refusals, first {:#?}", refused.len(), refused.first());
+}
