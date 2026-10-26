@@ -246,14 +246,18 @@ async fn an_omitted_provider_preserves_the_current_provider() {
 /// node restarts, and no node changes state"; "Copy" ... "dead births' and deleted nodes' records among
 /// them"; "The previous provider is kept as it was at the switch ... written no more"): a
 /// two-mesh fabric with history (a deleted birth, a deleted mesh) is moved to `test-target` by one Build
-/// of its complete topology while a `node.config.update` is in flight. The Build completes; the Fabric
+/// of its complete topology, and a caller's `node.config.update` of mesh2.rpc.1 reaches mesh2's
+/// mesh-primary once it has replied `blocked` ("A mesh-primary that has replied `blocked` issues no new
+/// command until it is unblocked"; node-config-update.md: "admitted at any time"): it is answered, and the
+/// node applies the map only once its mesh-primary's `mesh.unblock` began; the row carrying it is on
+/// `test-target` and not on `file`. The Build completes; the Fabric
 /// row names `test-target` with `file` previous; every node writes `test-target` and is the same birth,
 /// ready-for-traffic, carrying the config the update set; every line of the five stores is on
 /// `test-target` in source order, the deleted birth's and the deleted mesh's included; `file` is written
 /// no more; and each mesh-primary's `mesh.block` (its reply `blocked`), the copy, the switch and each
 /// `mesh.unblock` (its reply `unblocked`) are spans on one trace (storage.md §2, Q198). Must NOT
-/// happen: a node restarted or replaced, a record lost or reordered, or the old provider written after
-/// the commit.
+/// happen: a node restarted or replaced, a record lost or reordered, the old provider written after
+/// the commit, or the update's command issued by a blocked mesh-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_customer_changes_topology_storage_without_restarting_members() {
     let test = "a_customer_changes_topology_storage_without_restarting_members";
@@ -275,7 +279,9 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
 
     let stream = estate.carrier().await.create(naming_provider(&estate, Some(TOPOLOGY_STORAGE_TARGET)).await).await.unwrap_or_else(|e| panic!("the storage change naming {TOPOLOGY_STORAGE_TARGET} is accepted: {e}"));
     let build_id = stream.build_id().to_string();
-    // A caller's command while the change runs: answered once its line has landed.
+    // A caller's command to mesh2's mesh-primary once it replied `blocked`: admitted, and issued only
+    // once it is unblocked (storage.md §2 step 1).
+    let blocked = blocked_at(&estate, &build_id, "mesh2").await;
     let subject = views.iter().find(|v| v.name.to_string() == "mesh2.rpc.1").cloned().expect("mesh2.rpc.1");
     let primary = views.iter().find(|v| v.mesh == "mesh2" && v.is_primary).cloned().expect("mesh2's primary");
     let told: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
@@ -286,6 +292,8 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     let (done, updated) = tokio::join!(estate.follow(stream), update);
     updated.unwrap_or_else(|e| panic!("node.config.update during the change is answered: {e}"));
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
+    // The row the update wrote is on the provider its mesh-primary writes once unblocked, never the old.
+    assert!(!lines_naming(&target_root, "\"tier\":\"gold\"").is_empty() && lines_naming(&file_root, "\"tier\":\"gold\"").is_empty(), "the update's row is on {TOPOLOGY_STORAGE_TARGET} and not on {FILE}");
 
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
     let after = estate.node_views().await;
@@ -315,6 +323,11 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
         traces.extend(found.iter().map(|sp| s(&sp["trace_id"])));
     }
     assert_eq!(traces.len(), 1, "the storage steps are on one causal trace: {traces:?}");
+    // The node applies the update's map only once its mesh-primary's `mesh.unblock` began.
+    let unblocked = of_build(&spans, UNBLOCK, &build_id, Some("mesh2")).into_iter().filter(|sp| sp["attributes"]["outcome"] == "unblocked").map(start_ns).min().expect("mesh2's mesh-primary unblocked");
+    let applied: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-apply-node-config").into_iter().filter(|sp| attr(sp, "node") == "mesh2.rpc.1" && start_ns(sp) >= start_ns(&blocked)).collect();
+    assert!(!applied.is_empty(), "mesh2.rpc.1 applied the update's map");
+    assert!(applied.iter().all(|sp| start_ns(sp) >= unblocked), "mesh2.rpc.1 applies the map only once its mesh-primary is unblocked: {applied:#?}");
     estate.record_trace_url(traces.iter().next().unwrap());
 }
 

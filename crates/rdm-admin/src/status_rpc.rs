@@ -984,12 +984,20 @@ impl StatusAuthority {
                     .in_scope(|| tracing::info!("a mesh-deleted call naming this admin was decided"));
                 return reply;
             }
-            StatusRequest::UpdateName { .. } => return self.update_name(req).await,
+            // A caller's property command is admitted at any time (Q166, node-config-update.md); a
+            // mesh-primary that replied `blocked` to a storage change issues it, its row write and its
+            // command to the node, only once it is unblocked (storage.md §2 step 1).
+            StatusRequest::UpdateName { .. } => {
+                self.commands.admitted().await;
+                return self.update_name(req).await;
+            }
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
+                self.commands.admitted().await;
                 return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), req).await;
             }
             StatusRequest::UpdateNodeConfig { .. } => {
-                // A caller's config put is admitted at any time (Q166, node-config-update.md).
+                self.commands.admitted().await;
+                let view = self.topology.read().await.clone();
                 return match self.configs.get() {
                     Some(configs) => configs.update(&me_name, &self.node_id, &view, &*self.nodes_storage, req).await,
                     None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet; {} is refused", req.op())),
