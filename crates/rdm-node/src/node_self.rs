@@ -508,8 +508,13 @@ impl NodeSelf {
             }
             ConnectionScope::Connections(_) => None,
         };
+        // The open entries are the log's: the rows owed before the delete land first (Q169), so a
+        // connection opened just before it is among those it closes.
         let mut open = match &writer {
-            Some(w) => w.held_routes().await,
+            Some(w) => {
+                w.observations_landed().await;
+                w.held_routes().await
+            }
             None => Vec::new(),
         };
         if let Some(reg) = self.data_connections.lock().unwrap().clone() {
@@ -557,14 +562,20 @@ impl NodeSelf {
                 }
             }
         }
-        // Each drop is owed on the writer's queue and lands after (Q169): the connections still open
-        // are those held less the ones just cut.
+        // Each drop is owed on the writer's one ordered queue (Q169); the completion is returned once
+        // they have landed (node-connections-delete.md steps 3.5 and 3.6: the drops are recorded,
+        // then node.connections.deleted is returned), so the connections it names as held are those
+        // the log still holds open.
         let closed = match &writer {
-            Some(w) => w.write_drops(&routes, CONNECTIONS_DELETE),
+            Some(w) => {
+                let closed = w.write_drops(&routes, CONNECTIONS_DELETE);
+                w.observations_landed().await;
+                closed
+            }
             None => Vec::new(),
         };
         let held = match &writer {
-            Some(w) => w.held_routes().await.into_iter().map(|r| r.id).filter(|id| !closed.contains(id)).collect(),
+            Some(w) => w.held_routes().await.into_iter().map(|r| r.id).collect(),
             None => Vec::new(),
         };
         let receipt = in_flight.map(|w| match w {

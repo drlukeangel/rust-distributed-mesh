@@ -524,6 +524,8 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
     });
     let _proxy_conn = dialer_gw1.open(&brk2.birth).await.unwrap();
     let (_srv_conn, _acc_brk2) = accept_task.await.unwrap();
+    // The open's rows are owed (Q169): the cell reads them once they land.
+    gw1.writer.observations_landed().await;
 
     // Drive 5 more reconnect attempts as each attempt's due_ms is reached (total 6 Direct Failed attempts):
     let dial = registry_recovery_dial(&gw1.registry, None);
@@ -898,6 +900,7 @@ async fn a_refused_dial_starts_a_series_a_refused_attempt_continues_and_an_admit
     let (_, mut accepts) = brk.registry.connections(ALPN_A).unwrap().split();
 
     assert_eq!(opener.open(&brk.birth).await.unwrap_err(), ConnectError::Refused { reason: "expired".into() });
+    gw.writer.observations_landed().await;
     let obs = obligations(&gw.writer);
     assert_eq!(obs.len(), 1, "the refused dial starts the source's series: {obs:?}");
     assert_eq!((obs[0].destination.name.clone(), obs[0].alpn.as_slice(), obs[0].recovery.attempt_ordinal), (brk.birth.name.clone(), ALPN_A, 1));
