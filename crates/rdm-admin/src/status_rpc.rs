@@ -974,7 +974,12 @@ impl StatusAuthority {
                 return crate::node_commands::refuse_node_left(&me_name.to_string(), &name, &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req);
             }
             StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } => return self.serve_command(&view, sender.as_ref(), peer, req).await,
-            StatusRequest::DeleteConnections { node_id, incarnation, scope } => return self.carry_delete_connections(&view, sender.as_ref(), node_id, incarnation, scope).await.status_reply(),
+            StatusRequest::DeleteConnections { node_id, incarnation, scope } => {
+                // A blocked mesh-primary carries the command to the node only once unblocked (storage.md §2 step 1).
+                self.commands.admitted().await;
+                let view = self.topology.read().await.clone();
+                return self.carry_delete_connections(&view, sender.as_ref(), node_id, incarnation, scope).await.status_reply();
+            }
             StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } => {
                 let Some(mesh_deleter) = self.mesh_deleter.get().cloned() else {
                     return rdm_core::reply::status::not_ready(format!("{me_name} is still starting: it cannot serve {} yet", req.op()));

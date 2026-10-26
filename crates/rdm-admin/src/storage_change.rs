@@ -207,8 +207,8 @@ async fn copy_stores(providers: &crate::storage_backend::TopologyStorageProvider
 }
 
 /// The switch span of one read or insert of the `commit` record.
-fn switch_span(build_id: &BuildId, change: &StorageChange) -> tracing::Span {
-    tracing::info_span!("rdm.node_admin.build.update.via-storage-switch", build_id = %change.commit_build(build_id).log(), change_id = %change.change_id, provider = %change.to, commit_found = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty)
+fn switch_span(change: &StorageChange) -> tracing::Span {
+    tracing::info_span!("rdm.node_admin.build.update.via-storage-switch", build_id = %change.build_id.log(), change_id = %change.change_id, provider = %change.to, commit_found = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty)
 }
 
 /// Record a read of the `commit` record on `span`.
@@ -257,11 +257,11 @@ impl StorageChanges {
     }
 
     /// Read the `commit` record until its provider answers: the provider the change decided.
-    async fn decide(&self, build_id: &BuildId, change: &StorageChange) -> String {
+    async fn decide(&self, change: &StorageChange) -> String {
         let mut backoff = Duration::from_millis(500);
         loop {
-            let decision = read_commit(&self.providers, &self.fabric_id, &change.to, change.commit_build(build_id), &change.change_id).await;
-            let span = switch_span(build_id, change);
+            let decision = read_commit(&self.providers, &self.fabric_id, &change.to, &change.build_id, &change.change_id).await;
+            let span = switch_span(change);
             record_read(&span, &decision);
             span.in_scope(|| tracing::info!("the change's decision is read from its commit record"));
             match decision {
@@ -327,7 +327,7 @@ impl StorageChanges {
     #[allow(clippy::too_many_arguments)]
     pub async fn unblock_mesh(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>) -> Result<(), crate::executor::RunEnd> {
         let door = Self::door(status_door)?;
-        let provider = self.decide(build_id, change).await;
+        let provider = self.decide(change).await;
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-unblock", build_id = %build_id.log(), change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, provider = %provider, moved = tracing::field::Empty, left = tracing::field::Empty, outcome = tracing::field::Empty);
         self.move_own(&door, build_id, &change.change_id, &provider).await?;
         let paths: Vec<PathName> = topology.read().await.members().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status.is_live()).map(|n| n.name.clone()).collect();
@@ -376,8 +376,8 @@ impl StorageChanges {
             seam.before_storage_switch(&change.change_id).await;
         }
         let key = switch_operation(&change.change_id);
-        if read_commit(&self.providers, &self.fabric_id, &change.to, change.commit_build(build_id), &change.change_id).await == Decision::Switched {
-            let span = switch_span(build_id, change);
+        if read_commit(&self.providers, &self.fabric_id, &change.to, &change.build_id, &change.change_id).await == Decision::Switched {
+            let span = switch_span(change);
             record_read(&span, &Decision::Switched);
             span.in_scope(|| tracing::info!("the change is resumed and its commit record is found: it is switched"));
         } else {
@@ -396,8 +396,8 @@ impl StorageChanges {
             // 3. Switch: the insert is the decision; a lost answer is learnt by reading the record.
             let mut backoff = Duration::from_millis(500);
             loop {
-                let span = switch_span(build_id, change);
-                match insert_commit(&self.providers, &self.fabric_id, &change.to, change.commit_build(build_id), &change.change_id).await {
+                let span = switch_span(change);
+                match insert_commit(&self.providers, &self.fabric_id, &change.to, &change.build_id, &change.change_id).await {
                     Ok(true) => {
                         span.record("commit_found", false).record("outcome", "inserted");
                         span.in_scope(|| tracing::info!("the commit record is inserted on the new provider: the change is switched"));
@@ -411,9 +411,9 @@ impl StorageChanges {
                     Err(e) => {
                         span.record("outcome", "no-answer").record("reason", e.as_str());
                         drop(span);
-                        let decision = read_commit(&self.providers, &self.fabric_id, &change.to, change.commit_build(build_id), &change.change_id).await;
+                        let decision = read_commit(&self.providers, &self.fabric_id, &change.to, &change.build_id, &change.change_id).await;
                         if !matches!(decision, Decision::NoAnswer(_)) {
-                            record_read(&switch_span(build_id, change), &decision);
+                            record_read(&switch_span(change), &decision);
                         }
                         if decision == Decision::Switched {
                             break;
@@ -436,7 +436,7 @@ impl StorageChanges {
     /// mesh-primaries then sent `mesh.unblock` on the old provider, and the Build's verdict names why).
     /// A `commit` found means the change switched after all: it resumes.
     async fn fail_before_switch(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange, why: String) -> Result<(), crate::executor::RunEnd> {
-        if self.decide(build_id, change).await == change.to {
+        if self.decide(change).await == change.to {
             return Err(crate::executor::RunEnd::Incomplete(format!("storage change {}: {why}; its commit record is found, so it is switched and resumes", change.change_id)));
         }
         let key = switch_operation(&change.change_id);
@@ -447,7 +447,7 @@ impl StorageChanges {
     /// The Build's verdict (`storage.change:<change_id>`), the fabric-primary's once every mesh-primary
     /// replied `unblocked`: switched, the change is done; not switched, the Build fails naming why.
     pub async fn finish(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange) -> Result<(), crate::executor::RunEnd> {
-        if self.decide(build_id, change).await == change.to {
+        if self.decide(change).await == change.to {
             return receipt(builds, build_id, attempt, operation(&change.change_id)).await;
         }
         let key = switch_operation(&change.change_id);

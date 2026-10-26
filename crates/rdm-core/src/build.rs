@@ -237,18 +237,9 @@ pub struct StorageChange {
     pub from: String,
     /// The provider the Build names: the new provider.
     pub to: String,
-    /// The change's own Build, set at its acceptance: its `commit` record is keyed `(build_id,
-    /// change_id)` whichever Build reads it, a fabric.delete interrupting the change included.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub build_id: Option<crate::BuildId>,
-}
-
-impl StorageChange {
-    /// The Build the change's `commit` record is keyed by: its own, else `running`, the Build that
-    /// carries it.
-    pub fn commit_build<'a>(&'a self, running: &'a crate::BuildId) -> &'a crate::BuildId {
-        self.build_id.as_ref().unwrap_or(running)
-    }
+    /// The change's own Build: its `commit` record is keyed `(build_id, change_id)` whichever Build reads
+    /// it, a fabric.delete interrupting the change included.
+    pub build_id: crate::BuildId,
 }
 
 /// The `commit` record of a storage change (storage.md §2 step 4, "Switch"): inserted for
