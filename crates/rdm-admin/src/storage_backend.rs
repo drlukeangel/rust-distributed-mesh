@@ -151,7 +151,7 @@ impl StorageBackend for FileBackend {
             })
         };
         let connections: OpenConnections = {
-            let (root, writer) = (root.clone(), scope.writer.clone());
+            let (root, writer) = (root.clone(), scope.log_writer());
             Arc::new(move |name: PathName| {
                 let (root, writer) = (root.clone(), writer.clone());
                 Box::pin(async move { Ok(Arc::new(crate::storage::FileConnectionsStorage::open(&root, &name, &writer).await?) as Arc<dyn ConnectionsStorage>) })

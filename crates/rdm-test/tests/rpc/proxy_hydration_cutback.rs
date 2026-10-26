@@ -98,8 +98,7 @@ fn originate(estate: &Estate, from: &str, to: &str, key: &str) -> (Value, u64, u
 
 /// The source's durable raw log on the fabric's store root: every fact it wrote, in order.
 async fn history(estate: &Estate, node: &str) -> Vec<Value> {
-    let dir = estate.connections_dir_of(node);
-    std::fs::read_to_string(dir.join("history.jsonl")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    estate.connection_history(node)
 }
 
 /// Seed the Proxy `SOURCE -> CARRIER -> DEST` after `failed` Direct Failed observations.

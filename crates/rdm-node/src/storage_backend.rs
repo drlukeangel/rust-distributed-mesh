@@ -28,8 +28,8 @@ pub trait NodeStorageBackend: Send + Sync {
     async fn open(&self, launch: &Launch) -> Result<NodeStorage, String>;
 }
 
-/// RDM standalone's backend: the node's connections rows under `connections/<its path.name>/` of
-/// the fabric's store root (R14), held in its scratchpad before the fabric's first state-commit and
+/// RDM standalone's backend: the node's connection facts, its lines of the fabric's store root's
+/// `connections.jsonl` (R14, R-SR1), held in its scratchpad before the fabric's first state-commit and
 /// published by its commit-state action (states.md, Setting a state).
 #[cfg(feature = "file-backend")]
 #[derive(Debug, Default, Clone, Copy)]
@@ -40,7 +40,7 @@ pub struct FileNodeBackend;
 impl NodeStorageBackend for FileNodeBackend {
     async fn open(&self, launch: &Launch) -> Result<NodeStorage, String> {
         let root = crate::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
-        let connections = crate::storage::FileConnectionsStorage::open(&root, &launch.name, &launch.incarnation).await.map_err(|e| format!("connections storage: {e}"))?;
+        let connections = crate::storage::FileConnectionsStorage::open(&root, &launch.name, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
             state_actions: Arc::new(crate::fabric_states::StorePublication::new(root.scratchpad().cloned(), None)),

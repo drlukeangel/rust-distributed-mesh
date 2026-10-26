@@ -812,9 +812,10 @@ impl Estate {
         rdm_admin::store_log::read_record(&self.fabric_store_root().join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id))
     }
 
-    /// The node's own connections rows and raw log on the fabric's store root: `connections/<node>/`.
-    pub fn connections_dir_of(&self, node: &str) -> PathBuf {
-        self.fabric_store_root().join("connections").join(node)
+    /// The node's raw connection log on the fabric's store root: every fact it wrote to the root's
+    /// `connections.jsonl`, oldest first, each as JSON (none while the file cannot be read whole).
+    pub fn connection_history(&self, node: &str) -> Vec<serde_json::Value> {
+        rdm_node::storage::connection_history(&self.fabric_store_root(), node).unwrap_or_default().iter().filter_map(|f| serde_json::to_value(f).ok()).collect()
     }
 
     /// The pid of `node`'s runtime: its process (process provider: its `deployment.json`), or its

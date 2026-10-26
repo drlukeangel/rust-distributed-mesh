@@ -91,8 +91,7 @@ impl DurableNode {
         let storage: Arc<dyn ConnectionsStorage> = Arc::new(
             FileConnectionsStorage::open(
                 &StoreRoot::at(dir),
-                &birth.name,
-                &birth.incarnation,
+                &birth.name, &rdm_node::store_log::LogWriter::new(&birth.node_id, &birth.incarnation),
             )
             .await
             .unwrap(),

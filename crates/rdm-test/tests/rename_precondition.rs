@@ -32,13 +32,7 @@ use std::time::Duration;
 /// Every entry in `name`'s kept log under the fabric's store root, in the order written.
 fn kept_log(store: &std::path::Path, fabric: &FabricId, name: &PathName) -> Vec<NodeConnection> {
     let root = rdm_admin::store_root::StoreRoot::open(store, fabric).expect("the store root opens");
-    let file = root.connections(name).join("history.jsonl");
-    std::fs::read_to_string(&file)
-        .unwrap_or_else(|e| panic!("{}: {e}", file.display()))
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{}: {e}: {l}", file.display())))
-        .collect()
+    rdm_node::storage::connection_history(root.dir(), &name.to_string()).unwrap_or_else(|e| panic!("{name}'s kept log: {e}"))
 }
 
 #[test]

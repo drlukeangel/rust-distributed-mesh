@@ -653,9 +653,9 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
         }
         assert!(addressed().is_some(), "{mesh}'s primary recorded {name}'s address on its Node record: {:?}", estate.node_record(&id_of[name]));
     }
-    assert!(holds("connections/mesh1.rpc.1/"), "mesh1.rpc.1 published the connection it originated and held: {after:#?}");
+    assert!(holds("connections.jsonl#node-connection/mesh1.rpc.1--"), "mesh1.rpc.1 published the connection it originated and held: {after:#?}");
     for name in want.iter().filter(|n| *n != "mesh1.rpc.1") {
-        assert!(!holds(&format!("connections/{name}/")), "{name} originated no connection, so it holds no connections row; the control plane writes none: {after:#?}");
+        assert!(!holds(&format!("connections.jsonl#node-connection/{name}--")), "{name} originated no connection, so it holds no connections row; the control plane writes none: {after:#?}");
     }
 
     // A node born after the first state-commit writes straight to the store, and the second checklist's
@@ -739,7 +739,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
 
     // The node born after the first state-commit opened its store on the store root; the second
     // checklist's actions had nothing held.
-    assert!(later.iter().any(|r| r.starts_with("connections/mesh2.rpc.2/")), "mesh2.rpc.2 wrote the connection it originated straight to the store: {later:#?}");
+    assert!(later.iter().any(|r| r.starts_with("connections.jsonl#node-connection/mesh2.rpc.2--")), "mesh2.rpc.2 wrote the connection it originated straight to the store: {later:#?}");
     let opened = named(&spans, "rdm.mesh.node.resolve.via-connections-hydrated").into_iter().find(|sp| sp["attributes"]["node"] == "mesh2.rpc.2").expect("mesh2.rpc.2 opened its connections store");
     assert_eq!(opened["attributes"]["writes_to"], "store-root", "a node born after state-commit writes to the store root: {opened}");
     let (_, second_change) = change_of(&spans, &second);

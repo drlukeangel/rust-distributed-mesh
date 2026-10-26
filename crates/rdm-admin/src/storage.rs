@@ -1562,8 +1562,8 @@ mod tests {
         let mem = (MemoryMeshStorage::default(), MemoryNodesStorage::default(), MemoryConnectionsStorage::default());
         check(&mem.0, &mem.1, &mem.2, true).await;
         let (root, w, me): (_, IncarnationId, PathName) = (crate::store_root::StoreRoot::at(&d.join("root")), IncarnationId::mint(), "mesh1.admin.1".parse().unwrap());
-        check(&FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), &FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), &FileConnectionsStorage::open(&root, &me, &w).await.unwrap(), true).await;
-        let (m, n, c) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), FileConnectionsStorage::open(&root, &me, &w).await.unwrap());
+        check(&FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), &FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), &FileConnectionsStorage::open(&root, &me, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), true).await;
+        let (m, n, c) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), FileConnectionsStorage::open(&root, &me, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap());
         check(&m, &n, &c, false).await;
         c.remove_connection(&down.index()).await.unwrap();
         assert!(c.connections().await.unwrap().is_empty());
@@ -1650,12 +1650,6 @@ mod tests {
         successor.update(&file, &other.node_id, Some(other.clone()), |_| ()).await.unwrap();
         assert_eq!(crate::node_rows::move_row(&file, &successor, &me, &theirs, &other.name, &to).await.err(), Some(crate::node_rows::RenameRefused::NameHeld(NameHeld { name: to.clone(), by: from.node_id.clone() })), "another node's rename to the name is NameHeld");
         let _ = std::fs::remove_dir_all(&d);
-    }
-
-    fn keys(dir: &std::path::Path) -> Vec<String> {
-        let mut k: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".json")).collect();
-        k.sort();
-        k
     }
 
     /// CONTRACT (R14 items 1 and 2; acceptance "two mesh-primaries write their own meshes' rows at
@@ -1816,39 +1810,35 @@ mod tests {
         assert_eq!((n1.tagged("rabbit").await.unwrap(), n1.tagged("red").await.unwrap()), ([succ.clone()].into(), BTreeSet::new()), "a later write of the inherited record indexes none of its labels");
     }
 
-    /// CONTRACT (R14 items 1 and 9; acceptance "an ordinary node's connections rows land under
-    /// `connections/<node>/` in the shared root and the successor mesh-primary reads them there";
-    /// states.md, Setting a state): before the fabric's first state-commit a node holds its connections rows
-    /// and raw log in its scratchpad, reads them there, and puts nothing on the root; its publication
-    /// writes them under `connections/<its path.name>/`, where a second store opened by another
-    /// process (another incarnation) reads every row.
+    /// CONTRACT (R14 items 1 and 9, R-SR1; connections.md §3: the raw log and the latest-per-key view
+    /// are one file; states.md, Setting a state): before the fabric's first state-commit a node holds
+    /// its connection facts in its scratchpad, reads them there, and puts nothing on the root; its
+    /// publication appends them as lines of the root's `connections.jsonl`, where a second store opened
+    /// by another process reads the latest fact per key as the current entry and every fact as the raw
+    /// log.
     #[tokio::test]
-    async fn an_ordinary_nodes_connections_rows_land_under_connections_node_and_a_second_instance_reads_them() {
+    async fn an_ordinary_nodes_connection_facts_land_in_connections_jsonl_and_a_second_instance_reads_them() {
         let d = crate::test_support::tempdir("shared-connections");
         let store = d.join("store");
         std::fs::create_dir_all(&store).unwrap();
         let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
         let node: PathName = "mesh1.admin.1".parse().unwrap();
-        let writer = FileConnectionsStorage::open(&root, &node, &IncarnationId::mint()).await.unwrap();
+        let writer = FileConnectionsStorage::open(&root, &node, &crate::store_log::LogWriter::mint()).await.unwrap();
         let (up, down) = (fact(ConnectionState::Connected), fact(ConnectionState::Disconnected));
-        writer.put_connection(&up).await.unwrap();
         writer.append_history(&up).await.unwrap();
+        writer.put_connection(&up).await.unwrap();
+        writer.append_history(&down).await.unwrap();
         writer.put_connection(&down).await.unwrap();
-        let dir = store.join(root.dir().file_name().unwrap()).join("connections").join("mesh1.admin.1");
-        assert!(keys(&dir).is_empty() && !dir.join("history.jsonl").exists(), "nothing reaches the root before the publication: {}", dir.display());
-        assert_eq!(writer.connections().await.unwrap(), [down.clone()], "the writer reads the rows it holds");
-        assert_eq!(writer.history().await.unwrap(), [up.clone()], "the writer reads the log lines it holds");
+        let file = root.dir().join(crate::store_root::CONNECTIONS_FILE);
+        assert!(crate::store_log::read_file(&file).unwrap().is_empty(), "nothing reaches the root before the publication");
+        assert_eq!(writer.connections().await.unwrap(), [down.clone()], "the writer reads the entries it holds");
+        assert_eq!(writer.history().await.unwrap(), [up.clone(), down.clone()], "the writer reads the facts it holds");
         let published = root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
-        // The by-destination index's members are held and published with the rows (connections.md
-        // §3.1): the later row names another birth at the destination's path, so the first birth's
-        // index holds its removal and the second's the member.
-        let index = |c: &NodeConnection| format!("connections-by-destination/{}=1", c.destination.node_id);
-        assert_eq!(published.summary(), format!("connections/mesh1.admin.1=1,connections/mesh1.admin.1/history=1,{},{}", index(&up), index(&down)), "{published:?}");
-        assert_eq!(keys(&dir).len(), 1, "one row per (source, destination, kind): {}", dir.display());
-        assert!(dir.join("history.jsonl").exists());
-        let reader = FileConnectionsStorage::open(&root, &node, &IncarnationId::mint()).await.unwrap();
-        assert_eq!(reader.connections().await.unwrap(), [down]);
-        assert_eq!(reader.history().await.unwrap(), [up]);
+        assert_eq!(published.summary(), "connections=2", "{published:?}");
+        assert_eq!(crate::store_log::read_file(&file).unwrap().len(), 2, "one line per fact");
+        let reader = FileConnectionsStorage::open(&root, &node, &crate::store_log::LogWriter::mint()).await.unwrap();
+        assert_eq!(reader.connections().await.unwrap(), [down.clone()], "the latest fact per (source, destination, alpn, kind)");
+        assert_eq!(reader.history().await.unwrap(), [up, down], "every fact, oldest first");
     }
 
     /// CONTRACT (connections.md §3.1: "by-destination prefix = hash(destination)", one latest member
@@ -1856,7 +1846,7 @@ mod tests {
     /// row whose destination is one node, whichever source wrote it and in whichever mesh, read by any
     /// process on the root; a removed row leaves it, and a row whose destination is re-born at its
     /// path.name under a new node id leaves the old node's index for the new one's. Memory and file
-    /// alike; on the file root a read of a node nobody connects to makes no directory.
+    /// alike; on the file root the index is the fold of `connections.jsonl` keyed by destination.
     #[tokio::test]
     async fn the_by_destination_index_names_every_source_holding_a_row_to_one_node_in_any_mesh() {
         let d = crate::test_support::tempdir("by-destination");
@@ -1884,10 +1874,9 @@ mod tests {
         };
         let mem = MemoryConnectionsStorage::default();
         check(&mem, &mem, &mem, "memory").await;
-        let open = async |name: &str| FileConnectionsStorage::open(&root, &name.parse().unwrap(), &IncarnationId::mint()).await.unwrap();
+        let open = async |name: &str| FileConnectionsStorage::open(&root, &name.parse().unwrap(), &crate::store_log::LogWriter::mint()).await.unwrap();
         let (fa, fb, reader) = (open("mesh1.rpc.2").await, open("mesh2.rpc.1").await, open("mesh1.admin.1").await);
         check(&fa, &fb, &reader, "file").await;
-        assert!(!root.connections_to(&a.source.node_id).exists(), "a read of a node nobody connects to makes no directory on the root");
     }
 
     #[tokio::test]
@@ -1912,23 +1901,6 @@ mod tests {
         let op = crate::store_log::Op { node_id: "n".into(), incarnation_id: "i".into(), seq: 1 };
         std::fs::OpenOptions::new().append(true).open(root.dir().join(crate::store_root::NODES_FILE)).and_then(|mut f| std::io::Write::write_all(&mut f, &crate::store_log::encode_line(&op, "node-runtime/9", &a.key(), b"{}"))).unwrap();
         assert!(matches!(n.runtimes().await, Err(StorageError::Unrecognised { .. })));
-    }
-
-    /// CONTRACT: a read of the connections raw log (`history.jsonl`) never waits on the disk on a
-    /// runtime worker: it runs on the blocking pool, as the log's append does. The cell reads the
-    /// log while its file holds the read: the runtime's only thread keeps running, and the read
-    /// answers the logged fact.
-    #[test]
-    fn a_read_of_the_connections_history_waits_on_the_disk_off_the_runtime_thread() {
-        let d = crate::test_support::tempdir("history-offload");
-        let logged = fact(ConnectionState::Connected);
-        let mut line = serde_json::to_vec(&logged).unwrap();
-        line.push(b'\n');
-        let (root, node): (_, PathName) = (crate::store_root::StoreRoot::at(&d.join("root")), "mesh1.admin.1".parse().unwrap());
-        let fifo = root.connections(&node).join("history.jsonl");
-        let (ran, history) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, line, Box::pin(async move { FileConnectionsStorage::open(&root, &node, &IncarnationId::mint()).await.unwrap().history().await }));
-        assert!(ran, "the runtime thread ran while the history read waited on the disk");
-        assert_eq!(history, Ok(vec![logged]));
     }
 
     /// CONTRACT (node-identity-and-state.md §2.7: the mesh-primary "claims the mesh's name at the key

@@ -246,11 +246,6 @@ impl StoreRoot {
         }
     }
 
-    /// `nodes/<mesh>/`: the mesh's members' Node rows and contacts.
-    pub fn nodes(&self, mesh: &str) -> PathBuf {
-        self.dir.join("nodes").join(mesh)
-    }
-
     /// `meshes/<mesh>/`: the mesh's own rows beside its Mesh row (`meshes/<mesh>/claims/`, its
     /// in-flight attempt: ``mesh_claims``; `meshes/<mesh>/builds/`, its Build receipts: R-BI6).
     pub fn meshes(&self, mesh: &str) -> PathBuf {
@@ -267,22 +262,6 @@ impl StoreRoot {
         self.meshes(mesh).join("builds")
     }
 
-    /// `connections/<node>/`: the node's own connections rows and raw log.
-    pub fn connections(&self, node: &PathName) -> PathBuf {
-        self.dir.join("connections").join(node.to_string())
-    }
-
-    /// `connections-by-destination/<node id>/`: the by-destination index of the connections rows
-    /// (connections.md §3.1), one member per (source, destination, alpn, kind) whose destination is
-    /// that node, written by each source beside its own row.
-    pub fn connections_to(&self, destination: &crate::model::NodeId) -> PathBuf {
-        self.dir.join("connections-by-destination").join(destination.as_str())
-    }
-
-    /// `status/<mesh>/`.
-    pub fn status(&self, mesh: &str) -> PathBuf {
-        self.dir.join("status").join(mesh)
-    }
 }
 
 /// Give the root `dir` a caller chose this build's layout marker when it holds none: created
@@ -330,8 +309,6 @@ mod tests {
         let root = StoreRoot::open(&store, &fabric).unwrap();
         assert_eq!(root.dir(), store.join(fabric.to_string()));
         assert!(root.dir().is_dir());
-        assert_eq!(root.connections(&"mesh1.rpc.1".parse().unwrap()), store.join(fabric.to_string()).join("connections").join("mesh1.rpc.1"));
-        assert_eq!(root.status("mesh2"), store.join(fabric.to_string()).join("status").join("mesh2"));
     }
 
     /// CONTRACT (R-SR1, proposal §5.1 "An old root is refused by its marker, no migration"): the root's
