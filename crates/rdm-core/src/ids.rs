@@ -190,10 +190,10 @@ product_id!(
     BuildId, "build id", PartialOrd, Ord
 );
 product_id!(
-    /// One run of a storage change (storage.md §2 "Changing it"): minted and recorded with its Build
-    /// before any of the run's commands, carried by every command, freeze acknowledgement, copy position
-    /// and the decision of the run, and reused by the recovery of an unfinished run. A resubmission after
-    /// a confirmed abort mints a new one. Equality only.
+    /// A storage change's durable identity (storage.md §2 "Changing it"): minted at the acceptance of
+    /// its Build and recorded with it before its first command; every command of the change carries
+    /// it, the `commit` record is keyed by it with the Build's id, and whoever resumes the change
+    /// resumes it under the same one. Equality only.
     ChangeId, "change id"
 );
 

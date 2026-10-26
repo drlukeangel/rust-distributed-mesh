@@ -87,6 +87,10 @@ pub enum ClaimKind {
     Name,
     /// The one attempt in flight on a mesh.
     InFlight,
+    /// A storage change's `commit` record for `(build_id, change_id)` (storage.md §2 step 4), named
+    /// [`rdm_core::build::StorageCommit::name`]: inserted on the new provider by the switch, read by
+    /// whoever resumes the change. Not a claim a copy carries: [`ProviderLines::claims`] lists none.
+    Commit,
 }
 
 impl std::fmt::Display for ClaimKind {
@@ -95,6 +99,7 @@ impl std::fmt::Display for ClaimKind {
             Self::FabricName => "fabric name claim",
             Self::Name => "name claim",
             Self::InFlight => "in-flight row",
+            Self::Commit => "commit record",
         })
     }
 }
@@ -131,6 +136,11 @@ pub trait ProviderLines: Send + Sync {
     async fn claims(&self) -> Result<Vec<Claim>, StorageError>;
     /// Insert `claim` as written: `Won` when this insert wrote it, else `Held` with the standing content.
     async fn insert_claim(&self, claim: &Claim) -> Result<ClaimTaken, StorageError>;
+    /// The content of the claim `kind` of `name`, `None` when it does not stand: how a storage change's
+    /// `commit` record is read (storage.md §2 step 4).
+    async fn claim(&self, kind: ClaimKind, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        Ok(self.claims().await?.into_iter().find(|c| c.kind == kind && c.name == name).map(|c| c.content))
+    }
 }
 
 /// The change a copy is a step of, and the registered names of its two providers.
@@ -350,10 +360,21 @@ impl ProviderLines for FileProviderLines {
         Ok(claims)
     }
 
+    async fn claim(&self, kind: ClaimKind, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let lock = match kind {
+            ClaimKind::Name => LockKind::Name,
+            ClaimKind::InFlight => LockKind::InFlight,
+            ClaimKind::Commit => LockKind::Commit,
+            ClaimKind::FabricName => return Ok(self.claims().await?.into_iter().find(|c| c.kind == kind && c.name == name).map(|c| c.content)),
+        };
+        self.locks.read(lock, name).await
+    }
+
     async fn insert_claim(&self, claim: &Claim) -> Result<ClaimTaken, StorageError> {
         let lock = match claim.kind {
             ClaimKind::Name => LockKind::Name,
             ClaimKind::InFlight => LockKind::InFlight,
+            ClaimKind::Commit => LockKind::Commit,
             ClaimKind::FabricName => {
                 let (dir, path, content) = (self.names.clone(), self.name_path(&claim.name), claim.content.clone());
                 let tmp = self.names.join(format!(".{}.storage-copy-{}.json.tmp", claim.name, std::process::id()));

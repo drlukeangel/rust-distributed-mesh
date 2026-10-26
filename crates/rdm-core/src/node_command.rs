@@ -84,6 +84,21 @@ pub enum NodeCommandRequest {
         /// The operation's declared identity.
         operation: String,
     },
+    /// A step of a storage change (storage.md §2 "Changing it"), carried by the exact birth's
+    /// mesh-primary: answered [`NodeCommandReply::StorageStepped`] once the birth did it, or
+    /// [`NodeCommandReply::RejectedStaleChange`] for a command of a change older than the one it holds.
+    StorageStep {
+        /// The commanded node.
+        node_id: NodeId,
+        /// Its exact incarnation.
+        incarnation: IncarnationId,
+        /// The storage change's Build.
+        build_id: String,
+        /// The change.
+        change_id: crate::ChangeId,
+        /// The step.
+        step: crate::build::StorageStep,
+    },
 }
 
 impl NodeCommandRequest {
@@ -93,13 +108,14 @@ impl NodeCommandRequest {
             Self::DeleteConnections { .. } => "delete-connections",
             Self::StopNode { .. } => "stop-node",
             Self::StartNode { .. } => "start-node",
+            Self::StorageStep { .. } => "storage-step",
         }
     }
 
     /// The birth the command names.
     pub fn subject(&self) -> (&NodeId, &IncarnationId) {
         match self {
-            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } => (node_id, incarnation),
+            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } | Self::StorageStep { node_id, incarnation, .. } => (node_id, incarnation),
         }
     }
 }
@@ -204,6 +220,18 @@ pub enum NodeCommandReply {
         /// The state it holds, named by the refusal.
         current: crate::status::NodeState,
     },
+    /// The storage step is done: the birth blocked, its issued writes finished on the old provider, or
+    /// it unblocked onto `provider`. The command's terminal.
+    StorageStepped {
+        /// The provider the birth's owed writes land on: the old one while it is blocked.
+        provider: String,
+    },
+    /// The command names a storage change older than the one the birth holds: refused by name, nothing
+    /// done (storage.md §2 "Changing it").
+    RejectedStaleChange {
+        /// The change the birth holds.
+        held: crate::ChangeId,
+    },
 }
 
 impl NodeCommandReply {
@@ -227,6 +255,8 @@ impl NodeCommandReply {
             Self::NodeStarted => "node-started",
             Self::Failed { .. } => "failed",
             Self::RejectedInvalidNodeTransition { .. } => "rejected-invalid-node-transition",
+            Self::StorageStepped { .. } => "storage-stepped",
+            Self::RejectedStaleChange { .. } => "rejected-stale-change",
         }
     }
 }
@@ -254,8 +284,8 @@ impl NodeProtocol for NodeCommand {
     /// A connections-deleting node still takes a command: a second `All` leaves an incomplete
     /// closure (node-connections-delete.md step 5).
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 3;
-    const REPLY_VARIANTS: u32 = 17;
+    const REQUEST_VARIANTS: u32 = 4;
+    const REPLY_VARIANTS: u32 = 19;
 
     type Request = NodeCommandRequest;
     type Reply = NodeCommandReply;
@@ -279,12 +309,15 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::NodeStarted => "node-started",
             NodeCommandReply::Failed { .. } => "failed",
             NodeCommandReply::RejectedInvalidNodeTransition { .. } => "rejected-invalid-node-transition",
+            NodeCommandReply::StorageStepped { .. } => "storage-stepped",
+            NodeCommandReply::RejectedStaleChange { .. } => "rejected-stale-change",
         }
     }
 
     fn classify_reply(reply: &NodeCommandReply) -> ReplyKind {
         match reply {
-            NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted => ReplyKind::Success,
+            NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted | NodeCommandReply::StorageStepped { .. } => ReplyKind::Success,
+            NodeCommandReply::RejectedStaleChange { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             NodeCommandReply::Failed { code, .. } => ReplyKind::new(*code),
             NodeCommandReply::RejectedInvalidNodeTransition { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             NodeCommandReply::StopConnectionsDeleted { receipt: ConnectionsReceipt::Deadline { .. } } => ReplyKind::new(crate::outcome::Code::DeadlineExceeded),
@@ -328,7 +361,7 @@ impl StreamingProtocol for NodeCommand {
         match frame {
             NodeCommandReply::CommandAccepted { .. } => FrameKind::Started,
             NodeCommandReply::ConnectionsDeleting { .. } | NodeCommandReply::StopConnectionsDeleted { .. } | NodeCommandReply::NodeJoined => FrameKind::Data,
-            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } => FrameKind::Terminal,
+            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(NodeCommand::classify_reply(other)),
         }
     }

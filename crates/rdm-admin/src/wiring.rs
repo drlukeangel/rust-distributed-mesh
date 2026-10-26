@@ -116,6 +116,8 @@ pub struct MeshReadyCtx {
 pub trait CommandFrameSeam: Send + Sync {
     /// Before the stopped report is recovered by its mesh-primary.
     async fn before_stopped(&self, operation: &rdm_core::LifecycleOp);
+    /// Before the mesh-primary carries `step` of the storage change `change_id` to the node `node`.
+    async fn before_storage_step(&self, _node: &crate::model::PathName, _change_id: &rdm_core::ChangeId, _step: &rdm_core::build::StorageStep) {}
 }
 
 /// `on_fabric_ready`: the notice the fabric-primary calls once the fabric is ready-for-traffic. Fire

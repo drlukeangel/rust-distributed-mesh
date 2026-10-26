@@ -91,6 +91,9 @@ pub struct AdminRunner {
     /// The drives of the Builds this admin drives: the node.delete of this admin's own birth ends its
     /// runtime once the callers of that Build read its terminal ([`Self::delete_own`]).
     pub drives: Arc<crate::build_drive::Drives>,
+    /// This admin's storage changes: its own block, and the change it runs as the fabric-primary
+    /// (storage.md §2 "Changing it").
+    pub storage_changes: Arc<crate::storage_change::StorageChanges>,
 }
 
 /// The lifecycle events of an operation this admin executes, on its own mesh channel only. The
@@ -293,6 +296,9 @@ impl AdminRunner {
         let known = mesh_id_of(&self.records, &self.topology, &*self.mesh_storage, mesh).await.map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
         let mut t = self.template.clone();
         t.launcher.name = self.held_name();
+        // Every node this admin launches writes the provider this admin writes at the launch (storage.md
+        // §2 "every launch"): the new one once a storage change moved it.
+        t.env.insert(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER.into(), self.storage_changes.handle.provider());
         t.executable = executable;
         t.binding = binding;
         if kind == NodeKind::NodeAdmin {
@@ -1314,6 +1320,23 @@ impl AdminRunner {
             BuildOperation::UpdateConfig { node } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt, operation = %op.key());
                 self.apply_in_place(build_id, attempt, node, op).instrument(span).await
+            }
+            BuildOperation::ChangeStorage { change } => {
+                // The Fabric row's line once the change is switched: the new provider current, the old
+                // appended to the providers the fabric left (storage.md §2 step 4), written if missing.
+                let (caches, fabric_storage, fabric_id, change_row) = (self.records.caches.clone(), self.fabric_storage.clone(), self.fabric_id.clone(), change.clone());
+                let fabric_row = async move {
+                    caches
+                        .update_fabric(&*fabric_storage, &fabric_id, None, move |r| {
+                            if r.topology_storage_provider.as_deref() != Some(change_row.to.as_str()) {
+                                let left = r.topology_storage_provider.replace(change_row.to.clone()).unwrap_or(change_row.from.clone());
+                                r.previous_topology_storage_providers.push(left);
+                            }
+                        })
+                        .await
+                        .and_then(|done| done.ok_or_else(|| "this fabric-primary holds no Fabric record".to_string()))
+                };
+                self.storage_changes.run(&*builds, build_id, attempt, change, Some(self.node_rpc.client.clone()), self.observer.authority.get().cloned(), self.topology.clone(), fabric_row).await
             }
         };
         ended

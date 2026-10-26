@@ -326,7 +326,7 @@ impl From<WireTopology> for FabricTopology {
             .collect();
         // The Build topic carries no topology_storage_provider: the journal's record of the accepted
         // Build is the one that does.
-        Self { fabric: t.fabric, meshes, topology_storage_provider: None }
+        Self { fabric: t.fabric, meshes, topology_storage_provider: None, storage_change: None }
     }
 }
 

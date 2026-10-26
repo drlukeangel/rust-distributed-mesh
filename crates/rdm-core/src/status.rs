@@ -516,6 +516,24 @@ pub enum StatusRequest {
     /// fabric-primary for its `FabricAtlas`, answered [`StatusReply::Atlas`]. A read. Appended last: no
     /// variant before it moves.
     GetAtlas,
+    /// Downward (storage.md §2 "Changing it"): the fabric-primary asks the exact birth's mesh-primary to
+    /// carry a step of a storage change to it, which the mesh-primary does on the node command op 0x22
+    /// (its own birth in-process), recording the provider the birth writes on its row once it
+    /// unblocked. Answered [`StatusReply::StorageStepped`] once the birth did the step,
+    /// [`StatusReply::RejectedStaleChange`] for a command of a change older than the one the birth holds,
+    /// or [`StatusReply::StorageStepFailed`] naming why the step failed.
+    StorageStep {
+        /// The birth commanded.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The storage change's Build.
+        build_id: String,
+        /// The change.
+        change_id: crate::ChangeId,
+        /// The step.
+        step: crate::build::StorageStep,
+    },
 }
 
 /// An issuing key's secret carried by [`StatusRequest::UpdateIssuer`], as hex: its debug form names its
@@ -843,6 +861,7 @@ impl StatusRequest {
             Self::LeaveMesh { .. } => "node.mesh.leave",
             Self::RenewCert { .. } => "node.cert.renew",
             Self::UpdateIssuer { .. } => "node.issuer.update",
+            Self::StorageStep { .. } => "storage-step",
         }
     }
 }
@@ -1355,6 +1374,28 @@ pub enum StatusReply {
         /// The atlas.
         atlas: crate::views::AtlasView,
     },
+    /// The birth did the storage step: it blocked, or it unblocked onto `provider`.
+    StorageStepped {
+        /// The birth.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The provider the birth's writes land on: the old one while it is blocked.
+        provider: String,
+    },
+    /// The command names a storage change older than the one the birth holds: refused by name, nothing
+    /// done (storage.md §2 "Changing it").
+    RejectedStaleChange {
+        /// The change the birth holds.
+        held: crate::ChangeId,
+    },
+    /// The storage step failed at the birth, or could not be carried to it, named.
+    StorageStepFailed {
+        /// The birth's path.name.
+        node: String,
+        /// Why, by name.
+        reason: String,
+    },
 }
 
 /// The event a Blocked `pre_node_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -1582,6 +1623,9 @@ impl StatusReply {
             Self::CertRenewed { .. } => "cert-renewed",
             Self::IssuerUpdated { .. } => "issuer-updated",
             Self::RejectedCert { .. } => "rejected-cert",
+            Self::StorageStepped { .. } => "storage-stepped",
+            Self::RejectedStaleChange { .. } => "rejected-stale-change",
+            Self::StorageStepFailed { .. } => "storage-step-failed",
         }
     }
 }
@@ -1622,8 +1666,8 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 33;
-    const REPLY_VARIANTS: u32 = 56;
+    const REQUEST_VARIANTS: u32 = 34;
+    const REPLY_VARIANTS: u32 = 59;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -1686,6 +1730,9 @@ impl NodeProtocol for Status {
             StatusReply::CertRenewed { .. } => "cert-renewed",
             StatusReply::IssuerUpdated { .. } => "issuer-updated",
             StatusReply::RejectedCert { .. } => "rejected-cert",
+            StatusReply::StorageStepped { .. } => "storage-stepped",
+            StatusReply::RejectedStaleChange { .. } => "rejected-stale-change",
+            StatusReply::StorageStepFailed { .. } => "storage-step-failed",
         }
     }
 
@@ -1751,6 +1798,9 @@ impl NodeProtocol for Status {
             StatusReply::CertRenewed { .. } => ReplyKind::Success,
             StatusReply::IssuerUpdated { .. } => ReplyKind::Success,
             StatusReply::RejectedCert { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
+            StatusReply::StorageStepped { .. } => ReplyKind::Success,
+            StatusReply::RejectedStaleChange { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            StatusReply::StorageStepFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
         }
     }
 
@@ -1886,6 +1936,9 @@ mod tests {
             (StatusReply::IssuerUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), issuer_expires_at: 7 }, ReplyKind::Success),
             (StatusReply::RejectedCert { reason: "x".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::Atlas { atlas: crate::views::AtlasView::default() }, ReplyKind::Success),
+            (StatusReply::StorageStepped { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), provider: "app".into() }, ReplyKind::Success),
+            (StatusReply::RejectedStaleChange { held: crate::ChangeId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
+            (StatusReply::StorageStepFailed { node: "mesh1.rpc.1".into(), reason: "r".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -1936,6 +1989,7 @@ mod tests {
             StatusRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "leave-mesh:mesh1.rpc.1".into() },
             StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3] },
             StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into() },
+            StatusRequest::StorageStep { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), change_id: crate::ChangeId::mint(), step: crate::build::StorageStep::Block { from: "file".into(), to: "app".into() } },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {

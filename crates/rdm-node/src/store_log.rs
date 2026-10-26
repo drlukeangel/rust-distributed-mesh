@@ -119,6 +119,10 @@ pub struct Line {
     pub key: String,
     /// The whole record.
     pub record: serde_json::Value,
+    /// The record's bytes as its writer wrote them, for a line read from a store: a copy appends these,
+    /// so the new provider holds the line byte for byte (storage.md §2 Copy). `None` for a line made in
+    /// memory: its record is encoded.
+    pub written: Option<Vec<u8>>,
 }
 
 impl Line {
@@ -318,6 +322,9 @@ struct Envelope {
 
 /// The line of the object `obj` at byte offset `offset`, or why it is not one: its `len` must be its
 /// byte count, its `crc32` must match, and it must parse as a format `formats` reads.
+/// The object's record field name, as an encoded object holds it.
+const RECORD_FIELD: &[u8] = b",\"record\":";
+
 fn verify(obj: &[u8], offset: u64, formats: &Formats) -> Result<Line, String> {
     const HEAD: &[u8] = b"{\"len\":";
     if !obj.starts_with(HEAD) {
@@ -342,7 +349,10 @@ fn verify(obj: &[u8], offset: u64, formats: &Formats) -> Result<Line, String> {
         return Err("its len field is not its first".into());
     }
     formats.check(&env.format, &env.record)?;
-    Ok(Line { offset: Some(offset), op: Some(env.op), format: env.format, key: env.key, record: env.record })
+    // The record's bytes: from after the object's `"record":` field name to its `crc32`. A key holding
+    // a quote holds it escaped, so the field name's first unescaped occurrence is the field.
+    let written = obj.windows(RECORD_FIELD.len()).position(|w| w == RECORD_FIELD).map(|at| obj[at + RECORD_FIELD.len()..obj.len() - CRC_SUFFIX].to_vec()).filter(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).is_ok_and(|v| v == env.record));
+    Ok(Line { offset: Some(offset), op: Some(env.op), format: env.format, key: env.key, record: env.record, written })
 }
 
 /// What one scan of the bytes from an offset found.
@@ -639,7 +649,10 @@ impl StoreLog {
     pub async fn append_line(&self, line: &Line) -> Result<(), StorageError> {
         let file = self.0.path.display().to_string();
         let op = line.op.clone().ok_or_else(|| StorageError::Io { file: file.clone(), reason: format!("the {} line at {:?} has no op: only a line on a store is appended as written", line.format, line.key) })?;
-        let bytes = serde_json::to_vec(&line.record).map_err(|e| StorageError::Io { file: file.clone(), reason: format!("the {} record at {:?} does not encode: {e}", line.format, line.key) })?;
+        let bytes = match &line.written {
+            Some(written) => written.clone(),
+            None => serde_json::to_vec(&line.record).map_err(|e| StorageError::Io { file: file.clone(), reason: format!("the {} record at {:?} does not encode: {e}", line.format, line.key) })?,
+        };
         self.0.formats.check(&line.format, &line.record).map_err(|why| StorageError::Unrecognised { file, reason: format!("a write refused: {why}") })?;
         let guard = self.0.append.clone().lock_owned().await;
         let inner = self.0.clone();
@@ -869,6 +882,9 @@ pub enum LockKind {
     InFlight,
     /// `locks/name/<name>`: the claim of a mesh name or a node path.name, the lock being the claim.
     Name,
+    /// `locks/commit/<build_id>.<change_id>`: a storage change's `commit` record (storage.md §2 step 4),
+    /// inserted on the new provider; the insert is the switch.
+    Commit,
 }
 
 impl LockKind {
@@ -876,6 +892,7 @@ impl LockKind {
         match self {
             Self::InFlight => "in-flight",
             Self::Name => "name",
+            Self::Commit => "commit",
         }
     }
 }

@@ -90,19 +90,21 @@ pub struct WrittenRows {
     /// with that node's next record write, never recomputed from the already-updated copy.
     owed: Mutex<HashMap<NodeId, IndexMoves>>,
     /// The `topology_storage_provider` this admin writes (storage.md §2), set once its storage is
-    /// open: a name claim it writes records it on the claimed row.
-    topology_storage_provider: std::sync::OnceLock<String>,
+    /// open and again each time a storage change moves it: a name claim it writes records it on the
+    /// claimed row, the provider the node it launches writes.
+    topology_storage_provider: std::sync::RwLock<Option<String>>,
 }
 
 impl WrittenRows {
-    /// Hold `provider` as the `topology_storage_provider` this admin writes; set once, at its boot.
+    /// Hold `provider` as the `topology_storage_provider` this admin writes: at its boot, and at each
+    /// move a storage change makes.
     pub fn writes_to(&self, provider: &str) {
-        let _ = self.topology_storage_provider.set(provider.to_string());
+        *self.topology_storage_provider.write().unwrap_or_else(|e| e.into_inner()) = Some(provider.to_string());
     }
 
     /// The `topology_storage_provider` this admin writes, once its boot set it.
-    pub fn topology_storage_provider(&self) -> Option<&str> {
-        self.topology_storage_provider.get().map(String::as_str)
+    pub fn topology_storage_provider(&self) -> Option<String> {
+        self.topology_storage_provider.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Hold `row` as the writer's record of its node.
@@ -1097,7 +1099,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
     span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
     // The storage and placement the claim is handed (its create spec's), else the seed's.
     let (storage_meta, placement) = placed.map_or_else(|| (seed.as_ref().and_then(|p| p.storage_persistence), seed.as_ref().and_then(|p| p.placement)), |(s, p)| (Some(s), Some(p)));
-    let row = NodeRow { config, tags, allocated: allocated.cloned(), executable, predecessor, storage_persistence: storage_meta, placement, topology_storage_provider: written.topology_storage_provider().map(String::from), ..NodeRow::new(name.clone(), node_id.clone(), status) };
+    let row = NodeRow { config, tags, allocated: allocated.cloned(), executable, predecessor, storage_persistence: storage_meta, placement, topology_storage_provider: written.topology_storage_provider(), ..NodeRow::new(name.clone(), node_id.clone(), status) };
     span.record("awaiting", "put-node-row");
     let claimed = take_name(storage, name, node_id).await;
     let put = match claimed {

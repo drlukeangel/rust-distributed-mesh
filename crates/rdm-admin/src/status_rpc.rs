@@ -643,7 +643,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } => {
+        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::StorageStep { .. } => {
             (crate::node_self::request_not_handled(&me_name.to_string(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -887,6 +887,97 @@ impl StatusAuthority {
         end
     }
 
+    /// A step of a storage change (storage.md §2 "Changing it") on the birth `(node_id, incarnation)` of
+    /// this admin's mesh, carried by this mesh-primary from the fabric-primary to the exact birth on the
+    /// node command op 0x22 (its own birth in-process). Once the birth unblocked, this mesh-primary, the
+    /// writer of its mesh's rows, records the provider the birth writes on its row. The birth's own
+    /// refusal of an older change is returned as it is; a call that ended in no answer is
+    /// `StorageStepFailed` naming how, and the fabric-primary sends the step again.
+    pub async fn carry_storage_step(&self, node_id: &NodeId, incarnation: &IncarnationId, build_id: &str, change_id: &rdm_core::ChangeId, step: &rdm_core::build::StorageStep) -> StatusReply {
+        use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
+        let view = self.topology.read().await.clone();
+        let me_name = self.held_name_in(&view);
+        let Some(subject) = view.births().find(|n| n.node_id == *node_id).cloned() else {
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
+        };
+        if !view.own(&self.node_id).is_some_and(|n| n.is_primary && n.mesh == subject.mesh) {
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("the mesh-primary of {}", subject.mesh) });
+        }
+        match subject.incarnation_id.clone() {
+            Some(held) if held != *incarnation => return rdm_core::reply::stale(held),
+            Some(_) => {}
+            None => return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown),
+        }
+        if let Some(seam) = &self.command_frame_seam {
+            seam.before_storage_step(&subject.name, change_id, step).await;
+        }
+        // A step this mesh-primary could not carry, or whose answer it lost, is not the birth's refusal:
+        // the fabric-primary sends it again.
+        let failed = |reason: String| rdm_core::reply::status::not_ready(format!("{}: {reason}", subject.name));
+        let done = if *node_id == self.node_id {
+            // This mesh-primary is its own subject: its birth's storage step runs in-process.
+            let Some(storage) = self.own.get().and_then(|own| own.storage_block()) else {
+                return failed(format!("{me_name} holds no storage handle yet; the step is sent again"));
+            };
+            let Ok(build) = build_id.parse::<crate::build::BuildId>() else {
+                return failed(format!("{build_id:?} is no Build id"));
+            };
+            if let Some(refused) = storage.refusal(change_id).await {
+                refused
+            } else {
+                storage.serve(&build, change_id, step).await
+            }
+        } else {
+            let Some(configs) = self.configs.get() else {
+                return failed(format!("{me_name} has no node-RPC client yet to carry the storage step to {}", subject.name));
+            };
+            let command = NodeCommandRequest::StorageStep { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.to_string(), change_id: change_id.clone(), step: step.clone() };
+            let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
+            let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: std::time::Duration::from_secs(5), reply: std::time::Duration::from_secs(30) }, ..Default::default() };
+            let mut stream = match configs.client().call_stream::<NodeCommand>(&target, &command, &opts).await {
+                Ok((stream, _)) => stream,
+                Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => {
+                    let reply = r.into_value();
+                    return match reply {
+                        NodeCommandReply::RejectedStaleChange { held } => StatusReply::RejectedStaleChange { held },
+                        other => failed(format!("{} refused the storage step: {}", subject.name, other.name())),
+                    };
+                }
+                Err((other, _)) => return failed(format!("{me_name} carried the storage step to {} and the call ended {}: {other:?}", subject.name, other.name())),
+            };
+            let mut last = None;
+            while let Some(item) = stream.next().await {
+                match item {
+                    rdm_transport::stream::StreamItem::Frame(_, NodeCommandReply::CommandAccepted { .. }) => stream.accepted().await,
+                    rdm_transport::stream::StreamItem::Frame(_, reply) => {
+                        stream.accepted().await;
+                        last = Some(reply);
+                        break;
+                    }
+                    rdm_transport::stream::StreamItem::Failed(e) => return failed(format!("{}'s storage step broke after its acceptance: {e:?}", subject.name)),
+                }
+            }
+            match last {
+                Some(reply) => reply,
+                None => return failed(format!("{}'s storage step ended without its terminal frame", subject.name)),
+            }
+        };
+        match done {
+            NodeCommandReply::StorageStepped { provider } => {
+                if matches!(step, rdm_core::build::StorageStep::Unblock { .. }) {
+                    let recorded = provider.clone();
+                    if let Err(e) = self.caches.nodes.update(&*self.nodes_storage, node_id, None, move |r| r.topology_storage_provider = Some(recorded)).await {
+                        return failed(format!("{} unblocked onto {provider} and its row could not record it: {e}", subject.name));
+                    }
+                }
+                StatusReply::StorageStepped { node_id: node_id.clone(), incarnation: incarnation.clone(), provider }
+            }
+            NodeCommandReply::RejectedStaleChange { held } => StatusReply::RejectedStaleChange { held },
+            NodeCommandReply::Failed { reason, .. } => StatusReply::StorageStepFailed { node: subject.name.to_string(), reason },
+            other => failed(format!("{} answered the storage step {}", subject.name, other.name())),
+        }
+    }
+
     /// [`Self::apply`] of a call whose transport-proven endpoint is `peer` (`PeerContext`): the
     /// connection a command spares is the call's own, whether or not the view holds a birth for it.
     pub async fn apply_from(&self, peer: Option<iroh::PublicKey>, sender: Option<crate::model::Node>, req: &StatusRequest) -> StatusReply {
@@ -914,6 +1005,7 @@ impl StatusAuthority {
                 return reply;
             }
             StatusRequest::UpdateName { .. } => return self.update_name(req).await,
+            StatusRequest::StorageStep { node_id, incarnation, build_id, change_id, step } => return self.carry_storage_step(node_id, incarnation, build_id, change_id, step).await,
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
                 return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), req).await;
             }

@@ -225,6 +225,14 @@ pub enum BuildOperation {
         /// The labels the row loses.
         labels: std::collections::BTreeSet<String>,
     },
+    /// A storage change (storage.md §2 "Changing it"): the fabric-primary blocks every node, copies
+    /// the five stores to the new provider, switches by its `commit` record and unblocks every node,
+    /// its commands carried fabric-primary → mesh-primary → node ([`crate::storage_change`]). Its key is
+    /// `storage.change:<change_id>`. Appended, so every earlier variant keeps its name.
+    ChangeStorage {
+        /// The change.
+        change: rdm_core::build::StorageChange,
+    },
 }
 
 impl BuildOperation {
@@ -234,7 +242,7 @@ impl BuildOperation {
             Self::CreateNode { node, .. } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
             Self::RecipeStep { step, .. } => Some(step.node()),
             Self::TerminateNode { node, .. } | Self::UpdateConfig { node } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
-            Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
+            Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } | Self::ChangeStorage { .. } => None,
         }
     }
 
@@ -266,6 +274,7 @@ impl BuildOperation {
             Self::UpdateConfig { node } => format!("node.config.update:{node}"),
             Self::CreateTags { node, .. } => format!("node.tags.create:{node}"),
             Self::DeleteTags { node, .. } => format!("node.tags.delete:{node}"),
+            Self::ChangeStorage { change } => crate::storage_change::operation(&change.change_id),
         }
     }
 }

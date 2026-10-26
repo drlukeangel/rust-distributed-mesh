@@ -290,7 +290,7 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
         // A new provider holding a line the old one does not.
         let extra_dir = dir("extra-destination");
         let extra_root = StoreRoot::open(&extra_dir, &fabric).unwrap().dir().to_path_buf();
-        let stray = Line { offset: None, op: Some(Op { node_id: w.node_id.to_string(), incarnation_id: w.incarnation_id.to_string(), seq: 4 }), format: "node-record/1".into(), key: "node-k".into(), record: json!({"v": 4}) };
+        let stray = Line { offset: None, op: Some(Op { node_id: w.node_id.to_string(), incarnation_id: w.incarnation_id.to_string(), seq: 4 }), format: "node-record/1".into(), key: "node-k".into(), record: json!({"v": 4}), written: None };
         std::fs::write(extra_root.join(NODES_FILE), [raw(&src[0]), raw(&src[1]), raw(&src[2]), raw(&stray)].concat()).unwrap();
         let destination = FileProviderLines::open(DESTINATION, &extra_dir, &fabric).await.unwrap();
         let before = snapshot(&extra_dir);

@@ -294,6 +294,9 @@ pub struct NodeSelf {
     /// The process's data-plane `ConnectionsRegistry`: `node.connections.delete` closes active
     /// `Connection`s by their row id and blocks new connections under `All`.
     data_connections: Mutex<Option<rdm_transport::connections::ConnectionsRegistry>>,
+    /// The process's storage change commands (storage.md §2 "Changing it"): filled once the process
+    /// holds its storage handle and its data dir's record.
+    storage: Mutex<Option<Arc<crate::storage_block::StorageBlock>>>,
 }
 
 impl NodeSelf {
@@ -313,7 +316,7 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         topology_view.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None) }
+        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -350,6 +353,16 @@ impl NodeSelf {
     /// `node.connections.delete` writes its drops.
     pub fn set_connections(&self, connections: Arc<crate::connections_writer::ConnectionsWriter>) {
         *self.connections.lock().unwrap() = Some(connections);
+    }
+
+    /// This surface, serving the process's storage change commands through `storage`.
+    pub fn set_storage_block(&self, storage: Arc<crate::storage_block::StorageBlock>) {
+        *self.storage.lock().unwrap() = Some(storage);
+    }
+
+    /// The process's storage change commands, once it holds them.
+    pub fn storage_block(&self) -> Option<Arc<crate::storage_block::StorageBlock>> {
+        self.storage.lock().unwrap().clone()
     }
 
     /// This surface, holding the process's data-plane `ConnectionsRegistry`.
@@ -623,6 +636,9 @@ impl NodeSelf {
     /// Serve the command on its caller's connection, which a stop spares and a start joins back over.
     pub async fn serve_node_command_on(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         use tracing::Instrument;
+        if let NodeCommandRequest::StorageStep { incarnation, build_id, change_id, step, .. } = req {
+            return self.serve_storage_step(incarnation, build_id, change_id, step, frames).await;
+        }
         if !matches!(req, NodeCommandRequest::DeleteConnections { .. }) {
             return self.serve_lifecycle_command(commander, spare, req, frames).await;
         }
@@ -680,6 +696,32 @@ impl NodeSelf {
         span.record("outcome", "connections-deleted");
         span.in_scope(|| tracing::info!("node.connections.delete decided at this birth"));
         NodeCommandReply::ConnectionsDeleted { closed: d.closed, not_open: d.not_open, held: d.held, receipt: d.receipt }
+    }
+
+    /// A step of a storage change on this exact birth (storage.md §2 "Changing it"): a command of an
+    /// older change is refused by name before it is accepted; an accepted one ends with the step done
+    /// (`StorageStepped`) or failed by name.
+    async fn serve_storage_step(&self, incarnation: &IncarnationId, build_id: &str, change_id: &rdm_core::ChangeId, step: &rdm_core::build::StorageStep, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
+        if *incarnation != self.incarnation {
+            return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
+        }
+        let Some(storage) = self.storage_block() else {
+            return rdm_core::reply::node_command::not_ready(format!("{}: this birth holds no storage handle yet; nothing is done", self.held_name()));
+        };
+        let Ok(build_id) = build_id.parse::<rdm_core::BuildId>() else {
+            return rdm_core::reply::node_command::not_ready(format!("{}: the storage step names Build {build_id:?}, which is no Build id; nothing is done", self.held_name()));
+        };
+        if let Some(refused) = storage.refusal(change_id).await {
+            return refused;
+        }
+        if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {
+            return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing done", self.held_name()));
+        }
+        match storage.serve(&build_id, change_id, step).await {
+            // Refused after the acceptance (an older change's block raced it): the command's terminal.
+            NodeCommandReply::RejectedStaleChange { held } => rdm_core::reply::node_command::failed(format!("storage-{}", step.name()), format!("rejected-stale-change: this node holds storage change {held}"), rdm_core::outcome::Code::Aborted),
+            done => done,
+        }
     }
 
     /// Whether this birth is stopped: stopped, its process alive, waiting for a start or a delete.

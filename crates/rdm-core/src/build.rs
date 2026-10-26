@@ -227,29 +227,69 @@ impl RecipeStep {
     }
 }
 
-/// The decision of one storage change run (storage.md §2 "Decision"): one durable, mutually exclusive
-/// record on the new provider at `(build_id, change_id)`, inserted with the store's insert-and-fail
-/// primitive. Inserting `Commit` is the commit point and the claim cutover; a revert is permitted only
-/// by a successful `Abort` insert. A provider that does not answer is neither.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum StorageDecision {
-    /// The run commits: the new provider is current.
-    Commit,
-    /// The run aborts: the freeze lifts on the old provider.
-    Abort,
+/// A storage change (storage.md §2 "Changing it"): the Build that moves RDM's five stores from the
+/// fabric's provider to the one it names, recorded with the accepted Build before its first command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageChange {
+    /// The change's durable identity: every command of the change carries it.
+    pub change_id: crate::ChangeId,
+    /// The provider the fabric writes at the acceptance: the old provider.
+    pub from: String,
+    /// The provider the Build names: the new provider.
+    pub to: String,
 }
 
-/// The record of a storage change run's decision, keyed by `(build_id, change_id)` (storage.md §2
-/// "Decision"): written once and never rewritten.
+/// The `commit` record of a storage change (storage.md §2 step 4, "Switch"): inserted for
+/// `(build_id, change_id)` on the new provider with the store's insert-and-fail primitive. The insert
+/// is the switch; whoever resumes the change learns the decision only by reading it: found is
+/// switched, none on a provider that answers is not switched, and a provider that does not answer is
+/// neither.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageDecisionRecord {
+pub struct StorageCommit {
     /// The storage change's Build.
     pub build_id: crate::BuildId,
-    /// The run.
+    /// The change.
     pub change_id: crate::ChangeId,
-    /// What was decided.
-    pub decision: StorageDecision,
+}
+
+impl StorageCommit {
+    /// The name the record is inserted under: `<build_id>.<change_id>`.
+    pub fn name(&self) -> String {
+        format!("{}.{}", self.build_id, self.change_id)
+    }
+}
+
+/// A step of a storage change a node is commanded (storage.md §2 steps 1, 2 and 5), carried
+/// fabric-primary → mesh-primary → node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StorageStep {
+    /// Block (steps 1 and 2): the node stops admitting writes and claim operations, holds every write
+    /// it would make as owed, opens `to` beside `from`, records the block and both providers in its data
+    /// dir, brings every write it issued before the block to a durable outcome on `from`, then
+    /// acknowledges.
+    Block {
+        /// The old provider.
+        from: String,
+        /// The new provider.
+        to: String,
+    },
+    /// Unblock (step 5): the node moves to `provider` (the new provider after the switch, the old one
+    /// when the change failed before it), lands its owed writes there in its own order, answers its owed
+    /// commands and closes the other provider.
+    Unblock {
+        /// The provider the node writes from here on.
+        provider: String,
+    },
+}
+
+impl StorageStep {
+    /// The step's name in spans and refusals.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Block { .. } => "block",
+            Self::Unblock { .. } => "unblock",
+        }
+    }
 }
 
 /// What `Create` asks.

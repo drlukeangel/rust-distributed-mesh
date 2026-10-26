@@ -432,10 +432,20 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // opens, so every store line this process appends names it (R-SR3).
     let minted_node_id = cfg.launch.as_ref().map(|l| l.node_id.clone()).unwrap_or_else(NodeId::mint);
     let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone(), node_id: minted_node_id.clone() };
+    // A storage change's block this data dir records is read before anything is written (storage.md §2
+    // step 1): the change's `commit` record decides the provider this start opens and whether it holds
+    // the block; the provider this admin moved to last otherwise, else its launch's.
+    let mut block_record = crate::storage_block::BlockRecord::read(&cfg.data_dir).map_err(|e| format!("refusing to start: {e}"))?;
+    let (writes, holds_block) = crate::storage_change::resolve_at_start(&providers, &cfg.fabric_id, &cfg.data_dir, &mut block_record, &cfg.topology_storage_provider).await?;
+    cfg.topology_storage_provider = writes;
     // Every store this admin reads and writes is reached through its one handle, never a store held
     // from here, so a provider change moves every owner at once ("Each node moves to the new
     // provider", storage.md §2).
     let topology_storage = crate::storage_backend::TopologyStorageHandle::open(&providers, &cfg.topology_storage_provider, scope).await?;
+    if holds_block {
+        topology_storage.block();
+    }
+    let storage_changes = Arc::new(crate::storage_change::StorageChanges::new(topology_storage.clone(), providers.clone(), cfg.fabric_id.clone(), minted_node_id.clone()));
     let (fabric_backed, mesh_storage, nodes_storage, root_runtimes, journal, finish_writes) = (topology_storage.fabric(), topology_storage.meshes(), topology_storage.nodes(), topology_storage.root_runtimes(), topology_storage.builds(), topology_storage.finish_writes());
     storage_step.record("writes_to", topology_storage.writes_to().as_str());
     // The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
@@ -443,6 +453,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let caches = crate::record_cache::Caches::default();
     // A name claim this admin writes records the provider it writes on the claimed row (storage.md §2).
     caches.nodes.writes_to(&cfg.topology_storage_provider);
+    {
+        let rows = caches.nodes.clone();
+        topology_storage.on_provider_written(move |provider| rows.writes_to(provider));
+    }
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_backed.clone());
     let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::on(journal.clone()));
     // Each mesh's in-flight row (R-BI7 caveat 3): the one set of rows the claim door, the drive's
@@ -691,6 +705,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         connections_storage.clone(),
         Arc::new(std::sync::Mutex::new(rdm_core::connections::ConnectionsHeld::new())),
     ));
+    // This admin's storage change commands: a block read from its data dir is held from here, the
+    // connections writer's queue included.
+    let storage_block = Arc::new(crate::storage_block::StorageBlock::new(cfg.data_dir.clone(), node_id.clone(), Arc::new(crate::storage_change::AdminStorageSteps::new(topology_storage.clone(), connections.clone())), block_record));
+    storage_block.hold_at_start().await;
+    let _ = storage_changes.own.set(storage_block.clone());
     match connections.hydrate().await {
         Ok(n) => tracing::info!(node = %name, rows = n, "connections hydrated from storage"),
         Err(e) => return Err(format!("connections storage: {e}")),
@@ -1306,6 +1325,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     .with_executable_dirs(cfg.executable_dirs.clone())
                                     .with_topology_storage_providers(providers.names()),
                                 );
+                                let _ = control.storage_changes.set((storage_changes.clone(), node_rpc.client.clone(), authority.clone()));
                                 // The claim door: this admin decides a fabric-lane claim only while it holds the fabric-primary
                                 // seat, and its own mesh's drift-lane claim only while it holds its mesh's primary seat (R-BI7).
                                 let claim_door = Arc::new(crate::build_claim::ClaimDoor {
@@ -1580,6 +1600,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // runtime only once its own node.delete's callers read their terminal.
                             let drives = Arc::new(crate::build_drive::Drives::default());
                             let runner = Arc::new(AdminRunner {
+                                storage_changes: storage_changes.clone(),
                                 drives: drives.clone(),
                                 listeners: listener_names.clone(),
                                 mesh_deleter: mesh_deleter.clone(),
@@ -2286,6 +2307,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         };
                                         let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), topology_view.clone(), set_status, status, Some(declare), cfg.connections_delete_deadline).with_cancel(pre_node_ready_cancel.clone()).with_backbone(backbone.clone()));
                                         own.set_connections(connections.clone());
+                                        own.set_storage_block(storage_block.clone());
                                         // The app protocols this admin opens connections on: what a renewed member cert
                                         // is installed on, and what node.connections.delete closes, as on every node.
                                         own.set_data_connections(data_connections.clone());

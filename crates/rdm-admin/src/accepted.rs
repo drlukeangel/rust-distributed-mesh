@@ -170,6 +170,11 @@ pub struct FabricTopology {
     /// Build carries it, a record written before the field read as `file`; the Build topic does not
     /// carry it, so a copy heard there holds `None`.
     pub topology_storage_provider: Option<String>,
+    /// The storage change this Build is (storage.md §2 "Changing it"): its `change_id`, minted and
+    /// recorded with the accepted Build before its first command, and the old and new providers. `None`
+    /// for every Build that does not change the provider. The Build topic does not carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_change: Option<rdm_core::build::StorageChange>,
 }
 
 /// A [`FabricTopology`] as the journal holds it: a record written before the executable was each
@@ -182,6 +187,8 @@ struct StoredTopology {
     bindings: Option<StoredSet>,
     #[serde(default = "crate::fabric_storage::file_provider")]
     topology_storage_provider: Option<String>,
+    #[serde(default)]
+    storage_change: Option<rdm_core::build::StorageChange>,
 }
 
 /// The per-kind set an old record carries: only its bindings are read.
@@ -205,7 +212,7 @@ impl From<StoredTopology> for FabricTopology {
                 }
             }
         }
-        Self { fabric: t.fabric, meshes, topology_storage_provider: t.topology_storage_provider }
+        Self { fabric: t.fabric, meshes, topology_storage_provider: t.topology_storage_provider, storage_change: t.storage_change }
     }
 }
 
@@ -221,7 +228,7 @@ impl FabricTopology {
     pub fn root_on(fabric: &str, mesh: &str, mesh_id: MeshId, topology_storage_provider: &str) -> Self {
         let mut meshes = BTreeMap::new();
         meshes.insert(mesh.to_string(), MeshTopology::with_id(&MeshDesired::of(mesh, [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 0)]), mesh_id));
-        Self { fabric: fabric.into(), meshes, topology_storage_provider: Some(topology_storage_provider.into()) }
+        Self { fabric: fabric.into(), meshes, topology_storage_provider: Some(topology_storage_provider.into()), storage_change: None }
     }
 
     /// The accepted mesh named `name`.
@@ -273,7 +280,7 @@ impl FabricTopology {
             mesh.spec_by_path.insert(n.name.clone(), NodeSpec::default_for(n.name.clone()));
             mesh.nodes.insert(n.name.clone());
         }
-        Self { fabric: observed.fabric.name.clone(), meshes, topology_storage_provider: None }
+        Self { fabric: observed.fabric.name.clone(), meshes, topology_storage_provider: None, storage_change: None }
     }
 
     /// The topology as per-mesh counts (the view's convenience shape).
@@ -1360,6 +1367,14 @@ fn plan_with(
             Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-mesh-id-unknown", mesh = %m).in_scope(|| tracing::info!(error = %e, "the mesh's shutdown is not planned")),
         }
     }
+    // A storage change is its own operation, after every other the Build plans (storage.md §2
+    // "Changing it"), until its `Complete` is receipted.
+    if let Some(change) = topology.storage_change.as_ref().filter(|_| action.is_none()) {
+        let key = crate::storage_change::operation(&change.change_id);
+        if !steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete) {
+            ops.push(BuildOperation::ChangeStorage { change: change.clone() });
+        }
+    }
     BuildPlan { operations: ops }
 }
 
@@ -1460,7 +1475,7 @@ mod tests {
     }
 
     fn t(meshes: &[(&str, u32, u32)]) -> FabricTopology {
-        FabricTopology { topology_storage_provider: None, fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() }
+        FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() }
     }
 
     fn paths(m: &MeshTopology) -> Vec<String> {
@@ -2209,7 +2224,7 @@ mod tests {
         assert_eq!(m.spec(&"mesh1.admin.1".parse().unwrap()).unwrap().storage_persistence, preserve);
         assert_eq!(m.spec(&"mesh1.gateway.1".parse().unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
         assert_eq!(m.spec(&"mesh1.rpc.1".parse().unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
-        let mut topology = FabricTopology { topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
+        let mut topology = FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
         assert_eq!(topology.validate(), Ok(()));
         // Grow and shrink keep the create specs in step with the paths.
         let observed = Topology {
@@ -2714,7 +2729,7 @@ mod tests {
     fn only_the_paths_whose_entry_differs_from_their_row_are_replaced_and_a_resume_finishes_the_rest() {
         use NodeStatus::ReadyForTraffic as R;
         let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 2), (NodeKind::Compute, 1)]);
-        let cur = FabricTopology { topology_storage_provider: None, fabric: "fabric1".into(), meshes: ["mesh1", "mesh2"].iter().map(|m| (m.to_string(), MeshTopology::of(&mesh(m)))).collect() };
+        let cur = FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: ["mesh1", "mesh2"].iter().map(|m| (m.to_string(), MeshTopology::of(&mesh(m)))).collect() };
         let mut nodes = Vec::new();
         for m in ["mesh1", "mesh2"] {
             nodes.extend([n(&format!("{m}.admin.1"), R, true), n(&format!("{m}.admin.2"), R, false), n(&format!("{m}.broker.1"), R, true), n(&format!("{m}.gateway.1"), R, true), n(&format!("{m}.gateway.2"), R, false), n(&format!("{m}.compute.1"), R, true)]);
