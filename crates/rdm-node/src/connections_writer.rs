@@ -99,6 +99,11 @@ struct Inner {
     /// this to reach zero, `idle` wakes it when a write finishes.
     in_flight: std::sync::atomic::AtomicUsize,
     idle: tokio::sync::Notify,
+    /// How many writes were ever owed, and how many of them have finished (landed, or built to
+    /// nothing): the queue is one ordered consumer, so every write owed before a mark of `owed`
+    /// has finished once `finished` reaches it ([`ConnectionsWriter::owed_landed_by`]).
+    owed: std::sync::atomic::AtomicU64,
+    finished: std::sync::atomic::AtomicU64,
     /// The node's one ordered writer queue (Q169): every connection write in the order it was owed;
     /// one consumer builds, stamps, writes (retrying with backoff until it lands) and applies them
     /// one at a time, so rows land in queue order and the index member of a pair is the last owed.
@@ -170,6 +175,8 @@ impl ConnectionsWriter {
             last_stamp: Mutex::new(0),
             in_flight: std::sync::atomic::AtomicUsize::new(0),
             idle: tokio::sync::Notify::new(),
+            owed: std::sync::atomic::AtomicU64::new(0),
+            finished: std::sync::atomic::AtomicU64::new(0),
             queue,
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
             reconnect: crate::connection_reconnect::ReconnectState::default(),
@@ -251,6 +258,25 @@ impl ConnectionsWriter {
             }
             notified.await;
         }
+    }
+
+    /// Resolves `true` once every connection write owed before the call has landed, or `false` at
+    /// `until` with one still owed: it stays owed and is retried until it lands (Q169). A command
+    /// that answers from the log (`node.connections.delete`) waits this long and no longer, so a
+    /// node whose connections store is reached over a connection it cuts never waits forever.
+    pub async fn owed_landed_by(&self, until: tokio::time::Instant) -> bool {
+        let mark = self.inner.owed.load(std::sync::atomic::Ordering::Acquire);
+        let landed = async {
+            loop {
+                let mut notified = std::pin::pin!(self.inner.idle.notified());
+                notified.as_mut().enable();
+                if self.inner.finished.load(std::sync::atomic::Ordering::Acquire) >= mark {
+                    return;
+                }
+                notified.await;
+            }
+        };
+        tokio::time::timeout_at(until, landed).await.is_ok()
     }
 
     /// Hydrate the held projection from the index: every latest row this node wrote (its own
@@ -335,6 +361,7 @@ impl ConnectionsWriter {
     /// Queue one owed write behind every write owed before it.
     fn owe(&self, build: Build, origin: Origin) {
         self.inner.in_flight.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.inner.owed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let _ = self.inner.queue.send(Owed { build, origin, parent: tracing::Span::current() });
     }
 
@@ -572,6 +599,7 @@ impl ConnectionsWriter {
             let Some(mut row) = build(w, own) else {
                 drop(gate);
                 w.inner.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                w.inner.finished.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 w.inner.idle.notify_waiters();
                 return;
             };
@@ -629,6 +657,7 @@ impl ConnectionsWriter {
             }
             drop(span);
             w.inner.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            w.inner.finished.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             w.inner.idle.notify_waiters();
         }
     }

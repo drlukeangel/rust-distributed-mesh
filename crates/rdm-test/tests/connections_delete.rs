@@ -195,3 +195,98 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         "one cut of the named connections: {cuts:#?}"
     );
 }
+
+/// CONTRACT (node-connections-delete.md step 5, "Bound", the `Deadline` receipt; Q169): the drops of
+/// a `node.connections.delete { All }` are owed on the node's writer queue and the delete answers
+/// once they land, within `RDM_CONNECTIONS_DELETE_DEADLINE_MS` and no longer. `mesh1.rpc.1` holds a
+/// route to its admin; its connections store then refuses every write (a store reached over a
+/// connection the delete cuts). Its `All` answers `ConnectionsDeleted` within the bound carrying
+/// `Deadline`, the admin route closed and still held (its drop has not landed); the drop stays owed
+/// and lands once the store takes writes again, and the node then holds nothing. What must NOT
+/// happen: a delete that waits forever for a drop that cannot land, or an `Established` claimed
+/// while an entry is still open in the log.
+#[test]
+fn an_all_whose_drops_cannot_land_answers_deadline_within_its_bound() {
+    let cap = crate::common::capture("an_all_whose_drops_cannot_land_answers_deadline_within_its_bound");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
+        let root = std::env::temp_dir().join(format!("connections-delete-bound-{}", NodeId::mint()));
+        let store = root.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        crate::common::store_past_state_commit(&store, &fabric).await;
+        let born: PathName = "mesh1.rpc.1".parse().unwrap();
+        let deadline = Duration::from_millis(1500);
+        let dir = root.join(born.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        let key = node::load_or_mint_key(&dir).unwrap();
+        let cut = Launch {
+            fabric: "fabric1".into(),
+            fabric_id: fabric.clone(),
+            name: born.clone(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
+            seeds: vec![admin.seed.clone()],
+            launcher: Some(admin.launcher.clone()),
+            data_dir: dir,
+            store_dir: store.clone(),
+            mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
+            issuing: None,
+            roots: Vec::new(),
+            connections_delete_deadline: deadline,
+            declared: Default::default(),
+        };
+        admin.deployed(&cut, &key);
+        let seams: Arc<OnceLock<Seams>> = Arc::default();
+        let slot = seams.clone();
+        let _running = node::start_with_seams(&cut, move |b, s| {
+            let _ = slot.set(s);
+            b
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{born} comes up: {e}"));
+        let seams = seams.get().cloned().expect("the node handed its seams");
+        let digest_view = &admin.observer.topology_view.digest_view;
+        let mut heard = digest_view.heard_changes();
+        while digest_view.get(cut.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+            heard.changed().await.unwrap();
+        }
+
+        // The node holds a route to its admin, its Connected landed.
+        match seams.client.call::<Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &CallOptions::default()).await.0 {
+            RpcOutcome::Reply(_) => {}
+            other => panic!("the ping did not end in a reply: {other:?}"),
+        }
+        seams.connections.observations_landed().await;
+        let open: Vec<ConnectionId> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
+        assert_eq!(open.len(), 1, "the node holds its route to its admin: {open:?}");
+
+        // From here its connections store refuses every write.
+        seams.fault.arm(u32::MAX, u32::MAX, 0);
+        let (d, _) = digest_view.get(cut.node_id.as_str()).unwrap();
+        admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        let target = NodeTarget::ExactNode(cut.node_id.clone());
+        let began = std::time::Instant::now();
+        let deleted = crate::common::node_command_completion(&admin.observer.client, &target, &NodeCommandRequest::DeleteConnections { node_id: cut.node_id.clone(), incarnation: cut.incarnation.clone(), scope: ConnectionScope::All }).await;
+        let took = began.elapsed();
+        let NodeCommandReply::ConnectionsDeleted { closed, not_open, held, receipt } = &deleted else { panic!("the delete ends node.connections.deleted: {deleted:?}") };
+        assert!(took < deadline + Duration::from_secs(3), "the delete answers within its bound ({deadline:?}), not after: {took:?}");
+        assert_eq!((closed, not_open, held), (&open, &Vec::new(), &open), "the route is closed and, its drop not landed, still held in the log: {deleted:?}");
+        assert_eq!(
+            receipt,
+            &Some(rdm_core::status::ConnectionsReceipt::Deadline { last_in_flight: 0, closed: open.clone(), held: open.clone() }),
+            "the bound answers Deadline naming the entry still open, never Established"
+        );
+        assert!(seams.connections.in_flight() > 0, "the drop stays owed");
+
+        // The store takes writes again: the owed drop lands and nothing is held.
+        seams.fault.release();
+        tokio::time::timeout(Duration::from_secs(30), seams.connections.observations_landed()).await.expect("the owed drop is retried until it lands");
+        assert!(seams.connections.held_routes().await.is_empty(), "the drop landed: the node holds nothing");
+        let _ = std::fs::remove_dir_all(&root);
+    });
+}
