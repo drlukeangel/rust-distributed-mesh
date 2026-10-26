@@ -1,5 +1,7 @@
 # i149 inventory: storage handles, write paths, claims, finish-writes, copy facts
 
+> Read at 7d0b316eb against storage.md §2 as it stood then (freeze, tails, decision, release). Storage §2 is now block, finish outstanding writes, copy, switch, unblock (f3b9be06f): §7's "§2 Freeze" references map to Block and Finish outstanding writes, the pending log is gone (connection events stay owed on the Q169 queue), and the decision is the `commit` record alone. The code facts are unchanged.
+
 Read at `origin/main` **7d0b316eb**. Every citation is `file:line` at that SHA, paths from the
 repository root. Read-only: no code, no build, no commit. A deduction not read directly in code is
 marked **[inferred]**. Test modules (`#[cfg(test)] mod tests`) are excluded throughout.

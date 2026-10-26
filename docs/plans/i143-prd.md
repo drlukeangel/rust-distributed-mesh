@@ -3097,3 +3097,13 @@ storage.md §2's final contract, ba3d50631 and 4b984a779) restores the requireme
 fabric moves RDM's five record stores to the application's provider while it serves. i143's
 remaining work depends on it. State: plan pushed; e1–e6 not dispatched; the dispatch and landing SHAs
 are recorded here as they happen.
+
+## e12.s97 — 2026-10-26: storage change simplified (Luke); Q182; docs aligned
+
+storage.md §2 "Changing it" is block, finish outstanding writes, copy, switch, unblock, one
+insert-and-fail `commit` record as the switch, no Build but fabric.delete during a change, a node that
+will not block or unblock re-created (f3b9be06f). Q182 (node-investigation.md): a node answering no
+command is silent. The i149 plan (R9–R11 restated, R18–R19 added, canaries, spans, e4), the proposal
+and the inventory's dating note follow it. Dispatched: i149-e1 (lane e4s8), q182-unanswered-command
+(lane e6s4). Landed for the soaks: 491e871ab (an attempt's end releases the in-flight row it took),
+dcfbd6933 (the soak driver resubmits on build-in-progress).

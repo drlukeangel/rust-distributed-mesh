@@ -49,9 +49,8 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   where RDM's five record stores go, fabric, meshes, nodes, connections and builds, which is what the
   topology reads read. Not `fabric_storage_provider`: `fabric.storage` is one of the five, the Fabric
   record's own store. RDM's backend keeps its name, `file`.
-- The fabric-primary does the copy before any node switches; the fabric-primary then copies the final tails in source order, under a freeze of writes, so that at every instant one provider holds the whole truth and the
-  change is reversible until one commit point ("if we don't block it we will have to delete both
-  storage providers' data").
+- Block changes during migration: finish outstanding writes, copy the stable records, switch
+  providers, then unblock changes. Reads and serving processes continue.
 - The previous provider's data is never deleted by RDM.
 - The node's `storage` property is renamed `storage_persistence`.
 
@@ -109,8 +108,7 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   A running node never re-reads its environment: a change reaches it as the step's command, it does
   the step's work, writes its own row with the provider or providers it now writes and the step
   completed, and only then answers; the receipt exists only after the row does. A node that crashes
-  inside a step comes back one step behind at most, the node reconciles its launcher's value with its durable migration run before joining. A durable
-  freeze cannot be overridden by launch environment; the node resolves that run's decision first
+  inside a step comes back one step behind at most, the node reconciles its launcher's value with its durable migration run before joining. Blocked changes cannot be overridden by launch environment; the node resolves that run's decision first
   and runs any missed step before its join (R-SP10).
 - **R-SP5. Every node's storage can be replaced while it runs.** The handles a node's storage opens
   (an admin's fabric, meshes, nodes, connections and Build journal; every other node's connections)
@@ -123,115 +121,43 @@ So a running fabric cannot move to another storage, and no node can be asked whi
 
 ### The change
 
-Each migration run has a durable `change_id`, recorded with its Build before any migration command.
-Commands, freeze acknowledgements, copy progress and the decision carry that identity. Recovery of
-an unfinished run reuses it, including when its decision is uncertain. After a confirmed abort and
-completion of the rollback, resubmitting the same Build starts a new run with a new `change_id`.
-Nodes retain the resolved run identity and refuse delayed commands from an older run by name;
-accepting a new run does not erase that protection. A committed run only resumes release.
+The final contract is [Storage §2](../../architecture/storage.md#changing-it). The sequence is
+**block changes, finish outstanding writes, copy, switch providers, unblock changes**. There is
+no background-copy stage and no separate node lifecycle state. The expected short duration is
+measured, never used as a safety timeout.
 
-- **R-SP6. Step 1, on every node: open.** Each node opens the new provider beside the old, writes
-  nothing to it, and reports. A node whose executable does not register the named provider, or cannot
-  open it, fails the step by name, naming the node and the provider; the Build fails before anything
-  moved (R-SP13).
-- **R-SP7. Step 2, on the fabric-primary: copy, then close claims.** The fabric-primary, the one
-  reader of every store, reads every file on the old provider and appends every line to the new one in
-  its order, recording per writer the last `op` it copied. Dead births' connection rows, deleted nodes'
-  records and dead meshes' records are copied by it with the rest, so every retained record has a
-  copier and no key is ownerless. The copy is in source order per file, and its progress is a
-  verified position per source file: the offset through which every line is durable and verified
-  on the new provider in source order per key, across writer changes too. A lost copy receipt is
-  reconciled against the already-landed prefix before continuing, never by blindly appending again. Nodes keep writing the old provider during the copy; nothing is
-  written twice, and nothing is blocked: the copy takes the time it takes, under no freeze. Claims
-  stay decided in the old provider throughout the copy.
-- **R-SP8. Step 3: freeze, tails, commit, release.** The switch is blocked, as a freeze and never a
-  refusal, so that one provider holds the whole truth at every instant (Luke: unblocked, a failed
-  change leaves data on both sides and nothing to go back to).
-  - **Freeze.** Each node closes admission to ordinary appends and claim operations for the
-    `change_id`, drains already-issued appends and claim operations to a resolved durable outcome,
-    and durably records the frozen state and both providers in its data dir before acknowledging.
-    An indeterminate operation prevents acknowledgement. Restart reads this state before opening
-    ordinary writes and resolves the same run's decision; stale launch environment cannot unfreeze
-    it. Migration control records use the explicit migration path while ordinary writes stay blocked.
-    Each node holds every
-    write it would make from then on as owed. Nothing is refused, and nothing is acknowledged before
-    it is durable: a caller's command that would write, and a node's declaration its mesh-primary
-    would record, are answered only when their write has landed, under the one delivery rule, so the
-    caller and the declarer retry until then and a frozen writer that dies has acknowledged nothing it
-    did not write (Q54's rule, an Applied declaration durable before its answer, holds through the
-    freeze). A fact a node observes rather than is asked for, a connection event, cannot be retried
-    by anyone, so during the freeze the node appends it to a pending log in its own data dir, beside
-    `node-key`, fsynced, and replays it at the release or at its restart; the log is empty outside a
-    freeze. No claim is decided during the freeze: a claimant waits, as its write does (Architect 1).
-  - **Tails.** Each frozen node records its final source positions and its own row, then acknowledges.
-    The fabric-primary continues the ordered copy from its verified positions to the final positions,
-    including departed writers' records. Nodes do not independently append unordered tails. Every
-    writer must have acknowledged or be proven unable to write by node investigation's `exited`
-    verdict; silence and a copied tail prove neither. For each key, the destination history must be
-    a prefix of the source history before missing records are appended. Existing operations are
-    verified by identity and content, never just a highest identity or set membership. A hole or
-    reordered history is refused by name before cutover: an older missing record is never appended
-    behind a newer record of that key. The pass verifies the completed order and current value of
-    every key. It then transfers every held name claim and in-flight row naming the exact same
-    holder, and reads both claim sets back equal. Only then may it decide.
-  - **Commit.** The change's decision is one durable, mutually exclusive record on the new provider:
-    `locks/change/<build id>/<change id>`, the store's insert-and-fail primitive, the one every provider
-    implements for the in-flight row, holding `commit` or `abort` and the decider's birth. When the
-    completeness pass holds, the fabric-primary inserts `commit`; only after that insert succeeded
-    does it append the Fabric row's line on the new provider, `topology_storage_provider` the new
-    one, the old appended to `previous_topology_storage_providers`, the line's `op` its own and its
-    record naming the Build. The insert is the commit point and the claim cutover; the row is its
-    consequence. Before the insert nothing but copies, tails and claims has reached the new provider,
-    so a failure reverts (R-SP13); after it every writer's lines and every claim are on the new
-    provider and only the release remains. The decision is known only by reading it: a successor, or
-    the fabric-primary itself after a lost reply, reads `locks/change/<build id>/<change id>`. `commit` found is
-    committed, and the successor appends the Fabric row's line if it is not there yet. Nothing found
-    is not yet decided, and reverting is itself a decision: the successor inserts `abort`, and only
-    an insert that succeeded permits the revert, because a commit request still queued at the
-    provider, delivered after a recovery read answered absent, then meets `abort` and fails. A
-    provider not answering is neither, so the freeze holds until it answers, and if it never does the
-    change is a person's to end, by `fabric.delete` or a new fabric, never by a guess. A timeout never
-    means "not committed", and an absent read never permits a revert on its own (Architect 1).
-  - **Release.** Each node swaps its handle to the new provider, appends its owed writes there in its
-    own order, answers its owed commands, and closes the old provider. Claims are decided in the new
-    provider from here. A node that fails to release keeps its writes owed and retries; it is on the
-    new provider and its row says so.
-  The freeze lasts the tails and the commit, seconds; reads never block. The fabric-primary completes all final tails before the decision and releases first, so the
-  Fabric row's writer is on the new provider before anyone reads it there.
-- **R-SP9. The end.** With the last release receipt the Build completes. The Fabric row was written at
-  the commit; no further write marks the end.
-- **R-SP10. A node born during the change** is launched with both providers and the step the fabric is
-  at, and runs that step before it answers its join; a step it missed is run by its mesh-primary's
-  attempt as any planned birth's.
-- **R-SP11. The previous provider is kept, frozen at the commit, and never deleted by RDM.** After the
-  commit the old provider is a complete copy of the fabric as of the freeze, to the last tail, written
-  no more and named on the Fabric row in `previous_topology_storage_providers` ("RDM deletes nothing on disk,
-  ever", deployment-provider.md; never delete, only append). Removing it is the application's own
-  work, as a node's storage with the `release` disposition is, or nobody's; RDM gives it the fact,
-  the row and the Build's completion receipt, and does nothing further. Every provider the Fabric's
-  row ever named is one the fabric-primary's wiring registers, so it can open it; the access is the
-  ability to open, nothing more. Going back to a previous provider is a new Build naming it as the
-  new one: step 2 copies from the current provider into it only the lines it lacks by `op`, which,
-  frozen complete at its commit, are few.
-- **R-SP12. The fabric stays ready-for-traffic and no node changes state.** states.md, "Resize and
-  executable replacement": "A Build that changes only a node's `config`, `tags`, `storage` or
-  `placement` is neither: it applies them as build.md §1 states, and the fabric stays
-  ready-for-traffic." A storage change is a property Build, the meshes unchanged, and is the same kind:
-  the fabric, every mesh and every node stay ready-for-traffic through all three steps; the node's
-  states are its life and its traffic, and a change of where it writes is neither. The progress is the
-  step receipts and R-SP4's row, not a state. The page's sentence gains `topology_storage_provider` in its list.
-- **R-SP13. Failure.** A failed step fails by name and fails the Build as any step does; there is no
-  forward-only exception. Before the decision nothing but copies, tails and claims has reached the
-  new provider, so a failure in step 1, during the copy, or during the freeze and tails reverts, once
-  `abort` is inserted in `locks/change/<build id>/<change id>` (R-SP8): the freeze lifts on the old provider,
-  owed writes land there, the new provider is closed and written no more, the Fabric row is
-  unchanged, nothing lost. A revert without the `abort` insert is not a revert. After the commit point every node has its tail on
-  the new provider and the Fabric row names it; what remains is each node's release, which is an owed
-  step a node retries until it lands, so a failure there is a node still releasing, never a Build to
-  reverse: the Build stays in progress until the last release, as any Build whose attempt is lost
-  with its executor does (build.md §4), and its resubmission reattaches. `fabric.delete` during the
-  change is admitted and interrupts the Build as fabric-delete.md states for any Build; the records on
-  both providers stay, since RDM deletes nothing on disk.
+- **R-SP6. Check and block.** Check that each executable opens the destination, block new record
+  changes and claim operations, and finish every already-issued write and claim on the old provider.
+  Commands travel fabric-primary → mesh-primary → node. Every live writer confirms before copying
+  starts; a missing writer must be found `exited`, never inferred unable to write from silence.
+- **R-SP7. Copy the stable source.** The fabric-primary copies every store's complete history in
+  source order, including dead writers' records, then transfers all name claims and in-flight
+  attempts with their exact holders. Verify durable copies and claims. Only append after a matching
+  destination prefix; refuse holes and conflicting history. Retry from verified copy progress.
+- **R-SP8. Switch.** Insert the run's exclusive commit decision, update the Fabric row on the new
+  provider and switch each node's storage handle. Record the provider before each confirmation.
+  Changes remain blocked until all participating nodes have switched or their exact old writer is
+  found unable to write. Reads continue against the selected provider throughout.
+- **R-SP9. Unblock and complete.** Waiting changes write to the new provider, with their answers
+  following durability. Complete the Build after the nodes confirm. Observed connection events
+  stay owed on the node's writer queue (Q169) and land after the unblock; an open never waits.
+- **R-SP10. Restart and new births.** Persist the migration identity, blocked changes and both
+  provider names before confirming. Restart resolves that same migration before ordinary writes;
+  an older launch environment cannot unblock changes. A new birth joins the current migration
+  before issuing writes and is included in its writer confirmations.
+- **R-SP11. Keep the previous provider.** It remains unchanged after commit, named in the Fabric
+  row, and available to the fabric-primary. RDM deletes none of its records. Going back is another
+  Build using this same blocking procedure.
+- **R-SP12. Serving state does not change.** Nodes, meshes and the fabric stay ready-for-traffic.
+  Progress is the Build's receipts and provider properties. This blocks storage changes, not nodes.
+- **R-SP13. Resolve failure by the commit record.** One insert-and-fail `commit` record for
+  `(build_id, change_id)` on the new provider is the switch. Found, the change is switched and the
+  Fabric row's line is written if missing; none on a provider that answers, not switched; a provider
+  that does not answer is neither, and the block holds. A timeout never means not switched. No Build
+  but fabric.delete is admitted during a change. A step failing before the switch fails the Build
+  once no `commit` is read, and every node unblocks on the old provider. A node that will not block
+  or unblock is investigated and re-created on the provider of its step (Q182). Delayed messages of
+  an older change_id are refused by name. fabric.delete reads the record before it writes.
 - **R-SP14. Spans.** Each step spans its node, the provider it opens, switches to or closes, the step,
   the lines copied per writer and the last `op`, and its outcome, under the Build's step spans; the
   names follow the Build's span families and are listed in the landing. The open span of the
@@ -273,75 +199,34 @@ accepting a new run does not erase that protection. A committed run only resumes
 
 ## Cells
 
-- **The properties.** `fabrics.get` answers `topology_storage_provider` and `previous_topology_storage_providers`; a
-  topology without the field reads as `file`; a Build naming an unregistered provider is refused at
-  acceptance by name, nothing moved; `nodes.get [topology_storage_provider: …]` answers each node's, and during
-  a change the fabric's and a node's differ; a node's own row carries the provider and the step before
-  the step's receipt exists.
-- **Step 1.** A node whose executable lacks the provider fails step 1 by name, the Build fails, the old
-  provider whole and the Fabric row unchanged.
-- **Step 2.** The copy carries every line of every store, dead births' and deleted nodes' included,
-  and records verified source positions; nodes write the old provider throughout and nothing is
-  blocked; a claim during the copy is decided in the old provider.
-- **Step 3.** A frozen node's connection fact, its mesh-primary's row write and a caller's config
-  update are owed, not refused, and land on the new provider at the release in the writer's order; a
-  node's tail lands once and in order after the copied lines; no write reaches the new provider
-  between the last tail and the commit; a claimant during the freeze waits and is decided in the new
-  provider after the release; the final tails preserve source order per key and the fabric-primary releases first; a node reading
-  another writer's rows on the new provider after the commit sees every line; a node whose freeze
-  command is delayed appends to the old provider after the completeness pass began, and the commit
-  waits on its acknowledgement, so its line is in its tail; a writer silent with no `exited` verdict
-  holds the commit with no timer; a writer with the verdict and lines behind is copied by the pass.
-- **Completeness.** A destination holding operations 1 and 3 without 2 refuses the migration,
-  leaves 3 current and does not append 2 behind it. An interrupted ordered copy resumes at its
-  verified prefix without a duplicate; ownership passing from writer A to writer B preserves the
-  source order and B's final value even when B reports its freeze before A.
-- **Freeze durability.** An already-issued append delayed past the freeze command prevents the
-  acknowledgement until it completes durably and is included in the final positions. Restart after
-  acknowledgement retains the freeze even with an old launch environment; no ordinary append or
-  claim runs before resolving the same change's decision.
-- **Run identity.** Abort one run, finish rollback, and resubmit the same Build: a new change id can
-  commit. Recovery of an uncertain decision keeps its original change id. Delayed freeze, release
-  and abort commands from the resolved run cannot affect the new run.
-- **The decision.** The commit request delayed at the provider, a recovery read answering absent,
-  the successor inserting `abort`, then the original commit delivered: it fails on `abort` and the
-  revert stands; the reverse order, `commit` inserted first and the successor's `abort` failing, the
-  successor releases instead; the commit inserted and the Fabric row's line not yet written when the
-  fabric-primary dies: the successor finds `commit` and writes the line.
-- **Restart and birth.** A node restarted inside each step reconciles the launcher's environment
-  with its durable run identity and freeze, resolves any pending decision, and runs the missed step
-  before its join; a
-  node born during the change runs the step it is born at; the adoption launch reads the provider
-  from the data-dir row alone.
-- **Failure.** A failure before the commit, in step 1, the copy, the freeze or the tails, fails the
-  Build, lifts the freeze on the old provider with the owed writes landing there, closes the new
-  provider and leaves the Fabric row unchanged, every line still there; a node failing its release
-  after the commit retries it with its writes still owed and the Build still in progress; the commit
-  written and its reply lost, then the fabric-primary dead: the successor finds the commit line and
-  releases, never reverts; the new provider not answering at the commit: the freeze holds, nothing
-  reverts, until it answers; `fabric.delete` mid-change interrupts the Build and both providers'
-  records stay.
-- **Writers that die.** A node that appends after the copy and dies before its tail: the
-  completeness pass copies its remaining lines and the commit waits on it; a held name and an active
-  attempt cross the cutover with the same holders, read back equal on both providers before the
-  commit, and the name is not free on the new provider; a frozen node dying after observing a
-  connection event finds the event in its pending log at restart and replays it; a frozen
-  mesh-primary dying with a declaration unanswered: the declarer retries and the row is written once,
-  on whichever provider the fabric is then on; a caller's config update during the freeze is
-  answered once, after its line landed; the new provider not answering at the decision with no
-  `abort` insertable: the freeze holds and nothing reverts.
-- **The previous provider.** After the commit it holds every line to the last tail, nothing more is
-  written to it, RDM removes nothing of it, and a go-back Build copies into it only the lines it
-  lacks.
-- **Go-back.** A Build naming a previous provider copies into it only the lines it lacks by `op`.
-- **State.** The fabric, every mesh and every node stay ready-for-traffic through a change; no node
-  state transition is published.
+- **Properties and opening:** public Fabric/node reads carry the selected provider; omission retains
+  the current provider. Unsupported registrations fail by name before records move.
+- **Blocking:** a change submitted during migration waits. An outstanding write or claim prevents
+  copying until it has finished durably. A delayed writer confirmation holds the copy. Reads and
+  serving states continue; measure the migration's blocked duration in the smoke test.
+- **Copy:** preserve every record and current value in source order, including dead writers and
+  deleted entities. Transfer held names and attempts unchanged. A destination with operations 1 and
+  3 but missing 2 is refused without making 2 current. Lost copy answers do not duplicate records.
+- **Switch and unblock:** waiting changes remain blocked until participating nodes switch; they
+  then use the new provider and answer only after durability. No ordinary write resumes on the old
+  provider. All serving identities and states remain unchanged.
+- **Switch:** lose the commit answer; the record read decides. Kill the fabric-primary between the
+  commit and the Fabric-row write; its successor finishes switching. A provider that does not answer
+  keeps changes blocked. Fail a step before the switch; every node unblocks on the old provider.
+- **Restart:** restart after changes are blocked with an older launch environment; resolve the same
+  decision before writing. An observed connection event while blocked lands once after the unblock. Include
+  new births in the writer confirmations before allowing their writes.
+- **Admission and lost nodes:** a Build other than fabric.delete is refused during a change. Old
+  commands cannot switch or unblock a later change. A node that never acknowledges is re-created on
+  the provider of its step. Delete reads the commit record before teardown.
+- **History and return:** the old provider is unchanged after commit; a later go-back Build uses the
+  same procedure. Full public reads, including config filters, preserve their results.
 
 ## The mechanisms considered before this one
 
 Each was weighed in the same conversation and set aside, for the reason given.
 
-1. **Restore state-sync, state-commit and the scratchpad** (the draft Q182 arm A). Day-0 rows held in
+1. **Restore state-sync, state-commit and the scratchpad** (a withdrawn draft arm). Day-0 rows held in
    memory, written into the application's store at state-commit. Set aside: records are written to
    storage from Day 0, never held in a scratchpad (Luke), and it moves storage once, at Day 0, never
    while the fabric runs.
@@ -376,18 +261,20 @@ Each was weighed in the same conversation and set aside, for the reason given.
    mesh's in-flight row in two providers; a node's copy could land after a newer dual-written record,
    with no version to refuse it; a partial dual write had no defined recovery; records with no live
    writer had no copier; and a failed Build after step 2 contradicted build.md's failed-Build rule.
-   The fabric-primary's copy first and each node's own tail at its switch keep what that shape was
-   for, no restart and no state change, without the dual write.
-10. **A switch without a freeze** (this proposal's second shape, 4011b5c58: each node switches as
+   The current contract blocks changes before copying; it retains live serving processes without
+   dual writes or a catch-up stage.
+10. **A switch without blocking changes** (this proposal's second shape, 4011b5c58: each node switches as
     soon as its tail is copied, claims cut over by a `claims-closed` row, the change completing
     forward past it). Set aside on Luke's heads-up: from the first switch on the two providers
     diverge, a moved writer's lines exist on the new provider alone, and a change stuck after the row
-    can neither finish nor go back without losing them, so both providers' data would have to go. The
-    freeze makes one provider whole at every instant and the Fabric row the one commit point, and
-    removes the row, the forward-only rule and the reads window at the cost of seconds of owed writes.
+    can neither finish nor go back without losing them, so both providers' data would have to go. The current contract blocks changes before copying and switches only after the stable copy is
+    verified; it does not use this background-copy design.
 
 ## What this proposal does not decide
 
 - How the application's backend is built or what it stores (Q65: RDM's boundary contract is the how,
   the application decides who).
 - Retention of a store's lines, on either provider: the store-root proposal's measured trigger.
+
+The earlier copy-while-writing design with final tails is also superseded. The complete migration
+blocks changes from before the copy until the switch is confirmed; it needs no catch-up phase.

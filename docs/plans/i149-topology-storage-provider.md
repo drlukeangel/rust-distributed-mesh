@@ -24,6 +24,11 @@ This initiative moves the five RDM record stores. Application data files remain 
 `storage_persistence`. The separate storage_persistence field rename is tracked in e1 so its public
 names and compatibility work cannot be lost between initiatives.
 
+**Migration sequence:** block new changes, finish outstanding writes and claim operations, copy the
+stable records and held claims, switch providers, then unblock waiting changes. Reads and serving
+processes continue. This is one short blocking migration; there is no background copy or later
+catch-up stage. Measure its duration rather than using a one-second timer as a safety rule.
+
 ## Requirements
 
 A disposition is **HOLDS** with current evidence or **BUILD** with an owning epic. A passing unit
@@ -37,18 +42,20 @@ are source anchors rather than assertions that the missing capability already ex
 | R3 | Submit a complete-topology Build changing only topology_storage_provider; omission preserves the current value | BUILD | `crates/rdm-admin/src/accepted.rs:161`, `crates/rdm-core/src/build.rs:289` | e1 |
 | R4 | Every active reader and writer uses the same replaceable provider handle on its node | BUILD | `crates/rdm-admin/src/admin/boot.rs:380`, `crates/rdm-node/src/node.rs:468`, `crates/rdm-node/src/connections_writer.rs:46` | e2 |
 | R5 | Preserve all record history, including dead writers, and current values through copying | BUILD | `crates/rdm-node/src/store_log.rs:110`, `crates/rdm-admin/src/build_state.rs:237` | e3 |
-| R6 | Preserve source order per key across writer changes; reject a destination hole instead of replaying stale state | BUILD | `crates/rdm-node/src/store_log.rs:240`, Storage §2, Changing it, Copy and Tails | e3 |
+| R6 | Preserve source order per key across writer changes; reject a destination hole instead of replaying stale state | BUILD | `crates/rdm-node/src/store_log.rs:240`, Storage §2, Changing it, Copy | e3 |
 | R7 | Keep one claim decision point, transferring every held name and in-flight claim before cutover | BUILD | `crates/rdm-admin/src/storage.rs:177`, `crates/rdm-admin/src/mesh_claims.rs:1` | e3 |
-| R8 | Freeze ordinary writes and claim operations only after issued operations settle; retain the freeze across restart | BUILD | `crates/rdm-admin/src/storage_backend.rs:54`, `crates/rdm-node/src/connections_writer.rs:46`; Storage §2, Freeze | e4 |
-| R9 | Commands remain unanswered until durable; observed connection facts survive a frozen writer's crash | BUILD | `crates/rdm-node/src/connections_writer.rs:46`, `crates/rdm-node/src/node.rs:468` | e4 |
-| R10 | Distinguish commit from abort durably even after lost replies; timeout or absent read cannot cause an unsafe revert | BUILD | `crates/rdm-admin/src/build_state.rs:198`, `crates/rdm-admin/src/build_drive.rs:136`; Storage §2, Decision | e4 |
-| R11 | Recover an unfinished migration with the same change_id; resubmit after confirmed abort with a new change_id | BUILD | `crates/rdm-admin/src/build_state.rs:100`, `crates/rdm-admin/src/build_state.rs:124` | e4 |
+| R8 | Block new writes and claims, finish issued operations before copying, and keep changes blocked across restart | BUILD | `crates/rdm-admin/src/storage_backend.rs:54`, `crates/rdm-node/src/connections_writer.rs:46`; Storage §2, Changing it | e4 |
+| R9 | A caller's command and a node's declaration are answered only once their line lands; connection events stay owed on the node's writer queue (Q169) and never block an open | BUILD | `crates/rdm-node/src/connections_writer.rs:46`, `crates/rdm-node/src/node.rs:468` | e4 |
+| R10 | The switch is one insert-and-fail `commit` record for (build_id, change_id); recovery reads it; a provider that does not answer, or a timeout, never means not switched | BUILD | `crates/rdm-admin/src/build_state.rs:198`, `crates/rdm-admin/src/build_drive.rs:136`; Storage §2, Decision | e4 |
+| R11 | Recover an unfinished change with the same change_id; a node refuses a command of an older change_id by name | BUILD | `crates/rdm-admin/src/build_state.rs:100`, `crates/rdm-admin/src/build_state.rs:124` | e4 |
 | R12 | Restart, new birth, adoption and fabric.delete resolve the current migration before issuing ordinary writes | BUILD | `crates/rdm-admin/src/admin/boot.rs:296`, `crates/rdm-node/src/node.rs:468`; Storage §2 | e4 |
 | R13 | Serving nodes keep their identities and ready-for-traffic state throughout a successful change | BUILD | `crates/rdm-test/src/estate.rs:602`; Storage §2, Changing it | e5 |
 | R14 | Keep previous providers readable and unchanged after cutover; a later Build can return to one | BUILD | `crates/rdm-admin/src/fabric_storage.rs:107`; Storage §2 | e5 |
 | R15 | Exercise the capability in a fast smoke and the full scheduled suite, with process and container coverage | BUILD | `scripts/rdm-gate-at.sh:22`, `scripts/cells.sh:1`, `crates/rdm-test/tests/main.rs:1` | e5 |
 | R16 | Publish usable instructions and recovery procedures with the final implementation evidence | BUILD | `docs/eng/consumer-guide.md:1`, `docs/architecture/storage.md:54` | e6 |
 | R17 | Ordinary Build execution retains its existing exclusive attempt and receipt model | HOLDS | `docs/architecture/build.md:405`, `crates/rdm-admin/src/mesh_claims.rs:1`; migration-specific extensions are R7–R12 | e4 |
+| R18 | No Build is admitted during a change, a change back included; only fabric.delete, which interrupts it; a step failing before the switch fails the Build once no `commit` is read, and every node unblocks on the old provider | BUILD | `crates/rdm-admin/src/control_plane.rs` Build admission; Storage §2, Changing it | e4 |
+| R19 | A node that will not block or unblock is a lost node (node-investigation.md, Q182): investigated and re-created at its path.name on the provider of its step; after the switch the Build completes once every node has unblocked or been re-created | BUILD | node investigation and node recovery; Storage §2, Changing it | e4 |
 
 ## § Inventory
 
@@ -57,7 +64,7 @@ The e2/e3 inventory, read at 7d0b316eb: [i149-inventory](i149-inventory.md) (eve
 ## § Open forks
 
 No new product ruling is requested by this PRD. The accompanying architecture changes settle ordered
-copy, durable freeze and per-run decisions. Implementation discoveries that contradict that contract
+ordered copy, blocking changes across restart and per-run decisions. Implementation discoveries that contradict that contract
 must be recorded with positive code evidence and the exact outlier page before a ruling is asked.
 
 Provider names identify registrations, including their locations; two locations use two registered
@@ -100,10 +107,11 @@ and storage_persistence. No guessed client method or runnable YAML is specified 
 1. Start the real two-mesh estate; retain every node's id, incarnation, ready state, config and tags.
 2. Create connection history and records of a deleted birth and mesh; capture all public history.
 3. Submit the complete topology with the target provider through the real Build carrier.
-4. Keep connection activity and a config command active while the Build progresses.
+4. Keep connection activity running; submit a config change during migration and verify it waits
+   until the provider switch completes.
 5. Require Complete, the target on the Fabric and every node, unchanged serving births and states,
    intact record history/current values, and unchanged previous-provider records after completion.
-6. Assert copy, freeze, decision and release spans on one causal trace; read results through the
+6. Assert block, copy, decision and unblock spans on one causal trace; read results through the
    public entity reads available at landing, including arbitrary config-property matching.
 
 ### What a passing seed proves
@@ -132,15 +140,15 @@ an empty read or successful no-op.
 ## § Restart-recovery canary
 
 **FIRST test:** `topology_storage_state_survives_admin_restart_at_same_data_dir` in the planned
-estate stem. Persist a migration freeze, kill the real fabric-primary process, start recovery over
-the same data dir, and resolve the same change_id. Assert all public records and the pending
-observed event survive, stale launch environment does not unfreeze writes, and exactly one decision
-stands. Cover clean restart and forced termination; compare the complete captured dataset.
+estate stem. Persist that changes are blocked for the change, kill the real fabric-primary process, start recovery over
+the same data dir, and resolve the same change_id. Assert all public records survive, a stale launch
+environment does not unblock writes, and the decision is read from the `commit` record alone (found:
+switched; none on an answering provider: not switched). Cover clean restart and forced termination; compare the complete captured dataset.
 
-A second named canary, `topology_storage_state_survives_role_node_restart`, kills a frozen role
-process after its local pending-log fsync and before release. Restart at the same data dir and
-verify its observed events appear exactly once in the chosen provider. Exercise both commit and
-abort. A new birth with a different data dir must not be described as restart coverage.
+A second named canary, `topology_storage_state_survives_role_node_restart`, kills a role process while changes are blocked, with a write owed. Restart at the same data dir and
+verify it stays blocked, reads the `commit` record, and its writes land exactly once on the provider
+chosen. Exercise both a switched change and a step failed before the switch (every node unblocked on
+the old provider). A new birth with a different data dir must not be described as restart coverage.
 
 This generic RDM initiative uses test role nodes instead of depending on Rafka broker/gateway
 internals. Rafka's consuming integration must separately prove broker and gateway restart through
@@ -159,13 +167,14 @@ existing Build execution context across fabric-primary → mesh-primary → node
 |---|---|---|
 | `rdm.node_admin.build.update.via-storage-open` | build_id, change_id, node_id, provider, outcome | unsupported provider test sees its named refusal |
 | `rdm.node_admin.build.update.via-storage-copy` | build_id, change_id, source, destination, source_position, copied, outcome | ordered copy and destination-hole tests |
-| `rdm.node.build.update.via-storage-freeze` | build_id, change_id, node_id, issued_writes, pending_events, outcome | delayed append prevents freeze acknowledgement |
-| `rdm.node_admin.build.update.via-storage-decision` | build_id, change_id, provider, decision, outcome | delayed commit versus abort test |
-| `rdm.node.build.update.via-storage-release` | build_id, change_id, node_id, provider, pending_events, outcome | failed release remains owed |
+| `rdm.node.build.update.via-storage-block` | build_id, change_id, node_id, issued_writes, owed_writes, outcome | a delayed append holds the acknowledgement until it settles |
+| `rdm.node_admin.build.update.via-storage-switch` | build_id, change_id, provider, commit_found, outcome | a lost commit answer resolved by reading the record |
+| `rdm.node.build.update.via-storage-unblock` | build_id, change_id, node_id, provider, owed_writes, outcome | a failed unblock keeps its writes owed and retries |
 | `rdm.store.open.via-fold` | provider, bytes, lines, duration, invalid_offset when refused | reopen and history checks |
 
 Absence assertions require a successful control span for the request under test. In particular,
-no write after freeze is proven with attempted work and its blocked/owed outcome, not a quiet trace.
+attempt a write while changes are blocked, verify it waits, and verify its durable result after
+unblocking; a quiet trace alone proves nothing.
 Provider secrets and connection credentials never enter attributes or record-copy diagnostics.
 
 ## § Per-sprint seed-data obligation
@@ -182,7 +191,7 @@ in this repository. Adding a consumer YAML fixture belongs to the consumer hando
 - [x] unit — schema/defaults, registrations, decision identity and copy-prefix validation
 - [x] functional — real durable providers, exclusive claims, lost write answers and restart state
 - [x] e2e — real estate Build, reads, process termination and container namespace qualification
-- [x] load — continued event generation during copy and bounded freeze pending-log behavior
+- [x] load — reads and event generation while changes are blocked, with durable pending events
 - [x] chaos — delayed appends, lost decision replies, executor death and delayed old-run commands
 
 These checkmarks commit to deliverables; they are not passing results. RDM's test-main module and
@@ -195,7 +204,7 @@ no nonexistent Rafka feature registry is assumed.
   while the journal itself is being moved.
 - **Likely failure:** copying all operation identities yet exposing a stale current record because
   writer histories were appended out of source order.
-- **Persistence path:** five provider stores, exclusive claims, local frozen-state and pending-event
+- **Persistence path:** five provider stores, exclusive claims, local with changes blocked-state and pending-event
   logs, and one immutable decision per `(build_id, change_id)`. Restart resolves that decision before
   opening ordinary writes. Provider omission never silently switches an established fabric to file.
 - **Dependencies:** R-SR append-only stores and exclusive-claim primitives; Q167 public property reads;
@@ -253,13 +262,14 @@ The epic blocks below are the dispatch briefs; no epics are dispatched by this d
 
 ### e3 — copy the complete history and held claims in order
 
-- **Goal → gap:** Storage §2 Copy and Tails. Existing store-log identities do not implement a
+- **Goal → gap:** Storage §2 Copy. Existing store-log identities do not implement a
   cross-provider copy or verified progress.
 - **Detailed requirements:** R5–R7; use `rdm-node/src/store_log.rs:110` and `:240`,
   `rdm-admin/src/storage.rs:177` and Build facts at `build_state.rs:237`. Copy every retained kind,
   preserve source order per key across ownership changes, persist verified progress, and reconcile
   uncertain copy answers without duplicate appends. Refuse destination holes/reordering before
-  cutover. Transfer claims only after the freeze barrier and verify exact holders.
+  cutover. Copy starts only after changes are blocked and outstanding writes have finished; transfer claims
+  with the stable records and verify exact holders.
 - **Spans:** storage-copy, with verified source position and copied count; refusal identifies the
   key and mismatch without dumping records containing application settings.
 - **Testing:** `planned:crates/rdm-node/tests/storage_copy.rs`, shared estate history assertions.
@@ -272,34 +282,34 @@ The epic blocks below are the dispatch briefs; no epics are dispatched by this d
   shared production files with e4 mean e4 follows this epic.
 - **Rows absorbed / state:** R5–R7; BUILD.
 
-### e4 — recover freeze, decision and release after any executor loss
+### e4 — recover blocked changes and finish the provider switch after executor loss
 
-- **Goal → gap:** Storage §2 Freeze/Decision/Release and per-run identity. Build claims exist, but
+- **Goal → gap:** Storage §2 Block/Copy/Switch/Unblock and per-run identity. Build claims exist, but
   there is no durable storage-migration execution state or restart recovery path.
-- **Detailed requirements:** R8–R12 and R17; integrate `build_state.rs:100`, `:124`, `:198`,
-  `build_drive.rs:136`, `admin/boot.rs:296` and `rdm-node/src/node.rs:468`. Record the run before
-  commands, finish outstanding writes/claims before freeze acknowledgement, persist local frozen
-  state and pending observed events, and resolve commit/abort with the existing exclusive insert.
-  A confirmed abort permits a fresh run after rollback; uncertain decisions reuse the original run.
-  Old commands cannot affect that run's successor. Adoption and delete must resolve the decision
-  before they write; an unavailable decision store never implies abort. Release remains owed after
-  commit, and no failed-Build fallback resumes writes against the old provider.
-- **Spans:** storage-freeze, storage-decision and storage-release with exact change_id and target.
+- **Detailed requirements:** R8–R12, R17–R19; integrate `build_state.rs:100`, `:124`, `:198`,
+  `build_drive.rs:136`, `admin/boot.rs:296` and `rdm-node/src/node.rs:468`. Record the change_id
+  with its Build before the first command; Block (admission closed, every write owed, never
+  refused; connection events stay on the Q169 queue; the block and both providers recorded in the
+  data dir before acknowledging); Finish outstanding writes to a durable outcome on the old provider;
+  Switch by inserting `commit` with the store's insert-and-fail primitive, then the Fabric row's
+  line; Unblock onto the new provider. Recovery, restart, adoption and fabric.delete read the
+  `commit` record before any ordinary write; a provider that does not answer keeps the block. No
+  Build but fabric.delete is admitted during a change. A step failing before the switch fails the
+  Build once no `commit` is read and unblocks every node on the old provider. A node that will not
+  block or unblock is investigated and re-created (Q182) on the provider of its step. No timer.
+- **Spans:** storage-block, storage-switch and storage-unblock with exact change_id and node.
 - **Testing:** planned estate stem plus functional delayed-provider tests owned by this epic.
-- **Acceptance names:** `a_frozen_node_restart_waits_for_the_same_changes_decision`,
-  `a_delayed_commit_cannot_override_a_successful_abort`,
-  `a_resubmitted_build_can_commit_after_a_confirmed_abort`,
-  `an_old_changes_command_cannot_release_a_new_changes_freeze`,
-  `a_lost_executor_does_not_lose_pending_connection_events`,
-  `a_delete_resolves_the_storage_change_before_teardown`,
-  `a_build_naming_the_old_provider_aborts_an_undecided_change`,
-  `a_build_naming_the_old_provider_after_commit_is_refused_change_committed`.
-- **Abort (Storage §2):** while a change is undecided, a `build.create` naming the old provider is
-  admitted beside it and inserts `abort`; after `commit` it is refused `change-committed`. A writer
-  alive but silent through the freeze is ended by that Build, never by a timer.
+- **Acceptance names:** `a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read`,
+  `a_lost_commit_answer_is_resolved_by_reading_the_commit_record`,
+  `a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider`,
+  `a_build_other_than_fabric_delete_is_refused_during_a_change`,
+  `an_old_change_cannot_unblock_writes_for_a_new_change`,
+  `a_connection_event_during_a_change_lands_once_after_the_unblock`,
+  `a_node_that_never_unblocks_is_recreated_on_the_new_provider`,
+  `a_delete_resolves_the_storage_change_before_teardown`.
 - **Mesh plan:** multi-mesh, process/container, same shared fixture and test invocation as e1.
 - **Sizing / files:** one implementer; Build state/drive, both boot paths, local own-row and
-  pending-log persistence, node command dispatch, and migration implementation. Inventory exact new
+  block-state persistence, node command dispatch, and migration implementation. Inventory exact new
   modules in the epic evidence before dispatch rather than inventing existing API coordinates.
 - **Rows absorbed / state:** R8–R12, R17; BUILD.
 
@@ -315,7 +325,7 @@ The epic blocks below are the dispatch briefs; no epics are dispatched by this d
   scheduled invocation. An existing schedule is not claimed active until verified; an absent runner
   is this epic's defect to resolve with the lead, never silently replaced by the smoke.
 - **Spans:** every span in the OTLP table; assert causal Build context and actual public outcomes.
-- **Testing:** real two-mesh estate, live activity while copying, delayed writes, abrupt process
+- **Testing:** real two-mesh estate, waiting changes during copying, delayed outstanding writes, abrupt process
   death, claim competition, restart and go-back. The setup is shared across all e2e cells; faults do
   not choose unrelated shapes. Both deployment providers implement the same behavior matrix.
 - **Acceptance names:** seed and both restart canaries above,
@@ -351,7 +361,7 @@ The epic blocks below are the dispatch briefs; no epics are dispatched by this d
 - `crates/rdm-admin/src/storage_backend.rs`, `crates/rdm-node/src/storage_backend.rs` — registrations and replaceable boundaries.
 - `crates/rdm-admin/src/accepted.rs`, `crates/rdm-admin/src/fabric_storage.rs`, `crates/rdm-core/src/meta.rs`, `crates/rdm-core/src/views.rs` — public/durable properties.
 - `crates/rdm-admin/src/build_state.rs`, `crates/rdm-admin/src/build_drive.rs` — run identity, progress and decision recovery.
-- `crates/rdm-node/src/store_log.rs`, `crates/rdm-node/src/connections_writer.rs`, both boot paths — ordered copy, freeze and replay.
+- `crates/rdm-node/src/store_log.rs`, `crates/rdm-node/src/connections_writer.rs`, both boot paths — ordered copy, blocked changes and replay.
 - `planned:crates/rdm-test/tests/fabric/topology_storage_provider.rs` — customer acceptance, canaries and failure matrix.
 - `scripts/rdm-gate-at.sh` — smoke and release discovery; nightly configuration located and verified in e5.
 
@@ -361,7 +371,7 @@ The final epic creates all three substantive documents:
 
 - `planned:docs/features/topology-storage-provider/overview.md` — purpose, request/persistence/failure paths, crate boundaries, surface map and cross-references.
 - `planned:docs/features/topology-storage-provider/how-to.md` — executable registration, submit/read examples, omitted-property behavior, config-filter example and common named refusals.
-- `planned:docs/features/topology-storage-provider/runbook.md` — freeze and decision health, unavailable provider, restart/adoption, abort versus commit, refused history and previous-provider handling.
+- `planned:docs/features/topology-storage-provider/runbook.md` — blocked changes and decision health, unavailable provider, restart/adoption, switched versus failed before the switch, refused history and previous-provider handling.
 
 Examples use the actual RDM client/public read shapes at landing. Internal diagnostics never become
 an alternative customer API. The runbook explicitly distinguishes pending observed-event durability
@@ -373,10 +383,11 @@ from unanswered caller retries and gives procedures for the precise provider dec
 - [ ] All BUILD requirements have an implementing epic and are converted to HOLDS only with evidence.
 - [ ] Decoder round trips preserve explicit provider and omission semantics; unregistered names refuse by name.
 - [ ] Ordered copy, source-prefix refusal, lost copy answers, claims and the history of dead births and deleted nodes pass functional coverage.
-- [ ] Outstanding operations settle before freeze acknowledgement; restart cannot undo a durable freeze.
-- [ ] Per-run commit/abort tests cover both execution orders, lost replies, failed writes and successor recovery.
-- [ ] Confirmed abort followed by same-Build resubmission succeeds with a new change identity.
-- [ ] Stale run commands cannot write, release or decide for a later run.
+- [ ] Outstanding operations settle before confirmation that changes are blocked; restart cannot unblock changes before resolving the decision.
+- [ ] Switch tests cover a lost commit answer, a provider not answering, a failed write and successor recovery, the decision always read from the `commit` record.
+- [ ] A step failing before the switch unblocks every node on the old provider; no Build but fabric.delete is admitted during a change.
+- [ ] A node that will not block or unblock is re-created on the provider of its step (Q182).
+- [ ] Commands of an older change_id cannot write, unblock or decide for a later one.
 - [ ] All observed events and public record history survive the admin and role restart canaries.
 - [ ] The smoke is discovered and passes in the fast gate; full failure/load/container coverage passes release.
 - [ ] Nightly configuration and active schedule are verified; its existing coverage is preserved and the migration suite discovered.
@@ -400,7 +411,7 @@ and evidence; progress remains in this initiative's epic rows and the i143 depen
 | Wave | Epics | File ownership / reason |
 |---|---|---|
 | 1 | e1 | establish schema, registrations and RED canary/seed; shared metadata and boot interfaces |
-| 2 | e2 | consumes e1 types; handle inventory and issued-write accounting precede freeze |
+| 2 | e2 | consumes e1 types; handle inventory and issued-write accounting precede blocked changes |
 | 3 | e3 | consumes e2 handles; order/progress/claims are prerequisites of the decision |
 | 4 | e4 | consumes e3 verified-copy state; shared storage and Build files require sequencing |
 | 5 | e5 | full acceptance consumes e4; fixture tests may be authored earlier against agreed interfaces |
