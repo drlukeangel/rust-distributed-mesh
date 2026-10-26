@@ -977,15 +977,25 @@ impl DriveEnv {
     }
 
     /// The end of the fabric lane's `attempt` (its terminal, or its take-over from a proven-departed
-    /// executor) releases its executor's mesh's in-flight row (R-BI7 caveat 3), while the row still
-    /// names that attempt. A release that cannot be written is named: the mesh stays held, and the
-    /// next claim on it is refused naming this attempt.
+    /// executor) releases the in-flight row it took (R-BI7 caveat 3), while the row still names that
+    /// attempt: its executor's mesh's, and, for a node recovery, the recovered node's mesh's, which the
+    /// recovery takes whoever executes it (`ControlPlane`'s recovery claim). A release that cannot be
+    /// written is named: the mesh stays held, and the next claim on it is refused naming this attempt.
     async fn release_mesh(&self, id: &BuildId, attempt: u32, executor: &PathName) {
         let me = self.held_name().await;
         let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt, claimant: me.to_string(), claimant_node: None };
-        if let Err(e) = self.door.claims.release_in_flight(&executor.mesh, &row).await {
-            tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), attempt, mesh = %executor.mesh, node = %me, error = %e)
-                .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
+        let others: Vec<String> = self.topology.read().await.meshes.iter().map(|m| m.name.clone()).filter(|m| *m != executor.mesh).collect();
+        let mut taken = vec![executor.mesh.clone()];
+        for mesh in others {
+            if self.door.claims.in_flight(&mesh).await.ok().flatten().is_some_and(|held| held.same_attempt(&row)) {
+                taken.push(mesh);
+            }
+        }
+        for mesh in taken {
+            if let Err(e) = self.door.claims.release_in_flight(&mesh, &row).await {
+                tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), attempt, mesh = %mesh, node = %me, error = %e)
+                    .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
+            }
         }
     }
 
