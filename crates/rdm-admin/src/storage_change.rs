@@ -302,7 +302,7 @@ impl StorageChanges {
         let step = StorageStep::Unblock { provider };
         tokio::spawn(async move {
             let paths: Vec<PathName> = topology.read().await.members().filter(|n| n.node_id != me && n.status.is_live()).map(|n| n.name.clone()).collect();
-            let all = paths.iter().map(|p| this.step_until(client.clone(), status_door.clone(), topology.clone(), &held.build_id, &held.change_id, p, &step, None));
+            let all = paths.iter().map(|p| this.step_until(client.clone(), status_door.clone(), topology.clone(), &held.build_id, &held.change_id, p, &step));
             futures_util::future::join_all(all).await;
         });
     }
@@ -414,7 +414,7 @@ impl StorageChanges {
             }
             let step = StorageStep::Block { from: change.from.clone(), to: change.to.clone() };
             let paths = self.paths(&topology).await;
-            let all = paths.iter().map(|p| self.step_until(client.clone(), status_door.clone(), topology.clone(), build_id, &change.change_id, p, &step, Some(())));
+            let all = paths.iter().map(|p| self.step_until(client.clone(), status_door.clone(), topology.clone(), build_id, &change.change_id, p, &step));
             let ends = futures_util::future::join_all(all).await;
             if let Some((path, why)) = paths.iter().zip(ends).find_map(|(p, e)| match e {
                 StepEnd::Refused(why) => Some((p.clone(), why)),
@@ -476,7 +476,7 @@ impl StorageChanges {
             return Err(crate::executor::RunEnd::Incomplete(format!("storage change {}: the Fabric row's line naming {} could not be written: {e}", change.change_id, change.to)));
         }
         let paths = self.paths(&topology).await;
-        let all = paths.iter().map(|p| self.step_until(client.clone(), status_door.clone(), topology.clone(), build_id, &change.change_id, p, &me_step, None));
+        let all = paths.iter().map(|p| self.step_until(client.clone(), status_door.clone(), topology.clone(), build_id, &change.change_id, p, &me_step));
         futures_util::future::join_all(all).await;
         let receipt = crate::build_state::BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation(&change.change_id), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete, output: None, executor: None };
         builds.append_step_receipt(&receipt).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("storage change {}: its Complete could not be recorded: {e}", change.change_id)))?;
@@ -497,7 +497,7 @@ impl StorageChanges {
             }
         }
         let paths = self.paths(&topology).await;
-        let all = paths.iter().map(|p| self.step_until(client.clone(), status_door.clone(), topology.clone(), build_id, &change.change_id, p, &step, None));
+        let all = paths.iter().map(|p| self.step_until(client.clone(), status_door.clone(), topology.clone(), build_id, &change.change_id, p, &step));
         futures_util::future::join_all(all).await;
         if provider == change.to {
             return Err(crate::executor::RunEnd::Incomplete(format!("storage change {}: {why}; its commit record is found, so it is switched and resumes", change.change_id)));
@@ -528,10 +528,10 @@ impl StorageChanges {
 
     /// Send `step` to the birth at `path` through its mesh-primary until it is done: answered by the
     /// birth the view holds at `path` when each send leaves (a re-created one included: an exited
-    /// birth's successor), or no birth held there. A birth that refuses a block by name (`block` set)
-    /// ends it refused; silence is retried, never read as either.
+    /// birth's successor), or no birth held there. A birth that refuses a block by name ends it
+    /// refused; silence is retried, never read as either.
     #[allow(clippy::too_many_arguments)]
-    async fn step_until(&self, client: Option<Arc<rdm_transport::NodeRpcClient>>, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>, build_id: &BuildId, change_id: &ChangeId, path: &PathName, step: &StorageStep, block: Option<()>) -> StepEnd {
+    async fn step_until(&self, client: Option<Arc<rdm_transport::NodeRpcClient>>, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>, build_id: &BuildId, change_id: &ChangeId, path: &PathName, step: &StorageStep) -> StepEnd {
         let mut backoff = Duration::from_millis(250);
         loop {
             let view = topology.read().await.clone();
@@ -561,7 +561,7 @@ impl StorageChanges {
             };
             match reply {
                 Some(StatusReply::StorageStepped { .. }) => return StepEnd::Done,
-                Some(StatusReply::StorageStepFailed { reason, .. }) if block.is_some() => return StepEnd::Refused(reason),
+                Some(StatusReply::StorageStepFailed { reason, .. }) if matches!(step, StorageStep::Block { .. }) => return StepEnd::Refused(reason),
                 Some(StatusReply::RejectedStaleChange { held }) => return StepEnd::Refused(format!("rejected-stale-change: {path} holds storage change {held}")),
                 _ => {}
             }
