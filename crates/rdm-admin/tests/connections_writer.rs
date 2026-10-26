@@ -428,10 +428,10 @@ impl ConnectionsStorage for SlowIndex {
     }
 }
 
-/// CONTRACT (#2803 detection): the carrier names its edge from the dial that just failed. The
-/// failed dial hands its fact to the writer, which holds it once its write lands; the carrier's
-/// answer waits for that, however long the write takes, so a member that cannot reach its own
-/// node-admin says `carrier-edge-lost` every time, never "not sent" for want of a write.
+/// CONTRACT (#2803 detection; Q169): the carrier names its edge from the dial that just failed,
+/// from the dial's own outcome, however long the fact's write takes, so a member that cannot reach
+/// its own node-admin says `carrier-edge-lost` every time, never "not sent" for want of a write. The
+/// read of its held edges never waits for a write: until the Failed row lands it holds no fact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_carrier_names_the_edge_a_dial_has_just_failed_however_slow_the_write() {
     use rdm_transport::CarrierEdges;
@@ -441,16 +441,20 @@ async fn a_carrier_names_the_edge_a_dial_has_just_failed_however_slow_the_write(
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
     writer.hydrate().await.unwrap();
     writer.direct_failed(&resolved(&dest), "timed out");
-    let why = writer.edge_not_active(&dest.node_id).await.expect("the failed dial's fact is named");
+    let why = writer.edge_after_dial(&resolved(&dest), "timed out").await.expect("the failed dial's fact is named");
     assert_eq!(why, "mesh2.rpc.1 -> mesh2.admin.1 Direct failed (timed out)");
+    let held_now = tokio::time::timeout(std::time::Duration::from_millis(100), writer.edge_not_active(&dest.node_id)).await.expect("the read answers from what is held, never waiting for the write");
+    assert_eq!(held_now, None, "the Failed row has not landed, so no fact is held yet");
+    writer.observations_landed().await;
+    assert_eq!(writer.edge_not_active(&dest.node_id).await.as_deref(), Some("mesh2.rpc.1 -> mesh2.admin.1 Direct failed (timed out)"), "once landed the fact is held");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// CONTRACT: a fact is held only after its durable write lands. A refused write leaves no fact
-/// in the held projection, the route still reads "never observed", and the next observation of
-/// the same connection writes it afresh: nothing resends it.
+/// CONTRACT (Q169): a fact is held only after its durable write lands. A refused write leaves no
+/// fact in the held projection, the route still reads "never observed", and the write stays owed:
+/// it is retried with backoff and lands without a second observation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_refused_observation_write_leaves_no_held_fact_and_the_next_observation_lands_it() {
+async fn a_refused_observation_write_is_held_only_once_its_retry_lands() {
     let dir = data_dir("refused-observation");
     let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
     let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
@@ -459,7 +463,12 @@ async fn a_refused_observation_write_leaves_no_held_fact_and_the_next_observatio
     writer.hydrate().await.unwrap();
     storage.refuse.store(1, std::sync::atomic::Ordering::SeqCst);
     writer.direct_connected(&resolved(&dest));
-    writer.observations_landed().await;
+    // The first attempt is refused; the retry waits at least three quarters of the publish cadence.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while storage.refuse.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        assert!(std::time::Instant::now() < deadline, "the write was never attempted");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
     {
         let h = held.lock().unwrap();
         assert!(!h.holds_direct_fact(&me.name, &dest.name), "a refused fact is not held");
@@ -467,15 +476,13 @@ async fn a_refused_observation_write_leaves_no_held_fact_and_the_next_observatio
         assert_eq!(resolve(&h, &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: false });
     }
     assert!(storage.connections().await.unwrap().is_empty(), "nothing durable in the index");
-    // Nothing resends it.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(!held.lock().unwrap().holds_direct_fact(&me.name, &dest.name));
-    // The next observation of the connection lands it.
-    writer.direct_connected(&resolved(&dest));
+    assert_eq!(writer.in_flight(), 1, "the write stays owed");
+    // The retry lands it, with no second observation.
     writer.observations_landed().await;
     assert_eq!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true });
     let index = storage.connections().await.unwrap();
     assert_eq!((index.len(), index[0].state), (1, ConnectionState::Connected));
+    assert_eq!(storage.history().await.unwrap().len(), 1, "the raw log took the row once: only the refused index write was attempted again");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
