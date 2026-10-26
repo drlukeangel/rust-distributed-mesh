@@ -280,8 +280,8 @@ pub const FORWARD_REPLIES: u32 = 14;
 pub const NODE_COMMAND: &str = "crates/rdm-core/src/node_command.rs";
 pub const NODE_COMMAND_WIRE: &str = "crates/rdm-core/tests/node_command_wire.rs";
 /// The frozen 0x22 counts.
-pub const NODE_COMMAND_REQUESTS: u32 = 3;
-pub const NODE_COMMAND_REPLIES: u32 = 17;
+pub const NODE_COMMAND_REQUESTS: u32 = 4;
+pub const NODE_COMMAND_REPLIES: u32 = 19;
 pub const STATUS_WIRE: &str = "crates/rdm-core/tests/status_wire.rs";
 pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
 /// The frozen transport-header goldens (node-rpc-envelope.md "Transport frames"): Request kind 0,
@@ -732,8 +732,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 NODE_COMMAND_WIRE,
                 &[
-                    "fn the_requests_match_the_frozen_three_variant_wire_schema",
-                    "fn replies_match_the_frozen_seventeen_variant_wire_schema",
+                    "fn the_requests_match_the_frozen_four_variant_wire_schema",
+                    "fn replies_match_the_frozen_nineteen_variant_wire_schema",
                     "NodeCommand::REQUEST_VARIANTS",
                     "NodeCommand::REPLY_VARIANTS",
                 ],

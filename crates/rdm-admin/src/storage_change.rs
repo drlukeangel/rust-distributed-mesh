@@ -97,10 +97,19 @@ pub async fn command(client: &rdm_transport::NodeRpcClient, node_id: &NodeId, co
     Err("the stream ended without its terminal frame".into())
 }
 
-/// A step's receipt: `step` of `operation`, with `output`.
-async fn receipt(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, operation: String, step: &str, output: Option<serde_json::Value>) -> Result<(), crate::executor::RunEnd> {
-    let r = crate::build_state::BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.into(), outcome: crate::build_state::StepOutcome::Complete, output, executor: None };
+/// The step of the switch operation whose `Failed` receipt names why a change failed before its switch.
+pub const COPY_STEP: &str = "Copy";
+
+/// A step's receipt: `step` of `operation`, ending `outcome`. A storage step commits no output: the Build
+/// fact's wire carries none for it (`wire.rs` `produces`).
+async fn receipt_of(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, operation: String, step: &str, outcome: crate::build_state::StepOutcome) -> Result<(), crate::executor::RunEnd> {
+    let r = crate::build_state::BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.into(), outcome, output: None, executor: None };
     builds.append_step_receipt(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation}: its {step} could not be recorded: {e}")))
+}
+
+/// A step's `Complete` receipt.
+async fn receipt(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, operation: String) -> Result<(), crate::executor::RunEnd> {
+    receipt_of(builds, build_id, attempt, operation, "Complete", crate::build_state::StepOutcome::Complete).await
 }
 
 /// What a read of the `commit` record found.
@@ -283,7 +292,7 @@ impl StorageChanges {
         }
         span.record("in_flight", in_flight as u64).record("outcome", "blocked");
         span.in_scope(|| tracing::info!("mesh.block: every command in flight completed; this mesh-primary replies blocked, gossips its mesh's aggregate and issues no new command until it is unblocked"));
-        receipt(builds, build_id, attempt, block_operation(&change.change_id, mesh), "Complete", Some(serde_json::json!({ "reply": "blocked" }))).await
+        receipt(builds, build_id, attempt, block_operation(&change.change_id, mesh)).await
     }
 
     /// Carry the move onto `provider` to the birth at `path` until it is done (answered by the birth the
@@ -327,7 +336,7 @@ impl StorageChanges {
         door.commands.unblock();
         span.record("moved", (paths.len() - left.len()) as u64).record("left", left.join("; ").as_str()).record("outcome", "unblocked");
         span.in_scope(|| tracing::info!("mesh.unblock: this mesh-primary moved its nodes, replies unblocked and issues commands again"));
-        receipt(builds, build_id, attempt, unblock_operation(&change.change_id, mesh), "Complete", Some(serde_json::json!({ "reply": "unblocked", "provider": provider }))).await
+        receipt(builds, build_id, attempt, unblock_operation(&change.change_id, mesh)).await
     }
 
     /// This admin moved onto `provider`, its own row recording it.
@@ -420,7 +429,7 @@ impl StorageChanges {
         if let Err(e) = fabric_row.await {
             return Err(crate::executor::RunEnd::Incomplete(format!("{key}: the Fabric row's line naming {} could not be written: {e}", change.to)));
         }
-        receipt(builds, build_id, attempt, key, "Complete", Some(serde_json::json!({ "switched": true }))).await
+        receipt(builds, build_id, attempt, key).await
     }
 
     /// A step failed before the switch: the change fails only once no `commit` is read for it (its
@@ -430,17 +439,27 @@ impl StorageChanges {
         if self.decide(build_id, change).await == change.to {
             return Err(crate::executor::RunEnd::Incomplete(format!("storage change {}: {why}; its commit record is found, so it is switched and resumes", change.change_id)));
         }
-        receipt(builds, build_id, attempt, switch_operation(&change.change_id), "Complete", Some(serde_json::json!({ "switched": false, "reason": why }))).await
+        let key = switch_operation(&change.change_id);
+        receipt_of(builds, build_id, attempt, key.clone(), COPY_STEP, crate::build_state::StepOutcome::Failed { reason: why, code: rdm_core::outcome::Code::FailedPrecondition }).await?;
+        receipt(builds, build_id, attempt, key).await
     }
 
     /// The Build's verdict (`storage.change:<change_id>`), the fabric-primary's once every mesh-primary
     /// replied `unblocked`: switched, the change is done; not switched, the Build fails naming why.
     pub async fn finish(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange) -> Result<(), crate::executor::RunEnd> {
         if self.decide(build_id, change).await == change.to {
-            return receipt(builds, build_id, attempt, operation(&change.change_id), "Complete", None).await;
+            return receipt(builds, build_id, attempt, operation(&change.change_id)).await;
         }
         let key = switch_operation(&change.change_id);
-        let why = builds.read_build(build_id).await.ok().and_then(|b| b.steps.iter().rev().find_map(|r| (r.operation == key).then(|| r.output.as_ref()?.get("reason")?.as_str().map(String::from)).flatten())).unwrap_or_else(|| "its switch did not happen".into());
+        let why = builds
+            .read_build(build_id)
+            .await
+            .ok()
+            .and_then(|b| b.steps.iter().rev().find_map(|r| match &r.outcome {
+                crate::build_state::StepOutcome::Failed { reason, .. } if r.operation == key && r.step == COPY_STEP => Some(reason.clone()),
+                _ => None,
+            }))
+            .unwrap_or_else(|| "its switch did not happen".into());
         Err(crate::executor::RunEnd::failed(format!("storage change {} to {} failed before its switch ({why}); no commit record exists, and every mesh-primary was sent mesh.unblock on {}", change.change_id, change.to, change.from)))
     }
 
