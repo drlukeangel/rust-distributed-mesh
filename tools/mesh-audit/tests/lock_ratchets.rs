@@ -463,8 +463,11 @@ fn build_wire_refuses_a_moved_position_or_a_lost_golden() {
 #[test]
 fn store_layout_wire_refuses_a_moved_format_a_moved_key_or_a_lost_golden() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-admin/src/fabric_storage.rs", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/2\";");
+    t.edit("crates/rdm-node/src/store_root.rs", "pub const LAYOUT_VALUE: &str = \"r-sr1\";", "pub const LAYOUT_VALUE: &str = \"r-sr2\";");
     only(check(t.root()), Ratchet::StoreLayoutWireIsAtomic);
+    let l = Planted::of_tree();
+    l.edit("crates/rdm-node/src/store_log/tests.rs", "fn a_line_states_its_own_length_first_and_its_checksum_last", "fn changed_line_cell");
+    only(check(l.root()), Ratchet::StoreLayoutWireIsAtomic);
     let k = Planted::of_tree();
     k.edit("crates/rdm-admin/src/build_state.rs", "BuildFact::Accepted(_) => \"accepted\".to_string(),", "BuildFact::Accepted(_) => \"acceptance\".to_string(),");
     only(check(k.root()), Ratchet::StoreLayoutWireIsAtomic);

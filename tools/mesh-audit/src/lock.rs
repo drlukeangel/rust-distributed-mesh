@@ -670,10 +670,11 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, "crates/rdm-core/tests/build_wire.rs", &["fn failure_codes_are_appended_and_retained_by_the_build_wire", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
         Ratchet::StoreLayoutWireIsAtomic => {
-            // The store root's layout (Q28 A; build.md §5.3): the Build record's format and keys, one
-            // record per fact at its own key and the in-flight row, frozen byte for byte by one cell, and
-            // the retired seat-move format kept for its decoding; a layout that moves moves them together
-            // (`durable format moved`).
+            // The store root's layout (Q28 A; build.md §5.3; R-SR1 to R-SR5): the layout marker, the
+            // store file's line (its len first, its crc32 last, frozen byte for byte by one cell), the
+            // Build record's format and keys, one line per fact at its own key, and the in-flight lock,
+            // frozen byte for byte by one cell; a layout that moves moves them together (`durable format
+            // moved`).
             require(
                 root,
                 "crates/rdm-admin/src/build_state.rs",
@@ -687,8 +688,10 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 ratchet,
                 &mut out,
             );
-            require(root, "crates/rdm-admin/src/fabric_storage.rs", &["pub const SEAT_MOVES_DIR: &str = \"seat-moves\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "fn an_older_store_roots_move_rows_still_decode_and_it_opens"], ratchet, &mut out);
-            require(root, "crates/rdm-admin/src/storage.rs", &["const IN_FLIGHT_FORMAT: &str = \"mesh-in-flight/2\";", "const IN_FLIGHT: &str = \"in-flight\";"], ratchet, &mut out);
+            require(root, "crates/rdm-node/src/store_root.rs", &["pub const LAYOUT_VALUE: &str = \"r-sr1\";"], ratchet, &mut out);
+            require(root, "crates/rdm-node/src/store_log.rs", &["const CRC_SUFFIX: usize = 20;"], ratchet, &mut out);
+            require(root, "crates/rdm-node/src/store_log/tests.rs", &["fn a_line_states_its_own_length_first_and_its_checksum_last"], ratchet, &mut out);
+            require(root, "crates/rdm-admin/src/storage.rs", &["const IN_FLIGHT_FORMAT: &str = \"mesh-in-flight/2\";"], ratchet, &mut out);
         }
         Ratchet::PrimaryUpdateWireIsAtomic => {
             require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 2;", "const REPLY_VARIANTS: u32 = 13;", "code: crate::outcome::Code"], ratchet, &mut out);

@@ -746,7 +746,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     let held = door.wait_held("cut").await;
     assert_eq!(s(&held["hit"]["build_id"]), build_id.as_str(), "{held}");
     // The claim landed before the executor was lost: mesh2's row is on the store root.
-    let name_claim: Value = serde_json::from_slice(&std::fs::read(root.join("mesh-names/mesh2.json")).expect("the fabric-primary's claim of mesh2 wrote its name claim to the store root")).unwrap();
+    let name_claim: Value = serde_json::from_slice(&std::fs::read(root.join("locks/name/mesh2")).expect("the fabric-primary's claim of mesh2 wrote its name claim to the store root")).unwrap();
     let row: Value = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::MESHES_FILE), "mesh-record", Some(&s(&name_claim["record"]["mesh_id"]))).expect("the fabric-primary's claim of mesh2 wrote its record to the store root");
     let claimed = s(&row["record"]["mesh_id"]);
     assert!(!claimed.is_empty() && row["record"]["name"] == "mesh2", "{row}");

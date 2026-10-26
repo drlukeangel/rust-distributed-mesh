@@ -3741,7 +3741,8 @@ mod tests {
     /// CONTRACT (Q28 A: "a mesh-audit ratchet for the store layout"; R-SR1, R-SR3): the store root's
     /// layout, byte for byte: a Build record is one line of `builds.jsonl` at `<build_id>/<key>`
     /// (`build-record/1`, build.md §5.3), its object exactly the protocol's (`len`, `op`, `format`,
-    /// `key`, the record nested, `crc32`); and a mesh's in-flight row (`mesh-in-flight/2`). A layout
+    /// `key`, the record nested, `crc32`); and a mesh's in-flight lock (`mesh-in-flight/2`, naming the
+    /// birth that took it, R-SR5). A layout
     /// that moves moves this cell with it (`durable format moved`).
     #[tokio::test]
     async fn the_store_layout_is_frozen_byte_for_byte() {
@@ -3761,7 +3762,10 @@ mod tests {
         let claims = crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
         let row = crate::mesh_claims::InFlight { build_id: BuildId::parse(&b1).unwrap(), lane: None, attempt: 1, claimant: "mesh1.admin.1".into(), claimant_node: None };
         assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), crate::mesh_claims::Taken::Won);
-        assert_eq!(read("meshes/mesh2/claims/in-flight.json"), format!(r#"{{"format":"mesh-in-flight/2","record":{{"build_id":"{b1}","attempt":1,"claimant":"mesh1.admin.1"}}}}"#));
+        let lock = read("locks/in-flight/mesh2");
+        let by: serde_json::Value = serde_json::from_str::<serde_json::Value>(&lock).unwrap()["by"].clone();
+        assert_eq!(lock, format!(r#"{{"format":"mesh-in-flight/2","record":{{"build_id":"{b1}","attempt":1,"claimant":"mesh1.admin.1"}},"by":{by}}}"#));
+        assert!(by.as_array().is_some_and(|b| b.len() == 2), "the lock names the birth that took it: {by}");
     }
 
     /// CONTRACT (R-SR3): a line of `builds.jsonl` that is not a Build record refuses the journal's read

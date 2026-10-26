@@ -268,13 +268,8 @@ const MESH_KIND: &str = "mesh-record";
 const MESH_NAME_FORMAT: &str = "mesh-name/1";
 
 #[cfg(feature = "file-backend")]
-/// The format of a mesh's in-flight row. A row in the retired `mesh-in-flight/1` (no lane key) is
-/// refused by name.
+/// The format of a mesh's in-flight lock's claim.
 const IN_FLIGHT_FORMAT: &str = "mesh-in-flight/2";
-
-#[cfg(feature = "file-backend")]
-/// The key of a mesh's in-flight row under `meshes/<mesh>/claims/`.
-const IN_FLIGHT: &str = "in-flight";
 
 #[cfg(feature = "file-backend")]
 /// A mesh name's claim: the mesh that holds it.
@@ -285,17 +280,173 @@ struct MeshNameClaim {
 }
 
 #[cfg(feature = "file-backend")]
+/// A lock's content (R-SR5): the claim, in its format, and the birth that took it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LockClaim<T> {
+    format: String,
+    record: T,
+    /// The birth that took the lock: its node id and incarnation.
+    by: (String, String),
+}
+
+#[cfg(feature = "file-backend")]
+/// `claim` as the content of a lock taken by `by`.
+fn lock_content<T: Serialize>(format: &str, claim: &T, by: &crate::store_log::LogWriter) -> Vec<u8> {
+    serde_json::to_vec(&LockClaim { format: format.to_string(), record: claim, by: (by.node_id.to_string(), by.incarnation_id.to_string()) }).expect("a lock's claim encodes")
+}
+
+#[cfg(feature = "file-backend")]
+/// The claim a lock's content holds, refused by name when it is not a `format` claim.
+fn lock_claim<T: serde::de::DeserializeOwned>(file: &Path, bytes: &[u8], format: &str) -> Result<T, StorageError> {
+    let held: LockClaim<T> = serde_json::from_slice(bytes).map_err(|e| StorageError::Unrecognised { file: file.display().to_string(), reason: e.to_string() })?;
+    if held.format != format {
+        return Err(StorageError::Unrecognised { file: file.display().to_string(), reason: format!("a lock in format {:?}, this build reads {format:?} here", held.format) });
+    }
+    Ok(held.record)
+}
+
+#[cfg(feature = "file-backend")]
+/// A mesh name's lock as this process holds it before the fabric's first state-commit.
+#[derive(Debug, Clone)]
+enum HeldName {
+    /// Taken for the claim.
+    Take(MeshNameClaim),
+    /// Released while it named this mesh.
+    Release(MeshId),
+}
+
+#[cfg(feature = "file-backend")]
+/// The mesh name locks under `locks/name/`, held by this process before the fabric's first
+/// state-commit (states.md, Setting a state) and taken at the publication, each decided again
+/// against the lock then standing, as the held insert of a name claim always was.
+struct MeshNames {
+    locks: crate::store_log::StoreLocks,
+    by: crate::store_log::LogWriter,
+    /// `Some` while this process holds the name locks it takes: until its scratchpad is published.
+    held: tokio::sync::Mutex<Option<BTreeMap<String, HeldName>>>,
+}
+
+#[cfg(feature = "file-backend")]
+impl MeshNames {
+    fn path(&self, name: &str) -> std::path::PathBuf {
+        self.locks.path(crate::store_log::LockKind::Name, name)
+    }
+
+    async fn read(&self, name: &str) -> Result<Option<MeshNameClaim>, StorageError> {
+        if let Some(held) = self.held.lock().await.as_ref().and_then(|h| h.get(name).cloned()) {
+            return Ok(match held {
+                HeldName::Take(c) => Some(c),
+                HeldName::Release(_) => None,
+            });
+        }
+        self.disk(name).await
+    }
+
+    async fn disk(&self, name: &str) -> Result<Option<MeshNameClaim>, StorageError> {
+        match self.locks.read(crate::store_log::LockKind::Name, name).await? {
+            Some(bytes) => lock_claim(&self.path(name), &bytes, MESH_NAME_FORMAT).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    async fn take(&self, claim: &MeshNameClaim) -> Result<Result<(), MeshId>, StorageError> {
+        let mut held = self.held.lock().await;
+        if let Some(h) = held.as_mut() {
+            let standing = match h.get(&claim.name) {
+                Some(HeldName::Take(c)) => Some(c.clone()),
+                Some(HeldName::Release(_)) => None,
+                None => self.disk(&claim.name).await?,
+            };
+            return Ok(match standing {
+                Some(c) if c.mesh_id == claim.mesh_id => Ok(()),
+                Some(c) => Err(c.mesh_id),
+                None => {
+                    h.insert(claim.name.clone(), HeldName::Take(claim.clone()));
+                    Ok(())
+                }
+            });
+        }
+        drop(held);
+        match self.locks.take(crate::store_log::LockKind::Name, &claim.name, &lock_content(MESH_NAME_FORMAT, claim, &self.by)).await? {
+            crate::store_log::LockTaken::Won => Ok(Ok(())),
+            crate::store_log::LockTaken::Held(bytes) => {
+                let standing: MeshNameClaim = lock_claim(&self.path(&claim.name), &bytes, MESH_NAME_FORMAT)?;
+                Ok(if standing.mesh_id == claim.mesh_id { Ok(()) } else { Err(standing.mesh_id) })
+            }
+        }
+    }
+
+    async fn release(&self, name: &str, mesh_id: &MeshId) -> Result<(), StorageError> {
+        let mut held = self.held.lock().await;
+        if let Some(h) = held.as_mut() {
+            let standing = match h.get(name) {
+                Some(HeldName::Take(c)) => Some(c.clone()),
+                Some(HeldName::Release(_)) => None,
+                None => self.disk(name).await?,
+            };
+            if standing.is_some_and(|c| c.mesh_id == *mesh_id) {
+                h.insert(name.to_string(), HeldName::Release(mesh_id.clone()));
+            }
+            return Ok(());
+        }
+        drop(held);
+        let (file, mesh_id) = (self.path(name), mesh_id.clone());
+        self.locks.release(crate::store_log::LockKind::Name, name, move |b| lock_claim::<MeshNameClaim>(&file, b, MESH_NAME_FORMAT).is_ok_and(|c| c.mesh_id == mesh_id)).await.map(|_| ())
+    }
+}
+
+#[cfg(feature = "file-backend")]
+#[async_trait]
+impl crate::record_store::HeldStore for MeshNames {
+    /// Take or release each name lock held, decided again against the lock then standing: a take
+    /// meeting the same mesh's lock stands, another mesh's is refused, naming it.
+    async fn publish(&self) -> Result<crate::record_store::StorePublished, StorageError> {
+        let mut held = self.held.lock().await;
+        let mut done = crate::record_store::StorePublished { store: "locks".into(), ..Default::default() };
+        let Some(h) = held.take() else { return Ok(done) };
+        let mut left = h.clone();
+        for (name, op) in h {
+            match op {
+                HeldName::Take(claim) => match self.locks.take(crate::store_log::LockKind::Name, &name, &lock_content(MESH_NAME_FORMAT, &claim, &self.by)).await {
+                    Ok(crate::store_log::LockTaken::Won) => done.written += 1,
+                    Ok(crate::store_log::LockTaken::Held(bytes)) => match lock_claim::<MeshNameClaim>(&self.path(&name), &bytes, MESH_NAME_FORMAT) {
+                        Ok(c) if c.mesh_id == claim.mesh_id => done.stands += 1,
+                        Ok(c) => done.refused.push(format!("{name}: held by mesh {}", c.mesh_id)),
+                        Err(e) => {
+                            *held = Some(left);
+                            return Err(e);
+                        }
+                    },
+                    Err(e) => {
+                        *held = Some(left);
+                        return Err(e);
+                    }
+                },
+                HeldName::Release(mesh_id) => {
+                    let file = self.path(&name);
+                    if let Err(e) = self.locks.release(crate::store_log::LockKind::Name, &name, move |b| lock_claim::<MeshNameClaim>(&file, b, MESH_NAME_FORMAT).is_ok_and(|c| c.mesh_id == mesh_id)).await {
+                        *held = Some(left);
+                        return Err(e);
+                    }
+                    done.written += 1;
+                }
+            }
+            left.remove(&name);
+        }
+        Ok(done)
+    }
+}
+
+#[cfg(feature = "file-backend")]
 /// Each write of a Mesh record, whole, one line of the root's `meshes.jsonl` at its mesh id (R-SR1,
-/// R-SR2), the latest line the record; `mesh-names/<name>.json`, each live mesh's name claim; and
-/// `meshes/<mesh>/claims/in-flight.json`, each mesh's in-flight row ([`crate::mesh_claims`]).
+/// R-SR2), the latest line the record; each live mesh's name claim, the lock `locks/name/<name>`; and
+/// each mesh name's attempt in flight, the lock `locks/in-flight/<mesh name>` ([`crate::mesh_claims`];
+/// R-SR5).
 pub struct FileMeshStorage {
     records: crate::store_log::StoreLog,
-    names: FileRecords,
-    root: crate::store_root::StoreRoot,
+    names: std::sync::Arc<MeshNames>,
+    locks: crate::store_log::StoreLocks,
     log_writer: crate::store_log::LogWriter,
-    writer: IncarnationId,
-    /// `meshes/<mesh>/claims/`, one store per mesh, opened on its first use.
-    in_flight: tokio::sync::Mutex<BTreeMap<String, FileRecords>>,
 }
 
 #[cfg(feature = "file-backend")]
@@ -307,36 +458,28 @@ impl std::fmt::Debug for FileMeshStorage {
 
 #[cfg(feature = "file-backend")]
 impl FileMeshStorage {
-    /// Open the store under the fabric's store root, written by `writer`.
+    /// Open the store under the fabric's store root, written by `writer`: its name locks held in the
+    /// root's scratchpad until it is published, its in-flight locks taken at once (an attempt claim is
+    /// a Build fact, durable when it is taken, before the fabric's first state-commit too: Q61,
+    /// build.md §5.2).
     pub async fn open(root: &crate::store_root::StoreRoot, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
-        Ok(Self {
-            records: root.log(crate::store_root::MESHES_FILE, crate::store_log::Formats::new().with::<MeshRecord>(MESH_FORMAT)).await?,
-            names: root.records(root.dir(), "mesh-names", &writer.incarnation_id).await?,
-            root: root.clone(),
-            log_writer: writer.clone(),
-            writer: writer.incarnation_id.clone(),
-            in_flight: tokio::sync::Mutex::new(BTreeMap::new()),
-        })
-    }
-
-    /// `mesh`'s claims store. An attempt claim is a Build fact, durable on the root when it is
-    /// taken, before the fabric's first state-commit too (Q61, build.md §5.2): opened directly, never
-    /// held in the scratchpad.
-    async fn claims_of(&self, mesh: &str) -> Result<FileRecords, StorageError> {
-        let mut stores = self.in_flight.lock().await;
-        if let Some(s) = stores.get(mesh) {
-            return Ok(s.clone());
+        let locks = crate::store_log::StoreLocks::at(root.dir(), writer);
+        let names = std::sync::Arc::new(MeshNames { locks: locks.clone(), by: writer.clone(), held: tokio::sync::Mutex::new(Some(BTreeMap::new())) });
+        if !root.scratchpad().is_some_and(|s| s.enrol(names.clone())) {
+            *names.held.lock().await = None;
         }
-        let s = FileRecords::open(&self.root.meshes(mesh), "claims", &self.writer).await?;
-        stores.insert(mesh.to_string(), s.clone());
-        Ok(s)
+        Ok(Self { records: root.log(crate::store_root::MESHES_FILE, crate::store_log::Formats::new().with::<MeshRecord>(MESH_FORMAT)).await?, names, locks, log_writer: writer.clone() })
     }
 
     /// Finishes every write of the Mesh records and name claims this store has issued
     /// (node-primary-update.md step 3).
     pub async fn finish_issued_writes(&self) {
         self.records.finish_issued_writes().await;
-        self.names.finish_issued_writes().await;
+        drop(self.names.held.lock().await);
+    }
+
+    fn in_flight_path(&self, mesh: &str) -> std::path::PathBuf {
+        self.locks.path(crate::store_log::LockKind::InFlight, mesh)
     }
 }
 
@@ -347,7 +490,7 @@ impl MeshStorage for FileMeshStorage {
         self.records.latest(MESH_KIND, mesh_id.as_str()).await?.map(|l| l.decode(self.records.path())).transpose()
     }
     async fn mesh_named(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
-        let Some(claim) = self.names.read::<MeshNameClaim>(name, MESH_NAME_FORMAT).await? else { return Ok(None) };
+        let Some(claim) = self.names.read(name).await? else { return Ok(None) };
         self.mesh(&claim.mesh_id).await
     }
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
@@ -357,49 +500,29 @@ impl MeshStorage for FileMeshStorage {
         self.records.latest_of(MESH_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect()
     }
     async fn claim_mesh_name(&self, name: &str, mesh_id: &MeshId) -> Result<Result<(), MeshId>, StorageError> {
-        if self.names.insert(name, MESH_NAME_FORMAT, &MeshNameClaim { name: name.to_string(), mesh_id: mesh_id.clone() }).await? {
-            return Ok(Ok(()));
-        }
-        match self.names.read::<MeshNameClaim>(name, MESH_NAME_FORMAT).await? {
-            Some(held) if held.mesh_id == *mesh_id => Ok(Ok(())),
-            Some(held) => Ok(Err(held.mesh_id)),
-            None => Err(StorageError::Io {
-                file: format!("{}/{name}.json", self.names.store_name()),
-                reason: format!("the claim of the mesh name {name} was held at the insert for mesh {mesh_id} and gone at the read after it: its holder released it between the two; nothing is claimed, and the next claim decides on the free name"),
-            }),
-        }
+        self.names.take(&MeshNameClaim { name: name.to_string(), mesh_id: mesh_id.clone() }).await
     }
     async fn release_mesh_name(&self, name: &str, mesh_id: &MeshId) -> Result<(), StorageError> {
-        if !self.names.read::<MeshNameClaim>(name, MESH_NAME_FORMAT).await?.is_some_and(|held| held.mesh_id == *mesh_id) {
-            return Ok(());
-        }
-        let mesh_id = mesh_id.clone();
-        self.names.remove_released::<MeshNameClaim>(name, MESH_NAME_FORMAT, move |held| held.mesh_id == mesh_id).await
+        self.names.release(name, mesh_id).await
     }
     async fn take_in_flight(&self, mesh: &str, claim: &InFlight) -> Result<Taken, StorageError> {
-        let store = self.claims_of(mesh).await?;
-        if store.insert(IN_FLIGHT, IN_FLIGHT_FORMAT, claim).await? {
-            return Ok(Taken::Won);
-        }
-        match store.read::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT).await? {
-            Some(held) if held.same_claim(claim) => Ok(Taken::Won),
-            Some(held) => Ok(Taken::Held(held)),
-            None => Err(StorageError::Io {
-                file: format!("{}/{IN_FLIGHT}.json", store.store_name()),
-                reason: format!("mesh {mesh}'s in-flight row was live at the insert for attempt {} of {} and gone at the read after it: its holder's verdict released it between the two; nothing is claimed, and the next claim decides on the free row", claim.attempt, claim.build_id),
-            }),
+        match self.locks.take(crate::store_log::LockKind::InFlight, mesh, &lock_content(IN_FLIGHT_FORMAT, claim, &self.log_writer)).await? {
+            crate::store_log::LockTaken::Won => Ok(Taken::Won),
+            crate::store_log::LockTaken::Held(bytes) => {
+                let held: InFlight = lock_claim(&self.in_flight_path(mesh), &bytes, IN_FLIGHT_FORMAT)?;
+                Ok(if held.same_claim(claim) { Taken::Won } else { Taken::Held(held) })
+            }
         }
     }
     async fn release_in_flight(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError> {
-        let store = self.claims_of(mesh).await?;
-        if !store.read::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT).await?.is_some_and(|held| held.same_attempt(attempt)) {
-            return Ok(());
-        }
-        let attempt = attempt.clone();
-        store.remove_released::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT, move |held| held.same_attempt(&attempt)).await
+        let (file, attempt) = (self.in_flight_path(mesh), attempt.clone());
+        self.locks.release(crate::store_log::LockKind::InFlight, mesh, move |b| lock_claim::<InFlight>(&file, b, IN_FLIGHT_FORMAT).is_ok_and(|held| held.same_attempt(&attempt))).await.map(|_| ())
     }
     async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError> {
-        self.claims_of(mesh).await?.read(IN_FLIGHT, IN_FLIGHT_FORMAT).await
+        match self.locks.read(crate::store_log::LockKind::InFlight, mesh).await? {
+            Some(bytes) => lock_claim(&self.in_flight_path(mesh), &bytes, IN_FLIGHT_FORMAT).map(Some),
+            None => Ok(None),
+        }
     }
 }
 
@@ -1085,27 +1208,26 @@ type PathIndex = std::sync::Arc<Mutex<BTreeMap<String, NodeId>>>;
 /// state-commit too: a record at its node id, written by its mesh's writer, durable before the answer
 /// (Q54); a runtime row at `<node id>--<incarnation>`, written once by its birth's launching admin, the
 /// durable map a successor proves exits from, as durable as when it stood in the launcher's data dir;
-/// and a tag change at `<node id>/<label>`. The `path.name` index and the tags index are the fold. The name claims stand
-/// under `nodes/<mesh>/names/` of the root, one file per claim. The admin's own row stays its own seed
-/// in its data dir, `nodes/self.json` ([`Self::own_in`]).
+/// and a tag change at `<node id>/<label>`. The `path.name` index and the tags index are the fold. Each name claim is the
+/// lock `locks/name/<path.name>` of the root (R-SR5). The admin's own row stays its own seed in its
+/// data dir, `nodes/self.json` ([`Self::own_in`]).
 #[derive(Debug)]
 pub struct FileNodesStorage {
     /// The records, the runtime rows and the tags index's changes.
     records: crate::store_log::StoreLog,
     paths: PathIndex,
-    root: crate::store_root::StoreRoot,
     log_writer: crate::store_log::LogWriter,
-    /// Each mesh's name claims, `nodes/<mesh>/names/`, opened on first use.
-    names: Mutex<BTreeMap<String, FileRecords>>,
+    /// The name claims: `locks/name/<path.name>`.
+    locks: crate::store_log::StoreLocks,
 }
 
 #[cfg(feature = "file-backend")]
 impl FileNodesStorage {
     /// Open the store on the fabric's store `root`, written by `writer`. `own_data_dir` and `own_mesh`
-    /// are this admin's: its own row is read from the one ([`Self::own_in`]), and the name claims of
-    /// the other are opened first.
+    /// are this admin's (its own row is read from the one, [`Self::own_in`]); the store is the
+    /// fabric's, every mesh's nodes in one file.
     pub async fn open(own_data_dir: &Path, root: &crate::store_root::StoreRoot, own_mesh: &str, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
-        let _ = own_data_dir;
+        let _ = (own_data_dir, own_mesh);
         let paths: PathIndex = Default::default();
         let index = paths.clone();
         let observe: crate::store_log::Observer = std::sync::Arc::new(move |l: &crate::store_log::Line| {
@@ -1117,9 +1239,7 @@ impl FileNodesStorage {
         });
         let formats = || crate::store_log::Formats::new().with::<NodeRow>(RECORD_FORMAT).with::<RuntimeRow>(RUNTIME_FORMAT).with::<TagRow>(TAG_FORMAT);
         let records = crate::store_log::StoreLog::open_observed(&root.dir().join(crate::store_root::NODES_FILE), formats(), observe).await?;
-        let this = Self { records, paths, root: root.clone(), log_writer: writer.clone(), names: Mutex::new(BTreeMap::new()) };
-        this.names_of(own_mesh).await?;
-        Ok(this)
+        Ok(Self { records, paths, log_writer: writer.clone(), locks: crate::store_log::StoreLocks::at(root.dir(), writer) })
     }
 
     /// The admin's own row in `own_data_dir`, read before the store opens: a restarting admin's row
@@ -1134,23 +1254,14 @@ impl FileNodesStorage {
         FileRecords::open(own_data_dir, "nodes", writer).await?.write("self", NODE_FORMAT, record).await
     }
 
-    /// Finishes every write of the node records, the runtime rows, the tags index and the name claims
-    /// this store has issued (node-primary-update.md step 3).
+    /// Finishes every write of the node records, the runtime rows and the tags index this store has
+    /// issued (node-primary-update.md step 3); a name lock is taken or removed before its call answers.
     pub async fn finish_issued_writes(&self) {
         self.records.finish_issued_writes().await;
-        let names: Vec<FileRecords> = self.names.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
-        for n in names {
-            n.finish_issued_writes().await;
-        }
     }
 
-    /// `mesh`'s name claims, opened on first use, straight to the disk.
-    async fn names_of(&self, mesh: &str) -> Result<FileRecords, StorageError> {
-        if let Some(n) = self.names.lock().unwrap_or_else(|e| e.into_inner()).get(mesh) {
-            return Ok(n.clone());
-        }
-        let opened = FileRecords::open(&self.root.dir().join("nodes").join(mesh), "names", &self.log_writer.incarnation_id).await?;
-        Ok(self.names.lock().unwrap_or_else(|e| e.into_inner()).entry(mesh.to_string()).or_insert(opened).clone())
+    fn name_lock(&self, name: &PathName) -> std::path::PathBuf {
+        self.locks.path(crate::store_log::LockKind::Name, &name.to_string())
     }
 
     /// The latest record line of `node_id`, after reading the file's tail.
@@ -1222,31 +1333,27 @@ impl NodesStorage for FileNodesStorage {
         Ok(out)
     }
     async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError> {
-        Ok(self.names_of(&name.mesh).await?.read::<NameEntry>(&name.to_string(), NAME_CLAIM_FORMAT).await?.map(|e| e.node_id))
+        match self.locks.read(crate::store_log::LockKind::Name, &name.to_string()).await? {
+            Some(bytes) => Ok(Some(lock_claim::<NameEntry>(&self.name_lock(name), &bytes, NAME_CLAIM_FORMAT)?.node_id)),
+            None => Ok(None),
+        }
     }
+    /// The claim is the lock `locks/name/<name>`, taken create-exclusive (R-SR5): a lock this node
+    /// holds answers `Ok`, another node's `NameHeld` naming it.
     async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> {
-        let names = self.names_of(&name.mesh).await?;
-        let key = name.to_string();
-        if names.insert(&key, NAME_CLAIM_FORMAT, &NameEntry { name: name.clone(), node_id: node_id.clone() }).await? {
-            return Ok(Ok(()));
-        }
-        match names.read::<NameEntry>(&key, NAME_CLAIM_FORMAT).await? {
-            Some(held) if held.node_id == *node_id => Ok(Ok(())),
-            Some(held) => Ok(Err(NameHeld { name: name.clone(), by: held.node_id })),
-            None => Err(StorageError::Io {
-                file: format!("{}/{key}.json", names.store_name()),
-                reason: format!("the claim of {name} was held at the insert for {node_id} and gone at the read after it: its holder released it between the two; nothing is claimed, and the next claim decides on the free name"),
-            }),
+        let claim = NameEntry { name: name.clone(), node_id: node_id.clone() };
+        match self.locks.take(crate::store_log::LockKind::Name, &name.to_string(), &lock_content(NAME_CLAIM_FORMAT, &claim, &self.log_writer)).await? {
+            crate::store_log::LockTaken::Won => Ok(Ok(())),
+            crate::store_log::LockTaken::Held(bytes) => {
+                let held: NameEntry = lock_claim(&self.name_lock(name), &bytes, NAME_CLAIM_FORMAT)?;
+                Ok(if held.node_id == *node_id { Ok(()) } else { Err(NameHeld { name: name.clone(), by: held.node_id }) })
+            }
         }
     }
+    /// The lock goes under the name's reclamation mutex, only while it still names `node_id` (R-SR5).
     async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError> {
-        let names = self.names_of(&name.mesh).await?;
-        let key = name.to_string();
-        if !names.read::<NameEntry>(&key, NAME_CLAIM_FORMAT).await?.is_some_and(|held| held.node_id == *node_id) {
-            return Ok(());
-        }
-        let node_id = node_id.clone();
-        names.remove_released::<NameEntry>(&key, NAME_CLAIM_FORMAT, move |held| held.node_id == node_id).await
+        let (file, node_id) = (self.name_lock(name), node_id.clone());
+        self.locks.release(crate::store_log::LockKind::Name, &name.to_string(), move |b| lock_claim::<NameEntry>(&file, b, NAME_CLAIM_FORMAT).is_ok_and(|held| held.node_id == node_id)).await.map(|_| ())
     }
 }
 
@@ -1694,6 +1801,84 @@ mod tests {
         assert!(n1.node_at(&"mesh2.rpc.1".parse().unwrap()).await.unwrap().is_some(), "mesh1's primary reads mesh2's record from the shared root");
         assert!(n2.node_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap().is_some(), "mesh2's primary reads mesh1's record from the shared root");
         assert_eq!(live_records(&m1, &n1, "mesh1").await.unwrap().len(), 6, "a restart reads every mesh's records");
+    }
+
+    /// CONTRACT (R-SR5: "one winner stays one winner"; the claim is the lock `locks/name/<name>`): two
+    /// processes claim one path.name at once: one takes the lock, the other is refused `NameHeld`
+    /// naming it. The crash boundaries of a name: a lock taken by a birth that died before any record
+    /// line is adopted by the claim resuming its attempt (the same node) and refused to any other
+    /// claimant; a holder whose record line is Deleted and whose release never ran leaves a lock the
+    /// next claimant takes over; a lock naming a live claimant is never removed by another. Must NOT
+    /// happen: two winners, a live claimant's lock removed, or a released holder's lock blocking the
+    /// name for ever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_name_lock_has_one_winner_and_its_crash_boundaries_resolve_by_the_claimants_record() {
+        let d = crate::test_support::tempdir("name-locks");
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let open = || async { FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap() };
+        let (a, b) = (open().await, open().await);
+        let name: PathName = "mesh1.rpc.4".parse().unwrap();
+        let (x, y) = (NodeId::mint(), NodeId::mint());
+        let (ra, rb) = tokio::join!(a.claim_node_name(&name, &x), b.claim_node_name(&name, &y));
+        let (ra, rb) = (ra.unwrap(), rb.unwrap());
+        assert!(ra.is_ok() != rb.is_ok(), "one winner: {ra:?} {rb:?}");
+        let (winner, loser, loser_store) = if ra.is_ok() { (x.clone(), y.clone(), &b) } else { (y.clone(), x.clone(), &a) };
+        assert_eq!(loser_store.claim_node_name(&name, &loser).await.unwrap(), Err(NameHeld { name: name.clone(), by: winner.clone() }), "the other is refused, naming the winner");
+        assert!(root.lock(&name.to_string()).is_file(), "the claim is the lock locks/name/{name}");
+        // The winner's birth died before any record line: its resumed claim adopts the lock; any other
+        // claimant is refused, and the lock stands.
+        assert_eq!(a.claim_node_name(&name, &winner).await.unwrap(), Ok(()), "the resumed claim of the same node adopts its lock");
+        assert_eq!(crate::node_rows::take_name(&b, &name, &loser).await.unwrap(), Err(NameHeld { name: name.clone(), by: winner.clone() }), "another claimant waits: no record says the name was released");
+        // A live claimant's lock is never removed by another.
+        a.put_node(&NodeRow::new(name.clone(), winner.clone(), crate::model::NodeStatus::Pending)).await.unwrap();
+        assert_eq!(crate::node_rows::take_name(&b, &name, &loser).await.unwrap(), Err(NameHeld { name: name.clone(), by: winner.clone() }), "a live claimant's lock stands");
+        b.release_node_name(&name, &loser).await.unwrap();
+        assert_eq!(a.name_claim(&name).await.unwrap(), Some(winner.clone()), "a release naming another claimant removes nothing");
+        // The winner's record is Deleted and its release never ran: the next claimant takes the name.
+        a.put_node(&NodeRow::new(name.clone(), winner.clone(), crate::model::NodeStatus::Deleted)).await.unwrap();
+        assert_eq!(crate::node_rows::take_name(&b, &name, &loser).await.unwrap(), Ok(()), "the claim over a Deleted holder's lock wins");
+        assert_eq!(a.name_claim(&name).await.unwrap(), Some(loser.clone()));
+        a.release_node_name(&name, &winner).await.unwrap();
+        assert_eq!(a.name_claim(&name).await.unwrap(), Some(loser), "the old holder's delayed release finds another claimant's lock and leaves it");
+    }
+
+    /// CONTRACT (R-ML2 item 4 as amended: "the recreated mesh shares the name locks under locks/name/ and
+    /// the in-flight lock under its name, not a directory"; §5.4): mesh2 created again under its name, a
+    /// new mesh with a new id, takes the mesh name's lock over the Dead mesh's, its node-admin's
+    /// path.name over the Deleted record there, and its records carry the new MeshId; a delayed release
+    /// of an attempt on the old mesh against the name's in-flight lock finds it naming the recreated
+    /// mesh's attempt and releases nothing. Must NOT happen: the recreated mesh refused its name, or the
+    /// old attempt's release freeing the new attempt's lock.
+    #[tokio::test]
+    async fn a_recreated_mesh_takes_its_names_over_the_dead_ones_and_an_old_attempts_release_frees_nothing() {
+        use crate::node_rows::RecordAt as _;
+        let d = crate::test_support::tempdir("recreated-mesh");
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let w = crate::store_log::LogWriter::mint();
+        let (meshes, nodes) = (FileMeshStorage::open(&root, &w).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap());
+        let admin: PathName = "mesh2.admin.1".parse().unwrap();
+        let old = MeshRecord::new(MeshId::mint(), "mesh2");
+        claim_mesh(&meshes, None, &old).await.unwrap().expect("the first mesh2 claims its name");
+        let first = NodeRow { mesh_id: Some(old.mesh_id.clone()), ..NodeRow::new(admin.clone(), NodeId::mint(), crate::model::NodeStatus::Pending) };
+        assert_eq!(crate::node_rows::write_record(&nodes, &first).await.unwrap(), Ok(()));
+        let build = crate::build::BuildId::mint();
+        let old_attempt = InFlight { build_id: build.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into(), claimant_node: None };
+        assert_eq!(meshes.take_in_flight("mesh2", &old_attempt).await.unwrap(), Taken::Won);
+        // mesh2 is removed: its node Deleted, its record Dead, its attempt's verdict released.
+        nodes.put_node(&NodeRow { status: crate::model::NodeStatus::Deleted, ..first.clone() }).await.unwrap();
+        claim_mesh(&meshes, Some(&old), &MeshRecord { dead: true, ..old.clone() }).await.unwrap().expect("the Dead record is written");
+        meshes.release_in_flight("mesh2", &old_attempt).await.unwrap();
+        // mesh2 created again.
+        let new = MeshRecord::new(MeshId::mint(), "mesh2");
+        assert!(matches!(claim_mesh(&meshes, None, &new).await.unwrap(), Ok(MeshClaim::Written { .. })), "the recreated mesh takes its name over the Dead mesh's");
+        assert_eq!(meshes.mesh_named("mesh2").await.unwrap().map(|m| m.mesh_id), Some(new.mesh_id.clone()));
+        let second = NodeRow { mesh_id: Some(new.mesh_id.clone()), ..NodeRow::new(admin.clone(), NodeId::mint(), crate::model::NodeStatus::Pending) };
+        assert_eq!(crate::node_rows::write_record(&nodes, &second).await.unwrap(), Ok(()), "its node-admin's claim wins over the Deleted record");
+        assert_eq!(nodes.record_at(&admin).await.unwrap().and_then(|r| r.mesh_id), Some(new.mesh_id.clone()), "its records carry the new MeshId");
+        let new_attempt = InFlight { build_id: crate::build::BuildId::mint(), ..old_attempt.clone() };
+        assert_eq!(meshes.take_in_flight("mesh2", &new_attempt).await.unwrap(), Taken::Won);
+        meshes.release_in_flight("mesh2", &old_attempt).await.unwrap();
+        assert_eq!(meshes.in_flight("mesh2").await.unwrap(), Some(new_attempt), "the old attempt's delayed release frees nothing");
     }
 
     /// CONTRACT (R-SR2: "a create withdrawn before the node ran appends the record marked Withdrawn,

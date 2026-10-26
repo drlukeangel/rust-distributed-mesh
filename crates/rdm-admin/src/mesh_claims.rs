@@ -10,7 +10,8 @@
 //! attempt it holds the mesh for, `(build_id, lane, attempt)`, and the claimant. It is released at that
 //! attempt's verdict by a removal that takes it only while it still names that attempt. Nothing is
 //! read and written back: the take is an insert of the key, the release a removal of the same key.
-//! The file backend keeps it at `meshes/<mesh>/claims/in-flight` on the fabric's shared store root (R14).
+//! The file backend keeps it as the lock `locks/in-flight/<mesh>` on the fabric's shared store root
+//! (R14, R-SR5): a create-exclusive file naming the attempt and its claimant.
 //!
 //! The row decides; the facts do not move here: the claim fact is appended to the Build log and
 //! broadcast on the Build topic only after the take won, exactly as before.
@@ -99,19 +100,18 @@ mod tests {
     /// store root. The fabric-primary's topology attempt on mesh2 takes mesh2's in-flight row first;
     /// mesh2's mesh-primary's drift attempt is then refused, naming that attempt and its claimant,
     /// while mesh1 is taken apart. Only the verdict of the attempt holding mesh2 releases it, and the
-    /// row is the one file `meshes/mesh2/claims/in-flight.json` every process reads. Must NOT happen:
+    /// row is the one lock `locks/in-flight/mesh2` every process reads. Must NOT happen:
     /// two attempts holding one mesh, or a release that removes another attempt's row.
     #[cfg(feature = "file-backend")]
     #[tokio::test]
     async fn a_second_attempt_on_a_mesh_is_held_off_by_the_first_claim_on_the_store_root() {
-        use crate::model::IncarnationId;
         use crate::storage::FileMeshStorage;
         use crate::store_root::StoreRoot;
         let d = crate::test_support::tempdir("mesh-claims");
         let root = StoreRoot::at(&d);
         let (a, b) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap(), FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         one_attempt_in_flight_per_mesh(&a, &b).await;
-        assert!(root.meshes("mesh2").join("claims").join("in-flight.json").is_file(), "the row is on the store root under meshes/mesh2/claims/");
+        assert!(root.dir().join("locks").join("in-flight").join("mesh2").is_file(), "the row is the lock locks/in-flight/mesh2 on the store root");
         let later = FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
         assert_eq!(later.in_flight("mesh2").await.unwrap().map(|h| h.claimant), Some("mesh2.admin.1".to_string()), "a process that opens the root later reads the same row");
     }
@@ -134,7 +134,6 @@ mod tests {
     #[cfg(feature = "file-backend")]
     #[tokio::test]
     async fn a_second_claimant_of_one_attempt_on_the_store_root_is_held() {
-        use crate::model::IncarnationId;
         use crate::storage::FileMeshStorage;
         use crate::store_root::StoreRoot;
         let d = crate::test_support::tempdir("mesh-claims-second");

@@ -678,7 +678,7 @@ impl Scratchpad {
 
 /// Remove `path` from `dir`, if it is there; a removal that must survive a crash syncs its directory.
 /// `true`: this unlink removed the file; `false`: no file was there.
-fn remove_file(dir: &Path, path: &Path) -> Result<bool, StorageError> {
+pub(crate) fn remove_file(dir: &Path, path: &Path) -> Result<bool, StorageError> {
     match std::fs::remove_file(path) {
         Ok(()) => sync_dir(dir, path).map(|()| true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -708,7 +708,7 @@ fn publish_claim(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8], decide: &Cla
     }
 }
 
-fn insert_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool, StorageError> {
+pub(crate) fn insert_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool, StorageError> {
     use std::io::Write as _;
     let io = |e: std::io::Error| StorageError::Io { file: path.display().to_string(), reason: e.to_string() };
     let mut f = std::fs::File::create(tmp).map_err(io)?;

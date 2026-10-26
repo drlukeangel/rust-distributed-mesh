@@ -517,3 +517,72 @@ async fn capture_spans<F: std::future::Future<Output = T>, T>(f: impl FnOnce() -
     let out = spans.lock().unwrap().clone();
     out
 }
+
+// ---------------------------------------------------------------- the locks (R-SR5)
+
+fn locks(tag: &str) -> StoreLocks {
+    StoreLocks::at(&crate::record_store::tempdir(tag), &LogWriter::mint())
+}
+
+fn names(claimant: &'static str) -> impl Fn(&[u8]) -> bool + Send + 'static {
+    move |b: &[u8]| b == claimant.as_bytes()
+}
+
+/// CONTRACT (R-SR5: "one winner stays one winner"; the in-flight lock "taken and released as
+/// mesh_claims.rs does today"): a lock is taken once across two claimants, the second answered the
+/// standing lock's content; a release by an attempt that does not hold it removes nothing, and the
+/// holder's release frees it for the next take. Must NOT happen: two claimants both holding one lock,
+/// or a release removing another claimant's lock.
+#[tokio::test]
+async fn a_lock_is_taken_once_and_released_only_by_its_claimant() {
+    let l = locks("store-locks-once");
+    for kind in [LockKind::InFlight, LockKind::Name] {
+        assert_eq!(l.take(kind, "mesh2", b"a").await.unwrap(), LockTaken::Won, "{kind:?}: the first claimant takes it");
+        assert_eq!(l.take(kind, "mesh2", b"b").await.unwrap(), LockTaken::Held(b"a".to_vec()), "{kind:?}: the second is answered the claimant holding it");
+        assert!(!l.release(kind, "mesh2", names("b")).await.unwrap(), "{kind:?}: a release naming another claimant removes nothing");
+        assert_eq!(l.read(kind, "mesh2").await.unwrap(), Some(b"a".to_vec()));
+        assert!(l.release(kind, "mesh2", names("a")).await.unwrap(), "{kind:?}: the claimant's release removes it");
+        assert_eq!(l.take(kind, "mesh2", b"b").await.unwrap(), LockTaken::Won, "{kind:?}: the next take decides on the free lock");
+    }
+    assert!(l.take(LockKind::Name, "../x", b"a").await.is_err(), "a name that is not one path segment names no lock");
+}
+
+/// CONTRACT (R-SR5: "a second reclaimer blocks on the mutex, then re-reads and finds a live claimant,
+/// and leaves it"; "a holder whose release was delayed past a reclamation finds another claimant's lock
+/// and leaves it"): X holds a name and its release was due. R1 reclaims it (the release of X's lock,
+/// then its own take); R2, which read X's lock before R1 ran and was paused before its removal, then
+/// removes under the mutex only what still names X, and leaves R1's lock; so does X's own release,
+/// delayed past the reclamation. Must NOT happen: R1's lock removed by a remover that expected X.
+#[tokio::test]
+async fn a_late_remover_finds_another_claimants_lock_and_leaves_it() {
+    let l = locks("store-locks-reclaim");
+    assert_eq!(l.take(LockKind::Name, "mesh1.rpc.1", b"X").await.unwrap(), LockTaken::Won);
+    assert_eq!(l.read(LockKind::Name, "mesh1.rpc.1").await.unwrap(), Some(b"X".to_vec()), "R2 reads X's lock, then pauses");
+    assert!(l.release(LockKind::Name, "mesh1.rpc.1", names("X")).await.unwrap(), "R1 releases X's lock under the mutex");
+    assert_eq!(l.take(LockKind::Name, "mesh1.rpc.1", b"R1").await.unwrap(), LockTaken::Won, "and takes its own");
+    assert!(!l.release(LockKind::Name, "mesh1.rpc.1", names("X")).await.unwrap(), "R2 re-reads under the mutex, finds R1, and removes nothing");
+    assert!(!l.release(LockKind::Name, "mesh1.rpc.1", names("X")).await.unwrap(), "X's delayed release finds R1 and removes nothing");
+    assert_eq!(l.read(LockKind::Name, "mesh1.rpc.1").await.unwrap(), Some(b"R1".to_vec()), "R1's lock stands");
+    assert!(l.path(LockKind::Name, "mesh1.rpc.1").with_file_name("mesh1.rpc.1.reclaim").exists(), "the mutex's anchor stays");
+}
+
+/// CONTRACT (R-SR5: the reclamation mutex is "an flock(LOCK_EX) on locks/name/<name>.reclaim ...
+/// dropped by the kernel if its holder dies"): a remover waits while another holds the name's mutex,
+/// and proceeds once the holder's descriptor goes, as when its process dies. Must NOT happen: a
+/// removal inside another's mutex, or a removal that never proceeds after the holder is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remover_waits_on_the_names_mutex_and_proceeds_when_its_holder_dies() {
+    let l = locks("store-locks-mutex");
+    assert_eq!(l.take(LockKind::Name, "mesh1.rpc.1", b"X").await.unwrap(), LockTaken::Won);
+    let held = l.hold_mutex("mesh1.rpc.1");
+    let remover = tokio::spawn({
+        let l = l.clone();
+        async move { l.release(LockKind::Name, "mesh1.rpc.1", names("X")).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(!remover.is_finished(), "the removal waits on the mutex its holder keeps");
+    assert_eq!(l.read(LockKind::Name, "mesh1.rpc.1").await.unwrap(), Some(b"X".to_vec()));
+    drop(held);
+    assert!(tokio::time::timeout(std::time::Duration::from_secs(5), remover).await.expect("the removal proceeds once the holder is gone").unwrap().unwrap());
+    assert_eq!(l.read(LockKind::Name, "mesh1.rpc.1").await.unwrap(), None);
+}

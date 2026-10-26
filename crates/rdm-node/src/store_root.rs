@@ -1,18 +1,28 @@
 //! The fabric's one shared store root (R14): `<store_dir>/<fabric_id>/`, one location every node
 //! of the fabric reaches on the same backing namespace.
 //!
-//! Layout: `fabric/` (the fabric-primary's identity, seats, mesh deletes and `fabric/builds/` Build
-//! journal), `meshes/<mesh>` (each mesh's primary's Mesh row),
-//! `meshes/<mesh>/claims/` (the mesh's one attempt in flight, inserted by its claimant: the
-//! fabric-primary for a topology operation, the mesh-primary for its drift attempt; R-BI7),
-//! `meshes/<mesh>/builds/` (the mesh's primary's Build receipts; R-BI6),
-//! `nodes/<mesh>/` (each mesh's primary's members' Node rows and contacts), `connections/<node>/`
-//! (each node its own) and `status/<mesh>/` (each mesh's primary's status rows). Beside the
-//! per-fabric roots, `<store_dir>/fabrics/<name>` is the fabrics' name index (R-FN1): each fabric's
-//! claim of its name, written by its fabric-primary. The writers are exactly the writer ladder
-//! (node-identity-and-state.md §4.3), so no two writers share a key. A node's data dir keeps only its
-//! own runtime material. A `store_dir` that is missing or unreadable fails the boot by name; nothing
-//! falls back to the data dir and nothing creates the `store_dir` (the provider supplies it).
+//! Layout (R-SR1 to R-SR5, proposal `store-root-one-directory-per-entity.md` §4):
+//!
+//! ```text
+//! <store_dir>/fabrics/<name>          the fabrics' name index (R-FN1): each fabric's claim of its name
+//! <store_dir>/<fabric id>/
+//!   layout                            the layout marker, r-sr1
+//!   fabric.jsonl                      the Fabric record's writes
+//!   meshes.jsonl                      every Mesh record's writes
+//!   nodes.jsonl                       every node record's writes, every runtime row, every tag change
+//!   connections.jsonl                 every connection fact of every source
+//!   builds.jsonl                      every Build fact
+//!   locks/in-flight/<mesh name>       the one attempt in flight on that mesh name, create-exclusive
+//!   locks/name/<name>                 the claim of a mesh name or a node path.name, create-exclusive
+//! ```
+//!
+//! One append-only JSONL file per storage boundary ([`crate::store_log`]): every write is one line
+//! carrying the whole record, the latest complete line for a key is the current state, nothing is
+//! ever removed, and the indexes are the fold. The conditional operations keep their guarantees in the
+//! locks, because an append cannot refuse. The writers are exactly the writer ladder
+//! (node-identity-and-state.md §4.3), one writer per key. A node's data dir keeps only its own runtime
+//! material. A `store_dir` that is missing or unreadable fails the boot by name; nothing falls back to
+//! the data dir and nothing creates the `store_dir` (the provider supplies it).
 //!
 //! The root holds a layout marker, `layout` (R-SR1), written once by its creator before any other
 //! entry of the root: [`StoreRoot::open`] makes a root that is absent or empty with its marker in one
@@ -27,9 +37,9 @@
 //! Four writes reach the root from their store's open, before state-commit too, never held: a node's
 //! record with its declared states (an Applied declaration, Q54), a birth's runtime row (its
 //! launching admin's durable map, written once), both lines of `nodes.jsonl`; the Build facts and the
-//! meshes' attempt claims (a committed Build fact, Q61, build.md §5.2).
+//! meshes' attempt claims, locks under `locks/in-flight/` (a committed Build fact, Q61, build.md §5.2).
 
-use crate::model::{FabricId, IncarnationId, PathName};
+use crate::model::{FabricId, IncarnationId};
 use crate::record_store::{FileRecords, Scratchpad};
 use crate::storage_error::StorageError;
 use std::path::{Path, PathBuf};
@@ -246,10 +256,9 @@ impl StoreRoot {
         }
     }
 
-    /// `meshes/<mesh>/`: the mesh's own rows beside its Mesh row (`meshes/<mesh>/claims/`, its
-    /// in-flight attempt: ``mesh_claims``; `meshes/<mesh>/builds/`, its Build receipts: R-BI6).
-    pub fn meshes(&self, mesh: &str) -> PathBuf {
-        self.dir.join("meshes").join(mesh)
+    /// `locks/name/<name>`: the claim of a mesh name or a node path.name (R-SR5).
+    pub fn lock(&self, name: &str) -> PathBuf {
+        self.dir.join(LOCKS_DIR).join("name").join(name)
     }
 
 }

@@ -357,7 +357,7 @@ fn rows_on(root: &std::path::Path) -> Vec<String> {
                 // A store file read while its nodes append: a line caught mid-write is read again.
                 let latest = (0..50).find_map(|_| rdm_admin::store_log::latest_in(&p).ok().or_else(|| { std::thread::sleep(std::time::Duration::from_millis(20)); None })).unwrap_or_else(|| panic!("{} reads whole", p.display()));
                 out.extend(latest.into_keys().map(|(kind, key)| format!("{rel}#{kind}/{key}")));
-            } else if rel != rdm_admin::store_root::LAYOUT {
+            } else if rel != rdm_admin::store_root::LAYOUT && !rel.ends_with(".reclaim") {
                 out.push(rel);
             }
         }
@@ -585,8 +585,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     // ReadyForTraffic, the Day-0 root joined nobody, each on its node's record.
     let mut declarations: Vec<String> = nodes.iter().flat_map(|n| {
         let name = s(&n["name"]);
-        let mesh = name.split('.').next().unwrap().to_string();
-        vec![format!("nodes/{mesh}/names/{name}.json"), format!("nodes.jsonl#node-record/{}", s(&n["node_id"]))]
+        vec![format!("locks/name/{name}"), format!("nodes.jsonl#node-record/{}", s(&n["node_id"]))]
     }).collect();
     declarations.sort();
     for n in &nodes {
@@ -612,7 +611,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     }
     // Q61: a committed Build fact stands on the root when it is committed: the lanes' keys and the
     // meshes' attempt claims are there before state-commit, beside the declarations.
-    let (build_facts, rows): (Vec<String>, Vec<String>) = before.iter().cloned().partition(|r| r.starts_with("builds.jsonl#") || (r.starts_with("meshes/") && r.contains("/claims/")));
+    let (build_facts, rows): (Vec<String>, Vec<String>) = before.iter().cloned().partition(|r| r.starts_with("builds.jsonl#") || r.starts_with("locks/in-flight/"));
     // A birth's runtime row is its launching admin's durable map, appended at once, before
     // state-commit too (R-SR1: the fourth writer to the root before it).
     let (runtimes, rows): (Vec<String>, Vec<String>) = rows.into_iter().partition(|r| r.starts_with("nodes.jsonl#node-runtime/"));
@@ -641,7 +640,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     let only_identity_builds_and_events = |rows: &[String]| !rows.iter().any(|r| r.starts_with("fabric/")) && rows.iter().filter(|r| r.starts_with("fabric.jsonl#")).all(|r| r.starts_with("fabric.jsonl#fabric-record/"));
     assert!(only_identity_builds_and_events(&after), "the Fabric row carries no pointer to the newest Build and no seat row stands beside it: the fabric-primary's fabric/ rows are the identity, fabric/builds/ and fabric/events/ and nothing else: {after:#?}");
     for mesh in ["mesh1", "mesh2"] {
-        assert!(holds(&format!("mesh-names/{mesh}.json")), "{mesh}'s primary published its Mesh name claim: {after:#?}");
+        assert!(after.iter().any(|r| *r == format!("locks/name/{mesh}")), "{mesh}'s primary published its Mesh name claim: {after:#?}");
     }
     assert_eq!(after.iter().filter(|r| r.starts_with("meshes.jsonl#mesh-record/")).count(), 2, "each mesh's record stands on the root: {after:#?}");
     for name in &want {
@@ -706,7 +705,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
         if name.contains(".admin.") {
             // A Node record is written straight to the store (states.md :51, Q54): what a mesh's primary
             // publishes is its Mesh record with its name claim; its members' addresses are on their Node records.
-            assert!(stores.contains("meshes=") && stores.contains("mesh-names") && !stores.contains("/contacts"), "{name}, its mesh's primary, published its Mesh record and its name claim: {stores}");
+            assert!(stores.contains("meshes=") && stores.contains("locks=") && !stores.contains("/contacts"), "{name}, its mesh's primary, published its Mesh record and its name claim: {stores}");
         }
         if name != "mesh1.admin.1" {
             // fabric/ has one writer, the fabric-primary (R14 item 2): no other node holds a row there.

@@ -666,7 +666,7 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     let root = Prepared::at("an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id", History::StateCommit);
     let fabric_root = root.store.join(root.fabric_id.to_string());
     let meshes = fabric_root.join(rdm_admin::store_root::MESHES_FILE);
-    let name_claim = fabric_root.join("mesh-names").join("mesh1.json");
+    let name_claim = fabric_root.join("locks").join("name").join("mesh1");
     let held = rdm_admin::store_log::read_record(&meshes, "mesh-record", Some(&root.mesh_id.to_string())).expect("mesh1's record");
     let claim: serde_json::Value = serde_json::from_slice(&std::fs::read(&name_claim).unwrap()).unwrap();
     let own_id = root.mesh_id.to_string();
@@ -691,7 +691,7 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     let recreated_id = rdm_admin::model::MeshId::mint().to_string();
     // mesh1 created again: its record at its own id, and the name's claim naming it.
     append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "dead": false}));
-    let (err, pid) = refused(&|| std::fs::write(&name_claim, serde_json::to_vec(&serde_json::json!({"format": claim["format"], "record": {"name": "mesh1", "mesh_id": recreated_id}})).unwrap()).unwrap(), "mesh1 created again");
+    let (err, pid) = refused(&|| std::fs::write(&name_claim, serde_json::to_vec(&serde_json::json!({"format": claim["format"], "record": {"name": "mesh1", "mesh_id": recreated_id}, "by": claim["by"]})).unwrap()).unwrap(), "mesh1 created again");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains(&recreated_id), "the refusal names this admin's mesh and the mesh created again under its name: {err}");
     let spans = spans_of(&root.dir, pid);
     let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the refused start left no storage step: {spans:?}"));

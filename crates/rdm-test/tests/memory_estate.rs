@@ -225,11 +225,12 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
     let _ = capture.flush(Duration::from_secs(10));
 
     // The admin's own durable state never reached a file: its data dir holds no store, and the store
-    // dir holds the rpc node's own connections rows only.
+    // dir holds the rpc node's own connection facts only (its lines of the root's connections.jsonl,
+    // the root its store opened, with the root's layout marker).
     for store in ["nodes", "attempt-context"] {
         assert!(!data_dir.join(store).exists(), "the memory admin wrote {store}/ in its data dir {}", data_dir.display());
     }
-    let stray: Vec<PathBuf> = files_under(&store_dir).into_iter().filter(|f| !f.components().any(|c| c.as_os_str() == "connections")).collect();
+    let stray: Vec<PathBuf> = files_under(&store_dir).into_iter().filter(|f| !f.ends_with(rdm_admin::store_root::CONNECTIONS_FILE) && !f.ends_with(rdm_admin::store_root::LAYOUT)).collect();
     assert!(stray.is_empty(), "the memory admin wrote under the fabric's store dir {}: {stray:?}", store_dir.display());
 
     let spans = spans_in(&artifacts);
