@@ -3131,3 +3131,13 @@ view and its peer's digest without waiting: the root admin's start is faster wit
 (523 ms against 1814 ms) and the members' first ready declaration is owed again; the cell now waits
 for both (3e69b2623). Flame: f1330d5a5b25ccdf3f8efeb31cfa97cf (the successor claims and converges the
 delete Build from the store; no Build channel span). 141 told.
+
+## e12.s100 — 2026-10-26: Q183 landed, node.restart removed
+
+Landed 436ea2433..c0ad86379 (lane e6s4): node.restart, its NodeRestarting notice and hold, the
+client's restart and the restart pipeline are removed; callers run node.stop then node.start; removed
+positions reserved and refused by name; durable format moved; node-restart.md deleted, the pages and
+CLAUDE.md name stop then start; 27 cells removed, 18 renamed (declared). Found and fixed red-first:
+a second stop or start of the same birth in one Build reported Complete without running (9589869bf).
+Q189 asked: a start right after a stop of a node in another mesh can be refused node-not-live while
+the fabric-primary's view lags. 141: message pending (Remote Control disconnected).
