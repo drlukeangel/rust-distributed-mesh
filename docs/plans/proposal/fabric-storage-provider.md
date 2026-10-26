@@ -137,13 +137,18 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   the fabric, every mesh and every node stay ready-for-traffic through all three steps; the node's
   states are its life and its traffic, and a change of where it writes is neither. The progress is the
   step receipts and R-SP4's row, not a state. The page's sentence gains `storage_provider` in its list.
-- **R-SP16. The node's `storage` is renamed `storage_persistence`, and `on_retire` `reclaim`** (Luke,
-  2026-10-26). `StorageMeta` is `Ephemeral` or `Persistent { on_retire }`: the node's data-dir
-  persistence, nothing to do with the fabric's backend, and with a provider on the node's row the
-  name `storage` would mean two things. The property is `storage_persistence`, values `ephemeral` and
-  `persistent { reclaim: retain | delete }`, the Kubernetes pair by another spelling
-  (`storageClassName`, `persistentVolumeReclaimPolicy: Retain | Delete`); `retire` is a banned word
-  and goes with it. `storage` and `on_retire` are JSON field names on every node record and every
+- **R-SP16. The node's `storage` is renamed `storage_persistence`, and `on_retire` `disposition`**
+  (Luke, 2026-10-26). `StorageMeta` is `Ephemeral` or `Persistent { on_retire: Preserve | Release }`:
+  the node's data-dir persistence, nothing to do with the fabric's backend, and with a provider on
+  the node's row the name `storage` would mean two things. The property is `storage_persistence`,
+  values `ephemeral` and `persistent { disposition: preserve | release }`, the page's own word for
+  the field ("the declared disposition of the storage once the node is gone") and its own two
+  values; `retire` is a banned word and goes with it. The three states stay the three
+  (deployment-provider.md: "the three-state `StorageMeta` contract is RDM law"): ephemeral is about
+  the node's births, fresh storage for every new node; the disposition is about storage that
+  survived them, once the node is gone, preserved or released to the application's own removal,
+  since "RDM deletes nothing on disk, ever". Ephemeral is not a disposition: there is no kept storage
+  to dispose of. `storage` and `on_retire` are JSON field names on every node record and every
   Build's `NodeSpec`, so this is a descriptor field moved: its landing carries `durable format moved`,
   and a fabric born before it is a new fabric; the positional wire carries no names and is untouched.
   Pages: the node-properties table, build.md §1 and §5.3, build-deployment.md §2, node-replace.md,
