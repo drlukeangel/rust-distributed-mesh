@@ -14,10 +14,13 @@ returned; delayed events cannot move it backward.
 
 The fabric-primary admits a Build from a projection rebuilt per request from the `DigestView` (the gossip
 view and everything in flight) and the store rows (`control_plane.rs` admission, `boot.rs` `view_now`,
-`projection.rs` `project_with`); a nodes `stopped` comes from the `DigestView` alone
-(`projection.rs:370-393`), so a stop the fabric-primarys own Build recorded is not admissible state until
-gossip echoes it (Q189). `DigestView` keeps its name and meaning (Luke, 2026-10-26: "digest-view is supposed
-to be the gossip-view and everything that is inflight").
+`projection.rs` `project_with`). A completed stop is already applied before `Complete`: `SeatGate::attempt_completed`
+(`admin/reconcile.rs:139-152`, awaited at `build_drive.rs:1306`) takes each completed `node.stop:` receipt into
+the fabric-primarys view (span `rdm.mesh.topology.remove.via-node-stopped`, `publisher=` empty). No other
+receipt is: a completed start leaves the node `leaving` in that view until gossip says otherwise, so a stop sent
+the moment a start completes is refused `node-not-live` (red 5/5 on mesh2s node-admins, fabric-atlas-red
+8d4768946). `DigestView` keeps its name and meaning (Luke, 2026-10-26: \"digest-view is supposed to be the
+gossip-view and everything that is inflight\").
 
 ## Requirements
 
@@ -29,8 +32,9 @@ to be the gossip-view and everything that is inflight").
   receiver rules ordering (gossip.md §3.1: a frame older than the newest held for its key is ignored; a
   births `digest_seq`; a Builds attempt number), so a delayed event never moves it backward.
 - **R-FA4.** `fabrics.atlas.get` returns it (Q167s read naming); `fabrics.get` is unchanged.
-- **R-FA5.** First RED cell: a `node.start` of another meshs node sent the moment its `node.stop` streams
-  `Complete` is admitted (Q189).
+- **R-FA5.** Both directions are admitted: a `node.start` sent the moment the nodes `node.stop` streams
+  `Complete` (passes today, through the stop receipt) and a `node.stop` sent the moment its `node.start`
+  streams `Complete` (red today, `a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_admitted`).
 
 ## Open
 
