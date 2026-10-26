@@ -2105,7 +2105,7 @@ One birth's view of its own mesh channel, sampled when it publishes its digest.
 
 ### `Hit`
 
-`crates/rdm-test/src/fault_door.rs` · enum · 13 variants · rdm-test
+`crates/rdm-test/src/fault_door.rs` · enum · 12 variants · rdm-test
 
 The call a cut held first, as the decorator offered it.
 
@@ -2123,38 +2123,34 @@ The call a cut held first, as the decorator offered it.
 | 1.3 | `attempt` | `u32` |  | The attempt. |
 | 1.4 | `node` | `String` |  | The node the event concerns. |
 | 1.5 | `incarnation_id` | `String` |  | Its incarnation. |
-| 2 | **`Hook`** |  |  | A lifecycle hook about to run. |
-| 2.0 | `phase` | `String` |  | The hook phase. |
-| 2.1 | `target` | `String` |  | The hook's target. |
-| 2.2 | `transition_id` | `String` |  | The transition the hook belongs to. |
-| 3 | **`Accepted`** |  |  | An accepted Build about to become durable. |
+| 2 | **`Accepted`** |  |  | An accepted Build about to become durable. |
+| 2.0 | `build_id` | `String` |  | The Build. |
+| 3 | **`Claimed`** |  |  | An attempt's claim, durable and broadcast, about to be returned to the drive. |
 | 3.0 | `build_id` | `String` |  | The Build. |
-| 4 | **`Claimed`** |  |  | An attempt's claim, durable and broadcast, about to be returned to the drive. |
-| 4.0 | `build_id` | `String` |  | The Build. |
-| 4.1 | `attempt` | `u32` |  | The attempt. |
-| 4.2 | `executor` | `String` |  | The executor the claim names. |
-| 5 | **`ProviderDomain`** |  |  | The provider reported a control domain no held birth is in. |
-| 6 | **`LeaveAnnouncement`** |  |  | A leave announcement about to be published. |
-| 6.0 | `node` | `String` |  | The announcing node. |
-| 6.1 | `announcement` | `u32` |  | The announcement's 1-based number. |
-| 6.2 | `channel` | `String` |  | The channel it is published on. |
-| 7 | **`TopologyRead`** |  |  | A joining admin's topology read, about to be made. |
-| 7.0 | `node` | `String` |  | The joining admin. |
-| 7.1 | `reads_from` | `String` |  | The admin the read goes to: the one that answered the join. |
-| 8 | **`Announcement`** |  |  | A final aggregate or leadership announcement about to be sent on a channel. |
-| 8.0 | `node` | `String` |  | The announcing node. |
-| 8.1 | `announcement` | `String` |  | The announcement (`rdm_transport::topology::Withhold`). |
-| 8.2 | `channel` | `String` |  | The channel it is sent on. |
-| 9 | **`ProviderTerminate`** |  |  | A provider `terminate` refused while the cut is armed. |
-| 9.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
-| 9.1 | `deployment_id` | `String` |  | The deployment the runtime belongs to. |
-| 10 | **`Declaration`** |  |  | A node's declaration at the status door, about to be decided. |
-| 10.0 | `node` | `String` |  | The declaring node. |
-| 10.1 | `state` | `String` |  | The state it declares. |
-| 11 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
-| 11.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
-| 12 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
-| 12.0 | `node` | `String` |  | The admin whose pass it is. |
+| 3.1 | `attempt` | `u32` |  | The attempt. |
+| 3.2 | `executor` | `String` |  | The executor the claim names. |
+| 4 | **`ProviderDomain`** |  |  | The provider reported a control domain no held birth is in. |
+| 5 | **`LeaveAnnouncement`** |  |  | A leave announcement about to be published. |
+| 5.0 | `node` | `String` |  | The announcing node. |
+| 5.1 | `announcement` | `u32` |  | The announcement's 1-based number. |
+| 5.2 | `channel` | `String` |  | The channel it is published on. |
+| 6 | **`TopologyRead`** |  |  | A joining admin's topology read, about to be made. |
+| 6.0 | `node` | `String` |  | The joining admin. |
+| 6.1 | `reads_from` | `String` |  | The admin the read goes to: the one that answered the join. |
+| 7 | **`Announcement`** |  |  | A final aggregate or leadership announcement about to be sent on a channel. |
+| 7.0 | `node` | `String` |  | The announcing node. |
+| 7.1 | `announcement` | `String` |  | The announcement (`rdm_transport::topology::Withhold`). |
+| 7.2 | `channel` | `String` |  | The channel it is sent on. |
+| 8 | **`ProviderTerminate`** |  |  | A provider `terminate` refused while the cut is armed. |
+| 8.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
+| 8.1 | `deployment_id` | `String` |  | The deployment the runtime belongs to. |
+| 9 | **`Declaration`** |  |  | A node's declaration at the status door, about to be decided. |
+| 9.0 | `node` | `String` |  | The declaring node. |
+| 9.1 | `state` | `String` |  | The state it declares. |
+| 10 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
+| 10.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
+| 11 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
+| 11.0 | `node` | `String` |  | The admin whose pass it is. |
 
 <a id="t-rdm_core-ids-IncarnationId"></a>
 

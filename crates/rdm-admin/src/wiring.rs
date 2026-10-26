@@ -2,17 +2,18 @@
 //!
 //! `start` builds a node-admin from concrete parts and holds them behind traits: the Fabric's
 //! control storage (`FabricStorage`), the Build state (`BuildStateAdapter`), the deployment
-//! provider, the lifecycle events a retirement publishes, and the lifecycle hook registry. A
-//! [`Wiring`] lets an executable that IS a node-admin (a consumer's own, or a testkit's) wrap each
-//! of them once, and register hooks before the registry is built, before the admin runs. The product
-//! passes [`Wiring::default`]: nothing is wrapped and no hook is registered. The core carries no
-//! fault code; a decorator that delays, refuses or records lives in the executable that passes it.
+//! provider and the lifecycle events a retirement publishes. A [`Wiring`] lets an executable that IS
+//! a node-admin (a consumer's own, or a testkit's) wrap each of them once before the admin runs. The
+//! product passes [`Wiring::default`]: nothing is wrapped. Application work enters a lifecycle only
+//! through the [Fabric and node hooks](../../../docs/architecture/fabric-node-hooks.md)
+//! (`pre_node_ready`, `on_node_ready`, `on_mesh_ready`, `on_fabric_ready`; build.md §9): the
+//! admin's transition pipeline registers no application hook. The core carries no fault code; a
+//! decorator that delays, refuses or records lives in the executable that passes it.
 
 use crate::build_state::BuildStateAdapter;
 use crate::deployment::pipeline::LifecycleEvents;
 use crate::deployment::provider::DeploymentProvider;
 use crate::fabric_storage::FabricStorage;
-use crate::lifecycle::{LifecycleHook, LifecycleHookSpec};
 use rdm_core::context::CallContext;
 use std::future::Future;
 use std::pin::Pin;
@@ -181,15 +182,13 @@ pub struct Wiring {
     pub node_hooks: crate::node_hooks::NodeHooks,
     /// The app's own ops, added to the server before it is built.
     pub serve_app: Option<ServeApp>,
-    /// Hooks registered, in order, before the lifecycle registry is built.
-    pub hooks: Vec<(LifecycleHookSpec, Arc<dyn LifecycleHook>)>,
-    /// The app's declared secrets (Q150), registered at boot like the hooks: each per-process
+    /// The app's declared secrets (Q150), registered at boot: each per-process
     /// variable by name, with the node kinds it is set on. The bootstrap admin reads each value once
     /// from its own environment; every node-admin RDM launches is written them beside the root; a value
     /// is set in the environment of the named kinds' processes only
     /// ([`crate::deployment::declared`]). A name RDM sets or passes through refuses the start by name.
     pub declared: Vec<rdm_core::launch::DeclaredSecret>,
-    /// The app's listeners (Q151), registered at boot like the hooks: each product kind's listeners by
+    /// The app's listeners (Q151), registered at boot: each product kind's listeners by
     /// name. A create assigns each the birth's address with port 0 (`RDM_LISTENERS`); the node binds
     /// them and reports the ports at its join, which refuses a report that does not carry exactly them;
     /// they are published on the node's row. A duplicate name in a kind, a name RDM owns and a
@@ -202,7 +201,7 @@ pub struct Wiring {
 }
 
 impl Wiring {
-    /// Nothing wrapped and no hook, with no certs by explicit choice: an in-process node-admin that
+    /// Nothing wrapped and no app work, with no certs by explicit choice: an in-process node-admin that
     /// issues nothing.
     pub fn no_certs() -> Self {
         Self { certs: crate::certs::CertChoice::NoCerts, ..Self::default() }

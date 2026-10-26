@@ -302,7 +302,6 @@ use rdm_client::{BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, Node
 use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
 use rdm_admin::deployment::pipeline::{CreateStep, RetireStep};
-use rdm_admin::lifecycle::HookPhase;
 use rdm_test::elections::{advertised_fabric_primaries, primaries_as_expected};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
@@ -920,7 +919,7 @@ async fn silent_case(run: &Run) {
 /// CONTRACT (#2782): real stalls of a real estate (mesh1 with two node-admins, both the testkit's
 /// faulted admin, and rpc nodes), each held and released through its own door or signal, are judged
 /// by the semantic detector, never by a timeout. Cuts: a deployment step (create `WaitForBind`), a
-/// removal step on a serving node (retire `NodeDeleting`), a lifecycle hook (`BeforeEligibility`),
+/// removal step on a serving node (retire `NodeDeleting`),
 /// the accepted Build durable, and current from then on (the
 /// fabric-primary admin held), a joining admin held at its Ready gate on the provider domain and another
 /// held at the topology read it makes while it hydrates (node-start.md step 4), and a non-primary rpc node
@@ -998,24 +997,8 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         true,
     )
     .await;
-    // A lifecycle hook of the Pending -> ReadyForTraffic transition: the rpc node's declared status is
-    // independent of the admin-side hook, so the node stays routable while the hook holds.
-    let before = run.names().await;
-    let phase = HookPhase::BeforeEligibility.as_str();
-    door_case(
-        &run,
-        Family::LifecycleHook,
-        &format!("hook:{phase}"),
-        json!({"kind": "hook", "phase": phase, "node": node}),
-        &door,
-        Trigger::Spawn,
-        Shape::Create { node: Some(node.into()) },
-        Watch::NewNodes(before),
-        true,
-    )
-    .await;
-
-    // A second rpc node, so the frozen one is not the cohort's only member; then the frozen node.
+    // Two rpc nodes, so the frozen one is not its node type's primary nor the only one; then the frozen node.
+    run.plain_create(NodeKind::RpcNode).await;
     run.plain_create(NodeKind::RpcNode).await;
     silent_case(&run).await;
 

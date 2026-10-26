@@ -12,6 +12,9 @@
 //!   -> AfterTransition hooks
 //! ```
 //!
+//! The pipeline is RDM's own: no application registers a hook on it; application work
+//! enters a lifecycle only through the Fabric and node hooks (build.md §9, Q177).
+//!
 //! Hooks are registered before the registry is built. Each run appends a receipt
 //! keyed by `(transition_id, hook_id)`; a retry of the same transition reuses
 //! every `Complete` receipt instead of re-running the hook. A failed blocking

@@ -82,7 +82,6 @@ pub enum Family {
     RuntimeFactAdoption,
     ProviderDomain,
     RuntimeMetadataHydration,
-    LifecycleHook,
     PendingBeforeBuild,
     ElectionAuthorityMovement,
     StaleSlotRace,
@@ -95,7 +94,7 @@ pub enum Family {
 }
 
 impl Family {
-    pub const ALL: [Family; 21] = [
+    pub const ALL: [Family; 20] = [
         Family::RequestPreSend,
         Family::RequestPostApply,
         Family::BuildStep,
@@ -107,7 +106,6 @@ impl Family {
         Family::RuntimeFactAdoption,
         Family::ProviderDomain,
         Family::RuntimeMetadataHydration,
-        Family::LifecycleHook,
         Family::PendingBeforeBuild,
         Family::ElectionAuthorityMovement,
         Family::StaleSlotRace,
@@ -132,7 +130,6 @@ impl Family {
             Family::RuntimeFactAdoption => "runtime-fact-adoption",
             Family::ProviderDomain => "provider-domain",
             Family::RuntimeMetadataHydration => "runtime-metadata-hydration",
-            Family::LifecycleHook => "lifecycle-hook",
             Family::PendingBeforeBuild => "pending-before-build",
             Family::ElectionAuthorityMovement => "election-authority-movement",
             Family::StaleSlotRace => "stale-slot-race",

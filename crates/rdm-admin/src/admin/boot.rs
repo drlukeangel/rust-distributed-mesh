@@ -1459,11 +1459,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 declared: declared_secrets,
                                 binding: None,
                             };
-                            let mut registry = HookRegistry::new();
-                            for (spec, hook) in wiring.hooks.drain(..) {
-                                registry = registry.register(spec, hook);
-                            }
-                            let hooks = registry.build().map_err(|e| format!("{e:?}"))?;
+                            // RDM's own transition pipeline: no application hook is registered on it; the
+                            // application's work enters through the Fabric and node hooks (build.md §9, Q177).
+                            let hooks = HookRegistry::new().build().map_err(|e| format!("{e:?}"))?;
                             let handover = Arc::new(crate::fabric_handover::HandoverDoor {
                                 fabric: cfg.fabric.clone(),
                                 me: name.clone(),

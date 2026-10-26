@@ -4,8 +4,8 @@
 //!
 //! The product node-admin carries no fault code. Its `Wiring` (`rdm_admin::wiring`)
 //! takes the decorators here: a [`FaultedBuilds`] over the Build state, a [`FaultedProvider`] over
-//! the deployment provider, a [`FaultedEvents`]
-//! over the lifecycle events and one [`FaultedHook`] per reachable lifecycle phase. Each decorator
+//! the deployment provider and a [`FaultedEvents`]
+//! over the lifecycle events. Each decorator
 //! asks the shared [`AdminFaults`] at its one cut; an armed, matching cut holds the caller there
 //! until the door releases it. Nothing else changes: every other call passes straight through.
 //!
@@ -27,7 +27,6 @@ use rdm_admin::build_state::{
 };
 use rdm_admin::deployment::pipeline::LifecycleEvents;
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rdm_admin::lifecycle::{HookContext, HookPhase, LifecycleHook, LifecycleHookSpec, LifecycleScope, LifecycleState, ShapePredicate, TransitionKey};
 use rdm_admin::model::ProviderKind;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use serde::{Deserialize, Serialize};
@@ -62,13 +61,6 @@ pub enum CutSpec {
         /// The event name: `deleting`, `restarting`, `deleted` or `stopped`.
         event: String,
         /// The node the event concerns.
-        #[serde(default)] node: Option<String>,
-    },
-    /// A lifecycle hook phase of the `Node: Pending -> ReadyForTraffic` transition.
-    Hook {
-        /// The hook phase.
-        phase: String,
-        /// The node the hook concerns.
         #[serde(default)] node: Option<String>,
     },
     /// An accepted Build is about to become durable: its one write (`publish_accepted`) has been called
@@ -167,15 +159,6 @@ pub enum Probe {
         /// The lifecycle operation the event names.
         op: LifecycleOp,
     },
-    /// A lifecycle hook about to run.
-    Hook {
-        /// The hook phase.
-        phase: &'static str,
-        /// The hook's target.
-        target: String,
-        /// The transition the hook belongs to.
-        transition_id: String,
-    },
     /// An attempt's claim that is durable and broadcast, about to be returned to the drive.
     Claimed {
         /// The Build.
@@ -251,7 +234,6 @@ impl CutSpec {
                 failed == f && step == s && operation.as_deref().is_none_or(|prefix| o.starts_with(prefix)) && node_is(node, o)
             }
             (CutSpec::Event { event, node }, Probe::Event { event: e, op }) => event == e && node_is(node, &op.name.to_string()),
-            (CutSpec::Hook { phase, node }, Probe::Hook { phase: ph, target, .. }) => phase == ph && node_is(node, target),
             (CutSpec::AcceptedBuild, Probe::Accepted { .. }) => true,
             (CutSpec::ClaimedAttempt { attempt }, Probe::Claimed { attempt: a, .. }) => attempt.is_none_or(|w| w == *a),
             (CutSpec::ProviderDomain, Probe::ProviderDomain) => true,
@@ -273,7 +255,6 @@ impl Probe {
         match self {
             Probe::Receipt { step, operation, build_id, attempt, .. } => Hit::Receipt { step: step.clone(), operation: operation.clone(), build_id: build_id.clone(), attempt: *attempt },
             Probe::Event { event, op } => Hit::Event { event: event.to_string(), operation: op.operation.clone(), build_id: op.build_id.clone(), attempt: op.attempt, node: op.name.to_string(), incarnation_id: op.incarnation.as_str().to_string() },
-            Probe::Hook { phase, target, transition_id } => Hit::Hook { phase: phase.to_string(), target: target.clone(), transition_id: transition_id.clone() },
             Probe::Accepted { build_id } => Hit::Accepted { build_id: build_id.clone() },
             Probe::Claimed { build_id, attempt, executor } => Hit::Claimed { build_id: build_id.clone(), attempt: *attempt, executor: executor.clone() },
             Probe::ProviderDomain => Hit::ProviderDomain,
@@ -610,20 +591,6 @@ impl LifecycleEvents for FaultedEvents {
     }
 }
 
-/// A registered lifecycle hook that does nothing but cross its phase's cut.
-pub(crate) struct FaultedHook {
-    phase: HookPhase,
-    faults: Arc<AdminFaults>,
-}
-
-#[async_trait]
-impl LifecycleHook for FaultedHook {
-    async fn run(&self, ctx: &HookContext) -> Result<(), String> {
-        self.faults.hold(Probe::Hook { phase: self.phase.as_str(), target: ctx.target.clone(), transition_id: ctx.transition_id.clone() }).await;
-        Ok(())
-    }
-}
-
 /// The leave's seam: an armed [`CutSpec::LeaveAnnouncement`] that matches withholds that publish.
 struct FaultedLeave(Arc<AdminFaults>);
 
@@ -664,9 +631,6 @@ impl rdm_admin::wiring::DeclarationSeam for FaultedDeclaration {
     }
 }
 
-/// The phases of `Node: Pending -> ReadyForTraffic` the admin runs (`bring_into_traffic`).
-pub(crate) const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition];
-
 /// The reconcile loop's drift seam: an armed [`CutSpec::DriftPass`] holds the admin's pass before it
 /// runs, until the release, and the loop names the cut that holds it.
 struct FaultedDrift(Arc<AdminFaults>);
@@ -689,10 +653,9 @@ impl rdm_admin::wiring::CommandFrameSeam for FaultedCommandFrame {
     }
 }
 
-/// The `Wiring` that puts every decorator and hook of `faults` into a node-admin.
+/// The `Wiring` that puts every decorator of `faults` into a node-admin.
 pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
     let (f_builds, f_provider, f_events) = (faults.clone(), faults.clone(), faults.clone());
-    let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
     Wiring { types: Vec::new(), alpns: Vec::new(), declared: Vec::new(), listeners: Vec::new(),
         leave_seam: Some(Arc::new(FaultedLeave(faults.clone()))),
         announcement_seam: Some(Arc::new(FaultedAnnouncement(faults.clone()))),
@@ -708,15 +671,6 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         certs: CertChoice::NoCerts,
         serve_app: None,
         fabric_hooks: FabricHooks::no_app_work(),
-        hooks: NODE_READY_PHASES
-            .iter()
-            .map(|&phase| {
-                (
-                    LifecycleHookSpec { hook_id: format!("testkit-{}", phase.as_str()), transition: key, phase, applies_when: ShapePredicate::Always, blocking: true, max_attempts: 1 },
-                    Arc::new(FaultedHook { phase, faults: faults.clone() }) as Arc<dyn LifecycleHook>,
-                )
-            })
-            .collect(),
     }
 }
 

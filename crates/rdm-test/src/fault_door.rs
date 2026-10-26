@@ -32,7 +32,6 @@ pub const OP: u8 = <FaultDoor as NodeProtocol>::OP;
 enum CutWire {
     Receipt { step: String, operation: Option<String>, node: Option<String>, failed: bool },
     Event { event: String, node: Option<String> },
-    Hook { phase: String, node: Option<String> },
     AcceptedBuild,
     ClaimedAttempt { attempt: Option<u32> },
     ProviderDomain,
@@ -109,15 +108,6 @@ pub enum Hit {
         /// Its incarnation.
         incarnation_id: String,
     },
-    /// A lifecycle hook about to run.
-    Hook {
-        /// The hook phase.
-        phase: String,
-        /// The hook's target.
-        target: String,
-        /// The transition the hook belongs to.
-        transition_id: String,
-    },
     /// An accepted Build about to become durable.
     Accepted {
         /// The Build.
@@ -192,7 +182,6 @@ impl Hit {
         match self {
             Hit::Receipt { step, operation, build_id, attempt } => json!({"step": step, "operation": operation, "build_id": build_id, "attempt": attempt}),
             Hit::Event { event, operation, build_id, attempt, node, incarnation_id } => json!({"event": event, "operation": operation, "build_id": build_id, "attempt": attempt, "node": node, "incarnation_id": incarnation_id}),
-            Hit::Hook { phase, target, transition_id } => json!({"phase": phase, "target": target, "transition_id": transition_id}),
             Hit::Accepted { build_id } => json!({"build_id": build_id}),
             Hit::Claimed { build_id, attempt, executor } => json!({"build_id": build_id, "attempt": attempt, "executor": executor}),
             Hit::ProviderDomain => json!({"control_domain": "reported foreign"}),
@@ -404,7 +393,6 @@ mod tests {
             CutSpec::Receipt { step: "StopNode".into(), operation: Some("node.delete:mesh2.rpc.2".into()), node: None, failed: false },
             CutSpec::Receipt { step: "TerminateRuntime".into(), operation: Some("node.delete".into()), node: Some("mesh2.rpc.2".into()), failed: true },
             CutSpec::Event { event: "deleting".into(), node: Some("mesh1.rpc.1".into()) },
-            CutSpec::Hook { phase: "before_eligibility".into(), node: None },
             CutSpec::AcceptedBuild,
             CutSpec::ClaimedAttempt { attempt: Some(2) },
             CutSpec::ProviderDomain,
