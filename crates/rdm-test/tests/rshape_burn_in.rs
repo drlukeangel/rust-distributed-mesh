@@ -6161,14 +6161,14 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let quiet_sends = named(&quiet_spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| start_ns(sp) >= quiet0 && start_ns(sp) <= quiet1).count();
     assert_eq!(quiet_sends, 0, "a quiet fabric sends no status frame in {} ms", (quiet1 - quiet0) / 1_000_000);
 
-    // Control loss: each victim hears and is heard by no node, the other victim included.
-    let mut cuts = Vec::new();
-    for v in &vnames {
-        let rest: Vec<String> = everyone.iter().filter(|n| *n != v).cloned().collect();
-        cuts.push(Partition::start(&udp_ports(&st.nodes, std::slice::from_ref(v)), &udp_ports(&st.nodes, &rest)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the victim's traffic: {why}")));
-    }
+    // Control loss: each victim hears and is heard by no node, the other victim and every node born after the
+    // cut included (a re-created node binds a new port).
+    let cuts = vec![Partition::isolate(&udp_ports(&st.nodes, &vnames)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the victims' traffic: {why}"))];
     let cut_at = now_ns();
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "nodes": vnames, "acknowledged": true}));
+    // The cut's own record, written when it is applied: a red before the cell's events are written still names
+    // who was cut, on which ports, at which instant, and who held each primary then.
+    eprintln!("{}", json!({"event": "fault.udp-drop", "cut_at_ns": cut_at, "victims": victims.iter().map(|v| json!({"name": v["name"], "node_id": v["node_id"], "incarnation_id": v["incarnation_id"], "udp_ports": udp_ports(&st.nodes, &[s(&v["name"])])})).collect::<Vec<_>>(), "fabric_primary": st.fp["name"], "mesh_primaries": [st.primary_of("mesh1")["name"].clone(), st.primary_of("mesh2")["name"].clone()]}));
     let bound = window * 6 + Duration::from_secs(40);
     // Every node-admin that is not a victim marks every victim silent in its own view.
     for o in &observers {

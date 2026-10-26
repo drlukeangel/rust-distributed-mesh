@@ -119,8 +119,11 @@ pub fn partition_rules(a: &[u16], b: &[u16]) -> Vec<String> {
 /// The rules that drop every UDP datagram on loopback from or to `ports`, whatever port is on the other end, so
 /// a node born after the cut is cut from them too. An empty set cuts nothing.
 pub fn isolation_rules(ports: &[u16]) -> Vec<String> {
-    let _ = ports;
-    Vec::new()
+    if ports.is_empty() {
+        return Vec::new();
+    }
+    let set = port_set(ports);
+    vec![format!("iifname \"lo\" udp sport {set} drop"), format!("iifname \"lo\" udp dport {set} drop")]
 }
 
 /// UDP between two sets of loopback ports dropped, until dropped itself or its installer ends.
@@ -132,6 +135,11 @@ impl Partition {
     /// `Err` names why the host cannot partition (a skip, or a CI failure).
     pub fn start(a: &[u16], b: &[u16]) -> Result<Self, String> {
         Ok(Self { held: Held::install("part", &partition_rules(a, b))? })
+    }
+
+    /// Every UDP datagram to or from `ports` dropped, births after the cut included.
+    pub fn isolate(ports: &[u16]) -> Result<Self, String> {
+        Ok(Self { held: Held::install("isolate", &isolation_rules(ports))? })
     }
 
     /// The process whose exit ends this cut.
