@@ -2809,6 +2809,42 @@ R-D1 drive landed bd201c0c; R14 shared store landed fbcb087b (absorbed s43); lan
 <!-- /epic:e12.s23 -->
 
 <!-- epic:e10.s2 -->
+## e12.s91 — 2026-10-25/26: one read per scope (Q165), the flat create spec (Q166), the store root (R-SR1..R-SR5), Day 0 (Q170) and connection writes that never block (Q169)
+
+### State
+
+Landed from `047db41f7` to `9938fb9f5`, each through the fast gate:
+
+- **Reads (Q165).** One read per scope: `node.get { id }` returns one node or NOT_FOUND, `mesh.get { name }` one mesh, and `mesh.nodes.get` / `fabric.nodes.get` the list (`ba0369835`, `170f95efb`).
+- **The create spec (Q166).** `NodeSpec { path, storage, placement, executable, tags, config }`, flat, with no nested configuration type (`487cb9b43`). A create spec's config is the node's first config (`01603c8ed`). `node.config.update` is admitted at any time (`b34284b46`). A Reconcile applies every property that differs from the node's row, each by its own operation (`099797139`). The last write wins while a Build runs too (`0f5ea6025`..`8b7da244b`; build.md §1).
+- **The status loop.** A status turn reads the current Build once (`90ad4e710`); the status loop's wait ends on a node's ready (`f25914f49`).
+- **The store root (R-SR1..R-SR5).** The `layout` marker; one JSONL file per store (fabric, meshes, nodes, connections, builds); `locks/` for name claims and the attempt in flight; whole-record append-only lines; a malformed line refuses the open (`2d518f912`..`fec54f390`, R14 item 9).
+- **Day 0 (Q170).** Day 0 is a single fabric-primary and its own mesh. The Day-0 Build is Complete only from its own ready-for-traffic. fabric.delete ends an attempt the fabric-primary itself executes (`a5cf5c6dc`..`60f951b94`).
+- **The view (`a6502701a`).** `DigestView::get_by_endpoint` and `get_by_path_name` are map reads.
+- **Connection writes (Q169).** Every write is owed on the node's one ordered writer queue, retried with backoff and never awaited. node.connections.delete closes the connections open now and answers without waiting for a row. A rename and a leave decide from live connections. The reconciler decides from the dial's own result (`bd787d434`..`9938fb9f5`; node-connections-delete.md, node-mesh-leave.md).
+- **Withdrawn.** Q168 was withdrawn (Luke 2026-10-25: state-sync is the fabric's state; nodes keep no attempt or storage of it). Its code was reverted (`558578449`, `e0e7b3cb9`, `d62755100`).
+- **Docs.** The runbooks (fabric recovery, node storage), `docs/architecture/telemetry.md`, and `docs/eng/consumer-guide.md` with its Tags section.
+- **141.** 141 was told every SHA that affects Rafka. Its pin is `9938fb9f5`; it drops its interim `open_direct` patch.
+
+### Remaining
+
+- **Held by Luke:**
+  - the Q167 proposal (one read per entity, plural, with filters);
+  - the unlanded `fabric-get-is-the-fabric` branch, superseded by Q165.
+- **Unattributed under release load, read on the tail, never re-rolled:**
+  - fabric_takeover `a_backbone_executor…`;
+  - the heard-again create-in-flight race (`heard_again.rs:96`, `sent=false outcome=create-in-flight`);
+  - the peer_mesh_investigation and executables span cells.
+- **Store-root follow-ups:**
+  - container_proof and store_root_probe still prove R14 item 5's old guarantees;
+  - `demo/tests/connections.rs` is built only by the release gate;
+  - no cell covers a re-born node's connection facts;
+  - no compaction.
+- **Rafka's, reported to 141:**
+  - the ~100 ms broker read path;
+  - the multi-mesh fabric.delete stall. Rafka's storage reads (`<sys>.ops.nodes`, `ops.builds`) count replicas on mesh2's deleted brokers toward coverage. fabric-delete.md deletes the fabric-primary's own mesh last, so the fix is placement and coverage in Rafka's adapter, not an RDM ruling.
+- **The tail at one SHA:** fast, release, export run, soaks, `export-manifest --candidate <sha>` (e10.s2, e11.s12).
+
 ## e10.s2 — export: one RDM SHA on which the whole export gate is green, the import manifest, and the final parity scan
 
 **Builder:** the lead (gate runs) with an RDM engineer for fixes · **Tracking issue:** #2790 (generated once; not read back) · **Architecture:** §14 Export/import gate; §15 Verification artifacts; §17 Definition of done; transport-parity.md
