@@ -16,7 +16,7 @@ A node's own storage is its data dir (`RDM_DATA_DIR`): `node-key`, `ca-secret`, 
 there and never reads the application's. `storage_persistence` is a typed property of the node's
 create spec, carried on the accepted Build's `NodeSpec` and the node's row, and is three states:
 
-| `storage_persistence` | across the node's births (stop, start, restart, re-creation at the same `path.name`) | once the node is gone |
+| `storage_persistence` | across the node's births (stop, start, re-creation at the same `path.name`) | once the node is gone |
 |---|---|---|
 | `ephemeral` | fresh storage for every new node; nothing is inherited | nothing kept, so nothing to dispose of |
 | `persistent { disposition: preserve }` | survives; a node created over the inherited data dir keeps it | kept |

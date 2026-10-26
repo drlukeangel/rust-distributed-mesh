@@ -74,7 +74,7 @@ was given; the app never signs or verifies anything.
 
 | Event | Issuer | Carried in |
 |---|---|---|
-| a node's JoinNode is accepted (the first start inside node.create, and every node.start after a stop, node.restart included) | the accepting primary: the maker for a node-admin, the mesh-primary for an ordinary node | the JoinNode answer, as opaque bytes |
+| a node's JoinNode is accepted (the first start inside node.create, and every node.start after a stop) | the accepting primary: the maker for a node-admin, the mesh-primary for an ordinary node | the JoinNode answer, as opaque bytes |
 | a new mesh's first node-admin is deployed | the maker, which holds the root or an issuing cert that may mint for that mesh | that admin's launch |
 | a member cert has lived two thirds of its TTL (`RDM_CERT_RENEW_AT`, with up to 5 % jitter) | the birth's issuer (its mesh-primary; the fabric-primary for a mesh-primary) | [node.cert.renew](lifecycles/node-cert-renew.md) to the running birth; the old cert stays valid to its own expiry |
 

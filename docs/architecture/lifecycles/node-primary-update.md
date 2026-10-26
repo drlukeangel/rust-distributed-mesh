@@ -6,7 +6,7 @@
 other type alike, and completes as `node.primary.updated`. `node.fabric-primary.update` moves the
 fabric-primary by the same primitive and completes as `node.fabric-primary.updated`. Commands only go
 down: the fabric-primary commands a mesh-primary, and a mesh-primary commands the primaries of its
-mesh's other node types. No node commands its own primary. A stop, delete, restart, replace or
+mesh's other node types. No node commands its own primary. A stop, delete, replace or
 `node.connections.delete { scope: All }` of a primary runs it first.
 
 Who is primary is the [election](../fabric-node-lifecycle-elections.md)'s result, computed by every
@@ -42,7 +42,7 @@ and its successor and "the mesh-primary" for the commander, the announcer and th
 the same, command, then the successor becomes primary and announces, then the record. Becoming primary
 and recording it are separate for every type.
 
-1. The primary is commanded from above, as a step of the Build that stops, deletes, restarts, replaces or
+1. The primary is commanded from above, as a step of the Build that stops, deletes, replaces or
    runs `node.connections.delete { scope: All }` on it.
 2. The writer pre-checks from its own view: the election over the nodes of that type in the mesh with the
    primary excluded names a ReadyForTraffic successor. If it names none, the step is refused by name and
@@ -67,7 +67,7 @@ and recording it are separate for every type.
 6. The commanding Build continues on the successor's direct acknowledgement of step 4, never on
    gossip: step 5 is the recording of a change that has already happened, and the Build waits for
    neither the digest nor the record. The successor is now the old primary's primary (for the `node-admin`
-   type, its mesh-primary) and commands the old primary's connections delete, stop, restart or replace.
+   type, its mesh-primary) and commands the old primary's connections delete, stop or replace.
 
 ## Failure contract
 
@@ -126,11 +126,11 @@ and recording it are separate for every type.
 - **No other node of the type in the mesh:** `node.primary.update` commanded for a type with no other
   node of that type in the mesh is refused by name, `cannot transfer: no secondary of type <node_type> in
   mesh <mesh>`, until a secondary is available. The primary stays primary, no row is written, and the
-  workflow that commanded it (the stop, restart or delete of that node) fails by name with that reason.
+  workflow that commanded it (the stop or delete of that node) fails by name with that reason.
   The exceptions that skip the update: the delete of a mesh's only node, and the delete of a type's only
   node in its mesh, whether the node leaves the topology (a removal) or is re-created at the same
   `path.name` (node recovery, an executable replacement); the type has no primary until the election names
-  the new birth ReadyForTraffic. A mesh's sole `broker` cannot be stopped or restarted until a second
+  the new birth ReadyForTraffic. A mesh's sole `broker` cannot be stopped until a second
   broker is ReadyForTraffic. No row and no vacancy inferred from a stop.
 - **No other mesh-primary for the fabric-primary:** the fabric arm's own refusal,
   [below](#the-fabric-primary-nodefabric-primaryupdate).
@@ -149,7 +149,7 @@ as its mesh's writer), with its own op,
 `node.fabric-primary.update`. It runs the same sequence through the same primitive and completes as
 `node.fabric-primary.updated` (never `node.primary.updated`, which is the mesh-primary's), the
 fabric-primary (a mesh-primary by definition) as caller, its commander being the workflow that stops,
-restarts, deletes or runs `node.connections.delete { scope: All }` on it, or mesh.delete. Only the
+deletes or runs `node.connections.delete { scope: All }` on it, or mesh.delete. Only the
 successor search and the row differ.
 
 Successor search for the commanded transfer:
@@ -163,7 +163,7 @@ Successor search for the commanded transfer:
    each found. The fabric-primary stays fabric-primary, no row is written, and the commanding workflow
    fails with that reason until a successor is available.
 
-Where the refusal bites: a single-mesh fabric with one node-admin cannot stop, restart or delete its
+Where the refusal bites: a single-mesh fabric with one node-admin cannot stop or delete its
 fabric-primary until a second node-admin is ReadyForTraffic; mesh.delete of the only mesh, or of the
 fabric-primary's mesh when no other mesh has a Ready primary, is refused the same way, and deleting the
 last mesh is fabric.delete's path.
@@ -184,7 +184,7 @@ nothing.
 ## Command, completion and gossip messages
 
 ```text
-commander → primary       (a step of the Build that stops, deletes, restarts, replaces or deletes the primary's connections)
+commander → primary       (a step of the Build that stops, deletes, replaces or deletes the primary's connections)
 writer                    pre-check: a ReadyForTraffic successor of the type in the mesh, the primary excluded
 primary                   issued writes finished (node-admin type)
 primary → successor       node.primary.update (PrimaryUpdate)
@@ -207,7 +207,7 @@ sequenceDiagram
     participant NA1 as NA1 (mesh-primary)
     participant NA2 as NA2 (successor, writer)
     participant G as Mesh channel and backbone
-    FP->>NA1: Build step on NA1 (stop, delete, restart, replace, connections delete)
+    FP->>NA1: Build step on NA1 (stop, delete, replace, connections delete)
     Note over NA1: pre-check: a ReadyForTraffic successor, NA1 excluded
     Note over NA1: issued writes finished
     NA1->>NA2: node.primary.update

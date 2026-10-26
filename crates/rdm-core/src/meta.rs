@@ -48,7 +48,7 @@ pub struct NodeSpec {
 pub enum StorageMeta {
     /// Fresh storage for a new node.
     Ephemeral,
-    /// Storage survives stop, start and restart, and a new node created over an inherited data dir
+    /// Storage survives stop and start, and a new node created over an inherited data dir
     /// keeps it; `on_retire` is its declared disposition once the node is gone.
     Persistent {
         /// The declared disposition of the storage once the node is gone.

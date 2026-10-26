@@ -51,16 +51,16 @@ at a new `path.name` of that type on the new executable, ReadyForTraffic and mes
 replaced after that recovery's attempt completes, never in the same attempt. The successor's storage follows its create spec's `storage`: `Persistent` inherits the
 predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one; config and tags come from
 the Deleted row (node-replace.md "Inherited"); a storage or placement change in the same request is the
-same re-birth with the new properties. The row then records the new executable. node.restart keeps the executable
-(node-restart.md "Kept"); nothing changes a running birth's executable. A Build that puts the fabric
+same re-birth with the new properties. The row then records the new executable. node.stop and node.start keep the executable
+(node-stop.md "Kept"); nothing changes a running birth's executable. A Build that puts the fabric
 back to pending completes only after its own ready-for-traffic state is set (states.md).
 
 ## 4. Recovery
 
 A heal is node investigation's verdict first (node-investigation.md). `reached`: the birth is commanded
 back through node.mesh.join, the same process on the same executable; nothing is created and nothing
-about its executable is read or written. A restart keeps the process and the executable
-(node-restart.md "Kept"). Any other verdict re-creates the birth at its `path.name`, and that create
+about its executable is read or written. A stop and a start keep the process and the executable
+(node-stop.md "Kept"). Any other verdict re-creates the birth at its `path.name`, and that create
 names no executable on its step, so it takes the row's (node-recovery.md "Retained"), never the
 recovering admin's and never the topology's next entry. A heal never upgrades; a pending replacement
 follows as its own step. A row written before the field

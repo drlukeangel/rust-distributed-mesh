@@ -173,9 +173,9 @@ The submitted change may remain on B' as audit/history for build.get, but it is 
 
 Exactly one current fabric-primary accepts topology-changing requests. A non-primary refuses by name. A second topology-changing request while the current Build is actively reconciling is refused with a named build-in-progress refusal naming the current Build; RDM does not implement Build supersession/cancellation. The one exception is fabric.delete, which may interrupt the Build in progress because its target is nothing. Its acceptance record is the durable intent: once written, the interrupted Build opens no further operation and is never resumed, and a successor fabric-primary reads the delete as the current Build and continues the teardown. Operations already admitted at an executor finish or fail within their existing bounds and their launch evidence is retained; a fabric state the fabric-primary is setting ends at the acceptance, its hook's future dropped. When every open attempt of the interrupted Build has ended, its run receives `Failed { step, reason }` naming the delete, and the teardown's steps open mesh by mesh under the one-attempt-per-mesh rule. An operation that fails to end within its bound fails the delete's attempt by name, the intent retained; nothing reconciles the interrupted Build again. No other Build ends another. One attempt is in flight per mesh, not per fabric: a topology Build's operation on mesh X and mesh X's drift attempt never both open; the loser is refused build-in-progress naming the open attempt (R-BI7).
 
-Every change to the topology is its own Build, submitted through build.create with its own build_id: node.create, node.delete, Rafka's replace recipe (one Build of node primitives, [node replace](lifecycles/node-replace.md)), mesh.delete and fabric.delete. node.stop, node.start, node.restart, node recovery, a primary change and runtime drift leave the topology unchanged: each is an attempt of the current Build, never a new Build. One node.create is recovery, not a change to the shape: the node-admin mesh investigation creates into a live mesh that lost its node-admins runs on the same accepted Build, as its next attempt, under the mesh's own MeshId ([mesh-investigation.md](lifecycles/mesh-investigation.md) steps 5-6, [fabric-primary.md](fabric-primary.md#13-node-admin-storage-restart-and-recovery)).
+Every change to the topology is its own Build, submitted through build.create with its own build_id: node.create, node.delete, Rafka's replace recipe (one Build of node primitives, [node replace](lifecycles/node-replace.md)), mesh.delete and fabric.delete. node.stop, node.start, node recovery, a primary change and runtime drift leave the topology unchanged: each is an attempt of the current Build, never a new Build. One node.create is recovery, not a change to the shape: the node-admin mesh investigation creates into a live mesh that lost its node-admins runs on the same accepted Build, as its next attempt, under the mesh's own MeshId ([mesh-investigation.md](lifecycles/mesh-investigation.md) steps 5-6, [fabric-primary.md](fabric-primary.md#13-node-admin-storage-restart-and-recovery)).
 
-Workflow input is execution state, not topology: node.restart on an exact birth (node id and incarnation) and node recovery (`node.delete` then `node.create` at the same path.name, keyed on the exited birth) carry the exact birth they act on, which fences them against a stale birth. They never change the accepted topology map.
+Workflow input is execution state, not topology: node.stop and node.start on an exact birth (node id and incarnation) and node recovery (`node.delete` then `node.create` at the same path.name, keyed on the exited birth) carry the exact birth they act on, which fences them against a stale birth. They never change the accepted topology map.
 
 Every execution attempt re-reads the accepted topology and current realized/observed state and computes remaining work. Completed step receipts prevent repeating already-satisfied work; a Build never resumes from a mutable instruction pointer. A step receipt is `(build_id, attempt, operation, step)` with its output; the exact birth it acted on is the attempt's fenced action. Each workflow's `AttemptOpened` starts a run; a resume after the executor is lost (R-BI4) continues that run; a receipt is reused only within its run. A later attempt of the same run replays a held Complete receipt for the same operation and step. A receipt of an earlier run at the same path.name satisfies nothing for a later run: a second recovery at the same name opens its own run and runs its own steps.
 
@@ -186,7 +186,7 @@ Forbidden:
 - any node-admin other than the current fabric-primary accepting a topology change;
 - treating BuildIntent/change-request data as the accepted topology;
 - storing only counts and letting each executor independently choose which logical path to add/remove;
-- minting a new Build for node.stop, node.start, node.restart, node recovery, a primary change, or runtime drift against unchanged topology;
+- minting a new Build for node.stop, node.start, node recovery, a primary change, or runtime drift against unchanged topology;
 - accepting a second topology mutation while the current Build is actively reconciling;
 - replaying the submitted change to reconstruct topology;
 - blindly replaying operations already satisfied in current state.
@@ -200,7 +200,7 @@ Rafka shape vocabulary may remain product-facing input. It compiles once into th
 RDM creates, drives, reads and deletes Builds only through the
 [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm), which defines build.create,
 build.attempt.run, build.get and build.delete, their direction, streams and refusals.
-node.create, node.stop, node.start, node.restart and node.delete are submitted through
+node.create, node.stop, node.start and node.delete are submitted through
 build.create; §1 decides whether an input compiles a new Build or opens an attempt of
 the current one. Application bootstrap and fault injection are application work, not
 Build calls.
@@ -247,7 +247,7 @@ The writer is the current fabric-primary from [fabric-node-lifecycle-elections.m
 
 Persisted copies are not writers: several node-admins may each hold the same Fabric and Build facts for recovery, and only the current fabric-primary, as the election names it, may accept the next topology mutation.
 
-A topology-changing request compiles the current accepted explicit path map plus the requested change into a new complete Build. Create/remove/add/resize select exact logical paths during compilation. node.stop, node.start, node.restart and node recovery are attempts of the current Build and keep that exact topology map unchanged.
+A topology-changing request compiles the current accepted explicit path map plus the requested change into a new complete Build. Create/remove/add/resize select exact logical paths during compilation. node.stop, node.start and node recovery are attempts of the current Build and keep that exact topology map unchanged.
 
 ### 4.1 Build identity is active reconciliation state
 

@@ -200,7 +200,7 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`ConnectionsDeleting`** | `connections-deleting` |  |  | Connections-deleting: it takes no new work. |
 | 3 | **`Leaving`** | `leaving` |  |  | Leaving: it has announced its departure. |
 | 4 | **`PendingReconnect`** | `pending-reconnect` |  |  | Unheard past the staleness floor (`RDM_STALENESS_MS`, 30 s): this node's own pruner marks |
-| 5 | **`Restarting`** | `restarting` |  |  | Commanded silence: its mesh executor is restarting this exact birth (`NodeRestarting`, |
+| 5 | **`Reserved5`** | `reserved5` |  |  | Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting |
 | 6 | **`Dead`** | `dead` |  |  | True offline: half a floor after the mark the mesh primary's one QUIC connect found no path, |
 | 7 | **`Deleted`** | `deleted` |  |  | Deleted: the node's identity and name are released. Only the node's row carries it, written |
 | 8 | **`Withdrawn`** | `withdrawn` |  |  | Withdrawn: the create that claimed the name was withdrawn before its node ran (R-SR2). Only the |
@@ -222,7 +222,7 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`ConnectionsDeleting`** | `connections-deleting` |  | `rename = "connections-deleting"` | Connections-deleting: it takes no new work while it finishes what it holds. |
 | 3 | **`Leaving`** | `leaving` |  |  | Leaving: it has announced its departure and is closing. |
 | 4 | **`PendingReconnect`** | `pending-reconnect` |  |  | Unheard past the staleness floor: held, never death, and never a reason to restart or |
-| 5 | **`Restarting`** | `restarting` |  |  | Commanded silence: its mesh executor is restarting this exact birth and owns bringing it |
+| 5 | **`Reserved5`** | `reserved5` |  |  | Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting |
 | 6 | **`Dead`** | `dead` |  |  | True offline: the mesh primary's connect found no path on two ladders a staleness floor |
 | 7 | **`Deleted`** | `deleted` |  |  | Deleted: identity and name released; only the node's row carries it. |
 

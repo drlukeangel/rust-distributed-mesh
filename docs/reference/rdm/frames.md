@@ -45,11 +45,11 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 4 | **`NodeDeleted`** |  |  | The provider proved `op`'s exact birth terminal: it has left. Same |
 | 4.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The removal that completed. |
 | 4.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 5 | **`NodeRestarting`** |  |  | The mesh executor holding `op` (`node.restart:<path>`) is restarting its exact birth: |
-| 5.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The restart being executed. |
-| 5.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 5.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | The exact birth that published the fact: the epoch of `topology_version`, as on |
-| 5.3 | `topology_version` | `u64` |  | The publisher's `topology_version` of the subject's mesh at which the subject changed. |
+| 5 | **`NodeRestarting`** |  |  | Reserved position (Q183; gossip.md, reserved lifecycle frame positions): never sent on any |
+| 5.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | Never read. |
+| 5.1 | `forwarded_by` | `Option<String>` |  | Never read. |
+| 5.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | Never read. |
+| 5.3 | `topology_version` | `u64` |  | Never read. |
 | 6 | **`MeshStatus`** |  |  | A mesh's status, authored by that mesh's primary alone, on its own mesh channel and the |
 | 6.0 | `mesh` | `String` |  | The mesh the status belongs to. |
 | 6.1 | `status` | `String` |  | The status. |

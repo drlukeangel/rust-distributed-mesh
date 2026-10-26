@@ -324,7 +324,7 @@ Do not collapse these operations into one generic "re-entry" rule.
 |---|---:|---:|---:|---|
 | mesh-primary takeover | no | yes | **not by takeover itself** | the election + hydration |
 | fabric-primary takeover | no (the same active Build continues) | yes | hydrate current-state evidence and the accepted Build's complete Mesh set | the election + current-state completion evidence |
-| node restart | no | maybe later | node lifecycle only unless another explicit event follows | Build + node lifecycle |
+| node stop and start | no | maybe later | node lifecycle only unless another explicit event follows | Build + node lifecycle |
 | WAL reset | no | not inherently | yes, only through its explicit reset/re-entry contract | reset lifecycle path |
 | Mesh join | yes | yes/a new primary may appear | yes | Build + Mesh/Fabric lifecycle transition |
 | Mesh remove | yes | yes as estate changes | yes | Build + Mesh/Fabric lifecycle transition |

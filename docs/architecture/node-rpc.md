@@ -905,7 +905,7 @@ The caller invalidates pooled connections to that birth and re-enters its own ta
 
 Handlers already running keep their admission and memory permits, may finish, and may issue outbound Node RPC calls while finishing. In-flight work finishes under node.connections.delete's own rules; its receipt is `ConnectionsReceipt`: `Established { in_flight, closed }`, or `Deadline { last_in_flight, closed, held }` at its bound (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`). Node RPC never rolls back domain work.
 
-A stopped node keeps its endpoint bound; stopped does not refuse node.start, node.update or node.delete ([readiness gate](node-rpc-envelope.md#node-rpc-readiness-gate)). A restart never exits the process.
+A stopped node keeps its endpoint bound; stopped does not refuse node.start, node.update or node.delete ([readiness gate](node-rpc-envelope.md#node-rpc-readiness-gate)). A stop and the start after it never exit the process.
 
 Lifecycle vocabulary is fixed:
 

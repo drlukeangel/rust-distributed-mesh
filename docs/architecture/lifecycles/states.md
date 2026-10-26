@@ -80,7 +80,7 @@ Application routing selects a birth only while it is ready-for-traffic and its m
 ready-for-traffic. There is no list of excluded states: anything else is a routing
 stop, applied by a peer on receipt of the fact that says so. A node that is starting, pending,
 connections-deleting, connections-deleted, stopping, stopped or deleting, a NodeStopped,
-NodeRestarting, NodeDeleting or NodeDeleted overlay, a mesh deleting or deleted,
+NodeDeleting or NodeDeleted overlay, a mesh deleting or deleted,
 each excludes the exact birth from new application traffic from the moment the peer holds it.
 In-flight work finishes under [node.connections.delete's](node-connections-delete.md) rules. A routing stop is never a barrier: it
 orders nothing and waits for nobody. Start clears NodeStopped at node.joined, but
@@ -123,8 +123,7 @@ and leaves the live process stopped. node.get answers Current { stopped }.
 
 node.start is the only transition out of stopped.
 It retains node.id, incarnation, endpoint key, bound port and bin and completes all
-start gates before ready-for-traffic. node.restart composes that stop/start; it is not
-an exit and a new birth. node.delete proceeds from stopped, as deleting, to `TerminateRuntime`
+start gates before ready-for-traffic. A stop then a start is not an exit and a new birth. node.delete proceeds from stopped, as deleting, to `TerminateRuntime`
 and identity release, deleted. Silence decides nothing; node investigation does.
 
 The [stopped-node collector](../node-identity-and-state.md#stopped-node-garbage-collector)
@@ -162,6 +161,6 @@ are separate facts.
 
 A Build that changes only a node's `config`, `tags`, `storage` or `placement` is neither: it applies them as [build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine) states, and the fabric stays ready-for-traffic.
 
-A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth is ready-for-traffic.
+A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); a stop and a start retain the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth is ready-for-traffic.
 
 See [the fabric's ready-for-traffic](#the-fabrics-ready-for-traffic) and [mesh.delete](mesh-delete.md).

@@ -345,7 +345,7 @@ else:
 
 A latest Failed Direct is the one state a reconnect series stands on (§9.1), and the series owns its retry.
 Any other non-active Direct has no series: none ever observed, a closed connection (Disconnected, as
-`node.connections.delete` writes at every node.stop and node.restart), or an acceptor's Refused. A new call
+`node.connections.delete` writes at every node.stop), or an acceptor's Refused. A new call
 dials it (§7), and a failed dial writes the first Failed of a series.
 
 This precedence provides ordered cutback. When a direct connection returns, traffic stays on the proven

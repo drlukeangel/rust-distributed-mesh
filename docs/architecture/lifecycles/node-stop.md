@@ -14,7 +14,7 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
 | Caller / executor | Mesh-primary through the typed object; exact node executes the stop |
 | Entry | Live exact `(node.id, incarnation)` |
 | Steps | Whole `node.connections.delete { scope: All }` → the transport cut → node.stopped |
-| Primary | A target that is a primary hands over first by [node.primary.update](node-primary-update.md) ([node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) for the fabric-primary) and is stopped by its successor. With no successor the stop is refused by name before anything moves: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, or `cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh <mesh>, no other mesh-primary ReadyForTraffic`; the primary stays primary and no row is written. A single-admin single-mesh fabric's primary cannot be stopped until a secondary is ReadyForTraffic. A standalone node.stop or node.restart never hands over without a successor. This refusal does not apply to [fabric.delete](fabric-delete.md), which keeps every primary until it is deleted ([elections §6](../fabric-node-lifecycle-elections.md#6-fabric-shutdown-does-not-invent-another-election)), or to the final-admin deletion after mesh.delete's confirmed fabric handover ([mesh-delete.md step 7](mesh-delete.md#numbered-end-to-end-sequence)) |
+| Primary | A target that is a primary hands over first by [node.primary.update](node-primary-update.md) ([node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) for the fabric-primary) and is stopped by its successor. With no successor the stop is refused by name before anything moves: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, or `cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh <mesh>, no other mesh-primary ReadyForTraffic`; the primary stays primary and no row is written. A single-admin single-mesh fabric's primary cannot be stopped until a secondary is ReadyForTraffic. A standalone node.stop never hands over without a successor. This refusal does not apply to [fabric.delete](fabric-delete.md), which keeps every primary until it is deleted ([elections §6](../fabric-node-lifecycle-elections.md#6-fabric-shutdown-does-not-invent-another-election)), or to the final-admin deletion after mesh.delete's confirmed fabric handover ([mesh-delete.md step 7](mesh-delete.md#numbered-end-to-end-sequence)) |
 | Transport cut | The stop's own step after the connections are deleted: its gossip neighbours and its Node RPC pool, which are not connections; never its own endpoint or the stop call's stream |
 | Reply | `node.stopped` on the stop call's reply stream |
 | Peer publication | Mesh-primary authors NodeStopped from the matching stopped frame, in its in-flight overlay |
@@ -76,8 +76,6 @@ These are reply frames on one call; each step has its own span and Build receipt
 The mesh-primary publishes the [NodeStopped lifecycle overlay](../gossip.md#node-stopped-lifecycle-overlay)
 from the matching node.stopped frame; the node authors no gossip. The decoded frame is the
 [NodeStopped example](../gossip.md#examples). Its channels, forwarding and meaning are the overlay's.
-Inside [node.restart](node-restart.md), the mesh-primary publishes that stop's stopped as
-NodeRestarting instead of NodeStopped.
 
 ## Mermaid sequence diagram
 

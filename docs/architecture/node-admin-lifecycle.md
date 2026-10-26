@@ -24,7 +24,7 @@ workflow node-admin drives, its events and its gossip),
    Different meshes may each replace one node-admin at the same time. Every mesh therefore keeps a
    running node-admin through any planned operation except mesh.delete, after whose
    mesh.deleted a separate node.delete removes the mesh-primary, and fabric.delete.
-3. **The fabric primary is handed off, never wiped out.** Before its delete, restart or replace, it runs
+3. **The fabric primary is handed off, never wiped out.** Before its delete, stop or replace, it runs
    [node.primary.update](lifecycles/node-primary-update.md), commanded from above, and its successor, now
    its primary, commands the step ([elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover));
    as its mesh's last admin it stops being fabric-primary only by node.fabric-primary.update inside mesh.delete.
@@ -80,8 +80,8 @@ The parameters select one of these modes:
 | **Create as mesh primary** | mesh, seed, mesh primary | the fabric primary | A live peer mesh lost all its node-admins: node.create of a node-admin into it ([mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation) step 6), then the entry sequence (§4) and the mesh's missing node-admins (§4.3). |
 | **Fabric recovery** | mesh, seed, mesh primary, fabric primary | a person | Every node-admin is lost (catastrophic): the entry sequence (§4), then every mesh's missing node-admins. The launched node-admin is a new node over its inherited data dir: new node.id and incarnation, same path.name and endpoint key, new port. |
 
-node.restart launches nothing: it is node.stop then node.start on the same process
-([node restart](lifecycles/node-restart.md)).
+node.stop and node.start launch nothing: the same process stops and rejoins
+([node stop](lifecycles/node-stop.md), [node start](lifecycles/node-start.md)).
 
 ## 4. A node-admin enters an existing mesh
 
@@ -137,9 +137,9 @@ The Pending hand-off to a mesh's first admin is a row of [States: who sets each 
 
 ## 6. Replacing node-admins
 
-- node.restart (same NodeId, incarnation, endpoint and port) and replacement (new NodeId at the
+- node.stop then node.start (same NodeId, incarnation, endpoint and port) and replacement (new NodeId at the
   same path.name) of a node-admin are Builds, one node-admin at a time per mesh (rule 2).
-- A Build that runs `node.connections.delete { scope: All }` on, stops, restarts or replaces a
+- A Build that runs `node.connections.delete { scope: All }` on, stops or replaces a
   primary runs [node.primary.update](lifecycles/node-primary-update.md) first: the primary, commanded from
   above, hands over to its successor, who then commands the old primary's step (rule 3).
 

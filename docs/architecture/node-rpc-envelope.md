@@ -242,7 +242,7 @@ adapters, which are transitional entries; `testkit` holds `0x70` to
 
 ## Typed object contract
 
-Callers use typed objects: `node.create`, `node.start`, `node.stop`, `node.restart`,
+Callers use typed objects: `node.create`, `node.start`, `node.stop`,
 `node.delete`, `node.get`, `node.name.update`,
 `node.topology.get`, `node.connections.get/delete`, `node.tags.get/create/delete`, `node.config.get/update`,
 `mesh.get`, `mesh.update`, `mesh.nodes.get`, `mesh.config.get/update`, `mesh.delete`,
@@ -289,7 +289,7 @@ Call patterns:
 
 The target is `{ node_id, op }` ([Section 0](#section-0-the-target)); `(node.id, incarnation)`
 is the exact-birth identity used by resolution, lifecycle checks and terminal proof.
-Stop/start/restart retain the same instance. A stopped endpoint answers anyone who reaches it:
+Stop/start retain the same instance. A stopped endpoint answers anyone who reaches it:
 the mesh adds no generic caller check or authorship validation. connections-deleting and stopped
 are defined in [States](lifecycles/states.md#stopped-nodes); the graceful closure behind
 connections-deleting is [node.connections.delete](lifecycles/node-connections-delete.md), whose
@@ -306,7 +306,6 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [node.create](lifecycles/node-create.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; first join on [JoinNode 0x1D](#join-op-0x1d-rdm); a held name answers NameHeld { by }; the create of a mesh's first node-admin is the mesh-absent arm, [mesh.create](lifecycles/mesh-create.md), with no call of its own | every FirstStart event ending node.started, then node.created | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → StopConnectionsDeleted (Data) → NodeStopped (Terminal); the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.restart](lifecycles/node-restart.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's and the start's ops; no restart opcode | every stop/start event, node.restarted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.delete](lifecycles/node-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's ops, then provider inspection, which is not a Node RPC | every stop event, then node.deleted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.mesh.join](lifecycles/node-mesh-join.md) | The report is [JoinNode 0x1D](#join-op-0x1d-rdm); standalone, [Status 0x1B](#status-op-0x1b-rdm) `JoinMesh`, answered `MeshJoined { joined }`; inside node.start a step of the start's stream | node.mesh.joined; a refused report fails the primitive by the report's refusal | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.mesh.leave](lifecycles/node-mesh-leave.md) | Standalone, [Status 0x1B](#status-op-0x1b-rdm) `LeaveMesh`, answered `MeshLeft { left }`; node.stop and node.delete end their live part with it, and inside a stop it is the stop's own step and this frame is not sent | node.mesh.left; `BusyHoldingConnections { connections }` while the node holds a connection | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
@@ -1255,7 +1254,7 @@ REPLY_VARIANTS is 25. The [schema](#build-schema) gives both enums.
 
 | Call | Direction / caller → server | Request content | Reply / stream |
 |---|---|---|---|
-| build.create | upward, caller → fabric-primary | submitted Build intent or node.create/stop/start/restart/delete workflow; a preset is a Build input; existing build_id for resubmission | Started { build_id }, step frames, Complete or Failed { step, reason }; a fabric-primary change ends with FabricPrimaryMoved, the typed frame naming the new one |
+| build.create | upward, caller → fabric-primary | submitted Build intent or node.create/stop/start/delete workflow; a preset is a Build input; existing build_id for resubmission | Started { build_id }, step frames, Complete or Failed { step, reason }; a fabric-primary change ends with FabricPrimaryMoved, the typed frame naming the new one |
 | build.attempt.run | downward, fabric-primary → executor named by executor_for | (build_id, attempt) and the Won claim | replay held Complete receipts, current Blocked if still blocked, then live step frames; a run that stops at another executor's operation ends HandedOff { to }; executor loss ends Indeterminate |
 | build.get | caller → fabric-primary | build_id | read accepted Build and receipts for reattachment after a cut; never progress polling |
 | build.delete | caller → fabric-primary | build_id | named deletion result or refusal; the current Build ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)) cannot be deleted |
@@ -1347,7 +1346,7 @@ pub enum BuildChange {
     RemoveNode { node: PathName },
     Reserved4,
     RemoveMesh { mesh: String },
-    Restart { node: PathName },
+    Reserved6,
     // RecipeStep = Create | Stop | Update | Start | Delete: one node primitive per step. Create names
     // the node and the executable binding the Build fixes for it (launch id, hash); the executing
     // admin launches that binding, verified at launch, whichever admin runs or resumes the step.
@@ -1357,8 +1356,8 @@ pub enum BuildChange {
     // NodeSpec { path, storage, placement, executable, tags, config }. The executable (path, sha256,
     // image) the node runs is compiled onto the accepted topology's entry and recorded on the row at
     // the claim (build-deployment.md); config is the application's map, written to the row at the
-    // claim. The Build applies the diff against each node's row (build.md §1). Positions 0, 1, 2 and 4 (the count forms) and
-    // 14 (the removed change of the old per-kind set) are reserved: never sent, and a request at one is an unknown
+    // claim. The Build applies the diff against each node's row (build.md §1). Positions 0, 1, 2 and 4 (the count forms),
+    // 6 (the removed node.restart, Q183) and 14 (the removed change of the old per-kind set) are reserved: never sent, and a request at one is an unknown
     // variant (positional, no format move).
     ConnectionsDelete { node: PathName },
     Stop { node: PathName },

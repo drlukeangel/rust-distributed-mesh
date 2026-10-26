@@ -8,8 +8,7 @@ joins that mesh, `f(FabricId, MeshId)`. A node-admin joins two, its own mesh and
 node-admin backbone, and the primitive completes when both hold. Progress is `joining`,
 completion `node.mesh.joined`. It is run by:
 
-- [node.start](node-start.md) step 2, and so [node.restart](node-restart.md) and the first start
-  inside [node.create](node-create.md);
+- [node.start](node-start.md) step 2, and so the first start inside [node.create](node-create.md);
 - the mesh-primary, standalone, when a [tickle](node-tickle.md) reaches a node that is off its
   mesh: the node is commanded back on;
 - a node-admin entering an existing mesh ([mesh investigation](mesh-investigation.md#a-node-admin-joins-the-live-mesh), [mesh.create](mesh-create.md)).
@@ -29,7 +28,7 @@ Those pages link here and restate nothing.
 | Progress | `joining` from the report until the mesh holds, and the backbone too for a node-admin; the node publishes nothing in that state |
 | Completion | `node.mesh.joined` on the commanding stream once the report is accepted and the mesh holds (and the backbone, a node-admin): the first `Digest` heartbeat follows it; the mesh-primary's one Pending publish for this join came before it, when the report was accepted (step 10) |
 | Refusals | The report's: `JoinMismatch { field, deployed, reported }`, `NotPrimary { primary }`, `DeploymentAbandoned { build_id, attempt, node_id, incarnation }`, `CertRefused { name, detail }`, `NotReady`, `Busy`, `ConnectionsDeleting`, `Malformed`; a refused report fails the primitive by that name and the node joins nothing. `PeerUnresolved` and `Unauthorized` are codec positions only: a mesh receiver never sends either ([node-rpc.md](../node-rpc.md#40-error-truth-table) refusal table) |
-| Gossip | No new frame. The join's visible effect is the node's first Digest and, from the mesh-primary, the node's status recorded `pending` on its row when it accepts the node's join report, before it answers it, carried by its Members projection like every status; never a view-side mark; NodeStopped or NodeRestarting for that birth is cleared at `node.mesh.joined` |
+| Gossip | No new frame. The join's visible effect is the node's first Digest and, from the mesh-primary, the node's status recorded `pending` on its row when it accepts the node's join report, before it answers it, carried by its Members projection like every status; never a view-side mark; NodeStopped for that birth is cleared at `node.mesh.joined` |
 | Wire | The report is [Join, op `0x1D`](../node-rpc-envelope.md#join-op-0x1d-rdm). The standalone command is `JoinMesh { node_id, incarnation, build_id, attempt, operation }` on 0x1B, answered `MeshJoined` on completion; an appended variant pair, `durable format moved`, retiring the legacy `Rejoin` control frame |
 | Spans | `rdm.node.mesh.update.via-joining` at the report, `via-joined` once per mesh joined, each naming mesh, MeshId and which (`own` or `backbone`); the primary's `rdm.node_admin.node.update.via-join` on acceptance |
 
@@ -53,7 +52,7 @@ Those pages link here and restate nothing.
    validated report. At every join, a first start, a start after a stop and a commanded re-entry alike
    (Q87), it issues the birth's member cert (`node.cert.create`: signed for the exact birth with the
    mesh's issuing key, 24 h, and its cert row written; a refused issuance refuses the join by name,
-   [fabric certs](../fabric-certs.md#when-a-cert-is-issued)). A restart or a standalone rejoin has no
+   [fabric certs](../fabric-certs.md#when-a-cert-is-issued)). A start of a stopped node or a standalone rejoin has no
    deployment wait.
 6. The primary answers `Joined`: who served it, the control snapshot (provider, fabric
    identity, shutdown if any, the Build floor, rafka-time now, the member cert, the row's name,

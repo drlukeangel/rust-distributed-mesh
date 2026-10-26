@@ -15,7 +15,7 @@ A Build provides durable resumable execution, not automatic rollback.
 | Writer | The node's [row writer](../node-identity-and-state.md#25-one-system-org-one-projection-one-writer-per-mesh) writes every row of this recipe |
 | Successor | Created at `<name>` once the predecessor has released it: a re-birth, with a new node.id, incarnation and runtime; new port; key from its specified data dir; its `Create` step names its executable ([build-deployment.md](../build-deployment.md)) |
 | Predecessor | Its connections deleted, it leaves its mesh, then it is renamed `<name>.old` and stopped, or deleted |
-| Immutable exe | New bin/budgets require this new node, never a restart of the stopped one |
+| Immutable exe | New bin/budgets require this new node, never a start of the stopped one |
 | Inherited | Config and tags are inherited from the retained `<name>.old` row, or from the Deleted predecessor row at `<name>` when the predecessor was deleted. The successor's tag-index entries use its own id. Retained predecessor labels are removed from the active index, not erased from its row. A repeated cutover keeps the successor's already-inherited values and never overwrites a later update. Nothing is copied later ([node properties](../node-rpc-envelope.md#node-properties)) |
 | Data transfer | Rafka's own step; preserve its declared move/copy and commit boundary |
 | Name ownership | [The node owns its name](../node-identity-and-state.md#22-the-node-pathname-is-what-placement-stores--the-endpoint_id-is-resolved-at-dial-time) |

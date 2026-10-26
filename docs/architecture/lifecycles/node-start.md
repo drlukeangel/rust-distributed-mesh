@@ -3,7 +3,7 @@
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Typed calls and wire mapping](../node-rpc-envelope.md#typed-object-contract)
 
 `node.start` rejoins a stopped or just-created process. It creates no identity or
-runtime. Create composes it with FirstStart; restart composes it with AfterStop.
+runtime. Create composes it with FirstStart; a start of a stopped node runs it with AfterStop.
 
 ## Operation contract
 

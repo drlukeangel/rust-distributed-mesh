@@ -76,12 +76,12 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   to a node (Rafka's replica sets and placement among them) carries the node's `path.name`, and a
   dial resolves `path.name` → `endpoint_id` at DIAL time (§2.2), never from a stored copy. A stored
   64-hex `endpoint_id` is refused by name.
-- **The id names one node INSTANCE and is never reissued.** A stop, start or restart keeps the id,
+- **The id names one node INSTANCE and is never reissued.** A stop or a start keeps the id,
   incarnation, endpoint and port; a new bin is a new node with a fresh id (the replace recipe), and so
   is a node that replaces another or is added (§2.3).
 - **A node PROCESS has an incarnation.** The `Node` row carries `incarnation_id`, an opaque id minted by the
   one minter at node.create, naming the exact runtime that serves the node's id and `path.name`. It stays the
-  same through stop, start and restart (the process never exits) and ends at delete; recover and replace create
+  same through stop and start (the process never exits) and ends at delete; recover and replace create
   a new node with its own. The process reads it once at boot (`RDM_INCARNATION_ID`, written by node-admin at launch). A reader
   compares incarnations for EQUALITY only: it is not a counter, and it is not the writer incarnation that refuses stale writes
   a writer's rows. `node.get` returns it per node.
@@ -425,26 +425,18 @@ put.
 Joining → Alive ⇄ Overloaded          self-published (auto, every tick)
 Alive ⇄ Degraded                      self-published (auto, every tick)
 Alive → PendingReconnect              observer-inferred on staleness, or on a command never sent for a reachability reason (soft, reversible)
-Alive → Restarting                    the mesh-primary's NodeRestarting overlay for an open node.restart
 *     → Leaving                       set by the mesh-primary on node.stopped; published as NodeStopped
 *     → Dead                          observer-inferred ONLY (never sent)
 ```
 
 A node's `NodeState` is self-published from what the node measures, inferred by an observer from
-absence, or set from its mesh-primary's lifecycle overlays (`NodeStopped`, `NodeRestarting`).
+absence, or set from its mesh-primary's lifecycle overlay (`NodeStopped`).
 
 - **Self-publication** recomputes state each gossip tick: `Joining` until the node has published
   once and is self-ready; `Overloaded` when over its CPU or RAM budget; `Degraded` when it reaches a
   broker only through a peer or node-admin (§8); else `Alive`. The node never publishes its own
   departure: a stopping node gossips nothing, and its mesh-primary publishes `NodeStopped` from the
   stop stream's `node.stopped` frame.
-- **`PendingReconnect` vs `Restarting` are different KINDS of claim.** PendingReconnect is
-  an observer's inference ("this node went quiet, or a command could not reach it, and we do not
-  know why"). `Restarting` is announced by
-  the mesh-primary (`NodeRestarting`) for the length of a node.restart: the process is stopped and
-  rejoins, never exits, and the overlay clears on that same incarnation's `node.started`. A node
-  holding `Restarting` is EXEMPT from the staleness sweep's flip to `PendingReconnect`: overwriting a
-  fact with an inference loses information.
 - **Shutdown is signal-driven.** SIGINT and SIGTERM run the node's own stop steps
   ([node stop](lifecycles/node-stop.md), the signal stop). No file poll, no timer.
 
@@ -459,7 +451,6 @@ absence, or set from its mesh-primary's lifecycle overlays (`NodeStopped`, `Node
 | `Leaving` | set by the mesh-primary on `node.stopped` (overlay `NodeStopped`) | the routing rule: routed no traffic |
 | `Dead` | never sent; receiver-side vocabulary | the traffic/topology filters |
 | `PendingReconnect` | the staleness sweep; the mesh-primary, at once, for a member a command was never sent to for a reachability reason ([node recovery](lifecycles/node-recovery.md) step 1) | the mesh-primary's recovery tick ([node recovery](lifecycles/node-recovery.md)) |
-| `Restarting` | the mesh-primary's `NodeRestarting` overlay for an open node.restart | the routing rule; peers keep the birth, expecting it back |
 
 Every state in that table has a reader. That is the bar a state has to clear to exist.
 
@@ -555,7 +546,7 @@ A removal by [node.delete](lifecycles/node-delete.md), [mesh.delete](lifecycles/
 or [fabric.delete](lifecycles/fabric-delete.md) is its workflow's.
 
 **A node's topology row — any type — is never RELEASED by a liveness gap or a same-identity
-restart.** It goes `Restarting` or `PendingReconnect` and stays in the projection's kind index,
+restart.** It goes `PendingReconnect` and stays in the projection's kind index,
 because that index is what every reader resolves a node from: a row removed on a heartbeat gap
 leaves a stored reference with no resolvable node. Only node.delete releases it, and then the row
 stays with status deleted while the data dir stays.
@@ -609,8 +600,8 @@ would in its own container. A test suite tears a mesh down by the tag it created
 <a id="72-node-admins-own-lifecycle-birth-scale-replace-reap"></a>
 ### 7.2 node-admin's own lifecycle: create, scale, replace, delete
 
-A node-admin is created, restarted, replaced and deleted like any node
-([node create](lifecycles/node-create.md), [node restart](lifecycles/node-restart.md),
+A node-admin is created, stopped, started, replaced and deleted like any node
+([node create](lifecycles/node-create.md), [node stop](lifecycles/node-stop.md), [node start](lifecycles/node-start.md),
 [node replace](lifecycles/node-replace.md), [node delete](lifecycles/node-delete.md)); its launch,
 start modes and replacement rules are [node-admin-lifecycle.md](node-admin-lifecycle.md), and its
 the fabric-primary moves as [elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover)
@@ -619,7 +610,7 @@ defines.
 - **The shape is the accepted Build's.** A mesh may run N node-admins for HA; scaling up never
   implies a paired deletion.
 - **Every mesh always has a LISTENING node-admin**: ready-for-traffic and holding a live backbone
-  aggregate it RECEIVED from every other mesh. No delete, restart or
+  aggregate it RECEIVED from every other mesh. No delete, stop or
   replace leaves a mesh without one; the separate node.delete of a mesh's last node-admin after
   mesh.deleted is the one exception ([mesh delete](lifecycles/mesh-delete.md)).
 - **A node-admin executable replacement replaces a non-primary admin first**, so the mesh keeps another listening

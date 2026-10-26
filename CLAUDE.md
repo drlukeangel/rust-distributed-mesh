@@ -28,8 +28,8 @@ connection). Banned everywhere: `relay`, `cluster`, `tailer`, `sidecar`, `child 
 `operator`, `sysadmin`, `book` / `books` (it is a view: the topology view, `DigestView`), `tree`, `partition`, `reborn`, `drain` / `draining` / `drained` (the state is
 `connections-deleting`, the bound `RDM_CONNECTIONS_DELETE_DEADLINE_MS`: [node-connections-delete](docs/architecture/lifecycles/node-connections-delete.md)),
 `park` / `parked`, `fence`, `epoch`, `relaunch`, `departed`, `retire` / `retired`, `seat` / `seated` / `unseat`, `holder` (of a primary; a name's holder in `NameHeld` is another sense), `authority` / `authorize` / `authoritative`, `cohort`, `lane`, `cut-off` / `cut off`, `committed seat`, `exit proof` / `proven exit`, `held-running`, `hung hold`, `LeadershipView` / leadership `resolver`, `sticky`, `roll` / `rolls` / `rolled` / `rolling` (the operation is a node's executable replacement, a Build; `docs/architecture/build-deployment.md`), `climb` / `climbs` / `climbed` / `climbing`, `round` / `rounds` (the fabric has states, pending and ready-for-traffic; a state is set fabric-wide and is set when every member has checked in; the whole movement from pending to ready-for-traffic is the fabric's change) (the name check's set,
-`scripts/name-check.py`). A node is restarted (same node.id and
-incarnation) or re-born (same path.name, new node.id); a mesh is never reborn.
+`scripts/name-check.py`). A node is stopped then started (same node.id and
+incarnation; node.restart is removed, Q183) or re-born (same path.name, new node.id); a mesh is never reborn.
 
 ## Rulings
 

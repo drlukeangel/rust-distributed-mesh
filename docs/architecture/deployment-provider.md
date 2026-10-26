@@ -114,7 +114,7 @@ The fact is:
 
 `control_domain` is opaque equality-only deployment metadata. It is not a product identity and not a leadership key.
 
-Changing the locator or control domain for the same incarnation is a named inconsistency and refusal. A restart keeps the NodeId, the IncarnationId and the RuntimeFact: the process never exits. A new node (create, recovery, Rafka's replace) has a new NodeId, IncarnationId and RuntimeFact.
+Changing the locator or control domain for the same incarnation is a named inconsistency and refusal. A stop and a start keep the NodeId, the IncarnationId and the RuntimeFact: the process never exits. A new node (create, recovery, Rafka's replace) has a new NodeId, IncarnationId and RuntimeFact.
 
 A provider's local handle cache is never the source of truth merely because that admin launched the runtime.
 
@@ -276,7 +276,7 @@ A `node.delete` of a live target runs the whole [node.stop](lifecycles/node-stop
 
 A node's storage and placement are typed properties of its create spec (`storage: StorageMeta`, `placement: PlacementMeta`; [build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)); `config` is the application's map, which RDM never reads. `Tag` is an extrinsic annotation with no execution semantics. The pipeline interprets the storage and placement and resolves concrete storage actions against exact locators; the provider interprets neither.
 
-Persistence belongs to the logical `path.name`, not its incarnation: Ephemeral storage is fresh for a new node; Persistent storage survives stop, start and restart, and a new node created over an inherited data dir keeps it. Delete releases no storage; `Preserve` issues no release action.
+Persistence belongs to the logical `path.name`, not its incarnation: Ephemeral storage is fresh for a new node; Persistent storage survives stop and start, and a new node created over an inherited data dir keeps it. Delete releases no storage; `Preserve` issues no release action.
 
 `PrepareStorage` for a recovery (R-FM2) tells **gone** from **broken** by the error, never by a guess:
 

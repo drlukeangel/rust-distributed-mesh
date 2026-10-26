@@ -37,7 +37,7 @@ pub enum NodePrimaryUpdateRequest {
         /// Every primary that moves: its node type (`fabric` for the fabric-primary), the primary's
         /// exact birth, the successor's exact birth and the revision the successor takes.
         primaries: Vec<(String, Birth, Birth, u64)>,
-        /// The Build whose stop, delete, restart, replace or node.connections.delete the update precedes.
+        /// The Build whose stop, delete, replace or node.connections.delete the update precedes.
         build_id: String,
         /// The run of that Build: the first attempt of the series a submission opened.
         run: u32,
@@ -49,7 +49,7 @@ pub enum NodePrimaryUpdateRequest {
     UpdatePrimary {
         /// The node type whose primary moves.
         node_type: String,
-        /// The Build whose stop, delete, restart, replace or node.connections.delete the update precedes.
+        /// The Build whose stop, delete, replace or node.connections.delete the update precedes.
         build_id: String,
         /// The run of that Build.
         run: u32,

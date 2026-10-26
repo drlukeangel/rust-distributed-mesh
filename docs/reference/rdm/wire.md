@@ -945,12 +945,12 @@ The directed calls of node.primary.update.
 |---|---|---|---|---|---|
 | 0 | **`PrimaryUpdate`** |  |  | `op() = "primary-update"` | node.primary.update, the primary to its successor's exact birth: the election's result the |
 | 0.0 | `primaries` | `Vec<(String, Birth, Birth, u64)>` → [`Birth`](#t-rdm_core-framing-Birth) |  |  | Every primary that moves: its node type (`fabric` for the fabric-primary), the primary's |
-| 0.1 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete the update precedes. |
+| 0.1 | `build_id` | `String` |  |  | The Build whose stop, delete, replace or node.connections.delete the update precedes. |
 | 0.2 | `run` | `u32` |  |  | The run of that Build: the first attempt of the series a submission opened. |
 | 0.3 | `operation` | `String` |  |  | The update's operation identity, `node.primary.update:<build_id>:<run>:<op>`. |
 | 1 | **`UpdatePrimary`** |  |  | `op() = "update-primary"` | node.primary.update commanded from above, on the primary of `node_type` in the receiver's mesh, |
 | 1.0 | `node_type` | `String` |  |  | The node type whose primary moves. |
-| 1.1 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete the update precedes. |
+| 1.1 | `build_id` | `String` |  |  | The Build whose stop, delete, replace or node.connections.delete the update precedes. |
 | 1.2 | `run` | `u32` |  |  | The run of that Build. |
 | 1.3 | `operation` | `String` |  |  | The update's operation identity. |
 | 1.4 | `successor` | `Option<Birth>` → [`Birth`](#t-rdm_core-framing-Birth) |  |  | The successor's exact birth, named by the mesh-primary's pre-check (node-primary-update.md step |
@@ -1674,8 +1674,7 @@ What a caller submits. The fabric-primary compiles it once against the accepted 
 | 4 | **`Reserved4`** |  |  | Reserved position: the removed count form `CreateMesh` (§3.10(a)), as `Self::Reserved0`. |
 | 5 | **`RemoveMesh`** |  |  | Remove a mesh. |
 | 5.0 | `mesh` | `String` |  | The mesh to remove. |
-| 6 | **`Restart`** |  |  | Restart the live birth at `node` (the next attempt of the accepted Build). |
-| 6.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+| 6 | **`Reserved6`** |  |  | Reserved position: the removed `node.restart` (Q183; callers run node.stop then node.start). |
 | 7 | **`DeleteConnections`** |  |  | `node.connections.delete { All }` of the live birth at `node`; it keeps running. |
 | 7.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 8 | **`Stop`** |  |  | Stop the live birth at `node` with no implicit drain and no departure. |
@@ -2106,7 +2105,7 @@ One birth's view of its own mesh channel, sampled when it publishes its digest.
 
 ### `Hit`
 
-`crates/rdm-test/src/fault_door.rs` · enum · 14 variants · rdm-test
+`crates/rdm-test/src/fault_door.rs` · enum · 13 variants · rdm-test
 
 The call a cut held first, as the decorator offered it.
 
@@ -2139,26 +2138,23 @@ The call a cut held first, as the decorator offered it.
 | 6.0 | `node` | `String` |  | The announcing node. |
 | 6.1 | `announcement` | `u32` |  | The announcement's 1-based number. |
 | 6.2 | `channel` | `String` |  | The channel it is published on. |
-| 7 | **`CatchUp`** |  |  | A catch-up about to be sent to a neighbour. |
-| 7.0 | `node` | `String` |  | The sending node. |
-| 7.1 | `neighbour` | `String` |  | The neighbour. |
-| 8 | **`TopologyRead`** |  |  | A joining admin's topology read, about to be made. |
-| 8.0 | `node` | `String` |  | The joining admin. |
-| 8.1 | `reads_from` | `String` |  | The admin the read goes to: the one that answered the join. |
-| 9 | **`Announcement`** |  |  | A final aggregate or leadership announcement about to be sent on a channel. |
-| 9.0 | `node` | `String` |  | The announcing node. |
-| 9.1 | `announcement` | `String` |  | The announcement (`rdm_transport::topology::Withhold`). |
-| 9.2 | `channel` | `String` |  | The channel it is sent on. |
-| 10 | **`ProviderTerminate`** |  |  | A provider `terminate` refused while the cut is armed. |
-| 10.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
-| 10.1 | `deployment_id` | `String` |  | The deployment the runtime belongs to. |
-| 11 | **`Declaration`** |  |  | A node's declaration at the status door, about to be decided. |
-| 11.0 | `node` | `String` |  | The declaring node. |
-| 11.1 | `state` | `String` |  | The state it declares. |
-| 12 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
-| 12.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
-| 13 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
-| 13.0 | `node` | `String` |  | The admin whose pass it is. |
+| 7 | **`TopologyRead`** |  |  | A joining admin's topology read, about to be made. |
+| 7.0 | `node` | `String` |  | The joining admin. |
+| 7.1 | `reads_from` | `String` |  | The admin the read goes to: the one that answered the join. |
+| 8 | **`Announcement`** |  |  | A final aggregate or leadership announcement about to be sent on a channel. |
+| 8.0 | `node` | `String` |  | The announcing node. |
+| 8.1 | `announcement` | `String` |  | The announcement (`rdm_transport::topology::Withhold`). |
+| 8.2 | `channel` | `String` |  | The channel it is sent on. |
+| 9 | **`ProviderTerminate`** |  |  | A provider `terminate` refused while the cut is armed. |
+| 9.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
+| 9.1 | `deployment_id` | `String` |  | The deployment the runtime belongs to. |
+| 10 | **`Declaration`** |  |  | A node's declaration at the status door, about to be decided. |
+| 10.0 | `node` | `String` |  | The declaring node. |
+| 10.1 | `state` | `String` |  | The state it declares. |
+| 11 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
+| 11.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
+| 12 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
+| 12.0 | `node` | `String` |  | The admin whose pass it is. |
 
 <a id="t-rdm_core-ids-IncarnationId"></a>
 
@@ -2473,7 +2469,7 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`ConnectionsDeleting`** |  | `rename = "connections-deleting"` | Connections-deleting: it takes no new work while it finishes what it holds. |
 | 3 | **`Leaving`** |  |  | Leaving: it has announced its departure and is closing. |
 | 4 | **`PendingReconnect`** |  |  | Unheard past the staleness floor: held, never death, and never a reason to restart or |
-| 5 | **`Restarting`** |  |  | Commanded silence: its mesh executor is restarting this exact birth and owns bringing it |
+| 5 | **`Reserved5`** |  |  | Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting |
 | 6 | **`Dead`** |  |  | True offline: the mesh primary's connect found no path on two ladders a staleness floor |
 | 7 | **`Deleted`** |  |  | Deleted: identity and name released; only the node's row carries it. |
 
@@ -2917,7 +2913,7 @@ What survives a topology-preserving runtime loss or restart, and the declared di
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Ephemeral`** |  |  | Fresh storage for a new node. |
-| 1 | **`Persistent`** |  |  | Storage survives stop, start and restart, and a new node created over an inherited data dir |
+| 1 | **`Persistent`** |  |  | Storage survives stop and start, and a new node created over an inherited data dir |
 | 1.0 | `on_retire` | `PersistentRetireDisposition` → [`PersistentRetireDisposition`](#t-rdm_core-meta-PersistentRetireDisposition) |  | The declared disposition of the storage once the node is gone. |
 
 <a id="t-rdm_core-topology-StoredNode"></a>
