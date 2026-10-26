@@ -97,32 +97,50 @@ state. The progress is the Build's step receipts and each node's row. Acceptance
 provider the fabric-primary's wiring does not register or cannot open. The change is three steps,
 each fabric-wide, carried fabric-primary → mesh-primary → node as the Build's ordinary order:
 
+Each migration run has a durable `change_id`, recorded with its Build before any migration command.
+Commands, freeze acknowledgements, copy progress and the decision carry that identity. Recovery of
+an unfinished run reuses it, including when its decision is uncertain. After a confirmed abort and
+completion of the rollback, resubmitting the same Build starts a new run with a new `change_id`.
+Nodes retain the resolved run identity and refuse delayed commands from an older run by name;
+accepting a new run does not erase that protection. A committed run only resumes release.
+
 1. **Open.** Every node opens the new provider beside the old, writes nothing to it, and reports. A
    node whose executable does not register the provider fails the step by name, naming the node and
    the provider, and the Build fails with nothing moved.
 2. **Copy.** The fabric-primary, the one reader of every store, appends every line of every store on
    the old provider to the new one in source order, every writer's included, dead births' and
    deleted nodes' records among them, keeping a verified position per source file that advances only
-   when the lines before it are durable on the new provider. Nodes keep writing the old provider
+   when the lines before it are durable on the new provider, with source order preserved per key
+   across ownership changes as well as within one writer. Nodes keep writing the old provider
    throughout; nothing is blocked and nothing is written twice. Claims stay decided in the old
    provider.
 3. **Freeze, tails, decision, release.**
-   - *Freeze.* Each node, on its command, stops appending to the old provider and holds every write
+   - *Freeze.* Each node first closes admission to ordinary appends and claim operations for the
+     `change_id`, drains all already-issued appends and claim operations to a resolved durable
+     outcome, and durably records the frozen state and both providers in its data dir before
+     acknowledging. An indeterminate operation prevents that acknowledgement. On restart the node
+     reads this state before opening ordinary writes and resolves the same run's decision; a stale
+     launch environment cannot unfreeze it. Migration control records use the explicit migration
+     path while ordinary writes remain blocked. Each node holds every write
      it would make as owed. Nothing is refused and nothing is acknowledged before it is durable: a
      caller's command and a node's declaration are answered only once their line has landed, so the
      caller and the declarer retry until then; a fact a node observes, a connection event, is
      appended to a pending log in its own data dir and replayed at the release or at its restart. No
      claim is decided during the freeze.
-   - *Tails.* The frozen node appends to the new provider its own lines written since the copy, in
-     its own order, writes its own row, and acknowledges; the acknowledgement is written after the
-     freeze and the row. The fabric-primary then verifies completeness: every writer holding lines on
-     the old provider has acknowledged or is proven unable to write by the node investigation's
-     `exited` verdict, with no timer for a silent one; every writer's set of operations on the old
-     provider is on the new, compared by identity and never by a highest one, the missing copied;
-     every held name claim and in-flight row is taken on the new provider naming the same holder and
-     read back equal.
+   - *Tails.* Each frozen node records its final source positions and its own row, then acknowledges.
+     The fabric-primary continues the ordered copy from its verified positions to those final
+     positions, including departed writers' records; nodes do not independently append unordered
+     tails. Every writer must have acknowledged the freeze or be proven unable to write by node
+     investigation's `exited` verdict. Silence is not proof and no timer substitutes for it.
+     For each key, the destination history must be a prefix of the source history before missing
+     records are appended. Existing operations are verified by identity and content, not merely by
+     the highest identity or set membership. A hole or reordered history is refused by name before
+     cutover; an older missing record is never appended behind a newer record of that key. A retry
+     after a lost copy receipt recognizes the already-landed prefix and does not append it twice.
+     The pass verifies the completed order and current value of every key, then transfers every held
+     name claim and in-flight row with the exact holder and reads the two claim sets back equal.
    - *Decision.* The change's decision is one durable, mutually exclusive record on the new provider,
-     `commit` or `abort`, by the store's insert-and-fail primitive. The fabric-primary inserts
+     `commit` or `abort`, keyed by `(build_id, change_id)` using the store's insert-and-fail primitive. The fabric-primary inserts
      `commit`, and only then appends the Fabric row's line on the new provider: the new provider
      current, the old appended to `previous_topology_storage_providers`. The insert is the commit
      point and the claim cutover. A successor, or the fabric-primary after a lost reply, learns the
