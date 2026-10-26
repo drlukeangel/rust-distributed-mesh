@@ -639,7 +639,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     for mesh in ["mesh1", "mesh2"] {
         assert!(holds(&format!("mesh-names/{mesh}.json")), "{mesh}'s primary published its Mesh name claim: {after:#?}");
     }
-    assert_eq!(after.iter().filter(|r| r.starts_with("mesh-records/")).count(), 2, "each mesh's record stands on the root: {after:#?}");
+    assert_eq!(after.iter().filter(|r| r.starts_with("meshes.jsonl#mesh-record/")).count(), 2, "each mesh's record stands on the root: {after:#?}");
     for name in &want {
         let mesh = name.split('.').next().unwrap();
         let path = root.join(format!("nodes/{mesh}/records/{}.json", id_of[name]));
@@ -703,7 +703,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
         if name.contains(".admin.") {
             // A Node record is written straight to the store (states.md :51, Q54): what a mesh's primary
             // publishes is its Mesh record with its name claim; its members' addresses are on their Node records.
-            assert!(stores.contains("mesh-records") && stores.contains("mesh-names") && !stores.contains("/contacts"), "{name}, its mesh's primary, published its Mesh record and its name claim: {stores}");
+            assert!(stores.contains("meshes=") && stores.contains("mesh-names") && !stores.contains("/contacts"), "{name}, its mesh's primary, published its Mesh record and its name claim: {stores}");
         }
         if name != "mesh1.admin.1" {
             // fabric/ has one writer, the fabric-primary (R14 item 2): no other node holds a row there.

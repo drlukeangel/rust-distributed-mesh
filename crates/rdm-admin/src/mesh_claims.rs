@@ -109,10 +109,10 @@ mod tests {
         use crate::store_root::StoreRoot;
         let d = crate::test_support::tempdir("mesh-claims");
         let root = StoreRoot::at(&d);
-        let (a, b) = (FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap(), FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap());
+        let (a, b) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap(), FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         one_attempt_in_flight_per_mesh(&a, &b).await;
         assert!(root.meshes("mesh2").join("claims").join("in-flight.json").is_file(), "the row is on the store root under meshes/mesh2/claims/");
-        let later = FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap();
+        let later = FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
         assert_eq!(later.in_flight("mesh2").await.unwrap().map(|h| h.claimant), Some("mesh2.admin.1".to_string()), "a process that opens the root later reads the same row");
     }
 
@@ -139,7 +139,7 @@ mod tests {
         use crate::store_root::StoreRoot;
         let d = crate::test_support::tempdir("mesh-claims-second");
         let root = StoreRoot::at(&d);
-        let (a, b) = (FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap(), FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap());
+        let (a, b) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap(), FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         a_second_claimant_of_one_attempt_is_held(&a, &b).await;
     }
 

@@ -208,6 +208,11 @@ pub fn read_record(path: &Path, kind: &str, key: Option<&str>) -> Option<serde_j
     Some(serde_json::json!({ "format": l.format, "key": l.key, "record": l.record }))
 }
 
+/// The keys of `kind` the store file at `path` holds a line of, sorted ([`read_file`]).
+pub fn keys_in(path: &Path, kind: &str) -> Result<Vec<String>, StorageError> {
+    Ok(latest_in(path)?.into_keys().filter(|(k, _)| k == kind).map(|(_, key)| key).collect())
+}
+
 /// The latest line of each (kind, key) of the store file at `path` ([`read_file`]).
 pub fn latest_in(path: &Path) -> Result<BTreeMap<(String, String), Line>, StorageError> {
     Ok(read_file(path)?.into_iter().map(|l| ((l.kind().to_string(), l.key.clone()), l)).collect())
@@ -259,6 +264,11 @@ pub fn encode_object(op: &Op, format: &str, key: &str, record: &[u8]) -> Vec<u8>
     obj.extend_from_slice(format!(",\"crc32\":\"{crc:08x}\"}}").as_bytes());
     debug_assert_eq!(obj.len(), len);
     obj
+}
+
+/// The whole line of one write: `\n` + [`encode_object`] + `\n`.
+pub fn encode_line(op: &Op, format: &str, key: &str, record: &[u8]) -> Vec<u8> {
+    line_of(&encode_object(op, format, key, record))
 }
 
 /// The line of `obj`: `\n` + the object + `\n`.

@@ -599,7 +599,7 @@ impl MeshStorage for Refusing {
         self.meshes.mesh_named(name).await
     }
     async fn put_mesh(&self, record: &rdm_admin::storage::MeshRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check(&format!("mesh-records/{}.json", record.mesh_id))?;
+        self.check("meshes.jsonl")?;
         self.meshes.put_mesh(record).await
     }
     async fn meshes(&self) -> Result<Vec<rdm_admin::storage::MeshRecord>, rdm_admin::storage_error::StorageError> {

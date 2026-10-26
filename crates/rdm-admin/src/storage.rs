@@ -263,6 +263,8 @@ impl MeshStorage for MemoryMeshStorage {
 #[cfg(feature = "file-backend")]
 const MESH_FORMAT: &str = "mesh-record/3";
 #[cfg(feature = "file-backend")]
+const MESH_KIND: &str = "mesh-record";
+#[cfg(feature = "file-backend")]
 const MESH_NAME_FORMAT: &str = "mesh-name/1";
 
 #[cfg(feature = "file-backend")]
@@ -283,13 +285,14 @@ struct MeshNameClaim {
 }
 
 #[cfg(feature = "file-backend")]
-/// `<store root>/mesh-records/<mesh id>.json`: each mesh's record, written whole by its writer;
-/// `mesh-names/<name>.json`, each live mesh's name claim; and `meshes/<mesh>/claims/in-flight.json`,
-/// each mesh's in-flight row ([`crate::mesh_claims`]).
+/// Each write of a Mesh record, whole, one line of the root's `meshes.jsonl` at its mesh id (R-SR1,
+/// R-SR2), the latest line the record; `mesh-names/<name>.json`, each live mesh's name claim; and
+/// `meshes/<mesh>/claims/in-flight.json`, each mesh's in-flight row ([`crate::mesh_claims`]).
 pub struct FileMeshStorage {
-    records: FileRecords,
+    records: crate::store_log::StoreLog,
     names: FileRecords,
     root: crate::store_root::StoreRoot,
+    log_writer: crate::store_log::LogWriter,
     writer: IncarnationId,
     /// `meshes/<mesh>/claims/`, one store per mesh, opened on its first use.
     in_flight: tokio::sync::Mutex<BTreeMap<String, FileRecords>>,
@@ -304,13 +307,14 @@ impl std::fmt::Debug for FileMeshStorage {
 
 #[cfg(feature = "file-backend")]
 impl FileMeshStorage {
-    /// Open the store under the fabric's store root, written by the process born as `writer`.
-    pub async fn open(root: &crate::store_root::StoreRoot, writer: &IncarnationId) -> Result<Self, StorageError> {
+    /// Open the store under the fabric's store root, written by `writer`.
+    pub async fn open(root: &crate::store_root::StoreRoot, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
         Ok(Self {
-            records: root.records(root.dir(), "mesh-records", writer).await?,
-            names: root.records(root.dir(), "mesh-names", writer).await?,
+            records: root.log(crate::store_root::MESHES_FILE, crate::store_log::Formats::new().with::<MeshRecord>(MESH_FORMAT)).await?,
+            names: root.records(root.dir(), "mesh-names", &writer.incarnation_id).await?,
             root: root.clone(),
-            writer: writer.clone(),
+            log_writer: writer.clone(),
+            writer: writer.incarnation_id.clone(),
             in_flight: tokio::sync::Mutex::new(BTreeMap::new()),
         })
     }
@@ -340,17 +344,17 @@ impl FileMeshStorage {
 #[async_trait]
 impl MeshStorage for FileMeshStorage {
     async fn mesh(&self, mesh_id: &MeshId) -> Result<Option<MeshRecord>, StorageError> {
-        self.records.read(mesh_id.as_str(), MESH_FORMAT).await
+        self.records.latest(MESH_KIND, mesh_id.as_str()).await?.map(|l| l.decode(self.records.path())).transpose()
     }
     async fn mesh_named(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
         let Some(claim) = self.names.read::<MeshNameClaim>(name, MESH_NAME_FORMAT).await? else { return Ok(None) };
         self.mesh(&claim.mesh_id).await
     }
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
-        self.records.write(record.mesh_id.as_str(), MESH_FORMAT, record).await
+        self.records.append(&self.log_writer, MESH_FORMAT, record.mesh_id.as_str(), record).await
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
-        self.records.list(MESH_FORMAT).await
+        self.records.latest_of(MESH_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect()
     }
     async fn claim_mesh_name(&self, name: &str, mesh_id: &MeshId) -> Result<Result<(), MeshId>, StorageError> {
         if self.names.insert(name, MESH_NAME_FORMAT, &MeshNameClaim { name: name.to_string(), mesh_id: mesh_id.clone() }).await? {
@@ -1641,8 +1645,8 @@ mod tests {
         let mem = (MemoryMeshStorage::default(), MemoryNodesStorage::default(), MemoryConnectionsStorage::default());
         check(&mem.0, &mem.1, &mem.2, true).await;
         let (root, w, me): (_, IncarnationId, PathName) = (crate::store_root::StoreRoot::at(&d.join("root")), IncarnationId::mint(), "mesh1.admin.1".parse().unwrap());
-        check(&FileMeshStorage::open(&root, &w).await.unwrap(), &FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap(), &FileConnectionsStorage::open(&root, &me, &w).await.unwrap(), true).await;
-        let (m, n, c) = (FileMeshStorage::open(&root, &w).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap(), FileConnectionsStorage::open(&root, &me, &w).await.unwrap());
+        check(&FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), &FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap(), &FileConnectionsStorage::open(&root, &me, &w).await.unwrap(), true).await;
+        let (m, n, c) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &w)).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap(), FileConnectionsStorage::open(&root, &me, &w).await.unwrap());
         check(&m, &n, &c, false).await;
         c.remove_connection(&down.index()).await.unwrap();
         assert!(c.connections().await.unwrap().is_empty());
@@ -1651,7 +1655,8 @@ mod tests {
         FileNodesStorage::put_own_in(&d, &w, &own).await.unwrap();
         assert_eq!(FileNodesStorage::own_in(&d, &IncarnationId::mint()).await.unwrap(), Some(own.clone()), "the own row is read back by the next process");
         assert_eq!(own.gossip_addr().map(|a| a.id.to_string()), Some(own.endpoint_id.0.clone()));
-        std::fs::write(root.dir().join("mesh-records").join(format!("{}.json", mesh.mesh_id)), br#"{"format":"mesh-record/9","record":{}}"#).unwrap();
+        let op = crate::store_log::Op { node_id: "n".into(), incarnation_id: "i".into(), seq: 1 };
+        std::fs::OpenOptions::new().append(true).open(root.dir().join(crate::store_root::MESHES_FILE)).and_then(|mut f| std::io::Write::write_all(&mut f, &crate::store_log::encode_line(&op, "mesh-record/9", mesh.mesh_id.as_str(), b"{}"))).unwrap();
         assert!(matches!(m.mesh(&mesh.mesh_id).await, Err(StorageError::Unrecognised { .. })));
     }
 
@@ -1750,7 +1755,7 @@ mod tests {
         let (data1, data2) = (d.join("mesh1.admin.1"), d.join("mesh2.admin.1"));
         let (inc1, inc2) = (IncarnationId::mint(), IncarnationId::mint());
         let (n1, n2) = (FileNodesStorage::open(&data1, &root, "mesh1", &inc1).await.unwrap(), FileNodesStorage::open(&data2, &root, "mesh2", &inc2).await.unwrap());
-        let (m1, m2) = (FileMeshStorage::open(&root, &inc1).await.unwrap(), FileMeshStorage::open(&root, &inc2).await.unwrap());
+        let (m1, m2) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc1)).await.unwrap(), FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc2)).await.unwrap());
         // The fabric's first state-commit published the store: what follows writes to it.
         root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
         let writes = async |n: &FileNodesStorage, m: &FileMeshStorage, mesh: &str| {
@@ -1769,9 +1774,9 @@ mod tests {
         for (mesh, ids) in [("mesh1", ids1), ("mesh2", ids2)] {
             assert_eq!(keys(&root.dir().join("nodes").join(mesh).join("records")), ids, "{mesh}'s records, keyed by node id, under its own mesh");
         }
-        assert_eq!(keys(&root.dir().join("mesh-records")).len(), 2, "one record per mesh");
+        assert_eq!(crate::store_log::keys_in(&root.dir().join(crate::store_root::MESHES_FILE), "mesh-record").unwrap().len(), 2, "one record per mesh");
         for data in [&data1, &data2] {
-            assert!(!data.join("mesh-records").exists() && !data.join("nodes").join("records").exists(), "{} holds a shared record", data.display());
+            assert!(!data.join(crate::store_root::MESHES_FILE).exists() && !data.join("nodes").join("records").exists(), "{} holds a shared record", data.display());
         }
         assert!(n1.node_at(&"mesh2.rpc.1".parse().unwrap()).await.unwrap().is_some(), "mesh1's primary reads mesh2's record from the shared root");
         assert!(n2.node_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap().is_some(), "mesh2's primary reads mesh1's record from the shared root");
@@ -2042,7 +2047,7 @@ mod tests {
             assert_eq!(m.mesh(&first).await.unwrap(), Some(dead(&first)), "{store}: the dead mesh's record stands, read by id");
         };
         check(&MemoryMeshStorage::default(), "memory").await;
-        check(&FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d.join("root")), &IncarnationId::mint()).await.unwrap(), "file").await;
+        check(&FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d.join("root")), &crate::store_log::LogWriter::mint()).await.unwrap(), "file").await;
         let _ = std::fs::remove_dir_all(&d);
     }
 }

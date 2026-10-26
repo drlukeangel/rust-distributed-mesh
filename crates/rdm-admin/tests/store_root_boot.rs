@@ -328,7 +328,7 @@ impl Prepared {
             let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::NodeId::mint(), &incarnation)).await.unwrap();
             let identity = rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
             rdm_admin::fabric_storage::claim_identity(&fabric, &identity).await.unwrap().expect("the fabric's name is free");
-            let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &incarnation).await.unwrap();
+            let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
             rdm_admin::storage::claim_mesh(&meshes, None, &rdm_admin::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), dead: false, states: Default::default() }).await.unwrap().expect("mesh1's name is free");
             let nodes = rdm_admin::storage::FileNodesStorage::open(&data_dir, &root, "mesh1", &incarnation).await.unwrap();
             let own = rdm_admin::storage::NodeRecord {
@@ -429,7 +429,7 @@ impl Prepared {
             let reader = rdm_admin::model::IncarnationId::mint();
             let nodes = rdm_admin::storage::FileNodesStorage::open(&self.data_dir, &root, "mesh1", &reader).await.unwrap();
             let row = nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
-            let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &reader).await.unwrap();
+            let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
             let contacts = rdm_admin::storage::live_records(&meshes, &nodes, "mesh1").await.unwrap().into_iter().filter(|r| r.newest_birth().is_some_and(|b| b.transport_addr.is_some())).map(|r| r.node_id.to_string()).collect();
             (row, contacts)
         })
@@ -589,7 +589,7 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     assert_eq!(ready["trace_id"], opened["trace_id"], "Ready ends the boot's own story");
     root.end(running);
     assert_eq!(fabric_dirs(&root.store), vec![root.fabric_id.to_string()], "no second fabric directory");
-    let mesh_row: serde_json::Value = serde_json::from_slice(&std::fs::read(root.store.join(root.fabric_id.to_string()).join("mesh-records").join(format!("{}.json", root.mesh_id))).unwrap()).unwrap();
+    let mesh_row = rdm_admin::store_log::read_record(&root.store.join(root.fabric_id.to_string()).join(rdm_admin::store_root::MESHES_FILE), "mesh-record", Some(&root.mesh_id.to_string())).expect("mesh1's row");
     assert_eq!(mesh_row["record"]["mesh_id"].as_str(), Some(root.mesh_id.to_string().as_str()), "mesh1's row keeps its MeshId: {mesh_row}");
     let (row, contacts) = root.rows_after();
     let row = row.expect("a row at mesh1.admin.1");
@@ -665,15 +665,15 @@ fn an_admin_started_on_a_prepared_root_whose_fabric_is_in_state_commit_does_not_
 fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_never_joins_a_mesh_created_again_under_its_name() {
     let root = Prepared::at("an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id", History::StateCommit);
     let fabric_root = root.store.join(root.fabric_id.to_string());
-    let own_record = fabric_root.join("mesh-records").join(format!("{}.json", root.mesh_id));
+    let meshes = fabric_root.join(rdm_admin::store_root::MESHES_FILE);
     let name_claim = fabric_root.join("mesh-names").join("mesh1.json");
-    let held: serde_json::Value = serde_json::from_slice(&std::fs::read(&own_record).unwrap()).unwrap();
+    let held = rdm_admin::store_log::read_record(&meshes, "mesh-record", Some(&root.mesh_id.to_string())).expect("mesh1's record");
     let claim: serde_json::Value = serde_json::from_slice(&std::fs::read(&name_claim).unwrap()).unwrap();
     let own_id = root.mesh_id.to_string();
-    // A start against `row` written at `file` on the root: refused by name at its storage step, before it
+    // A start against the rows `write` puts on the root: refused by name at its storage step, before it
     // writes its own row again.
-    let refused = |file: &std::path::Path, row: serde_json::Value, what: &str| -> (String, u32) {
-        std::fs::write(file, serde_json::to_vec(&row).unwrap()).unwrap();
+    let refused = |write: &dyn Fn(), what: &str| -> (String, u32) {
+        write();
         let mut running = root.start();
         let until = Instant::now() + BOOTS_WITHIN;
         loop {
@@ -690,8 +690,8 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     };
     let recreated_id = rdm_admin::model::MeshId::mint().to_string();
     // mesh1 created again: its record at its own id, and the name's claim naming it.
-    std::fs::write(fabric_root.join("mesh-records").join(format!("{recreated_id}.json")), serde_json::to_vec(&serde_json::json!({"format": held["format"], "record": {"mesh_id": recreated_id, "name": "mesh1", "dead": false}})).unwrap()).unwrap();
-    let (err, pid) = refused(&name_claim, serde_json::json!({"format": claim["format"], "record": {"name": "mesh1", "mesh_id": recreated_id}}), "mesh1 created again");
+    append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "dead": false}));
+    let (err, pid) = refused(&|| std::fs::write(&name_claim, serde_json::to_vec(&serde_json::json!({"format": claim["format"], "record": {"name": "mesh1", "mesh_id": recreated_id}})).unwrap()).unwrap(), "mesh1 created again");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains(&recreated_id), "the refusal names this admin's mesh and the mesh created again under its name: {err}");
     let spans = spans_of(&root.dir, pid);
     let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the refused start left no storage step: {spans:?}"));
@@ -700,8 +700,15 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     assert_eq!(opened["attributes"]["mesh_id"].as_str(), Some(own_id.as_str()), "the storage step names the mesh id the own row holds: {opened}");
     assert!(opened["attributes"]["error"].as_str().is_some_and(|e| e.contains(&recreated_id)), "the storage step names the refusal and the mesh created again: {opened}");
     std::fs::write(&name_claim, serde_json::to_vec(&claim).unwrap()).unwrap();
-    let (err, _) = refused(&own_record, serde_json::json!({"format": held["format"], "record": {"mesh_id": own_id, "name": "mesh1", "dead": true, "states": ["Dead"]}}), "mesh1 Dead");
+    let (err, _) = refused(&|| append_record(&meshes, held["format"].as_str().unwrap(), &own_id, serde_json::json!({"mesh_id": own_id, "name": "mesh1", "dead": true, "states": ["Dead"]})), "mesh1 Dead");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains("Dead"), "the refusal names this admin's mesh as Dead: {err}");
+}
+
+/// Append `record` as one line of the store file `file`, as another writer would.
+fn append_record(file: &std::path::Path, format: &str, key: &str, record: serde_json::Value) {
+    let op = rdm_admin::store_log::Op { node_id: rdm_admin::model::NodeId::mint().to_string(), incarnation_id: rdm_admin::model::IncarnationId::mint().to_string(), seq: 1 };
+    let line = rdm_admin::store_log::encode_line(&op, format, key, &serde_json::to_vec(&record).unwrap());
+    std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(file).unwrap(), &line).unwrap();
 }
 
 /// The Fabric record at `file` when it holds the ready-for-traffic event: the fact the fabric first
@@ -1005,7 +1012,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
         let nodes = rdm_admin::storage::FileNodesStorage::open(&d.dir.join("reader"), &root, "mesh1", &reader).await.unwrap();
-        let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &reader).await.unwrap();
+        let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
         let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader"), &reader).await.unwrap();
         (nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap(), meshes.in_flight("mesh1").await.unwrap(), journal.facts().await.unwrap())
     });
@@ -1051,7 +1058,7 @@ impl Prepared {
             };
             rdm_admin::build_state::accept(&journal, &delete, None, "mesh1.admin.1", "fabric.delete").await.unwrap();
             if dead {
-                let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &writer).await.unwrap();
+                let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
                 let mut m = meshes.mesh_named("mesh1").await.unwrap().expect("mesh1's row");
                 m.dead = true;
                 meshes.put_mesh(&m).await.unwrap();

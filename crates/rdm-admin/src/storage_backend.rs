@@ -134,7 +134,7 @@ impl StorageBackend for FileBackend {
         let writes_to = root.writes_to().to_string();
         let state_actions: Arc<dyn StateActions> = Arc::new(crate::fabric_status::StorePublication::new(root.scratchpad().cloned(), embedding));
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
-        let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
+        let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
         let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(Arc::new(crate::storage::FileNodesStorage::open_with_root_runtimes(&root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?));
         let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.writer).await.map_err(|e| e.to_string())?);
