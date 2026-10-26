@@ -134,6 +134,16 @@ pub enum CutSpec {
         /// The admin's `path.name`.
         #[serde(default)] node: Option<String>,
     },
+    /// A storage change's step (storage.md §2 "Changing it") this admin, as `node`'s mesh-primary, is
+    /// about to carry to `node`: the first matching command is held until the release and carried then,
+    /// its caller answered at once that the step is not done; every later one passes. It models one
+    /// command delayed on its way to the node. `step` narrows the cut to `block` or `unblock`.
+    StorageStep {
+        /// The commanded node's `path.name`.
+        #[serde(default)] node: Option<String>,
+        /// `block` or `unblock`.
+        #[serde(default)] step: Option<String>,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -224,6 +234,15 @@ pub enum Probe {
         /// The admin whose pass it is.
         node: String,
     },
+    /// A storage change's step about to be carried to its node.
+    StorageStep {
+        /// The commanded node.
+        node: String,
+        /// The change.
+        change_id: String,
+        /// `block` or `unblock`.
+        step: &'static str,
+    },
 }
 
 impl CutSpec {
@@ -244,6 +263,7 @@ impl CutSpec {
             (CutSpec::Declaration { node, state }, Probe::Declaration { node: n, state: s }) => node_is(node, n) && state.as_deref().is_none_or(|w| w == s),
             (CutSpec::ProviderUnproven { pids }, Probe::ProviderInspect { pid }) => pid.is_some_and(|p| pids.contains(&p)),
             (CutSpec::DriftPass { node }, Probe::DriftPass { node: n }) => node_is(node, n),
+            (CutSpec::StorageStep { node, step }, Probe::StorageStep { node: n, step: s, .. }) => node_is(node, n) && step.as_deref().is_none_or(|w| w == *s),
             _ => false,
         }
     }
@@ -265,6 +285,7 @@ impl Probe {
             Probe::Declaration { node, state } => Hit::Declaration { node: node.clone(), state: state.clone() },
             Probe::ProviderInspect { pid } => Hit::ProviderInspect { pid: *pid },
             Probe::DriftPass { node } => Hit::DriftPass { node: node.clone() },
+            Probe::StorageStep { node, change_id, step } => Hit::StorageStep { node: node.clone(), change_id: change_id.clone(), step: step.to_string() },
         }
     }
 }
@@ -371,7 +392,8 @@ impl AdminFaults {
     /// when no cut matches.
     fn hold_at_cut(&self, probe: &Probe) -> Option<(String, tokio::sync::watch::Receiver<bool>)> {
         let mut cuts = self.cuts.lock().unwrap();
-        cuts.iter_mut().find(|(_, c)| !c.released && c.spec.matches(probe)).map(|(id, c)| {
+        // A storage step cut holds its first command only (`CutSpec::StorageStep`).
+        cuts.iter_mut().find(|(_, c)| !c.released && c.spec.matches(probe) && !(matches!(c.spec, CutSpec::StorageStep { .. }) && c.hit.is_some())).map(|(id, c)| {
             if c.held_calls > 0 {
                 c.seen_while_held += 1;
             }
@@ -650,6 +672,13 @@ struct FaultedCommandFrame(Arc<AdminFaults>);
 impl rdm_admin::wiring::CommandFrameSeam for FaultedCommandFrame {
     async fn before_stopped(&self, op: &LifecycleOp) {
         self.0.hold(Probe::Event { event: "stopped", op: op.clone() }).await;
+    }
+
+    fn hold_storage_step(&self, node: &rdm_core::PathName, change_id: &rdm_core::ChangeId, step: &rdm_core::build::StorageStep) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
+        let probe = Probe::StorageStep { node: node.to_string(), change_id: change_id.to_string(), step: step.name() };
+        let (id, release) = self.0.hold_at_cut(&probe)?;
+        let faults = self.0.clone();
+        Some(Box::pin(async move { faults.wait_release(&id, &probe, release).await }))
     }
 }
 

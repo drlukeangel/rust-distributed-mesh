@@ -42,6 +42,7 @@ enum CutWire {
     Declaration { node: Option<String>, state: Option<String> },
     ProviderUnproven { pids: Vec<u32> },
     DriftPass { node: Option<String> },
+    StorageStep { node: Option<String>, step: Option<String> },
 }
 
 /// A fault door call.
@@ -173,6 +174,15 @@ pub enum Hit {
         /// The admin whose pass it is.
         node: String,
     },
+    /// A storage change's step the mesh-primary held on its way to its node.
+    StorageStep {
+        /// The commanded node.
+        node: String,
+        /// The change.
+        change_id: String,
+        /// `block` or `unblock`.
+        step: String,
+    },
 }
 
 impl Hit {
@@ -192,6 +202,7 @@ impl Hit {
             Hit::Declaration { node, state } => json!({"node": node, "state": state}),
             Hit::ProviderInspect { pid } => json!({"pid": pid}),
             Hit::DriftPass { node } => json!({"node": node}),
+            Hit::StorageStep { node, change_id, step } => json!({"node": node, "change_id": change_id, "step": step}),
         }
     }
 }
@@ -400,6 +411,7 @@ mod tests {
             CutSpec::TopologyRead,
             CutSpec::Announcement { announcement: "aggregate-in-flight".into(), channel: "any".into() },
             CutSpec::ProviderTerminate { pid: Some(4242) },
+            CutSpec::StorageStep { node: Some("mesh2.rpc.1".into()), step: Some("block".into()) },
         ]
     }
 
