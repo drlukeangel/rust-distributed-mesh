@@ -8,13 +8,17 @@
 //! provider the estate runs on.
 
 use rdm_test::estate::{named, Estate, Owner};
-use rdm_test::soak::{self, Config, Driver};
+use rdm_test::model::NodeClass;
+use rdm_test::soak::{self, Config, Driver, Profile};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 const PROCESS_CELL: &str = "soak_driver_reconciles_fixed_seed_thirty_minute_process_run";
 const CONTAINER_CELL: &str = "soak_driver_reconciles_fixed_seed_thirty_minute_container_run";
 const SEED: u64 = 1_432_787;
+/// Per mesh, of two meshes: the canonical R-shape (two node-admins, two compute, three gateway and
+/// three broker nodes), twenty nodes in all.
+const PER_MESH: [(NodeClass, u32); 4] = [(NodeClass::NodeAdmin, 2), (NodeClass::Compute, 2), (NodeClass::Gateway, 3), (NodeClass::Broker, 3)];
 
 fn owner(test: &str, provider: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "i143-2787".into(), subfeature: "soak".into(), rung: "MM".into(), provider: provider.into(), test: test.into() }
@@ -105,7 +109,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     let estate = Estate::bootstrap(owner(cell, provider), "fabric1", "mesh1").await;
     assert_eq!(estate.owner.provider, provider, "the cell runs on its provider");
     let root = estate.root.clone();
-    let cfg = Config::mm(seed, secs, rdm_transport::topology::staleness_floor(), rdm_transport::topology::backbone_gossip_interval(), tickle_ladder());
+    let cfg = Config::roles(seed, secs, PER_MESH, Profile::All, false, rdm_transport::topology::staleness_floor(), rdm_transport::topology::backbone_gossip_interval(), tickle_ladder());
     let driver = Driver::new(estate, cfg, crate::build_log::build_read).await;
     let progress = driver.progress();
     // The run is its own task: a panic inside it still leaves the seed and the executed sequence.
@@ -198,7 +202,8 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     assert!(report.rounds >= 3, "seed {seed}: only {} rounds in {secs}s", report.rounds);
 }
 
-/// CONTRACT (#2787): on an MM estate (two meshes, two node-admins and three rpc nodes each), the
+/// CONTRACT (#2787): on the canonical R-shape estate (two meshes, each of two node-admins, two
+/// compute, three gateway and three broker nodes: twenty nodes), the
 /// soak driver issues continuous proof-store operations (puts, compare-and-swaps, gets, deletes,
 /// each recorded in the operation ledger before it is sent and classified once from its typed
 /// outcome) for `RDM_SOAK_SECS` seconds of seed `RDM_SOAK_SEED` (1432787, 1800 s in the
@@ -207,7 +212,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
 /// runtimes on the process provider. After every action the estate converges (the Build's receipts
 /// name the new birth, every live admin holds the same births) and the invariants hold: one current
 /// birth per path, one fabric-primary, the current build_id held, no peer mesh unheard, the seats
-/// equal the public candidates', every rpc node reachable on its current birth, no Build minted
+/// equal the public candidates', every role node reachable on its current birth, no Build minted
 /// for drift, a held runtime comes back as the same birth, a retired node is never dispatched.
 /// At the end every issued operation is accounted: issued = Reply + NotSent + Unserved +
 /// RejectedStale + Indeterminate with none unclassified, every successful write is in the final
