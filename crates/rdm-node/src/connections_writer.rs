@@ -378,7 +378,7 @@ impl ConnectionsWriter {
         if let Some(registry) = registry {
             live.extend(registry.open_rows());
         }
-        live.sort_by(|a, b| (a.kind == ConnectionKind::Proxy, &a.destination.name, &a.alpn).cmp(&(b.kind == ConnectionKind::Proxy, &b.destination.name, &b.alpn)));
+        live.sort_by_key(|r| (r.kind == ConnectionKind::Proxy, r.destination.name.clone(), r.alpn.clone()));
         let mut seen = std::collections::HashSet::new();
         live.retain(|r| seen.insert(r.id.clone()));
         live

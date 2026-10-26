@@ -196,6 +196,8 @@ async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
         }
     );
 
+    // The first consumer's Proxy fact is held once its write lands (Q169): the second consumer reads it then.
+    gw1.writer.observations_landed().await;
     let history_after_first = gw1.storage.history().await.unwrap();
     let failed_directs_after_first: Vec<_> = history_after_first
         .iter()
