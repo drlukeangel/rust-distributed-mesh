@@ -23,9 +23,8 @@ use std::sync::Arc;
 #[async_trait::async_trait]
 pub trait CarrierEdges: Send + Sync {
     /// Why this node's own latest Direct edge to the exact node `target` is not Active, or `None`
-    /// when it is Active or this node holds no Direct fact toward it. A fact the inner call itself
-    /// observed is held only once its durable write lands, so an implementation answers after the
-    /// observations already handed to it have landed.
+    /// when it is Active or this node holds no Direct fact toward it. Answered from what is held: a
+    /// fact is held only once its durable write lands, and the read never waits for a write (Q169).
     async fn edge_not_active(&self, target: &NodeId) -> Option<String>;
 
     /// The edge text for a dial of this carrier's own that just ended with no connection to

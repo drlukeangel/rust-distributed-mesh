@@ -435,8 +435,9 @@ impl NodeSelf {
     }
 
     /// `node.connections.get` at this birth (fabric-mesh-node-lifecycles.md: "Reading or cutting a
-    /// node's held connections"): the connections it holds now, under the name it holds, once every
-    /// observation handed to its writer has landed; the ids are those `node.connections.delete` names.
+    /// node's held connections"): the connections it holds now, under the name it holds, answered from
+    /// what is held: a connection whose row has not landed is not held yet, and the read never waits
+    /// for a write (Q169); the ids are those `node.connections.delete` names.
     pub async fn connections_get(&self) -> StatusReply {
         let writer = self.connections.lock().unwrap().clone();
         let data_connections = self.data_connections.lock().unwrap().clone();
@@ -556,16 +557,14 @@ impl NodeSelf {
                 }
             }
         }
-        let (closed, refused) = match &writer {
-            Some(w) => w.write_drops(&routes, CONNECTIONS_DELETE).await,
-            None => (Vec::new(), Vec::new()),
+        // Each drop is owed on the writer's queue and lands after (Q169): the connections still open
+        // are those held less the ones just cut.
+        let closed = match &writer {
+            Some(w) => w.write_drops(&routes, CONNECTIONS_DELETE),
+            None => Vec::new(),
         };
-        for (id, why) in &refused {
-            tracing::info_span!("rdm.node_admin.node.connections.reject.via-refused-drop", node = %self.held_name(), entry = %id, refusal = %why)
-                .in_scope(|| tracing::info!("the connection was cut and its drop was refused by storage: the log still holds it open"));
-        }
         let held = match &writer {
-            Some(w) => w.held_routes().await.into_iter().map(|r| r.id).collect(),
+            Some(w) => w.held_routes().await.into_iter().map(|r| r.id).filter(|id| !closed.contains(id)).collect(),
             None => Vec::new(),
         };
         let receipt = in_flight.map(|w| match w {

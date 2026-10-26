@@ -682,7 +682,7 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
         Box::pin(async move {
             started.lock().unwrap().push(dest.clone());
             gate.acquire().await.unwrap().forget();
-            let _ = writer
+            writer
                 .record_data_plane(NodeConnection {
                     id: ConnectionId::mint(),
                     source: writer.own(),
@@ -694,8 +694,7 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
                     recovery: None,
                     reason: None,
                     logged_at_ms: 0,
-                })
-                .await;
+                });
             "Reply".to_string()
         })
     });

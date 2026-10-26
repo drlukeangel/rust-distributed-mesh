@@ -224,7 +224,7 @@ async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_d
         reason: None,
         logged_at_ms: 10,
     };
-    peer_a.sink.record_row(proxy_on_b.clone()).await.unwrap();
+    peer_a.sink.record(proxy_on_b.clone());
 
     let (dialer_a_on_a, _) = peer_a.registry.connections(ALPN_A).unwrap().split();
     let (_dialer_b, mut acceptor_b_on_a) = peer_b.registry.connections(ALPN_A).unwrap().split();
@@ -1130,7 +1130,7 @@ async fn a_held_proxy_is_taken_without_a_direct_dial() {
         reason: None,
         logged_at_ms: 5,
     };
-    source.sink.record_row(held_proxy).await.unwrap();
+    source.sink.record(held_proxy);
 
     let dest_admitter = Arc::new(CountingAdmitter {
         direct_from_source: AtomicUsize::new(0),
@@ -1837,7 +1837,7 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
         reason: None,
         logged_at_ms: 100,
     };
-    source.sink.record_row(direct_row).await.unwrap();
+    source.sink.record(direct_row);
 
     // 1. The open tunnel and its open stream outlive Direct restoration:
     t_send_s.write_all(b"after-restore").await.unwrap();
@@ -1933,8 +1933,8 @@ async fn a_non_forwardable_alpn_never_takes_a_proxy_even_when_one_is_held() {
         reason: None,
         logged_at_ms: 11,
     };
-    source.sink.record_row(failed_direct).await.unwrap();
-    source.sink.record_row(held_proxy).await.unwrap();
+    source.sink.record(failed_direct);
+    source.sink.record(held_proxy);
 
     let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
     let err = dialer_s
@@ -2092,7 +2092,7 @@ async fn a_direct_connected_disconnects_the_proxy() {
         reason: None,
         logged_at_ms: 50,
     };
-    source.sink.record_row(direct_connected).await.unwrap();
+    source.sink.record(direct_connected);
 
     {
         let held_guard = source.sink.held();

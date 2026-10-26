@@ -39,6 +39,10 @@ There is no separate `connections.proxies`, `connections.attempts`, `connections
 job topic. Direct connection state, proxy connection state, and failed direct attempts are all
 connection facts in this one log.
 
+Every connection write is asynchronous: it is owed on the node's one ordered writer queue, retried
+with backoff until it lands; no open, dial, accept or read waits for it; the held projection takes a
+fact once its write lands. Q169.
+
 ### 1.1 Connection kind
 
 `NodeConnection` gains a durable kind:

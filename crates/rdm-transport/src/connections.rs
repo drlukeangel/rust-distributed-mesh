@@ -223,6 +223,12 @@ mod admit;
 pub use admit::{Admitter, CertAdmitter, NoCertsAdmitter, RootSet};
 use admit::{AdmitVerdict, PresentFrame};
 
+/// One owed connection row (Q169; connections.md §1), built when the node's writer takes it from
+/// its one ordered queue: from the held projection as it is then, every row owed before it already
+/// applied once it landed, or `None` when the fact it would record no longer stands (a drop whose
+/// connection is no longer the latest entry of its pair).
+pub type OwedRow = Box<dyn FnOnce(&ConnectionsHeld) -> Option<NodeConnection> + Send>;
+
 /// Where the data-plane `Connections` runtime records `NodeConnection` rows and reads the held projection.
 #[async_trait::async_trait]
 pub trait ConnectionsSink: Send + Sync {
@@ -230,16 +236,59 @@ pub trait ConnectionsSink: Send + Sync {
     fn own_birth(&self) -> Birth;
     /// The held projection, shared with route resolution.
     fn held(&self) -> Arc<Mutex<ConnectionsHeld>>;
-    /// Persist and apply one connection row (`Connected`, `Disconnected`, `Failed`, or `Refused`).
-    async fn record_row(&self, row: NodeConnection) -> Result<NodeConnection, String>;
-    /// Write `Disconnected` drop rows for `routes` with `reason`.
-    async fn record_drops(&self, routes: &[NodeConnection], reason: &str) -> Vec<ConnectionId>;
+    /// Owe one connection row (`Connected`, `Disconnected`, `Failed`, or `Refused`) on the node's
+    /// one ordered writer queue (Q169): it is written, retried with backoff until it lands, and
+    /// applied to the held projection once it has. The caller never waits for it.
+    fn record_row(&self, row: OwedRow);
+    /// Owe a `Disconnected` drop for each of `routes` with `reason`, each written only if its route
+    /// is still an open entry of this node when the writer takes it ([`owed_drop`]).
+    fn record_drops(&self, routes: &[NodeConnection], reason: &str) {
+        for route in routes {
+            self.record_row(owed_drop(route, reason));
+        }
+    }
     /// Notify the sink that an inbound Direct connection from `peer` on `alpn` was admitted
     /// (`connections.md` §9.4, §10, §13 G: a recovery trigger, never a Direct row).
     fn accepted(&self, _peer: &Birth, _alpn: &[u8]) {}
     /// Refresh foreign resident `Direct` rows from the shared connections store before carrier
     /// discovery (`connections.md` §3.2, §4.1).
     async fn refresh_fleet_directs(&self) {}
+}
+
+/// Whether `route` is an open entry of this node in `held`: its own latest Direct that is
+/// `connected`, or its own active Proxy, by id.
+pub fn is_open_entry(held: &ConnectionsHeld, route: &NodeConnection) -> bool {
+    match route.kind {
+        CoreKind::Direct => held.own_latest_directs().into_iter().any(|r| r.state == ConnectionState::Connected && r.id == route.id),
+        CoreKind::Proxy => held.own_active_proxies().into_iter().any(|r| r.id == route.id),
+    }
+}
+
+/// The drop `route` owes with `reason`: built when the writer takes it, as a `Disconnected` entry
+/// with its own id toward the route's destination, or nothing when `route` is no longer an open
+/// entry of this node then (a newer entry of its pair is its state).
+pub fn owed_drop(route: &NodeConnection, reason: &str) -> OwedRow {
+    let route = route.clone();
+    let reason = reason.to_string();
+    Box::new(move |held: &ConnectionsHeld| {
+        is_open_entry(held, &route).then(|| NodeConnection {
+            id: ConnectionId::mint(),
+            source: route.source.clone(),
+            destination: route.destination.clone(),
+            kind: route.kind,
+            alpn: route.alpn.clone(),
+            state: ConnectionState::Disconnected,
+            carrier: route.carrier.clone(),
+            recovery: None,
+            reason: Some(reason),
+            logged_at_ms: 0,
+        })
+    })
+}
+
+/// An owed row that is `row` as built at the call (a fact that reads nothing held).
+pub fn owed(row: NodeConnection) -> OwedRow {
+    Box::new(move |_: &ConnectionsHeld| Some(row))
 }
 
 /// An in-memory [`ConnectionsSink`] for standalone transport tests that do not boot a full `rdm-node`.
@@ -286,7 +335,18 @@ impl ConnectionsSink for MemoryConnectionsSink {
         self.held.clone()
     }
 
-    async fn record_row(&self, mut row: NodeConnection) -> Result<NodeConnection, String> {
+    fn record_row(&self, row: OwedRow) {
+        let built = row(&self.held.lock().unwrap());
+        if let Some(row) = built {
+            self.record(row);
+        }
+    }
+}
+
+impl MemoryConnectionsSink {
+    /// Write and apply `row` at once (a memory sink applies synchronously), stamping it and naming
+    /// this node as its source unless it is a `Refused` the acceptor writes for its dialer.
+    pub fn record(&self, mut row: NodeConnection) -> NodeConnection {
         let now = self.clock.fetch_add(1, Ordering::SeqCst);
         row.logged_at_ms = now;
         if row.state != ConnectionState::Refused {
@@ -324,48 +384,7 @@ impl ConnectionsSink for MemoryConnectionsSink {
                 let _ = self.held.lock().unwrap().apply(retired);
             }
         }
-        Ok(row)
-    }
-
-    async fn record_drops(&self, routes: &[NodeConnection], reason: &str) -> Vec<ConnectionId> {
-        let own = self.own_birth().to_end();
-        let mut closed = Vec::new();
-        for route in routes {
-            let current = {
-                let held = self.held.lock().unwrap();
-                match route.kind {
-                    CoreKind::Direct => held
-                        .own_latest_directs()
-                        .into_iter()
-                        .any(|r| r.state == ConnectionState::Connected && r.id == route.id),
-                    CoreKind::Proxy => held
-                        .own_active_proxies()
-                        .into_iter()
-                        .any(|r| r.id == route.id),
-                }
-            };
-            if !current {
-                closed.push(route.id.clone());
-                continue;
-            }
-            let now = self.clock.fetch_add(1, Ordering::SeqCst);
-            let drop_row = NodeConnection {
-                id: ConnectionId::mint(),
-                source: own.clone(),
-                destination: route.destination.clone(),
-                kind: route.kind,
-                alpn: route.alpn.clone(),
-                state: ConnectionState::Disconnected,
-                carrier: route.carrier.clone(),
-                recovery: None,
-                reason: Some(reason.to_string()),
-                logged_at_ms: now,
-            };
-            self.history.lock().unwrap().push(drop_row.clone());
-            let _ = self.held.lock().unwrap().apply(drop_row);
-            closed.push(route.id.clone());
-        }
-        closed
+        row
     }
 }
 
@@ -756,7 +775,7 @@ impl ConnectionsRegistry {
             }
         }
         if !rows.is_empty() {
-            self.inner.sink.record_drops(&rows, "node.connections.delete").await;
+            self.inner.sink.record_drops(&rows, "node.connections.delete");
         }
         ids
     }
@@ -1383,8 +1402,7 @@ impl Dialer {
             self.registry
                 .inner
                 .sink
-                .record_drops(&[invalid_proxy], reason)
-                .await;
+                .record_drops(&[invalid_proxy], reason);
         }
         match res.route {
             EffectiveRoute::NoActiveRoute => return Err(ConnectError::NoActiveRoute),
@@ -1393,16 +1411,14 @@ impl Dialer {
                     self.registry
                         .inner
                         .sink
-                        .record_drops(std::slice::from_ref(&proxy), INVALID_CARRIER_EDGE_LOST)
-                        .await;
+                        .record_drops(std::slice::from_ref(&proxy), INVALID_CARRIER_EDGE_LOST);
                     return Err(ConnectError::NoActiveRoute);
                 };
                 let Some(carrier_inc) = carrier_end.incarnation.clone() else {
                     self.registry
                         .inner
                         .sink
-                        .record_drops(std::slice::from_ref(&proxy), INVALID_CARRIER_EDGE_LOST)
-                        .await;
+                        .record_drops(std::slice::from_ref(&proxy), INVALID_CARRIER_EDGE_LOST);
                     return Err(ConnectError::NoActiveRoute);
                 };
                 let carrier_birth = Birth {
@@ -1475,8 +1491,7 @@ impl Dialer {
                 destination.name,
                 String::from_utf8_lossy(&self.alpn.name)
             );
-            self.record_direct_failure(own, destination, &reason, caller_span)
-                .await;
+            self.record_direct_failure(own, destination, &reason, caller_span);
             return Err(ConnectError::NotSent { reason });
         }
         let resolved = match self
@@ -1493,7 +1508,7 @@ impl Dialer {
             Ok(r) => r,
             Err(e) => {
                 let reason = format!("{e:?}");
-                self.record_direct_failure(own, destination, &reason, caller_span).await;
+                self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
         };
@@ -1509,7 +1524,7 @@ impl Dialer {
             Ok(c) => c,
             Err(e) => {
                 let reason = e.to_string();
-                self.record_direct_failure(own, destination, &reason, caller_span).await;
+                self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
         };
@@ -1518,7 +1533,7 @@ impl Dialer {
             Ok(bi) => bi,
             Err(e) => {
                 let reason = e.to_string();
-                self.record_direct_failure(own, destination, &reason, caller_span).await;
+                self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
         };
@@ -1541,7 +1556,7 @@ impl Dialer {
         });
 
         if let Err(reason) = write_control_msg(&mut ctrl_send, &present).await {
-            self.record_direct_failure(own, destination, &reason, caller_span).await;
+            self.record_direct_failure(own, destination, &reason, caller_span);
             return Err(ConnectError::NotSent { reason });
         }
 
@@ -1554,16 +1569,16 @@ impl Dialer {
             }
             Ok(Ok(None)) => {
                 let reason = "acceptor closed control stream before verdict".to_string();
-                self.record_direct_failure(own, destination, &reason, caller_span).await;
+                self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
             Ok(Err(reason)) => {
-                self.record_direct_failure(own, destination, &reason, caller_span).await;
+                self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
             Err(_) => {
                 let reason = "timed out waiting for admission verdict".to_string();
-                self.record_direct_failure(own, destination, &reason, caller_span).await;
+                self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
         };
@@ -1573,7 +1588,7 @@ impl Dialer {
             // Failed row with the acceptor's reason, so this source's reconnect series exists and
             // continues from it (connections.md §9.1, §9.3).
             AdmitVerdict::Refused { reason } => {
-                self.record_direct_failure(own, destination, &format!("refused: {reason}"), caller_span).await;
+                self.record_direct_failure(own, destination, &format!("refused: {reason}"), caller_span);
                 quic_conn.close(
                     iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED),
                     reason.as_bytes(),
@@ -1590,7 +1605,7 @@ impl Dialer {
             destination: destination.clone(),
         };
         if let Err(reason) = write_control_msg(&mut ctrl_send, &intent).await {
-            self.record_direct_failure(own, destination, &reason, caller_span).await;
+            self.record_direct_failure(own, destination, &reason, caller_span);
             return Err(ConnectError::NotSent { reason });
         }
 
@@ -1598,16 +1613,16 @@ impl Dialer {
             Ok(Ok(Some(a))) => a,
             Ok(Ok(None)) => {
                 let reason = "acceptor closed control stream before intent answer".to_string();
-                self.record_direct_failure(own, destination, &reason, caller_span).await;
+                self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
             Ok(Err(reason)) => {
-                self.record_direct_failure(own, destination, &reason, caller_span).await;
+                self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
             Err(_) => {
                 let reason = "timed out waiting for intent answer".to_string();
-                self.record_direct_failure(own, destination, &reason, caller_span).await;
+                self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
         };
@@ -1634,14 +1649,9 @@ impl Dialer {
                     reason: None,
                     logged_at_ms: 0,
                 };
-                let recorded = self
-                    .registry
-                    .inner
-                    .sink
-                    .record_row(row)
-                    .instrument(caller_span.clone())
-                    .await
-                    .map_err(|reason| ConnectError::NotSent { reason })?;
+                // The Connected row is owed, never awaited (Q169): the open returns once Opened.
+                caller_span.in_scope(|| self.registry.inner.sink.record_row(owed(row.clone())));
+                let recorded = row;
                 let (closed_tx, closed_rx) = watch::channel(None);
                 self.registry.register_active(
                     row_id.clone(),
@@ -1812,8 +1822,7 @@ impl Dialer {
                         self.registry
                             .inner
                             .sink
-                            .record_drops(std::slice::from_ref(proxy), INVALID_CARRIER_EDGE_LOST)
-                            .await;
+                            .record_drops(std::slice::from_ref(proxy), INVALID_CARRIER_EDGE_LOST);
                     }
                 }
                 Err(ConnectError::Refused { reason })
@@ -1847,13 +1856,9 @@ impl Dialer {
                             reason: None,
                             logged_at_ms: 0,
                         };
-                        self.registry
-                            .inner
-                            .sink
-                            .record_row(row)
-                            .instrument(tunnel_span.clone())
-                            .await
-                            .map_err(|reason| ConnectError::NotSent { reason })?
+                        // The new Proxy's row is owed, never awaited (Q169).
+                        tunnel_span.in_scope(|| self.registry.inner.sink.record_row(owed(row.clone())));
+                        row
                     }
                 };
                 tunnel_span.record("entry", recorded.id.to_string().as_str());
@@ -1880,67 +1885,52 @@ impl Dialer {
         }
     }
 
-    async fn record_direct_failure(
+    /// Owe the dial's `Failed` row (Q169): built when the writer takes it, from the held
+    /// projection then, so a failing series of the birth dialled continues one ordinal up from the
+    /// failure owed before it; anything else is a new incident at ordinal one. Never awaited.
+    fn record_direct_failure(
         &self,
         own: &Birth,
         destination: &Birth,
         reason: &str,
         caller_span: &tracing::Span,
     ) {
+        let own = own.to_end();
         let dest_end = destination.to_end();
-        let previous = {
-            let held = self.registry.inner.sink.held();
-            let g = held.lock().unwrap();
-            g.own_latest_directs()
+        let alpn = self.alpn.name.clone();
+        let reason = reason.to_string();
+        let build: OwedRow = Box::new(move |held: &ConnectionsHeld| {
+            let previous = held
+                .own_latest_directs()
                 .into_iter()
-                .find(|d| d.destination.name == dest_end.name && d.alpn == self.alpn.name)
-                .cloned()
-        };
-        let row = match previous.as_ref() {
-            Some(p)
-                if p.state == ConnectionState::Failed
-                    && (&p.destination.node_id, &p.destination.incarnation)
-                        == (&dest_end.node_id, &dest_end.incarnation) =>
-            {
-                match p.recovery {
-                    Some(r) => NodeConnection {
-                        id: ConnectionId::mint(),
-                        source: own.to_end(),
-                        destination: dest_end,
-                        recovery: Some(DirectRecovery {
-                            recovery_round: r.recovery_round,
-                            attempt_ordinal: r.attempt_ordinal.saturating_add(1),
-                        }),
-                        reason: Some(reason.to_string()),
-                        logged_at_ms: 0,
-                        ..p.clone()
-                    },
-                    None => first_failure_for(
-                        own.to_end(),
-                        dest_end,
-                        self.alpn.name.clone(),
-                        previous.as_ref(),
-                        reason,
-                        0,
-                    ),
+                .find(|d| d.destination.name == dest_end.name && d.alpn == alpn)
+                .cloned();
+            Some(match previous.as_ref() {
+                Some(p)
+                    if p.state == ConnectionState::Failed
+                        && (&p.destination.node_id, &p.destination.incarnation)
+                            == (&dest_end.node_id, &dest_end.incarnation) =>
+                {
+                    match p.recovery {
+                        Some(r) => NodeConnection {
+                            id: ConnectionId::mint(),
+                            source: own,
+                            destination: dest_end,
+                            recovery: Some(DirectRecovery {
+                                recovery_round: r.recovery_round,
+                                attempt_ordinal: r.attempt_ordinal.saturating_add(1),
+                            }),
+                            reason: Some(reason),
+                            logged_at_ms: 0,
+                            ..p.clone()
+                        },
+                        None => first_failure_for(own, dest_end, alpn, previous.as_ref(), &reason, 0),
+                    }
                 }
-            }
-            _ => first_failure_for(
-                own.to_end(),
-                dest_end,
-                self.alpn.name.clone(),
-                previous.as_ref(),
-                reason,
-                0,
-            ),
-        };
-        let _ = self
-            .registry
-            .inner
-            .sink
-            .record_row(row)
-            .instrument(caller_span.clone())
-            .await;
+                _ => first_failure_for(own, dest_end, alpn, previous.as_ref(), &reason, 0),
+            })
+        });
+        caller_span.in_scope(|| self.registry.inner.sink.record_row(build));
     }
 }
 

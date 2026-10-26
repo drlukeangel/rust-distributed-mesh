@@ -16,7 +16,11 @@
 //! projection only once the write lands, so new calls keep the proven Proxy until then. A refused
 //! write leaves the obligation standing: it is derived again from the two latest rows at the next
 //! observation, at the next settlement a caller asks for, and every [`RECONCILER_TICK`] while
-//! owed. Nothing is queued; a restart reconstructs the same obligation from the same rows.
+//! owed. Nothing is queued for it; a restart reconstructs the same obligation from the same rows.
+//!
+//! Every connection write is asynchronous (Q169; connections.md §1): it is owed on the node's one
+//! ordered writer queue, retried with backoff until it lands; no open, dial, accept or read waits
+//! for it; the held projection takes a fact once its write lands.
 //!
 //! Two paths arm the one pending direct-recovery attempt per destination birth (connections.md
 //! §9.4, Q7): a latest Direct Failed row in `held`, and a connection accepted from the exact
@@ -55,13 +59,26 @@ impl std::fmt::Debug for RowsHeld {
     }
 }
 
-/// Makes an observation's row from the held projection, inside the write gate, naming this node as
-/// it is at that moment (the source end the held projection's own source was just set to).
-type Build = Box<dyn FnOnce(&ConnectionsWriter, ConnectionEnd) -> NodeConnection + Send>;
+/// Makes an owed row from the held projection, inside the write gate, naming this node as it is at
+/// that moment (the source end the held projection's own source was just set to); `None` when the
+/// fact no longer stands (a drop whose connection is no longer an open entry).
+type Build = Box<dyn FnOnce(&ConnectionsWriter, ConnectionEnd) -> Option<NodeConnection> + Send>;
 
-/// One queued observation: how its row is built, where it was observed (`dial`) and the
-/// peer endpoint it was observed with.
-type Observation = (Build, &'static str, String);
+/// What an owed row records, for the span its write is named on.
+enum Origin {
+    /// A fact observed of a connection: where (`dial`) and the peer endpoint it was observed with.
+    Observed { origin: &'static str, peer: String },
+    /// A drop of an open entry (`node.connections.delete`, an invalid carrier edge).
+    Drop { closed_entry: rdm_core::ConnectionId, reason: String },
+}
+
+/// One owed connection write on the node's one ordered queue (Q169): how its row is built, what it
+/// records, and the span of the call that owed it, which its write's span is a child of.
+struct Owed {
+    build: Build,
+    origin: Origin,
+    parent: tracing::Span,
+}
 
 /// Where the process holds the name this node publishes (R12): read, never copied.
 type HeldName = Arc<dyn Fn() -> PathName + Send + Sync>;
@@ -78,13 +95,14 @@ struct Inner {
     /// The last stamp this writer gave a row: every row it writes carries a later one, so two
     /// facts in one millisecond never tie (the held projection keeps one stamp per key).
     last_stamp: Mutex<u64>,
-    /// Observation writes spawned and not yet landed or refused; [`ConnectionsWriter::observations_landed`]
-    /// waits for this to reach zero, `idle` wakes it when a write finishes.
+    /// Owed writes queued and not yet landed; [`ConnectionsWriter::observations_landed`] waits for
+    /// this to reach zero, `idle` wakes it when a write finishes.
     in_flight: std::sync::atomic::AtomicUsize,
     idle: tokio::sync::Notify,
-    /// The observations in the order they were observed: one consumer builds, stamps, writes and
-    /// applies them one at a time, so the index member of a pair is always the last observed.
-    queue: tokio::sync::mpsc::UnboundedSender<Observation>,
+    /// The node's one ordered writer queue (Q169): every connection write in the order it was owed;
+    /// one consumer builds, stamps, writes (retrying with backoff until it lands) and applies them
+    /// one at a time, so rows land in queue order and the index member of a pair is the last owed.
+    queue: tokio::sync::mpsc::UnboundedSender<Owed>,
     /// The one write gate: held across every build, durable write and apply, whether it is an
     /// observation, a [`ConnectionsWriter::record`] or a retirement settlement; and by a start
     /// until it holds the name its join answer handed ([`ConnectionsWriter::hold_rows`]).
@@ -141,7 +159,7 @@ impl ConnectionsWriter {
     /// A writer for `own`, over its storage, holding `held` (shared with the route resolver).
     pub fn new(own: ConnectionEnd, storage: Arc<dyn ConnectionsStorage>, held: Arc<Mutex<ConnectionsHeld>>) -> Self {
         let runtime = tokio::runtime::Handle::current();
-        let (queue, mut observations) = tokio::sync::mpsc::unbounded_channel::<Observation>();
+        let (queue, mut owed) = tokio::sync::mpsc::unbounded_channel::<Owed>();
         let inner = Arc::new(Inner {
             own,
             held_name: std::sync::OnceLock::new(),
@@ -157,9 +175,9 @@ impl ConnectionsWriter {
         });
         let weak = Arc::downgrade(&inner);
         runtime.spawn(async move {
-            while let Some((build, origin, peer)) = observations.recv().await {
+            while let Some(item) = owed.recv().await {
                 let Some(inner) = weak.upgrade() else { break };
-                ConnectionsWriter { inner }.write_observed(build, origin, peer).await;
+                ConnectionsWriter { inner }.write_owed(item).await;
             }
         });
         Self { inner }
@@ -214,15 +232,15 @@ impl ConnectionsWriter {
         own
     }
 
-    /// Observation writes spawned by [`ConnectionObserver`] calls that have not yet landed or
-    /// been refused. The raw log, the index, the held projection and the observation's span follow
-    /// when its write completes.
+    /// Owed connection writes that have not yet landed. The raw log, the index, the held projection
+    /// and the row's span follow when its write lands.
     pub fn in_flight(&self) -> usize {
         self.inner.in_flight.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Resolves once every observation write spawned before the call has completed: the moment
-    /// after which the index and the evidence hold every fact this writer was handed.
+    /// Resolves once every connection write owed before the call has landed: the moment after which
+    /// the index and the evidence hold every fact this writer was handed. For cells that read the
+    /// store after a write; no open, dial, accept or read waits on it (Q169).
     pub async fn observations_landed(&self) {
         loop {
             let mut notified = std::pin::pin!(self.inner.idle.notified());
@@ -292,47 +310,37 @@ impl ConnectionsWriter {
         Ok(())
     }
 
-    /// Record a Direct row (Connected, Disconnected, Failed, or Refused) from the data plane's
-    /// `Connections` surface on `alpn`, stamping it with this writer's strictly increasing stamp.
-    pub async fn record_data_plane(&self, mut row: NodeConnection) -> Result<NodeConnection, String> {
-        let gate = self.inner.write_gate.lock().await;
-        let own = self.own_now();
-        if row.state != ConnectionState::Refused {
-            row.source = own;
-        }
-        row.logged_at_ms = self.stamp();
-        let settles = row.kind == ConnectionKind::Direct && row.state == ConnectionState::Connected;
-        let span = tracing::info_span!(
-            "rdm.node_admin.connection.update.via-observed",
-            entry = %row.id,
-            source = %row.source.name,
-            destination = %row.destination.name,
-            carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
-            kind = kind_name(row.kind),
-            state = state_name(row.state),
-            reason = %row.reason.clone().unwrap_or_default(),
-            origin = "dial",
-            outcome = tracing::field::Empty,
+    /// Owe a row (Connected, Disconnected, Failed, or Refused) from the data plane's `Connections`
+    /// surface (Q169): queued and never awaited; written, stamped with this writer's strictly
+    /// increasing stamp, retried until it lands and applied once it has.
+    pub fn record_data_plane(&self, row: NodeConnection) {
+        self.owe_row(rdm_transport::connections::owed(row));
+    }
+
+    fn owe_row(&self, build: rdm_transport::connections::OwedRow) {
+        let held = self.inner.held.clone();
+        self.owe(
+            Box::new(move |_, own| {
+                let mut row = build(&held.lock().unwrap())?;
+                if row.state != ConnectionState::Refused {
+                    row.source = own;
+                }
+                Some(row)
+            }),
+            Origin::Observed { origin: "dial", peer: String::new() },
         );
-        if let Err(e) = self.persist(&row).await {
-            span.record("outcome", format!("refused: {e}").as_str());
-            span.in_scope(|| tracing::info!("one connection fact this node observed"));
-            return Err(e);
-        }
-        let _ = self.inner.held.lock().unwrap().apply(row.clone());
-        self.sync_recovery();
-        span.record("outcome", "landed");
-        span.in_scope(|| tracing::info!("one connection fact this node observed"));
-        drop(gate);
-        if settles {
-            let _ = tracing::Instrument::instrument(self.settle_owed(), span.clone()).await;
-        }
-        Ok(row)
+    }
+
+    /// Queue one owed write behind every write owed before it.
+    fn owe(&self, build: Build, origin: Origin) {
+        self.inner.in_flight.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let _ = self.inner.queue.send(Owed { build, origin, parent: tracing::Span::current() });
     }
 
     /// The connections this node holds now (R-CR1): its own latest Direct entries that are
-    /// `connected` and its own active Proxy entries, under the name it holds, once every observation
-    /// handed to the writer before the call has landed. Ordered by destination, Direct first.
+    /// `connected` and its own active Proxy entries, under the name it holds, answered from what is
+    /// held: a write owed and not yet landed is not held, and no read waits for one (Q169).
+    /// Ordered by destination, Direct first.
     pub async fn held_routes(&self) -> Vec<NodeConnection> {
         self.held_connections().await.routes
     }
@@ -340,74 +348,87 @@ impl ConnectionsWriter {
     /// [`Self::held_routes`] with the name the node holds them under and whether its held set is
     /// complete: what `node.connections.get` answers.
     pub async fn held_connections(&self) -> HeldConnections {
-        self.observations_landed().await;
-        let _gate = self.inner.write_gate.lock().await;
         let own = self.own_now();
         let held = self.inner.held.lock().unwrap();
         HeldConnections { name: own.name, complete: held.is_complete(), routes: open_routes(&held) }
     }
 
     /// `node.connections.delete`'s drops (R-CR3): each of `routes` (open entries this node held,
-    /// whose connections were just cut) gets one `disconnected` entry with its own id and `reason`,
-    /// naming this node as it is now, written durably and then applied. A route whose open entry is
-    /// no longer the latest of its pair (a newer entry was written meanwhile) is cut and writes no
-    /// drop: the newer entry is the pair's state. Returns the ids of the routes cut, and those whose
-    /// drop the storage refused, with its refusal: the log still holds those open.
-    pub async fn write_drops(&self, routes: &[NodeConnection], reason: &str) -> (Vec<rdm_core::ConnectionId>, Vec<(rdm_core::ConnectionId, String)>) {
-        let _gate = self.inner.write_gate.lock().await;
-        let own = self.own_now();
-        let (mut closed, mut refused) = (Vec::new(), Vec::new());
+    /// whose connections were just cut) owes one `disconnected` entry with its own id and `reason`,
+    /// naming this node as it is when it is written, queued behind every write owed before it and
+    /// applied once it lands (Q169). A route whose open entry is no longer the latest of its pair
+    /// when its drop is written (a newer entry landed meanwhile) writes no drop: the newer entry is
+    /// the pair's state. Returns the ids of the routes cut.
+    pub fn write_drops(&self, routes: &[NodeConnection], reason: &str) -> Vec<rdm_core::ConnectionId> {
         for route in routes {
-            let current = {
-                let held = self.inner.held.lock().unwrap();
-                open_routes(&held).into_iter().any(|r| r.id == route.id)
-            };
-            if !current {
-                closed.push(route.id.clone());
-                continue;
-            }
-            let drop = NodeConnection {
-                id: rdm_core::ConnectionId::mint(),
-                source: own.clone(),
-                destination: route.destination.clone(),
-                kind: route.kind,
-                alpn: route.alpn.clone(),
-                state: ConnectionState::Disconnected,
-                carrier: route.carrier.clone(),
-                recovery: None,
-                reason: Some(reason.to_string()),
-                logged_at_ms: self.stamp(),
-            };
-            let span = tracing::info_span!(
-                "rdm.node_admin.connection.update.via-connections-delete",
-                source = %drop.source.name,
-                destination = %drop.destination.name,
-                kind = kind_name(drop.kind),
-                closed_entry = %route.id,
-                entry = %drop.id,
-                reason,
-                outcome = tracing::field::Empty,
+            let build = rdm_transport::connections::owed_drop(route, reason);
+            let held = self.inner.held.clone();
+            self.owe(
+                Box::new(move |_, own| {
+                    let mut row = build(&held.lock().unwrap())?;
+                    row.source = own;
+                    Some(row)
+                }),
+                Origin::Drop { closed_entry: route.id.clone(), reason: reason.to_string() },
             );
-            match self.persist(&drop).await {
-                Ok(()) => {
-                    let _ = self.inner.held.lock().unwrap().apply(drop);
-                    span.record("outcome", "landed");
-                    closed.push(route.id.clone());
-                }
-                Err(e) => {
-                    span.record("outcome", format!("refused: {e}").as_str());
-                    refused.push((route.id.clone(), e));
-                }
-            }
-            span.in_scope(|| tracing::info!("the drop of a connection node.connections.delete cut"));
         }
-        (closed, refused)
+        routes.iter().map(|r| r.id.clone()).collect()
     }
 
     /// The raw log first, then the index; an error names the storage's own refusal.
     async fn persist(&self, row: &NodeConnection) -> Result<(), String> {
         self.inner.storage.append_history(row).await.map_err(|e| e.to_string())?;
         self.inner.storage.put_connection(row).await.map_err(|e| e.to_string())
+    }
+
+    /// Write `row` until it lands (Q169): the raw log, then the index, each step attempted again
+    /// after a refusal on the delivery schedule (the publish cadence, doubling with jitter, capped
+    /// at the staleness floor), so a step that landed is never written twice. Each refusal is named
+    /// on its own span, a child of the row's, with its attempt and the delay before the next.
+    /// Returns the attempts it took, or `None` when every handle on this writer is gone.
+    async fn land(&self, row: &NodeConnection, span: &tracing::Span) -> Option<u32> {
+        let pacing = rdm_transport::delivery::Pacing::from_cadences();
+        let mut appended = false;
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let refusal = if appended {
+                self.inner.storage.put_connection(row).await.err()
+            } else {
+                match self.inner.storage.append_history(row).await {
+                    Ok(()) => {
+                        appended = true;
+                        self.inner.storage.put_connection(row).await.err()
+                    }
+                    Err(e) => Some(e),
+                }
+            };
+            let Some(refusal) = refusal else { return Some(attempt) };
+            let next = pacing.after(attempt);
+            tracing::info_span!(
+                parent: span,
+                "rdm.node_admin.connection.reject.via-refused-write",
+                entry = %row.id,
+                source = %row.source.name,
+                destination = %row.destination.name,
+                destination_node_id = %row.destination.node_id,
+                kind = kind_name(row.kind),
+                state = state_name(row.state),
+                reason = %row.reason.clone().unwrap_or_default(),
+                logged_at_ms = row.logged_at_ms,
+                step = if appended { "index" } else { "history" },
+                attempt,
+                next_in_ms = next.as_millis() as u64,
+                refusal = %refusal,
+            )
+            .in_scope(|| tracing::info!("the connection write was refused by storage; it stays owed and is written again after its backoff"));
+            span.record("attempts", attempt);
+            tokio::time::sleep(next).await;
+            // Only the queue's own handle is left: the node that owed the write is gone.
+            if std::sync::Arc::strong_count(&self.inner) <= 1 {
+                return None;
+            }
+        }
     }
 
     /// The latest Direct row this node holds toward `destination` on the default ALPN, if any.
@@ -525,68 +546,74 @@ impl ConnectionsWriter {
         *last
     }
 
-    /// An observed fact: `build` makes the row from the held projection, the row is written to the
-    /// raw log and the index, and it is applied to the held projection only once that write has
-    /// landed. A refused write leaves the fact unheld and names the refusal; the next observation
-    /// of the connection writes it afresh. Observations take the write gate one at a time, so a
-    /// row built from the held projection (a failing series' next ordinal) sees every earlier
-    /// observation already applied. A Direct Connected settles the Proxy retirement it may owe
-    /// once its own write has landed.
+    /// An observed fact: `build` makes the row from the held projection when the writer takes it,
+    /// queued behind every write owed before it (Q169). The row is written until it lands and is
+    /// applied to the held projection only once it has; a row built from the held projection (a
+    /// failing series' next ordinal) sees every earlier owed row already applied. A Direct
+    /// Connected settles the Proxy retirement it may owe once its own write has landed.
     fn observed(&self, build: impl FnOnce(&Self, ConnectionEnd) -> NodeConnection + Send + 'static, origin: &'static str, node: &ResolvedNode) {
-        self.inner.in_flight.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        let _ = self.inner.queue.send((Box::new(build), origin, node.endpoint_id.fmt_short().to_string()));
+        self.owe(Box::new(move |w, own| Some(build(w, own))), Origin::Observed { origin, peer: node.endpoint_id.fmt_short().to_string() });
     }
 
-    /// Write one queued observation inside the write gate, then settle the retirement it may owe.
-    async fn write_observed(&self, build: Build, origin: &'static str, peer: String) {
+    /// Write one owed row inside the write gate until it lands, apply it, then settle the
+    /// retirement it may owe.
+    async fn write_owed(&self, owed: Owed) {
         let w = self;
+        let Owed { build, origin, parent } = owed;
         {
             let gate = w.inner.write_gate.lock().await;
             let own = w.own_now();
-            let mut row = build(w, own.clone());
+            let Some(mut row) = build(w, own) else {
+                drop(gate);
+                w.inner.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                w.inner.idle.notify_waiters();
+                return;
+            };
             row.logged_at_ms = w.stamp();
             let settles = row.kind == ConnectionKind::Direct && row.state == ConnectionState::Connected;
-            let span = tracing::info_span!(
-                "rdm.node_admin.connection.update.via-observed",
-                entry = %row.id,
-                source = %row.source.name,
-                destination = %row.destination.name,
-                peer = %peer,
-                kind = kind_name(row.kind),
-                state = state_name(row.state),
-                reason = %row.reason.clone().unwrap_or_default(),
-                origin,
-                outcome = tracing::field::Empty,
-            );
-            let landed = match w.persist(&row).await {
-                Ok(()) => {
-                    let _ = w.inner.held.lock().unwrap().apply(row.clone());
-                    w.sync_recovery();
-                    span.record("outcome", "landed");
-                    true
-                }
-                Err(e) => {
-                    span.record("outcome", format!("refused: {e}").as_str());
-                    tracing::info_span!(
-                        "rdm.node_admin.connection.reject.via-refused-write",
-                        node = %own.name,
-                        source = %row.source.name,
-                        destination = %row.destination.name,
-                        destination_node_id = %row.destination.node_id,
-                        kind = kind_name(row.kind),
-                        state = state_name(row.state),
-                        reason = %row.reason.clone().unwrap_or_default(),
-                        origin,
-                        logged_at_ms = row.logged_at_ms,
-                        refusal = %e,
-                    )
-                    .in_scope(|| tracing::info!("the observed connection fact was refused by storage; it is not held, and the next observation of this connection writes it afresh"));
-                    false
-                }
+            let span = match &origin {
+                Origin::Observed { origin, peer } => tracing::info_span!(
+                    parent: &parent,
+                    "rdm.node_admin.connection.update.via-observed",
+                    entry = %row.id,
+                    source = %row.source.name,
+                    destination = %row.destination.name,
+                    carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
+                    peer = %peer,
+                    kind = kind_name(row.kind),
+                    state = state_name(row.state),
+                    reason = %row.reason.clone().unwrap_or_default(),
+                    origin = *origin,
+                    attempts = tracing::field::Empty,
+                    outcome = tracing::field::Empty,
+                ),
+                Origin::Drop { closed_entry, reason } => tracing::info_span!(
+                    parent: &parent,
+                    "rdm.node_admin.connection.update.via-connections-delete",
+                    source = %row.source.name,
+                    destination = %row.destination.name,
+                    kind = kind_name(row.kind),
+                    closed_entry = %closed_entry,
+                    entry = %row.id,
+                    reason = %reason,
+                    attempts = tracing::field::Empty,
+                    outcome = tracing::field::Empty,
+                ),
             };
-            span.in_scope(|| tracing::info!("one connection fact this node observed"));
+            let landed = w.land(&row, &span).await;
+            if landed.is_some() {
+                let _ = w.inner.held.lock().unwrap().apply(row.clone());
+                w.sync_recovery();
+                span.record("outcome", "landed");
+            } else {
+                span.record("outcome", "writer-gone");
+            }
+            span.in_scope(|| match origin {
+                Origin::Observed { .. } => tracing::info!("one connection fact this node observed"),
+                Origin::Drop { .. } => tracing::info!("the drop of a connection this node cut"),
+            });
             drop(gate);
-            if settles && landed {
+            if settles && landed.is_some() {
                 let _ = tracing::Instrument::instrument(w.settle_owed(), span.clone()).await;
             }
             drop(span);
@@ -661,9 +688,8 @@ impl rdm_transport::CarrierEdges for ConnectionsWriter {
     }
 
     async fn edge_not_active(&self, target: &rdm_core::NodeId) -> Option<String> {
-        // The dial that just failed handed its Failed fact to this writer; it is held once its write
-        // has landed. The carrier answers from the facts, so it waits for them.
-        self.observations_landed().await;
+        // Answered from what is held: a fact owed and not yet landed is not held, and no read waits
+        // for a write (Q169). A dial's own outcome is named by `edge_after_dial`.
         let held = self.inner.held.lock().unwrap();
         let latest = held.own_latest_directs().into_iter().find(|d| &d.destination.node_id == target)?;
         (latest.state != ConnectionState::Connected).then(|| {
@@ -693,12 +719,12 @@ impl rdm_transport::connections::ConnectionsSink for ConnectionsWriter {
         self.held()
     }
 
-    async fn record_row(&self, row: NodeConnection) -> Result<NodeConnection, String> {
-        self.record_data_plane(row).await
+    fn record_row(&self, row: rdm_transport::connections::OwedRow) {
+        self.owe_row(row);
     }
 
-    async fn record_drops(&self, routes: &[NodeConnection], reason: &str) -> Vec<rdm_core::ConnectionId> {
-        self.write_drops(routes, reason).await.0
+    fn record_drops(&self, routes: &[NodeConnection], reason: &str) {
+        self.write_drops(routes, reason);
     }
 
     fn accepted(&self, peer: &rdm_transport::connections::Birth, alpn: &[u8]) {

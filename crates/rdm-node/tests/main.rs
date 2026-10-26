@@ -3,4 +3,5 @@
 
 #[cfg(feature = "file-backend")]
 mod connection_reconnect;
+mod connection_writes;
 mod leadership;

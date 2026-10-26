@@ -302,7 +302,8 @@ async fn refuse(
             reason: Some(reason.to_string()),
             logged_at_ms: 0,
         };
-        let _ = tracing::Instrument::instrument(registry.inner.sink.record_row(refused_row), span.clone()).await;
+        // Owed, never awaited (Q169): the refusal closes the connection at once.
+        span.in_scope(|| registry.inner.sink.record_row(super::owed(refused_row)));
     }
     if answered && present.is_some() {
         let _ = tokio::time::timeout(floor, connection.closed()).await;
