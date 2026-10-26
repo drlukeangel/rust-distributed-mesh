@@ -91,6 +91,9 @@ pub struct ControlPlane {
     /// The `topology_storage_provider` names this admin's wiring registers (storage.md §2): as the
     /// fabric-primary, a request naming any other is refused by name at acceptance.
     pub topology_storage_providers: Vec<String>,
+    /// The fabric-primary's `FabricAtlas` (fabric-atlas.md): what Build acceptance of a node action
+    /// reads the node's birth and lifecycle from, never the gossip view.
+    pub atlas: Arc<crate::fabric_atlas::FabricAtlas>,
 }
 
 impl ControlPlane {
@@ -122,6 +125,7 @@ impl ControlPlane {
             node_id: std::sync::OnceLock::new(),
             executable_dirs: Vec::new(),
             topology_storage_providers: vec![rdm_core::launch::TOPOLOGY_STORAGE_FILE.into()],
+            atlas: Arc::default(),
         }
     }
 
@@ -452,7 +456,7 @@ impl ControlPlane {
             // An unheard birth is its mesh-primary's to recover on node investigation's verdict
             // (node-recovery.md step 3): it is refused `node-not-live` by name.
             if let TopologyChange::RemoveNode { node } = &change {
-                if let Some(n) = observed.node(node).filter(|n| !n.status.is_live() && !n.stopped) {
+                if let Some(n) = self.atlas_row(node, &observed).await?.filter(|n| !n.live && !n.stopped) {
                     return Err(not_live(&outer, route, node, n.status, "a delete needs a live node or a stopped one"));
                 }
             }
@@ -602,6 +606,9 @@ impl ControlPlane {
             });
         }
         tracing::info!(build_id = %current.build_id.log(), attempt = opened.attempt, lane = lane.unwrap_or("fabric"), "attempt opened");
+        if let Some(action) = &opened.action {
+            self.atlas.accept(&opened.build_id, opened.attempt, action);
+        }
         self.build_submitted.notify_waiters();
         Ok(Opened { build_id: current.build_id.clone(), attempt: opened.attempt, mesh: opened.mesh })
     }
@@ -715,7 +722,9 @@ impl ControlPlane {
                     Some(project) => project().await,
                     None => self.topology.read().await.clone(),
                 };
-                let held = t.node(&path).cloned();
+                // The birth and its lifecycle are the atlas's: the node row's current birth and what the
+                // ops left it (fabric-atlas.md R-FA1), never the gossip view.
+                let held = self.atlas_row(&path, &t).await?;
                 let Some(n) = held else {
                     let me = self.held_name().await;
                     let why = if stopped_old {
@@ -733,11 +742,12 @@ impl ControlPlane {
                 };
                 // A start is the transition out of Leaving, and only for a stopped process; every other action needs a live node.
                 let startable = kind == ActionKind::Start && n.stopped;
+                let live = n.live;
                 // A delete acts on the stopped predecessor, or on one whose exit is already proven, or on
                 // the last admin of a deleted mesh, live or stopped: its node.delete stops it first.
                 let deletable = kind == ActionKind::Delete && (n.stopped || n.status == crate::model::NodeStatus::Dead || deleted_mesh);
                 let needs_live = !matches!(kind, ActionKind::Start | ActionKind::Delete);
-                if (kind == ActionKind::Start && !startable) || (kind == ActionKind::Delete && !deletable) || (needs_live && !n.status.is_live()) {
+                if (kind == ActionKind::Start && !startable) || (kind == ActionKind::Delete && !deletable) || (needs_live && !live) {
                     let reason = match kind {
                         ActionKind::DeleteConnections => "node.connections.delete needs a live node",
                         ActionKind::Stop => "a stop needs a live node",
@@ -763,7 +773,7 @@ impl ControlPlane {
                         return Err(Refusal::Reject(reject));
                     }
                 }
-                match n.incarnation_id.clone() {
+                match n.incarnation.clone() {
                     Some(incarnation) => incarnation,
                     None => return Err(not_live(&outer, route, &path, n.status, "the node holds no incarnation id to fence the attempt to")),
                 }

@@ -33,6 +33,7 @@ pub mod drift;
 pub mod election;
 pub mod executor;
 pub mod seat_revision;
+pub mod fabric_atlas;
 pub mod fabric_builds;
 pub mod fabric_status;
 pub mod fabric_state;

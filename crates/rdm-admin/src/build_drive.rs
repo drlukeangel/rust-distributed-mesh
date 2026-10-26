@@ -85,9 +85,11 @@ pub trait Gate: Send + Sync {
     async fn primaries_updated(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId, _attempt: u32) -> Result<(), String> {
         Ok(())
     }
-    /// Refresh the fabric-primary's digest view and view from any completed stop-node receipt of `build_id`
-    /// before `BuildReply::Complete` goes out on the caller's stream.
+    /// Take the completed lifecycle receipts of `build_id` into the fabric-primary's `FabricAtlas`
+    /// before `BuildReply::Complete` goes out on the caller's stream (fabric-atlas.md R-FA2).
     async fn attempt_completed(&self, _build_id: &BuildId, _attempt: u32) {}
+    /// Attempt `attempt` of `build_id` ended `Failed`: what it accepted is no longer executing.
+    async fn attempt_failed(&self, _build_id: &BuildId, _attempt: u32) {}
     /// What the node rows record of each member of `topology`'s executable, for a replacement's plan
     /// ([`crate::accepted::recorded_executables`]; build-deployment.md §3). A gate with no rows
     /// records none: every member is owed its replacement.
@@ -1315,6 +1317,7 @@ impl DriveEnv {
                         }
                     }
                     self.release_mesh(&id, attempt, &executor).await;
+                    self.gate.attempt_failed(&id, attempt).await;
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }

@@ -20,7 +20,7 @@ pub use rdm_core::MeshNode;
 pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
 
 /// What the reads answer: the views travel on op `0x1B` and the control API answers the same shapes.
-pub use rdm_core::views::{ConnectionView, ConnectionsView, DataDirLost, DataDirUnreadable, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
+pub use rdm_core::views::{AtlasNodeView, AtlasView, ConnectionView, ConnectionsView, DataDirLost, DataDirUnreadable, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 /// Executable bindings: what each created path's config names (build-deployment.md), and a
 /// consumer's per-kind set a caller expands into per-path entries before the typed call.
 pub use rdm_core::binding;

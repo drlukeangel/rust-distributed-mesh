@@ -505,6 +505,9 @@ pub struct StatusAuthority {
     pub wake: Arc<crate::status_declare::DeclareWake>,
     /// This admin's fabric states; filled once the admin holds the handles they act through.
     pub fabric_states: Arc<OnceLock<Arc<crate::fabric_status::FabricStates>>>,
+    /// This admin's `FabricAtlas` (fabric-atlas.md), the one its control plane's Build acceptance reads:
+    /// what `fabrics.atlas.get` answers.
+    pub atlas: Arc<OnceLock<Arc<crate::fabric_atlas::FabricAtlas>>>,
     /// Fabric recovery in a view (Q122): while this admin runs it and the target mesh has no mesh-primary,
     /// it takes the declarations of the node re-created at the target's path.name, which its own node.create
     /// waits on (build.md §5.3).
@@ -640,7 +643,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } => {
+        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } => {
             (crate::node_self::request_not_handled(&me_name.to_string(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -945,6 +948,21 @@ impl StatusAuthority {
                         }
                     }
                     None => rdm_core::reply::status::not_ready(format!("{me_name} reads no digest view; {} is refused", req.op())),
+                };
+            }
+            StatusRequest::GetAtlas => {
+                let Some(atlas) = self.atlas.get() else {
+                    return rdm_core::reply::status::not_ready(format!("{me_name} holds no fabric atlas yet; {} is refused", req.op()));
+                };
+                // One row for every node the current Build's topology names (fabric-atlas.md R-FA4).
+                let paths: Vec<crate::model::PathName> = match self.builds.current().await {
+                    Ok(Some(b)) => b.topology.meshes.values().flat_map(|m| m.nodes.iter().cloned()).collect(),
+                    Ok(None) => Vec::new(),
+                    Err(e) => return rdm_core::reply::status::bounded_source_failed("builds.storage", req.op(), &format!("{me_name} could not read its current Build: {e}")),
+                };
+                return match atlas.view(paths, &*self.nodes_storage, &*self.builds, &view).await {
+                    Ok(atlas) => StatusReply::within_reply_bound(StatusReply::Atlas { atlas }, req.op()),
+                    Err(e) => rdm_core::reply::status::bounded_source_failed("nodes.storage", req.op(), &e),
                 };
             }
             StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric => {
@@ -2178,7 +2196,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            fabric_states: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
@@ -2244,7 +2262,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            fabric_states: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             caches: Default::default(),
             configs: Default::default(),
@@ -2319,7 +2337,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            fabric_states: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status,
             caches: Default::default(),
             configs: Default::default(),
@@ -2614,7 +2632,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            fabric_states: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
@@ -2692,7 +2710,7 @@ mod tests {
             mesh_deleter: Default::default(),
             hold_next_reply: Default::default(),
             wake: Default::default(),
-            fabric_states: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             pre_node_ready: Default::default(),
@@ -3053,7 +3071,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            fabric_states: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
@@ -3152,7 +3170,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            fabric_states: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),

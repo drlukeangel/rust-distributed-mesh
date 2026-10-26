@@ -128,6 +128,8 @@ pub enum FabricOp {
     NodesGet,
     /// `fabric.meshes.get`: every mesh of the fabric (Q165).
     MeshesGet,
+    /// `fabrics.atlas.get`: the fabric-primary's `FabricAtlas` (fabric-atlas.md R-FA4).
+    AtlasGet,
 }
 
 impl FabricOp {
@@ -137,6 +139,7 @@ impl FabricOp {
             Self::Get => "fabric.get",
             Self::NodesGet => "fabric.nodes.get",
             Self::MeshesGet => "fabric.meshes.get",
+            Self::AtlasGet => "fabrics.atlas.get",
         }
     }
 
@@ -146,6 +149,7 @@ impl FabricOp {
             Self::Get => tracing::info_span!("rdm.node_admin.fabric.get.via-call", op = "fabric.get", outcome = tracing::field::Empty),
             Self::NodesGet => tracing::info_span!("rdm.node_admin.fabric.get.via-nodes-call", op = "fabric.nodes.get", outcome = tracing::field::Empty),
             Self::MeshesGet => tracing::info_span!("rdm.node_admin.fabric.get.via-meshes-call", op = "fabric.meshes.get", outcome = tracing::field::Empty),
+            Self::AtlasGet => tracing::info_span!("rdm.node_admin.fabric.get.via-atlas-call", op = "fabrics.atlas.get", outcome = tracing::field::Empty),
         }
     }
 }

@@ -115,7 +115,7 @@ impl NodeObserver for LiveMesh {
                 nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), mesh_ids: Arc::new(Default::default), durable: Default::default(),
                 caches: Default::default(),
                 commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
-                hold_next_reply: Default::default(), wake: Default::default(), fabric_states: Default::default(), fabric_recovery: Default::default(), configs: Default::default(),
+                hold_next_reply: Default::default(), wake: Default::default(), fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(), configs: Default::default(),
                 republish: Default::default(), configure: Default::default(), pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
                 digest_view: Some(self.topology_view.digest_view.clone()), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };

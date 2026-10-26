@@ -2905,7 +2905,7 @@ mod tests {
             mesh_deleter: Arc::new(std::sync::OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
-            fabric_states: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             pre_node_ready: Default::default(),

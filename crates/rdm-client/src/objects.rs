@@ -13,7 +13,7 @@
 use crate::build_stream::{BuildCarrier, BuildReceipts};
 use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
-use crate::{Accepted, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricView, MeshView, NodeView};
+use crate::{Accepted, AtlasView, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricView, MeshView, NodeView};
 use rdm_core::{NodeId, PathName};
 use rdm_transport::{CallOptions, NodeTarget};
 use rdm_core::build::BuildChange;
@@ -379,6 +379,24 @@ impl Fabrics {
         };
         let r = tracing::Instrument::instrument(call, span.clone()).await;
         ended_read(&span, FabricOp::Get.name(), &r);
+        r
+    }
+
+    /// `fabrics.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): the fabric-primary's
+    /// `FabricAtlas`, one row per node of the current Build's topology: the birth its node row names
+    /// current, its lifecycle as the ops left it, and the operation accepted on it whose attempt has
+    /// not completed. `fabric.get` is unchanged by it.
+    pub async fn atlas_get(&self) -> Result<AtlasView, CallEnd> {
+        let span = FabricOp::AtlasGet.span();
+        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let call = async {
+            match read(&self.carrier, &target, &StatusRequest::GetAtlas).await? {
+                StatusReply::Atlas { atlas } => Ok(atlas),
+                other => Err(refused(&target, FabricOp::AtlasGet.name(), other)),
+            }
+        };
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
+        ended_read(&span, FabricOp::AtlasGet.name(), &r);
         r
     }
 

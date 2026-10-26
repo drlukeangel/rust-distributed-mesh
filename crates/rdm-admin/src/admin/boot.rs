@@ -1342,7 +1342,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     mesh_deleter: mesh_deleter.clone(),
                                     hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                                     wake: records.wake.clone(),
-                                    fabric_states: states_slot.clone(), fabric_recovery: Arc::new(std::sync::OnceLock::from(crate::fabric_recovery::reader(digest_view.clone(), records.clone()))),
+                                    fabric_states: states_slot.clone(), atlas: Arc::new(std::sync::OnceLock::from(control.atlas.clone())), fabric_recovery: Arc::new(std::sync::OnceLock::from(crate::fabric_recovery::reader(digest_view.clone(), records.clone()))),
                                     configs: configs_slot.clone(),
                                     republish: republish.clone(),
                                     configure: configure.clone(),
@@ -1552,7 +1552,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     builds: builds_dyn.clone(),
                                     door: claim_door.clone(),
                                     dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
-                                    gate: Arc::new(SeatGate { topology_view: topology_view.clone(), builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), meshes: mesh_storage.clone() }),
+                                    gate: Arc::new(SeatGate { builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), meshes: mesh_storage.clone() }),
                                     departure: Arc::new(ProviderDeparture {
                                         me: name.clone(),
                                         topology: control.topology.clone(),

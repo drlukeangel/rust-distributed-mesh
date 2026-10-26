@@ -269,6 +269,45 @@ pub struct FabricView {
     pub previous_topology_storage_providers: Vec<String>,
 }
 
+/// The fabric-primary's `FabricAtlas` (`fabrics.atlas.get`; docs/plans/proposal/fabric-atlas.md):
+/// one row for every node the current Build's topology names, in `path.name` order. Each row's birth
+/// is the one its node row names current, and its lifecycle is what the ops left it: the
+/// fabric-primary's own (what it accepted and the receipts its attempts returned) and the effects the
+/// node row records of any admin's op. Gossip is context only (`observed`) and decides nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtlasView {
+    /// The rows, one per node, in `path.name` order.
+    pub nodes: Vec<AtlasNodeView>,
+}
+
+impl AtlasView {
+    /// The row of the node at `name`, when the atlas holds one.
+    pub fn node(&self, name: &str) -> Option<&AtlasNodeView> {
+        self.nodes.iter().find(|n| n.name.to_string() == name)
+    }
+}
+
+/// One node of the [`AtlasView`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtlasNodeView {
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The minted id of the birth the node row names current.
+    pub node_id: NodeId,
+    /// The incarnation of that birth, once the row records one.
+    pub incarnation_id: Option<IncarnationId>,
+    /// The birth's lifecycle state as the ops left it.
+    pub status: NodeStatus,
+    /// A stopped birth with a live process (a completed node.stop), waiting for a start or a delete.
+    pub stopped: bool,
+    /// The operation key (`node.stop:mesh2.rpc.1`) of the command accepted on the node whose attempt
+    /// has not completed; `None` once its receipts are in.
+    pub accepted: Option<String>,
+    /// Context only: the status the answering admin's gossip view holds for the same birth, when it
+    /// holds it. Never read by acceptance.
+    pub observed: Option<NodeStatus>,
+}
+
 /// One connection fact a node holds (`node.connections.get`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionView {

@@ -512,6 +512,10 @@ pub enum StatusRequest {
         /// The root-signed issuing cert, as hex (`rdm_core::certs::encode_issuing_cert`).
         cert: String,
     },
+    /// `fabrics.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): a caller asks the
+    /// fabric-primary for its `FabricAtlas`, answered [`StatusReply::Atlas`]. A read. Appended last: no
+    /// variant before it moves.
+    GetAtlas,
 }
 
 /// An issuing key's secret carried by [`StatusRequest::UpdateIssuer`], as hex: its debug form names its
@@ -831,6 +835,7 @@ impl StatusRequest {
             Self::GetMeshes { mesh: Some(_) } => "mesh.get",
             Self::GetMeshes { mesh: None } => "fabric.meshes.get",
             Self::GetFabric => "fabric.get",
+            Self::GetAtlas => "fabrics.atlas.get",
             Self::GetConnections { .. } => "node.connections.get",
             Self::CreateTags { .. } => "node.tags.create",
             Self::DeleteTags { .. } => "node.tags.delete",
@@ -1344,6 +1349,12 @@ pub enum StatusReply {
         /// Why, by name; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
+    /// The answer to a `GetAtlas`: the fabric-primary's `FabricAtlas`. Appended last: no variant
+    /// before it moves.
+    Atlas {
+        /// The atlas.
+        atlas: crate::views::AtlasView,
+    },
 }
 
 /// The event a Blocked `pre_node_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -1551,6 +1562,7 @@ impl StatusReply {
             Self::Nodes { .. } => "nodes",
             Self::Meshes { .. } => "meshes",
             Self::Fabric { .. } => "fabric",
+            Self::Atlas { .. } => "atlas",
             Self::Connections { .. } => "connections",
             Self::UnknownMesh { .. } => "unknown-mesh",
             Self::ReadOverBound { .. } => "read-over-bound",
@@ -1610,8 +1622,8 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 32;
-    const REPLY_VARIANTS: u32 = 55;
+    const REQUEST_VARIANTS: u32 = 33;
+    const REPLY_VARIANTS: u32 = 56;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -1654,6 +1666,7 @@ impl NodeProtocol for Status {
             StatusReply::Nodes { .. } => "nodes",
             StatusReply::Meshes { .. } => "meshes",
             StatusReply::Fabric { .. } => "fabric",
+            StatusReply::Atlas { .. } => "atlas",
             StatusReply::Connections { .. } => "connections",
             StatusReply::UnknownMesh { .. } => "unknown-mesh",
             StatusReply::ReadOverBound { .. } => "read-over-bound",
@@ -1718,6 +1731,7 @@ impl NodeProtocol for Status {
             StatusReply::Nodes { .. } => ReplyKind::Success,
             StatusReply::Meshes { .. } => ReplyKind::Success,
             StatusReply::Fabric { .. } => ReplyKind::Success,
+            StatusReply::Atlas { .. } => ReplyKind::Success,
             StatusReply::Connections { .. } => ReplyKind::Success,
             StatusReply::UnknownMesh { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
             StatusReply::ReadOverBound { .. } => ReplyKind::new(crate::outcome::Code::ResourceExhausted),
@@ -1871,6 +1885,7 @@ mod tests {
             (StatusReply::CertRenewed { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), expires_at: 7 }, ReplyKind::Success),
             (StatusReply::IssuerUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), issuer_expires_at: 7 }, ReplyKind::Success),
             (StatusReply::RejectedCert { reason: "x".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
+            (StatusReply::Atlas { atlas: crate::views::AtlasView::default() }, ReplyKind::Success),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -1913,6 +1928,7 @@ mod tests {
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::All(["rabbit".to_string(), "red".to_string()].into())) },
             StatusRequest::GetMeshes { mesh: None },
             StatusRequest::GetFabric,
+            StatusRequest::GetAtlas,
             StatusRequest::GetConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: ["rabbit".to_string()].into() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },

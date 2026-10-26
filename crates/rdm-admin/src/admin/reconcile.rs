@@ -5,7 +5,6 @@ use super::*;
 /// The gates of the fabric-primary's drive: the Build log's fence, read from the fabric-primary
 /// record this admin holds.
 pub(crate) struct SeatGate {
-    pub(crate) topology_view: TopologyView,
     pub(crate) builds: Arc<FabricBuildStateAdapter>,
     /// The control plane whose peer-mesh reader the investigation installs once its ladder runs
     /// (after the drive is built): read when asked, as the Build door reads it.
@@ -13,37 +12,11 @@ pub(crate) struct SeatGate {
     /// The 0x21 door node.primary.update is commanded and run through, which holds what each update
     /// was answered and said (`HandoverDoor::memo`).
     pub(crate) handover: Arc<crate::fabric_handover::HandoverDoor>,
-    /// Projects the digest view into the view now, so a completed stop-node lists the stopped birth stopped
-    /// before `BuildReply::Complete` goes out on the caller's stream.
+    /// Projects the digest view into the view now, so a Mesh record read Dead is in the view the plan
+    /// reads next.
     pub(crate) project: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
-    /// The deployment provider and the durable runtime rows: a completed stop's exact birth is
-    /// inspected through them before its stop is taken into the view.
-    pub(crate) provider: Arc<dyn DeploymentProvider>,
-    pub(crate) nodes: Arc<dyn crate::storage::NodesStorage>,
     /// The Mesh records (mesh.storage on the fabric's shared root): which meshes are Dead, for the plan.
     pub(crate) meshes: Arc<dyn crate::storage::MeshStorage>,
-}
-
-/// Whether a completed stop's receipt still describes its exact birth: node-stop.md's Status is
-/// "stopped with a live process", and a later attempt "validates those receipts against the accepted
-/// operation and exact births before it reuses them" (node-rpc-envelope.md, Workflow). A birth whose
-/// runtime the provider reads exited is not stopped: it is node recovery's (node-recovery.md step 3),
-/// and its stop is not taken into the view. Any other reading keeps the receipt.
-pub(crate) async fn stop_receipt_holds(provider: &dyn DeploymentProvider, digest_view: &DigestView, nodes: &dyn crate::storage::NodesStorage, op: &rdm_core::LifecycleOp) -> bool {
-    // A deleted birth's stop is refused by the view itself (`DigestView::stopped`): nothing to inspect.
-    if digest_view.is_deleted(op.node_id.as_str()) {
-        return true;
-    }
-    let mut birth = Node::allocated(op.name.clone());
-    birth.node_id = op.node_id.clone();
-    birth.incarnation_id = Some(op.incarnation.clone());
-    let (inspected, _) = crate::node_investigation::inspect_birth_with_handle(provider, digest_view, Some(nodes), &birth).await;
-    if let crate::deployment::provider::Inspected::Exited(code) = inspected {
-        tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, outcome = "runtime-exited", exit_code = code.map(|c| c.to_string()).unwrap_or_default())
-            .in_scope(|| tracing::info!("the stopped birth's runtime exited: its stop receipt is not taken into the view, and the birth is node recovery's"));
-        return false;
-    }
-    true
 }
 
 #[async_trait::async_trait]
@@ -136,23 +109,17 @@ impl crate::build_drive::Gate for SeatGate {
         self.handover.records.fabric_state() == crate::fabric_state::FabricState::ReadyForTraffic
     }
 
-    async fn attempt_completed(&self, build_id: &crate::build::BuildId, _attempt: u32) {
+    /// The completed lifecycle receipts of the Build, taken into the fabric-primary's `FabricAtlas`
+    /// before the caller is answered `Complete` (fabric-atlas.md R-FA2): the atlas, never the gossip
+    /// view, is what Build acceptance reads them from (Q197).
+    async fn attempt_completed(&self, build_id: &crate::build::BuildId, attempt: u32) {
         if let Ok(p) = self.builds.read_build(build_id).await {
-            let mut stopped = false;
-            for s in &p.steps {
-                if s.operation.starts_with("node.stop:") && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete {
-                    stopped = true;
-                    if let Some(op) = s.output.as_ref().and_then(|v| serde_json::from_value::<rdm_core::LifecycleOp>(v.clone()).ok()) {
-                        if stop_receipt_holds(&*self.provider, &self.topology_view.digest_view, &*self.nodes, &op).await {
-                            let _ = self.topology_view.digest_view.stopped(op);
-                        }
-                    }
-                }
-            }
-            if stopped {
-                (self.project)().await;
-            }
+            self.control.atlas.receipts(&p, attempt);
         }
+    }
+
+    async fn attempt_failed(&self, build_id: &crate::build::BuildId, attempt: u32) {
+        self.control.atlas.ended(build_id, attempt);
     }
 }
 
