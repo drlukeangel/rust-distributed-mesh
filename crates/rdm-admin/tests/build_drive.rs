@@ -604,6 +604,51 @@ async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of
     }
 }
 
+/// CONTRACT (R-BI7 caveat 3: one attempt in flight per mesh, the mesh's in-flight row on the store
+/// root, released by the attempt's end): a node recovery takes the in-flight row of the mesh the
+/// recovered node is in, whoever executes it (control_plane.rs, `decide_claim` on the node's mesh). The
+/// fabric-primary `mesh1.admin.1` claims the recovery of `mesh2.rpc.1`, which takes mesh2's row,
+/// and the drive runs the attempt to its terminal: mesh2's row is released with it. Must NOT happen:
+/// the end releasing only its executor's mesh (mesh1), leaving mesh2 held by an attempt that ended,
+/// so every later attempt in mesh2 is refused build-in-progress naming it (the authority soak,
+/// 14034530d: Build nbw0yxzwgfg0 stalled 120 s on mesh2's row left by attempt 6 of 7z548bear6nj).
+#[tokio::test]
+async fn a_recovery_the_fabric_primary_executes_in_another_mesh_releases_that_meshs_in_flight_row_at_its_end() {
+    use rdm_admin::accepted::AttemptAction;
+    use rdm_admin::build_state::{AttemptOpened, AttemptReason, BuildAttemptClaim};
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    for (n, primary) in [("mesh2.admin.1", true), ("mesh2.rpc.1", false)] {
+        t.nodes.push(node(n, primary, false));
+    }
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
+    let r = rig_for(t, change, |ran, topology| Arc::new(Lands { ran, topology, lands: true })).await;
+    let first = Drive::detached(r.build.clone());
+    let end = r.env.run(&first).await;
+    assert!(matches!(end, DriveEnd::Terminal), "the Build's own attempt ends: {end:?}");
+
+    // The recovery of mesh2.rpc.1, opened and claimed by the fabric-primary on mesh2's row.
+    let recovered = r.env.topology.read().await.node(&"mesh2.rpc.1".parse().unwrap()).unwrap().clone();
+    let attempt = r.builds.read_build(&r.build).await.unwrap().attempt + 1;
+    let action = AttemptAction::Recover { path: recovered.name.clone(), node_id: recovered.node_id.clone(), from_incarnation: recovered.incarnation_id.clone().unwrap(), backbone: false };
+    r.builds
+        .open_attempt(&AttemptOpened { build_id: r.build.clone(), attempt, reason: AttemptReason::Recovery, action: Some(action), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, mesh: None })
+        .await
+        .unwrap();
+    let claim = BuildAttemptClaim { build_id: r.build.clone(), attempt, executor: "mesh1.admin.1".into(), claimant: Some("mesh1.admin.1".into()), mesh: None };
+    let me: PathName = "mesh1.admin.1".parse().unwrap();
+    let won = rdm_admin::build_claim::decide_claim(&me, &*r.builds, &*r.env.door.claims, &r.env.door.contexts, &claim, "mesh2").await;
+    assert!(matches!(won, rdm_core::build_claim::BuildClaimReply::Won { .. }), "{won:?}");
+    assert_eq!(r.env.door.claims.in_flight("mesh2").await.unwrap().map(|h| h.attempt), Some(attempt), "the recovery holds mesh2's row");
+
+    let second = Drive::detached(r.build.clone());
+    let _ = r.env.run(&second).await;
+    let ended = r.builds.read_build(&r.build).await.unwrap();
+    assert!(ended.attempt >= attempt, "the recovery attempt ran: {:?}", ended.attempt);
+    let held = r.env.door.claims.in_flight("mesh2").await.unwrap();
+    assert!(held.as_ref().is_none_or(|h| h.attempt != attempt), "mesh2's row is released at the recovery's end, not left naming attempt {attempt}: {held:?}");
+}
+
 /// Commits each operation's receipt and, when `lands`, puts the created node in the view live, as a
 /// create's launch and join do.
 struct Lands {
