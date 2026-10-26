@@ -44,7 +44,10 @@ So a running fabric cannot move to another storage, and no node can be asked whi
 - `storage_provider` is a property of the Fabric, written on the Fabric's row, so it can be queried;
   and of the node's row, the provider the node writes.
 - The fabric-primary does the copy before any node switches; each node then switches with its own
-  tail.
+  tail, under a freeze of writes, so that at every instant one provider holds the whole truth and the
+  change is reversible until one commit point ("if we don't block it we will have to delete both
+  storage providers' data").
+- The previous provider's data is never deleted by RDM.
 - The node's `storage` property is renamed `storage_persistence`.
 
 ## Steps
@@ -121,28 +124,48 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   its order, recording per writer the last `op` it copied. Dead births' connection rows, deleted nodes'
   records and dead meshes' records are copied by it with the rest, so every retained record has a
   copier and no key is ownerless. Nodes keep writing the old provider during the copy; nothing is
-  written twice. When the copy is done the fabric-primary inserts one row in the old provider,
-  `claims-closed`, naming the Build: from that instant every claim is decided in the new provider, a
-  claimant that meets the row retries there, and a claim won before the row keeps its lock, which the
-  copy carried over. One decider before the row, one after, no window (Architect 1).
-- **R-SP8. Step 3, on every node: switch, with its own tail.** Mesh by mesh under the Build's ordinary
-  order, the fabric-primary's own records last, each node: stops writing the old provider; appends to
-  the new one its own lines written after the `op` step 2 recorded for it, a short tail it alone
-  wrote, in its own order, so no copied line ever lands after a newer one; swaps its handle so reads
-  and writes go to the new provider; writes its own row; answers. Then it closes the old provider.
-  Until a writer has switched, a node that has switched does not see that writer's lines since the
-  copy on the new provider: a window the length of this step, holding recent rows of unmoved writers,
-  and the only store reads of another writer's rows are a takeover's rebuild and an admin's start.
-- **R-SP9. The end.** With the last receipt the fabric-primary writes the Fabric's row: `storage_provider`
-  the new one, the old one appended to `previous_storage_providers`. The Build completes.
+  written twice, and nothing is blocked: the copy takes the time it takes, under no freeze. Claims
+  stay decided in the old provider throughout the copy.
+- **R-SP8. Step 3: freeze, tails, commit, release.** The switch is blocked, as a freeze and never a
+  refusal, so that one provider holds the whole truth at every instant (Luke: unblocked, a failed
+  change leaves data on both sides and nothing to go back to).
+  - **Freeze.** Each node, on its step-3 command, stops appending to the old provider and holds every
+    write it would make from then on as owed, as a Node RPC message is owed until acknowledged: a
+    connection fact it observes, a row its mesh-primary would write, a property update that arrives.
+    Nothing is refused and nothing is lost; the writer's cache already holds the object, only the
+    append waits, and a caller's command that would write is answered when the freeze lifts. No claim
+    is decided during the freeze: a claimant waits, as its write does.
+  - **Tails.** The frozen node appends to the new provider its own lines written after the `op` step 2
+    recorded for it, a short tail it alone wrote, in its own order, so no copied line ever lands after a
+    newer one; the tail is final because nothing writes the old provider after the freeze. It writes
+    its own row and reports.
+  - **Commit.** When every node has reported, the fabric-primary writes the Fabric row on the new
+    provider: `storage_provider` the new one, the old appended to `previous_storage_providers`. That
+    one row is the commit point and the claim cutover: before it nothing but copies and tails has
+    reached the new provider, so a failure anywhere reverts (R-SP13); after it every node has its tail
+    on the new provider and only the release remains.
+  - **Release.** Each node swaps its handle to the new provider, appends its owed writes there in its
+    own order, answers its owed commands, and closes the old provider. Claims are decided in the new
+    provider from here. A node that fails to release keeps its writes owed and retries; it is on the
+    new provider and its row says so.
+  The freeze lasts the tails and the commit, seconds; reads never block. The fabric-primary's own
+  tail is last and its release is first, so the Fabric row's writer is on the new provider before
+  anyone reads it there.
+- **R-SP9. The end.** With the last release receipt the Build completes. The Fabric row was written at
+  the commit; no further write marks the end.
 - **R-SP10. A node born during the change** is launched with both providers and the step the fabric is
   at, and runs that step before it answers its join; a step it missed is run by its mesh-primary's
   attempt as any planned birth's.
-- **R-SP11. The fabric-primary keeps access to the previous providers.** Every provider the Fabric's
-  row ever named is one the fabric-primary's wiring registers, so it can open it; it writes nothing to
-  a previous provider and reads it for nothing in this proposal. Going back to a previous provider is a
-  new Build naming it as the new one: step 2 copies from the current provider into it, every line it
-  lacks by `op`, so its records stop at nothing. The access is the ability to open, nothing more.
+- **R-SP11. The previous provider is kept, frozen at the commit, and never deleted by RDM.** After the
+  commit the old provider is a complete copy of the fabric as of the freeze, to the last tail, written
+  no more and named on the Fabric row in `previous_storage_providers` ("RDM deletes nothing on disk,
+  ever", deployment-provider.md; never delete, only append). Removing it is the application's own
+  work, as a node's storage with the `release` disposition is, or nobody's; RDM gives it the fact,
+  the row and the Build's completion receipt, and does nothing further. Every provider the Fabric's
+  row ever named is one the fabric-primary's wiring registers, so it can open it; the access is the
+  ability to open, nothing more. Going back to a previous provider is a new Build naming it as the
+  new one: step 2 copies from the current provider into it only the lines it lacks by `op`, which,
+  frozen complete at its commit, are few.
 - **R-SP12. The fabric stays ready-for-traffic and no node changes state.** states.md, "Resize and
   executable replacement": "A Build that changes only a node's `config`, `tags`, `storage` or
   `placement` is neither: it applies them as build.md §1 states, and the fabric stays
@@ -150,16 +173,17 @@ So a running fabric cannot move to another storage, and no node can be asked whi
   the fabric, every mesh and every node stay ready-for-traffic through all three steps; the node's
   states are its life and its traffic, and a change of where it writes is neither. The progress is the
   step receipts and R-SP4's row, not a state. The page's sentence gains `storage_provider` in its list.
-- **R-SP13. Failure.** A failed step fails by name. Before the `claims-closed` row nothing reads or
-  decides in the new provider, so a failure in step 1 or during the copy fails the Build as any step
-  does: the old provider is whole, the new one is closed and written no more, and the Fabric row is
-  unchanged. From the `claims-closed` row on the change completes forward, never reversed: a failed
-  step ends its attempt and the fabric-primary opens the next, as it does when an executor is lost
-  (build.md §4, "An attempt lost with its executor … leaves the Build in progress"), and the Build
-  never reaches Failed past that row. That is one sentence build.md does not have today, since its
-  rule is that a failed Build is skipped and never resumed on its own; it goes on the page under
-  "Pages". `fabric.delete` during the change is admitted and interrupts the Build as fabric-delete.md
-  states for any Build; the records on both providers stay, since RDM deletes nothing on disk.
+- **R-SP13. Failure.** A failed step fails by name and fails the Build as any step does; there is no
+  forward-only exception. Before the commit point nothing but copies and tails has reached the new
+  provider, so a failure in step 1, during the copy, or during the freeze and tails reverts: the
+  freeze lifts on the old provider, owed writes land there, the new provider is closed and written no
+  more, the Fabric row is unchanged, nothing lost. After the commit point every node has its tail on
+  the new provider and the Fabric row names it; what remains is each node's release, which is an owed
+  step a node retries until it lands, so a failure there is a node still releasing, never a Build to
+  reverse: the Build stays in progress until the last release, as any Build whose attempt is lost
+  with its executor does (build.md §4), and its resubmission reattaches. `fabric.delete` during the
+  change is admitted and interrupts the Build as fabric-delete.md states for any Build; the records on
+  both providers stay, since RDM deletes nothing on disk.
 - **R-SP14. Spans.** Each step spans its node, the provider it opens, switches to or closes, the step,
   the lines copied per writer and the last `op`, and its outcome, under the Build's step spans; the
   names follow the Build's span families and are listed in the landing. The open span of the
@@ -191,8 +215,7 @@ So a running fabric cannot move to another storage, and no node can be asked whi
 ## Pages (text for Luke's yes, written with the build)
 
 - build.md §5.3: the Fabric row's sentence (R-SP2), and a section for the storage change (R-SP3 to
-  R-SP13); build.md §1 or §4: the sentence that a storage change completes forward from its
-  `claims-closed` row (R-SP13).
+  R-SP13).
 - fabric-mesh-node-lifecycles.md: the storage change's row.
 - node-admin-lifecycle.md §7: the store is the fabric's `storage_provider`, changed by a Build.
 - CLAUDE.md env table: `RDM_STORAGE_PROVIDER` (R-SP4).
@@ -210,23 +233,26 @@ So a running fabric cannot move to another storage, and no node can be asked whi
 - **Step 1.** A node whose executable lacks the provider fails step 1 by name, the Build fails, the old
   provider whole and the Fabric row unchanged.
 - **Step 2.** The copy carries every line of every store, dead births' and deleted nodes' included,
-  and records the last `op` per writer; competing claimants on opposite sides of the `claims-closed`
-  row, one in the old provider just before it and one in the new just after, yield one winner, and a
-  claim won before the row keeps its lock after it; a claimant meeting the row retries in the new
-  provider.
-- **Step 3.** A node's tail, lines written between the copy and its switch, lands once and in order
-  after the copied lines; a writer's update overtaking nothing, since nothing is copied after a
-  switch; a node that switched reading another writer's rows before that writer switches sees the
-  copy and not the tail, and sees the tail once the writer has switched; the fabric-primary switches
-  last.
+  and records the last `op` per writer; nodes write the old provider throughout and nothing is
+  blocked; a claim during the copy is decided in the old provider.
+- **Step 3.** A frozen node's connection fact, its mesh-primary's row write and a caller's config
+  update are owed, not refused, and land on the new provider at the release in the writer's order; a
+  node's tail lands once and in order after the copied lines; no write reaches the new provider
+  between the last tail and the commit; a claimant during the freeze waits and is decided in the new
+  provider after the release; the fabric-primary's tail is last and its release first; a node reading
+  another writer's rows on the new provider after the commit sees every line.
 - **Restart and birth.** A node restarted inside each step comes up at the fabric's step from its
   launcher's environment, its own row one step behind, and runs the missed step before its join; a
   node born during the change runs the step it is born at; the adoption launch reads the provider
   from the data-dir row alone.
-- **Failure.** A failure before the `claims-closed` row fails the Build with the old provider whole
-  and the new one closed; a failure after it opens the next attempt and the change completes, the
-  Build never Failed; `fabric.delete` mid-change interrupts the Build and both providers' records
-  stay.
+- **Failure.** A failure before the commit, in step 1, the copy, the freeze or the tails, fails the
+  Build, lifts the freeze on the old provider with the owed writes landing there, closes the new
+  provider and leaves the Fabric row unchanged, every line still there; a node failing its release
+  after the commit retries it with its writes still owed and the Build still in progress;
+  `fabric.delete` mid-change interrupts the Build and both providers' records stay.
+- **The previous provider.** After the commit it holds every line to the last tail, nothing more is
+  written to it, RDM removes nothing of it, and a go-back Build copies into it only the lines it
+  lacks.
 - **Go-back.** A Build naming a previous provider copies into it only the lines it lacks by `op`.
 - **State.** The fabric, every mesh and every node stay ready-for-traffic through a change; no node
   state transition is published.
@@ -270,13 +296,18 @@ Each was weighed in the same conversation and set aside, for the reason given.
    mesh's in-flight row in two providers; a node's copy could land after a newer dual-written record,
    with no version to refuse it; a partial dual write had no defined recovery; records with no live
    writer had no copier; and a failed Build after step 2 contradicted build.md's failed-Build rule.
-   The fabric-primary's copy first, one `claims-closed` row, and each node's own tail at its switch
-   keep what that shape was for, no restart and no state change, without the dual write.
+   The fabric-primary's copy first and each node's own tail at its switch keep what that shape was
+   for, no restart and no state change, without the dual write.
+10. **A switch without a freeze** (this proposal's second shape, 4011b5c58: each node switches as
+    soon as its tail is copied, claims cut over by a `claims-closed` row, the change completing
+    forward past it). Set aside on Luke's heads-up: from the first switch on the two providers
+    diverge, a moved writer's lines exist on the new provider alone, and a change stuck after the row
+    can neither finish nor go back without losing them, so both providers' data would have to go. The
+    freeze makes one provider whole at every instant and the Fabric row the one commit point, and
+    removes the row, the forward-only rule and the reads window at the cost of seconds of owed writes.
 
 ## What this proposal does not decide
 
 - How the application's backend is built or what it stores (Q65: RDM's boundary contract is the how,
   the application decides who).
-- Removing a previous provider's records: RDM writes nothing to it after the switch and deletes
-  nothing.
 - Retention of a store's lines, on either provider: the store-root proposal's measured trigger.
