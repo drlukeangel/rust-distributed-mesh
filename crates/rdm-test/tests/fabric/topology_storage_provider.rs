@@ -271,7 +271,12 @@ async fn admin_restart_resolves_the_same_change(test: &str, how: Ended) {
     }
     // The same logical admin over the same data dir, its launch environment naming the old provider: a
     // stale environment: the restart reads its block from its data dir before it writes anything.
-    estate.restart_admin_with(&estate.bootstrap_data_dir("mesh1"), &[("RDM_TOPOLOGY_STORAGE_PROVIDER", FILE)]);
+    let restarted = estate.restart_admin_with(&estate.bootstrap_data_dir("mesh1"), &[("RDM_TOPOLOGY_STORAGE_PROVIDER", FILE)]);
+    // The estate enters the fabric again at the restarted birth.
+    estate.enter(&restarted).await;
+    // The Build is followed at the fabric-primary the fabric names after the restart.
+    let holder = wait_for(&format!("{restarted}'s fabric names a fabric-primary"), SETTLE, || async { estate.fabric_view().await.fabric_primary }).await;
+    estate.enter(&holder).await;
     let done = estate.follow(stream).await;
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
@@ -493,11 +498,15 @@ fn dial(estate: &Estate, from: &str, to: &str) -> Value {
     out
 }
 
-/// A line on the destination root that the copy did not bring: on `target` and not on `source`.
+/// A line on the destination root that the copy did not bring: on `target` and not on `source`. The
+/// root is a provider's root of this build's layout (its `layout` marker), holding that one line.
 fn foreign_line(target: &Path) {
     std::fs::create_dir_all(target).unwrap();
+    std::fs::write(target.join(rdm_admin::store_root::LAYOUT), format!("{}\n", rdm_admin::store_root::LAYOUT_VALUE)).unwrap();
     let op = rdm_admin::store_log::Op { node_id: "zzzzzzzzzzz1".into(), incarnation_id: "zzzzzzzzzzz2".into(), seq: 1 };
-    let line = rdm_admin::store_log::encode_line(&op, "node-record/1", "zzzzzzzzzzz1", br#"{"name":"mesh9.rpc.1","node_id":"zzzzzzzzzzz1","status":"ready-for-traffic"}"#);
+    // A whole node record (`node-record/1`), as a writer of that store writes one.
+    let record = serde_json::to_vec(&rdm_admin::storage::NodeRow::new("mesh9.rpc.1".parse().unwrap(), rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), rdm_core::model::NodeStatus::ReadyForTraffic)).unwrap();
+    let line = rdm_admin::store_log::encode_line(&op, "node-record/1", "zzzzzzzzzzz1", &record);
     use std::io::Write;
     std::fs::OpenOptions::new().create(true).append(true).open(target.join(rdm_admin::store_root::NODES_FILE)).unwrap().write_all(&line).unwrap();
 }
@@ -637,15 +646,21 @@ async fn a_lost_commit_answer_is_resolved_by_reading_the_commit_record() {
     let role_id = node_id_of(&estate, ROLE).await;
     let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
     let change_id = attr(&blocked_at(&estate, &build_id, &role_id).await, "change_id");
-    // The commit record is on the new provider: a line naming the change and `commit` that is not a line
-    // the copy brought from `file`.
+    // The commit record is on the new provider, read through the store's insert-and-fail primitive it is
+    // inserted with: the claim of `commit` for (build_id, change_id) under the root's `locks/commit/`.
     let commits = || {
-        let copied: BTreeSet<String> = store_lines(&file_root).into_values().flatten().collect();
-        lines_naming(&target_root, &change_id).into_iter().filter(|l| l.contains("commit") && !copied.contains(l)).collect::<Vec<_>>()
+        std::fs::read_dir(target_root.join(rdm_admin::store_root::LOCKS_DIR).join("commit"))
+            .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| !n.starts_with('.') && n.contains(&change_id)).collect::<Vec<_>>())
+            .unwrap_or_default()
     };
     wait_for(&format!("the commit record of ({build_id}, {change_id}) is on {TOPOLOGY_STORAGE_TARGET}"), STEP, || async { (!commits().is_empty()).then_some(()) }).await;
     estate.kill_bootstrap();
-    estate.restart_admin(&estate.bootstrap_data_dir("mesh1"));
+    let restarted = estate.restart_admin(&estate.bootstrap_data_dir("mesh1"));
+    // The estate enters the fabric again at the restarted birth.
+    estate.enter(&restarted).await;
+    // The Build is followed at the fabric-primary the fabric names after the restart.
+    let holder = wait_for(&format!("{restarted}'s fabric names a fabric-primary"), SETTLE, || async { estate.fabric_view().await.fabric_primary }).await;
+    estate.enter(&holder).await;
     let done = estate.follow(stream).await;
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
     assert_eq!(commits().len(), 1, "exactly one commit record for ({build_id}, {change_id}): {:#?}", commits());
@@ -770,9 +785,10 @@ async fn a_build_other_than_fabric_delete_is_refused_during_a_change() {
 /// CONTRACT (storage.md §2 "Changing it": "The change has a durable `change_id`, recorded with its Build
 /// before its first command; its commands carry it, and a node refuses by name a command of an older
 /// one"; i149 R11): a first change to `test-target` runs while mesh2's mesh-primary, the carrier of its
-/// commands to mesh2.rpc.1, is frozen, so node investigation re-creates it (Q182) and the change
-/// completes through the new birth. A second change, back to `file`, is held after mesh2.rpc.1 has
-/// blocked under it, and the old mesh-primary birth is continued holding the first change's commands.
+/// commands to mesh2.rpc.1, holds the first block command of that change on its way to mesh2.rpc.1 (the
+/// testkit's storage-step cut); the fabric-primary sends it again and the change completes. A second
+/// change, back to `file`, is held after mesh2.rpc.1 has blocked under it, and the held command of the
+/// first change is released to mesh2.rpc.1.
 /// mesh2.rpc.1 refuses every command of the first change it receives after its block under the second,
 /// and stays blocked until the second change's switch: its only unblock after that block is the second
 /// change's, onto `file`. Must NOT happen: an unblock of the node by the first change's `change_id`, or
@@ -782,8 +798,11 @@ async fn an_old_change_cannot_unblock_writes_for_a_new_change() {
     let test = "an_old_change_cannot_unblock_writes_for_a_new_change";
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
     let role_id = node_id_of(&estate, ROLE).await;
-    let carrier = freeze(&estate, "mesh2.admin.1").await;
+    // mesh2's mesh-primary holds the first change's first block command of mesh2.rpc.1 on its way.
+    let carrier = rdm_test::faults::Door::at(&estate, "mesh2.admin.1").await;
+    carrier.arm("old-command", json!({"kind": "storage-step", "node": ROLE, "step": "block"})).await;
     let (first, first_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
+    carrier.wait_held("old-command").await;
     let old_change = attr(&blocked_at(&estate, &first_id, &role_id).await, "change_id");
     estate.follow(first).await;
     let hold = freeze(&estate, HOLD).await;
@@ -791,7 +810,7 @@ async fn an_old_change_cannot_unblock_writes_for_a_new_change() {
     let blocked = blocked_at(&estate, &second_id, &role_id).await;
     let new_change = attr(&blocked, "change_id");
     assert_ne!(old_change, new_change, "each change has its own change_id");
-    thaw(&carrier);
+    carrier.release("old-command").await;
     tokio::time::sleep(Duration::from_secs(5)).await;
     thaw(&hold);
     estate.follow(second).await;
