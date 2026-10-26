@@ -3,8 +3,7 @@
 //! read waits for it; the held projection takes a fact once its write lands.
 //!
 //! - `an_open_returns_before_its_row_lands_on_a_store_reached_over_that_connection`: the store's
-//!   write waits until the connection being opened exists (the broker-hosted store after
-//!   state-commit); the open returns, the row lands after, the held projection then holds it, and a
+//!   write waits until the connection being opened exists (a broker-hosted store); the open returns, the row lands after, the held projection then holds it, and a
 //!   read during the stalled write answers at once from what is held.
 //! - `a_refused_connection_write_is_retried_with_backoff_until_it_lands`: each refusal is named on
 //!   its own span with its attempt, and the row lands once.

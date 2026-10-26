@@ -22,7 +22,6 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 | [`OrderState`](#t-rdm_core-streaming-OrderState) | rdm-core | `crates/rdm-core/src/streaming.rs` |
 | [`ScopeStatus`](#t-rdm_core-model-ScopeStatus) | rdm-core | `crates/rdm-core/src/model.rs` |
 | [`ScopeStatus`](#t-rdm_core-views-ScopeStatus) | rdm-core | `crates/rdm-core/src/views.rs` |
-| [`SyncState`](#t-rdm_admin-wiring-SyncState) | rdm-admin | `crates/rdm-admin/src/wiring.rs` |
 
 <a id="t-rdm_node-before_ready-BeforeReadyState"></a>
 
@@ -114,16 +113,14 @@ What a provider knows of the exact runtime (deployment-provider.md §2.5): one m
 
 ### `FabricState`
 
-`crates/rdm-admin/src/fabric_state.rs` · enum · 4 variants · rdm-admin
+`crates/rdm-admin/src/fabric_state.rs` · enum · 2 variants · rdm-admin
 
 The state of the fabric: the value of a FabricStatus frame.
 
 | # | variant · field | serde name | type | serde | labels | doc |
 |---|---|---|---|---|---|---|
-| 0 | **`Pending`** | (not serialized) |  |  | `as_str() = "pending"` | Created; a mesh is not yet ready-for-traffic. |
-| 1 | **`StateSync`** | (not serialized) |  |  | `as_str() = "state-sync"` | Every mesh is ready-for-traffic; the application does its work. |
-| 2 | **`StateCommit`** | (not serialized) |  |  | `as_str() = "state-commit"` | The application answered state-synced; the scratchpads are published and traffic is opened. |
-| 3 | **`ReadyForTraffic`** | (not serialized) |  |  | `as_str() = "ready-for-traffic"` | Both checklists completed. |
+| 0 | **`Pending`** | (not serialized) |  |  | `as_str() = "pending"` | Created; a mesh is not yet ready-for-traffic, or the open-traffic checklist runs. |
+| 1 | **`ReadyForTraffic`** | (not serialized) |  |  | `as_str() = "ready-for-traffic"` | The open-traffic checklist completed. |
 
 <a id="t-rdm_admin-lifecycle-LifecycleState"></a>
 
@@ -211,7 +208,7 @@ A node birth's lifecycle state, as declared.
 
 ### `NodeStatus`
 
-`crates/rdm-core/src/model.rs` · enum · 8 variants · rdm-core
+`crates/rdm-core/src/model.rs` · enum · 9 variants · rdm-core
 
 Node lifecycle status as published on views.
 
@@ -227,6 +224,7 @@ serde: `rename_all = "kebab-case"`
 | 5 | **`Restarting`** | `restarting` |  |  | Commanded silence: its mesh executor is restarting this exact birth (`NodeRestarting`, |
 | 6 | **`Dead`** | `dead` |  |  | True offline: half a floor after the mark the mesh primary's one QUIC connect found no path, |
 | 7 | **`Deleted`** | `deleted` |  |  | Deleted: the node's identity and name are released. Only the node's row carries it, written |
+| 8 | **`Withdrawn`** | `withdrawn` |  |  | Withdrawn: the create that claimed the name was withdrawn before its node ran (R-SR2). Only the |
 
 <a id="t-rdm_core-views-NodeStatus"></a>
 
@@ -280,7 +278,7 @@ Where a stream stands.
 
 ### `ScopeStatus`
 
-`crates/rdm-core/src/model.rs` · enum · 7 variants · rdm-core
+`crates/rdm-core/src/model.rs` · enum · 5 variants · rdm-core
 
 Mesh and Fabric lifecycle status.
 
@@ -293,14 +291,12 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`Leaving`** | `leaving` |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
 | 3 | **`Dead`** | `dead` |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final, its id never reissued. |
 | 4 | **`Degraded`** | `degraded` |  |  | `name() = "degraded"` | The fabric primary has decided a peer mesh is reborn (`investigate`). |
-| 5 | **`StateSync`** | `state-sync` |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its day-0 and seed |
-| 6 | **`StateCommit`** | `state-commit` |  |  | `name() = "state-commit"` | A fabric state: commit-state publishes what the scratchpads hold |
 
 <a id="t-rdm_core-views-ScopeStatus"></a>
 
 ### `ScopeStatus`
 
-`crates/rdm-core/src/views.rs` · enum · 7 variants · rdm-core
+`crates/rdm-core/src/views.rs` · enum · 5 variants · rdm-core
 
 The lifecycle state of a mesh or of a fabric.
 
@@ -313,22 +309,6 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`Leaving`** | `leaving` |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
 | 3 | **`Dead`** | `dead` |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
 | 4 | **`Degraded`** | `degraded` |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
-| 5 | **`StateSync`** | `state-sync` |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its work. |
-| 6 | **`StateCommit`** | `state-commit` |  |  | `name() = "state-commit"` | A fabric state: the commit-state and open-traffic check-ins run. |
-
-<a id="t-rdm_admin-wiring-SyncState"></a>
-
-### `SyncState`
-
-`crates/rdm-admin/src/wiring.rs` · enum · 2 variants · rdm-admin
-
-The `sync_state` choice. A configuration with none is refused at start by name: an application
-
-| # | variant · field | serde name | type | serde | doc |
-|---|---|---|---|---|---|
-| 0 | **`NoAppWork`** | (not serialized) |  |  | The embedding owes no application work in state-sync. RDM's own executables and test |
-| 1 | **`Hook`** | (not serialized) |  |  | The application's async function: called by the fabric-primary with the `SyncState` |
-| 1.0 | `0` |  | `Arc<dyn Fn(StateSyncHandoff)->Pin<Box<dyn Future<Output = StateSyncAnswer> + Send>> + Send + Sync>` |  |  |
 
 ## Status strings
 
@@ -337,4 +317,3 @@ Every `pub const` string in RDM's non-test source whose value is a serde name or
 | const | value | file | doc |
 |---|---|---|---|
 | `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rdm-transport/src/topology.rs` | The mesh status a `Frame::MeshStatus` carries for a ready-for-traffic mesh (states.md: a mesh is |
-| `STATE_SYNC_CUT` | `state-sync` | `crates/rdm-test/src/test_app.rs` | The fault cut a `hold` application holds its answers at. |

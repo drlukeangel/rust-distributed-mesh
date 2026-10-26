@@ -1,6 +1,5 @@
 //! The storage backend a node runs on: its own connections rows (`connections.storage`) and the
-//! commit-state action that makes what it wrote before the fabric's first state-commit durable for
-//! the fabric. A node-admin's backend opens the admin's six boundaries (`rdm_admin::storage_backend`);
+//! open-traffic action it runs before it checks in. A node-admin's backend opens the admin's six boundaries (`rdm_admin::storage_backend`);
 //! a node opens this one at its boot. RDM standalone's is [`FileNodeBackend`] (the `file-backend`
 //! feature, the default), the rows as files on the fabric's store root. [`MemoryNodeBackend`] holds
 //! one process's rows.
@@ -15,7 +14,7 @@ use std::sync::Arc;
 pub struct NodeStorage {
     /// The node's own connections rows.
     pub connections: Arc<dyn ConnectionsStorage>,
-    /// The node's commit-state and open-traffic actions.
+    /// The node's open-traffic action.
     pub state_actions: Arc<dyn StateActions>,
     /// Where the rows are written now, as the boot's span records it.
     pub writes_to: String,
@@ -29,8 +28,7 @@ pub trait NodeStorageBackend: Send + Sync {
 }
 
 /// RDM standalone's backend: the node's connection facts, its lines of the fabric's store root's
-/// `connections.jsonl` (R14, R-SR1), held in its scratchpad before the fabric's first state-commit and
-/// published by its commit-state action (states.md, Setting a state).
+/// `connections.jsonl` (R14, R-SR1), written there from its open.
 #[cfg(feature = "file-backend")]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FileNodeBackend;
@@ -43,8 +41,8 @@ impl NodeStorageBackend for FileNodeBackend {
         let connections = crate::storage::FileConnectionsStorage::open(&root, &launch.name, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
-            state_actions: Arc::new(crate::fabric_states::StorePublication::new(root.scratchpad().cloned(), None)),
-            writes_to: root.writes_to().to_string(),
+            state_actions: Arc::new(crate::fabric_states::NoAction),
+            writes_to: "store-root".into(),
         })
     }
 }
@@ -55,14 +53,13 @@ pub fn file_node_backend() -> Arc<dyn NodeStorageBackend> {
     Arc::new(FileNodeBackend)
 }
 
-/// One process's rows: the node's connections held in memory, gone with its process, and nothing
-/// held for a later publication.
+/// One process's rows: the node's connections held in memory, gone with its process.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MemoryNodeBackend;
 
 #[async_trait]
 impl NodeStorageBackend for MemoryNodeBackend {
     async fn open(&self, _launch: &Launch) -> Result<NodeStorage, String> {
-        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), state_actions: Arc::new(crate::fabric_states::NoScratchpad), writes_to: "memory".into() })
+        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), state_actions: Arc::new(crate::fabric_states::NoAction), writes_to: "memory".into() })
     }
 }

@@ -475,15 +475,6 @@ pub enum BuildReject {
         /// The `path.name` it names.
         node: String,
     },
-    /// The workflow would move a seat or write a caller's row while the initial fabric has not
-    /// first reached ready-for-traffic: before state-commit its rows live only in their holders'
-    /// scratchpads (states.md, "The initial fabric before ready-for-traffic"; R-PB1, R-PC1).
-    FabricNotReady {
-        /// The refused workflow and its subject (`node.stop mesh1.rpc.1`, `mesh.delete mesh2`).
-        workflow: String,
-        /// The fabric's status as this admin holds it.
-        status: String,
-    },
     /// A complete-topology request (`Reconcile`) built from a read of a Build that is no longer the
     /// current one (proposal executable-bindings-at-create.md rule 1, optimistic concurrency): nothing
     /// is accepted, and the caller re-reads.
@@ -560,7 +551,6 @@ impl BuildReject {
             Self::EmptyRecipe => "empty-recipe",
             Self::RecipeStepRepeated { .. } => "recipe-step-repeated",
             Self::RecipeNodeUnknown { .. } => "recipe-node-unknown",
-            Self::FabricNotReady { .. } => "fabric-not-ready",
             Self::BasedOnNotCurrent { .. } => "based-on-not-current",
             Self::NoNodeListed => "no-node-listed",
             Self::NodeNamedTwice { .. } => "node-named-twice",
@@ -600,10 +590,6 @@ impl fmt::Display for BuildReject {
             Self::EmptyRecipe => write!(f, "a recipe needs at least one step"),
             Self::RecipeStepRepeated { operation } => write!(f, "the recipe names operation `{operation}` twice: each step's receipts are keyed by its operation, so a recipe names each operation once"),
             Self::RecipeNodeUnknown { step, node } => write!(f, "step {step} of the recipe acts on `{node}`, which holds no birth now and which no earlier step creates or renames a node to"),
-            Self::FabricNotReady { workflow, status } => write!(
-                f,
-                "{workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and before state-commit its rows live only in their holders' scratchpads, so nothing that moves a seat or writes caller state runs"
-            ),
             Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
             Self::BasedOnNotCurrent { based_on, current } => write!(f, "the request is based on Build {based_on}, and the current Build is {current}: nothing is accepted; read the topology again and submit from it"),
             Self::NoNodeListed => write!(f, "the request lists no node: a fabric with no mesh is fabric.delete, never a topology request; nothing is accepted"),

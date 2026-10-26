@@ -673,7 +673,6 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
-    let rows: Arc<rdm_admin::fabric_storage::MemoryFabricStorage> = Arc::new(Default::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = before.node(&member).unwrap().clone();
@@ -707,8 +706,7 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
     });
     let heir = Arc::new(
         ControlPlane::new(builds.clone(), accepted, "mesh2.admin.2".parse().unwrap(), after, crate::adopted_time())
-            .with_claims(claims.clone())
-            .with_first_ready(rdm_admin::fabric_state::FirstReady::new(), rows.clone()),
+            .with_claims(claims.clone()),
     );
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());
@@ -769,7 +767,6 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
 async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_released_by_the_new_mesh_primary_on_its_exit_proof() {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
-    let rows: Arc<rdm_admin::fabric_storage::MemoryFabricStorage> = Arc::new(Default::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = before.node(&member).unwrap().clone();
@@ -795,8 +792,7 @@ async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_rele
     });
     let heir = Arc::new(
         ControlPlane::new(builds.clone(), accepted, "mesh2.admin.2".parse().unwrap(), after, crate::adopted_time())
-            .with_claims(claims.clone())
-            .with_first_ready(rdm_admin::fabric_state::FirstReady::new(), rows.clone()),
+            .with_claims(claims.clone()),
     );
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());
@@ -845,7 +841,6 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
-    let rows: Arc<rdm_admin::fabric_storage::MemoryFabricStorage> = Arc::new(Default::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = before.node(&member).unwrap().clone();
@@ -881,8 +876,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     });
     let heir = Arc::new(
         ControlPlane::new(builds.clone(), accepted, "mesh2.admin.2".parse().unwrap(), after, crate::adopted_time())
-            .with_claims(claims.clone())
-            .with_first_ready(rdm_admin::fabric_state::FirstReady::new(), rows.clone()),
+            .with_claims(claims.clone()),
     );
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());
@@ -976,7 +970,6 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
-    let rows: Arc<rdm_admin::fabric_storage::MemoryFabricStorage> = Arc::new(Default::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = before.node(&member).unwrap().clone();
@@ -1025,8 +1018,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     });
     let heir = Arc::new(
         ControlPlane::new(builds.clone(), accepted, "mesh2.admin.2".parse().unwrap(), after, crate::adopted_time())
-            .with_claims(claims.clone())
-            .with_first_ready(rdm_admin::fabric_state::FirstReady::new(), rows.clone()),
+            .with_claims(claims.clone()),
     );
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());

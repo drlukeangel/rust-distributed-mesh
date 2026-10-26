@@ -70,17 +70,11 @@ async fn pull(client: &rdm_transport::NodeRpcClient, root: &NodeId) -> Vec<Row> 
     rows.clone()
 }
 struct Actions {
-    commits: AtomicU32,
     opens: AtomicU32,
     changed: tokio::sync::watch::Sender<u8>,
 }
 #[async_trait::async_trait]
 impl rdm_node::fabric_states::StateActions for Actions {
-    async fn commit_state(&self, _: &rdm_core::PathName) -> Result<(), String> {
-        self.commits.fetch_add(1, Ordering::SeqCst);
-        self.changed.send_modify(|v| *v |= 1);
-        Ok(())
-    }
     async fn open_traffic(&self, _: &rdm_core::PathName) -> Result<(), String> {
         self.opens.fetch_add(1, Ordering::SeqCst);
         self.changed.send_modify(|v| *v |= 2);
@@ -345,7 +339,6 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_st
         assert_eq!(held, Some(healed));
         // The ordinary broker's existing StateActions seam runs before its directed check-in.
         let actions = Arc::new(Actions {
-            commits: AtomicU32::new(0),
             opens: AtomicU32::new(0),
             changed: tokio::sync::watch::channel(0).0,
         });
@@ -353,10 +346,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_st
         let mut done = actions.changed.subscribe();
         let birth = node.digest.node.clone();
         let build = NodeId::mint().to_string();
-        for (kind, bit) in [
-            (rdm_node::fabric_states::StateCommand::StateCommit, 1),
-            (rdm_node::fabric_states::StateCommand::OpenTraffic, 2),
-        ] {
+        for (kind, bit) in [(rdm_node::fabric_states::StateCommand::OpenTraffic, 2)] {
             let state_key = rdm_node::fabric_states::StateKey {
                 fabric_id: node.digest.fabric_id.clone(),
                 build_id: build.clone(),
@@ -385,7 +375,6 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_st
                 .unwrap()
                 .unwrap();
         }
-        assert_eq!(actions.commits.load(Ordering::SeqCst), 1);
         assert_eq!(actions.opens.load(Ordering::SeqCst), 1);
         drop(sender);
         drop(receiver);

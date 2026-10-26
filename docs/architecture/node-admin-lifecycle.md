@@ -158,11 +158,9 @@ RDM's `rebuild_absent_birth` in `rdm-admin`.
 
 ## 7. Rafka storage and recovery
 
-Inside Rafka, RDM's records live in the node's in-memory store (its scratchpad), then in
-the system topics through the [state-commit state](lifecycles/states.md#states).
-RDM standalone keeps the same records in the fabric's one store root (`store_dir`, §2):
-scratchpad before state-commit, then each writer writes what it holds to the root, and writes
-go there directly afterwards.
+Inside Rafka, RDM's records live in the store Rafka's storage backend opens. RDM standalone keeps
+the same records in the fabric's one store root (`store_dir`, §2): each writer writes its rows
+there from Day 0 (Q171).
 Every node-admin also keeps an on-disk copy of its fabric, meshes, nodes, connections,
 status and Build records. That copy is a snapshot taken when the fabric last reaches
 ready-for-traffic, not a continuously overwritten latest-state copy: the latest state

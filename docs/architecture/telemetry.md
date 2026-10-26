@@ -44,7 +44,7 @@ namespace ([Runtime spans](node-rpc-envelope.md#runtime-spans)).
 | Gossip frame | the envelope's `traceparent` and `tracestate` (the CloudEvents Distributed Tracing extension, [gossip.md §3.4](gossip.md#34-the-envelope)) | the span the publisher is in when it publishes | the receive span is a child of the publishing span; a frame published from a timer carries that timer's span, which is a root of its own |
 | Launch of a node | `TRACEPARENT` (and `TRACESTATE`) in the launch environment | the pipeline's `DeployRuntime` step | the node's boot span `rdm.mesh.node.create.via-deployment` is that step's child. The launcher's own `TRACEPARENT` and `TRACESTATE` never reach the child ([deployment-provider.md](deployment-provider.md)) |
 | Data-plane connection (Direct or Proxy, on an app protocol) | the connection's present frame | the opener's span around `open` | a carrier's tunnel span `rdm.node.connections.create.via-tunnel` is its child and passes its own context on to the destination; stream bytes carry no context, and an application's own spans on a stream are its own |
-| `before_ready` and the fabric's state hooks | the hook's context, and the span RDM calls it in (`rdm.mesh.node.update.via-before-ready-attempt`, `rdm.node_admin.fabric.update.via-sync-state-called`) | the start step or the fabric change that calls it | the application's spans in the hook are children of that span |
+| `before_ready` and the `traffic_opened` notice | the hook's context, and the span RDM calls it in (`rdm.mesh.node.update.via-before-ready-attempt`, `rdm.node_admin.fabric.update.via-traffic-opened-hook`) | the start step or the fabric change that calls it | the application's spans in the hook are children of that span |
 
 ## 4. Where a trace starts
 
@@ -55,9 +55,8 @@ These start a root of their own today:
 - **A Day-0 or person-started node-admin.** Its boot span takes `TRACEPARENT` when it is given,
   and is a root otherwise.
 - **The fabric's change.** Each change from ready-for-traffic (or an adopted one) opens
-  `rdm.node_admin.fabric.update.via-change` as a root. Its state entries, the state-sync hook call,
-  the commit-state and open-traffic checklists, their down calls and the check-ins are its
-  children. It carries `build_id`. It is not a child of the Build's `build.create`: the Build that
+  `rdm.node_admin.fabric.update.via-change` as a root. Its state entries, the open-traffic
+  checklist, its down calls, the check-ins and the `traffic_opened` notice are its children. It carries `build_id`. It is not a child of the Build's `build.create`: the Build that
   caused it and the change are two traces, joined by `build_id`.
 - **Loops on a timer.** Each pass of the Build drive (`rdm.node_admin.build.update.via-drive`),
   the status turn (`rdm.mesh.fabric.update.via-status-send`), the heartbeat
@@ -80,7 +79,7 @@ These start a root of their own today:
 The per-operation chains are on their pages:
 - [fabric recovery](lifecycles/fabric-recovery.md#fabric-recovery-telemetry-chain);
 - [mesh investigation](lifecycles/mesh-investigation.md#telemetry-chain);
-- [state-commit](lifecycles/fabric-state-commit.md) and [ready-for-traffic](lifecycles/fabric-ready-for-traffic.md), "Node-side and receiving-side trace evidence".
+- [ready-for-traffic](lifecycles/fabric-ready-for-traffic.md), "Node-side and receiving-side trace evidence".
 
 ## 6. Not carried today
 

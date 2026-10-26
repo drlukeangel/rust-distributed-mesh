@@ -98,10 +98,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let mut estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)]).await;
     let before = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2", "mesh3"]), Duration::from_secs(30)).await);
-    // The initial fabric refuses a mesh delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
-    // The rows mesh1's primary writes are durable only once the fabric's first state-commit
-    // published them (states.md, Setting a state: "Before state-commit, RDM holds its rows in the
-    // scratchpad"; R14 item 9): the fabric is ready-for-traffic under this Build before mesh1 goes.
+    // A mesh delete waits for the Build in progress (Q170): the fabric is ready-for-traffic under this
+    // Build before mesh1 goes.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let fabric_id = estate.fabric_view().await.id.to_string();
     let (mesh1_id, mesh2_id, mesh3_id) = (estate.mesh_view("mesh1").await.id.expect("mesh1 carries its id").to_string(), estate.mesh_view("mesh2").await.id.expect("mesh2 carries its id").to_string(), estate.mesh_view("mesh3").await.id.expect("mesh3 carries its id").to_string());
@@ -357,7 +355,9 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         let leaving_states: Vec<&Value> = states.iter().copied().filter(|sp| matches!(s(&sp["attributes"]["status"]).as_str(), "ConnectionsDeleting" | "Leaving")).collect();
         assert!(!leaving_states.is_empty(), "a {m} node held a mesh1 member's own connections-deleting or Leaving: {states:?}");
         assert!(leaving_states.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "a mesh1 member saying connections-deleting or Leaving is not routable at {m}: {leaving_states:?}");
-        assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.rpc.")) && sp["attributes"]["channel"] == "mesh-channel"), "a {m} ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
+        // From its mesh channel, or from the read a gap on that channel pulls (gossip.md §3.3: "a node that
+        // notices a gap pulls").
+        assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.rpc.")) && matches!(sp["attributes"]["channel"].as_str(), Some("mesh-channel" | "topology-read"))), "a {m} ordinary node held a mesh1 member's own state from the mesh channel or its gap's read: {leaving_states:?}");
     }
     let routable = |sp: &Value| s(&sp["attributes"]["routable"]) == "true" || sp["attributes"]["routable"] == json!(true);
     let installed = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed");

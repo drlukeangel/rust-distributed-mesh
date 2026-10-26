@@ -127,7 +127,7 @@ pub(crate) enum Key {
     Mesh(String, MeshState),
     /// A fabric event at one mesh primary: `(receiver mesh, event)`.
     FabricEventAt(String, String),
-    /// A mesh primary's completion of a fabric checklist (`state-committed`, `traffic-opened`) to the
+    /// A mesh primary's completion of a fabric checklist (`traffic-opened`) to the
     /// fabric-primary: `(completion/fabric/build/attempt)`.
     Completion(String),
 }
@@ -715,8 +715,8 @@ mod tests {
     fn a_state_completion_is_owed_again_to_a_successor_fabric_primary_and_withdrawn_with_the_mesh_primary() {
         let me: PathName = "mesh2.admin.1".parse().unwrap();
         let d = Declarer::new();
-        let key = Key::Completion("state-committed/fabric/bld/1".into());
-        d.owe_in(key.clone(), Authority::FabricPrimary, StatusRequest::StateCommitted { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("inc")).unwrap(), build_id: "bld".into(), attempt: 1, operation: "commit-state:f".into() }, Some("00-f16a8b75a1b2c3d4e5f60718293a4b5c-1111111111111111-01".into()));
+        let key = Key::Completion("traffic-opened/fabric/bld/1".into());
+        d.owe_in(key.clone(), Authority::FabricPrimary, StatusRequest::TrafficOpened { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("inc")).unwrap(), build_id: "bld".into(), attempt: 1, operation: "open-traffic:f".into() }, Some("00-f16a8b75a1b2c3d4e5f60718293a4b5c-1111111111111111-01".into()));
         let first = view("mesh1.admin.1", "mesh1.admin.1");
         let holder = first.fabric_primary().unwrap().clone();
         // The fabric-primary took the completion.
@@ -749,10 +749,10 @@ mod tests {
         let me: PathName = "mesh2.admin.1".parse().unwrap();
         let d = Declarer::new();
         let fabric = FabricId::mint();
-        let state_key = |attempt: u32| crate::fabric_state::StateKey { kind: crate::fabric_state::StateCommand::StateCommit, fabric_id: fabric.clone(), build_id: "bld".into(), attempt };
+        let state_key = |attempt: u32| crate::fabric_state::StateKey { kind: crate::fabric_state::StateCommand::OpenTraffic, fabric_id: fabric.clone(), build_id: "bld".into(), attempt };
         let owe = |attempt: u32| {
             let r = state_key(attempt);
-            d.owe_in(Key::completion(&r), Authority::FabricPrimary, StatusRequest::StateCommitted { fabric_id: fabric.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("inc")).unwrap(), build_id: "bld".into(), attempt, operation: "commit-state:f".into() }, None);
+            d.owe_in(Key::completion(&r), Authority::FabricPrimary, StatusRequest::TrafficOpened { fabric_id: fabric.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("inc")).unwrap(), build_id: "bld".into(), attempt, operation: "open-traffic:f".into() }, None);
             Key::completion(&r)
         };
         let (owed_two, answered_three, current_four) = (owe(2), owe(3), owe(4));

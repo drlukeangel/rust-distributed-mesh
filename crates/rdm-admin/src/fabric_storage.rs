@@ -6,8 +6,8 @@
 //! ([`crate::build_state::BuildStateAdapter::current_build`]). The Fabric record has one writer, the
 //! fabric-primary (R14 item 2): it writes the identity, never again, and the fabric events applied,
 //! the record written whole with each event (storage-whole-records.md). Every other admin reads it,
-//! and holds the identity it learns before the fabric's first state-commit (its join answer, the Build
-//! topic) as its own runtime state, never as a record here.
+//! and holds the identity it learns (its join answer, the Build topic) as its own runtime state,
+//! never as a record here.
 //!
 //! Two implementations: [`MemoryFabricStorage`] for runs that need no restart survival, and
 //! [`FileFabricStorage`]: each write of the Fabric record one line of the root's `fabric.jsonl`
@@ -214,8 +214,7 @@ pub struct FileFabricStorage {
 impl FileFabricStorage {
     /// Open the store under the fabric's store root, written by `writer`.
     pub async fn open(root: &crate::store_root::StoreRoot, writer: &crate::store_log::LogWriter) -> Result<Self, FabricStorageError> {
-        // The name index opens first: held in the scratchpad, it is the first store the fabric's
-        // state-commit publishes.
+        // The name index opens first: the fabric's name claim is its first write.
         let names = root.fabric_names(&writer.incarnation_id).await?;
         let records = root.log(crate::store_root::FABRIC_FILE, crate::store_log::Formats::new().with::<FabricRecord>(RECORD_FORMAT)).await?;
         Ok(Self { names, records, writer: writer.clone() })
@@ -316,9 +315,8 @@ mod tests {
     /// (`<store_dir>/fabrics/<name>`), and a second fabric of the same name under that path is refused
     /// `NameHeld { by }`; Q109: the writer reads the claim and writes it; R14 item 1: the per-fabric root is unchanged, the index sits beside it;
     /// CLAUDE.md: a refused claim writes nothing of the entity): under one store_dir, fabric A claims
-    /// fabric1 and its state-commit publishes the claim. Fabric B, another FabricId with its own root
-    /// under the same store_dir, claims fabric1: refused naming A, and nothing of B is written, neither
-    /// at the index nor under B's root, even once B's scratchpad is published. Must NOT happen: a second fabric of one name under one store_dir taking the name because its
+    /// fabric1. Fabric B, another FabricId with its own root under the same store_dir, claims fabric1:
+    /// refused naming A, and nothing of B is written, neither at the index nor under B's root. Must NOT happen: a second fabric of one name under one store_dir taking the name because its
     /// identity row lives under its own root.
     // @feature: mesh-lifecycle
     #[tokio::test]
@@ -336,10 +334,9 @@ mod tests {
                 (root, s)
             }
         };
-        let (root_a, store_a) = open(&a).await;
+        let (_root_a, store_a) = open(&a).await;
         assert_eq!(crate::fabric_storage::claim_identity(&store_a, &a).await.unwrap(), Ok(FabricClaim::Written), "A claims fabric1");
-        root_a.scratchpad().expect("a root with no Fabric row holds a scratchpad").publish().await.unwrap();
-        let (root_b, store_b) = open(&b).await;
+        let (_root_b, store_b) = open(&b).await;
         let capture = crate::span_capture::Capture::new("i143-3089-fabric-name-index");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         assert_eq!(crate::admin::claim_fabric_name(&store_b, &b, &crate::model::NodeId::mint()).await, Ok(Err(FabricNameHeld { name: "fabric1".into(), by: a.fabric_id.clone() })), "B's claim of fabric1 under the same store_dir is refused naming A");
@@ -347,8 +344,6 @@ mod tests {
         assert_eq!(spans.len(), 1, "{spans:?}");
         assert_eq!((spans[0].attributes.get("outcome").map(String::as_str), spans[0].attributes.get("holder").cloned()), (Some("name-held"), Some(a.fabric_id.to_string())), "the claim's span names the refusal and its holder: {spans:?}");
         eprintln!("span rdm.node_admin.fabric.create.via-fabric-row trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
-        let published_b = root_b.scratchpad().expect("a root with no Fabric row holds a scratchpad").publish().await.unwrap();
-        assert_eq!(published_b.written(), 0, "nothing of B is written: {published_b:?}");
         assert!(crate::store_log::read_file(&store.join(b.fabric_id.to_string()).join(crate::store_root::FABRIC_FILE)).unwrap().is_empty(), "B's Fabric record is not written under its root");
         let index: serde_json::Value = serde_json::from_slice(&std::fs::read(store.join("fabrics").join("fabric1.json")).expect("the name's index row is on the store_dir")).unwrap();
         assert_eq!(index["record"]["fabric_id"].as_str(), Some(a.fabric_id.to_string().as_str()), "the index row at <store_dir>/fabrics/fabric1 is A's: {index}");

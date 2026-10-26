@@ -45,8 +45,6 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         let root = std::env::temp_dir().join(format!("rename-precondition-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        // The cell reads the node's kept log on the store root: its fabric is past its first state-commit.
-        crate::common::store_past_state_commit(&store, &fabric).await;
         let born: PathName = "mesh1.rpc.7".parse().unwrap();
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
         let peer_name: PathName = "mesh1.rpc.2".parse().unwrap();
@@ -214,7 +212,6 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
         let root = std::env::temp_dir().join(format!("rename-precondition-owed-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        crate::common::store_past_state_commit(&store, &fabric).await;
         let born: PathName = "mesh1.rpc.7".parse().unwrap();
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
         let dir = root.join(born.to_string());

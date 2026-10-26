@@ -207,13 +207,13 @@ sees only the catalog.
 | `0x01` | ping | core | live | canonical | `Ping` |
 | `0x11` | echo | core | retired | | |
 | `0x1A` | forward | core | live | canonical | `Forward` |
-| `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md); `Reserved6`, `Reserved7` and `NodeLeft` are reserved positions, never sent; until the initial fabric has first reached ready-for-traffic, every node property command (`UpdateName`, `CreateTags`, `DeleteTags`, `UpdateNodeConfig`) is refused `fabric-not-ready`, and `DeleteMesh` and the node workflow calls are sent only for a Build admitted past that refusal ([States](lifecycles/states.md#fabric-not-ready)) |
+| `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md); `Reserved6`, `Reserved7`, `Reserved12`, `Reserved13` and `NodeLeft` are reserved positions, never sent |
 | `0x1C` | build-claim | rdm | live | canonical | `ClaimAttempt` |
 | `0x1D` | join | rdm | live | canonical | `JoinNode` |
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
 | `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts`, `FetchCurrentBuild` |
-| `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete; build.create refuses `fabric-not-ready` until the initial fabric has first reached ready-for-traffic ([Build refusals](#fabric-not-ready-refusal)) |
-| `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied`; refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic |
+| `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete |
+| `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied` |
 | `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
 | `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
@@ -304,17 +304,17 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | Typed caller | Existing wire / execution component | Caller result / events | code |
 |---|---|---|---|
 | [node.create](lifecycles/node-create.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; first join on [JoinNode 0x1D](#join-op-0x1d-rdm); a held name answers NameHeld { by }; the create of a mesh's first node-admin is the mesh-absent arm, [mesh.create](lifecycles/mesh-create.md), with no call of its own | every FirstStart event ending node.started, then node.created | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → StopConnectionsDeleted (Data) → NodeStopped (Terminal); the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.restart](lifecycles/node-restart.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's and the start's ops; no restart opcode | every stop/start event, node.restarted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.delete](lifecycles/node-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's ops, then provider inspection, which is not a Node RPC | every stop event, then node.deleted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → StopConnectionsDeleted (Data) → NodeStopped (Terminal); the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.restart](lifecycles/node-restart.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's and the start's ops; no restart opcode | every stop/start event, node.restarted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.delete](lifecycles/node-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's ops, then provider inspection, which is not a Node RPC | every stop event, then node.deleted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.mesh.join](lifecycles/node-mesh-join.md) | The report is [JoinNode 0x1D](#join-op-0x1d-rdm); standalone, [Status 0x1B](#status-op-0x1b-rdm) `JoinMesh`, answered `MeshJoined { joined }`; inside node.start a step of the start's stream | node.mesh.joined; a refused report fails the primitive by the report's refusal | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.mesh.leave](lifecycles/node-mesh-leave.md) | Standalone, [Status 0x1B](#status-op-0x1b-rdm) `LeaveMesh`, answered `MeshLeft { left }`; node.stop and node.delete end their live part with it, and inside a stop it is the stop's own step and this frame is not sent | node.mesh.left; `BusyHoldingConnections { connections }` while the node holds a connection | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.tickle](lifecycles/node-tickle.md) | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) direct, and the same probe through up to two live peers of the node's mesh on [Forward 0x1A](#forward-op-0x1a-core) | `reached { answer }` or `unreached`; no event, and unreached is never death | `OK` for a served probe; unreached retains its typed delivery code |
 | [node.runtime.inspect](lifecycles/node-runtime-inspect.md) | The deployment provider's inspect of the runtime handle recorded at launch; not a Node RPC | `running`, `os-stopped`, `exited { code }` or `unavailable { reason }`, node investigation's provider verdict; no event | — (typed provider result; no Node RPC) |
 | node.get | [Status 0x1B](#status-op-0x1b-rdm) `GetNodes { select: Id }`, answered `Nodes`; `node.get { id }` answers the one node with that minted id, and an id the answering admin does not hold is `NOT_FOUND` (Q165: `<entity>.get` returns one, `<parent>.<children>.get` the list); the nodes of a mesh are mesh.nodes.get and the nodes of the fabric fabric.nodes.get, each with an optional tag filter; a node's tags are its own property (node.tags.get/create/delete) | the node, `NodeView`; a stopped node answers `stopped`; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
 | [node.topology.get](lifecycles/node-topology-get.md) | [GetTopology 0x1E](#topology-op-0x1e-rdm); complete source snapshot read | complete read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
-| [node.name.update](lifecycles/node-name-update.md) | Rename, to the node's mesh-primary; frames `UpdateName` and `ApplyNodeName` on [0x1B](#status-op-0x1b-rdm); the node admits no connection | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation`; `fabric-not-ready` | `OK`; NameHeld `ALREADY_EXISTS`, stale `ABORTED`, invalid name `INVALID_ARGUMENT`, other state refusal `FAILED_PRECONDITION` |
+| [node.name.update](lifecycles/node-name-update.md) | Rename, to the node's mesh-primary; frames `UpdateName` and `ApplyNodeName` on [0x1B](#status-op-0x1b-rdm); the node admits no connection | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation` | `OK`; NameHeld `ALREADY_EXISTS`, stale `ABORTED`, invalid name `INVALID_ARGUMENT`, other state refusal `FAILED_PRECONDITION` |
 | node.connections.get/[delete](lifecycles/node-connections-delete.md) | Held-connection read; `node.connections.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connections.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the caller's carrier to the node's mesh-primary is [Status 0x1B](#status-op-0x1b-rdm): StatusRequest position 21 `DeleteConnections`, answered by StatusReply position 31 `ConnectionsDeleted`, or by position 32 `RejectedConnectionScope` for a scope that names nothing the node can cut; the mesh-primary carries it to the exact node on NodeCommand 0x22 | read result / node.connections.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` | call `OK` when served; closed `OK`, not_open `NOT_FOUND`; `All` Deadline `DEADLINE_EXCEEDED` |
 | node.tags.get/create/delete | A node's tags are its own property, not config. `node.tags.get` answers the node's labels; `node.tags.create { label \\| [labels] }` adds one label or a list; `node.tags.delete { All \\| [labels] }` removes every label or the named ones, the same scope shape as `node.connections.delete`. One item or a list, uniform: a single item is the same as a list of one. Each label is its own keyed row (label, node id) in the node store's tags index. Create is a blind put of that key, so creating a label the node already carries is ignored and writes no duplicate; delete tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is refused by name and nothing is written; frames `CreateTags { node_id, incarnation, labels }` and `DeleteTags { node_id, incarnation, scope: All \| Labels }` on 0x1B, replies `TagsCreated { node_id, incarnation, already_carried }` and `TagsDeleted { node_id, incarnation, not_carried }` | read result / create: the reply names each label the node already carried, AlreadyApplied for those | call `OK` when served; already_carried `ALREADY_EXISTS`, not_carried `NOT_FOUND`, applied label `OK`; invalid label `INVALID_ARGUMENT` |
 | node.config.get/update | Application config read / full-map put; the [config update sequence](lifecycles/node-config-update.md); dedicated request mapping is open | read result / node.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
@@ -326,10 +326,10 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | mesh.get, mesh.update, mesh.nodes.get, mesh.config.get/update | mesh.get { name } answers the one mesh with that name or minted id, [Status 0x1B](#status-op-0x1b-rdm) `GetMeshes { mesh: Some }`, a mesh the answering admin does not hold refused `unknown-mesh`; mesh.nodes.get { tags? } answers every node row of the one mesh, `GetNodes { select: Mesh }`, and with a tag filter, all of the given labels or any of them, every node of the mesh that carries them, `GetNodes { select: MeshTags }`, the filter read through the node store's tags index (Q165); mesh.update puts the full mesh meta as a blind put and never changes status; mesh.config.get/update hold the application's attributes on the mesh row, as node.config does on a node; a mesh's tags are its own property, mesh.tags.get / mesh.tags.create { label \| [labels] } / mesh.tags.delete { All \| [labels] }, the same shape and label grammar as node.tags; dedicated request mapping for mesh.update, mesh.config and mesh.tags is open | read result / mesh.updated / mesh.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
 | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | A single call to the fabric-primary with a new root secret, the trust anchor; starts the root rotation's phases; refused `rotation-in-progress` or `root-already-trusted` by name; `fabric.get` carries `roots { phase, expires_at }` and `ca { expires_at }` | fabric.root.updated | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | fabric.get, fabric.update, fabric.meshes.get, fabric.nodes.get, fabric.config.get/update | fabric.get answers the fabric: its id, name, state, provider and fabric-primary, [Status 0x1B](#status-op-0x1b-rdm) `GetFabric`; fabric.meshes.get answers every mesh of the fabric, `GetMeshes { mesh: None }`; fabric.nodes.get { tags? } answers every node row of the fabric, the fabric topology, from the rows, the mesh selector's answer over every mesh, each with its status, config, tags and executable, `GetNodes { select: Fabric }`, and with a tag filter, all of the given labels or any of them, every node of the fabric that carries them, `GetNodes { select: Tags }`, the filter read through the node store's tags index (Q165); fabric.update puts the full fabric meta as a blind put and never changes status; fabric.config.get/update hold the application's attributes on the fabric row; dedicated request mapping for fabric.update and fabric.config is open | read result / fabric.updated / fabric.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
-| [mesh.delete](lifecycles/mesh-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [0x21](#primaryupdate-op-0x21-rdm) (node.fabric-primary.update) when the mesh's mesh-primary is the fabric-primary; [Status 0x1B DeleteMesh / MeshDeleted](#mesh-delete-command-pair); node.delete's ops per member | mesh.deleting, mesh.deleted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [mesh.delete](lifecycles/mesh-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [0x21](#primaryupdate-op-0x21-rdm) (node.fabric-primary.update) when the mesh's mesh-primary is the fabric-primary; [Status 0x1B DeleteMesh / MeshDeleted](#mesh-delete-command-pair); node.delete's ops per member | mesh.deleting, mesh.deleted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [fabric.create](lifecycles/fabric-create.md) | The first node-admin, started with no mesh and no durable topology, is the executor and the fabric-primary; the accepted topology rides [build.create 0x20](#build-op-0x20-rdm) | fabric.created when the fabric is ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [fabric.delete](lifecycles/fabric-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow, one Build the fabric-primary drives: every mesh removed leaf-inward, its own mesh last | fabric.deleted from the fabric-primary, still alive; its own node.delete is a separate call from outside the fabric | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the primary to its successor's exact birth | node.primary.updated { revisions }; RejectedConflictingPayload; `fabric-not-ready`; on the commanded arm, `Failed { step, reason }` when the update ends failed | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
+| [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the primary to its successor's exact birth | node.primary.updated { revisions }; RejectedConflictingPayload; on the commanded arm, `Failed { step, reason }` when the update ends failed | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | the same call, the fabric-primary as the `fabric` entry of `primaries` | node.fabric-primary.updated; the fabric arm's no-successor refusal | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | build.create/get/delete | [Build 0x20](#build-op-0x20-rdm); the fabric-primary accepts every Build and drives topology Builds; a mesh-primary drives drift attempts of the current Build inside its mesh. [ClaimAttempt 0x1C](#buildclaim-op-0x1c-rdm) is the attempt claim; [FetchBuildFacts 0x1F](#build-facts-op-0x1f-rdm) is the facts read | Started, step frames, Complete / Failed; reattachment reads; deletion result | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 | build.attempt.run | [Build 0x20](#build-op-0x20-rdm); fabric-primary calls the named executor with the won claim | receipt replay, current Blocked, then live frames | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
@@ -347,7 +347,7 @@ request-commit certainty boundary is
 
 ### Node properties
 
-Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` when not directly reachable), is refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic (except `node.config.update`, admitted at any time, Q166), and runs through that writer's defined storage operation.
+Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` when not directly reachable), is admitted at any time (Q166, Q171), and runs through that writer's defined storage operation.
 
 | property | set by | changed by | precondition | completion |
 |---|---|---|---|---|
@@ -758,8 +758,8 @@ pub enum StatusRequest {
         final_runtime: RuntimeFact,
         receipt_manifest: String,
     },
-    CommitState { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
-    StateCommitted { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
+    Reserved12 { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 12, reserved (Q171): refused by name, never executed
+    Reserved13 { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 13, reserved (Q171): refused by name, never executed
     OpenTraffic { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
     TrafficOpened { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
     StartNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 16, reserved: refused by name, never executed
@@ -863,7 +863,7 @@ pub enum StatusReply {
     RejectedIncompleteManifest { missing: u32, without_exit: Vec<String>, reason: String },
     RejectedSourceFailed { source: String, op: String, cause: String },
     RejectedTags { reason: String },
-    RejectedFabricNotReady { workflow: String, status: String },
+    Reserved44 { workflow: String, status: String }, // position 44, reserved (Q171): never sent
     TagsCreated { node_id: NodeId, incarnation: IncarnationId, already_carried: BTreeSet<String> },
     TagsDeleted { node_id: NodeId, incarnation: IncarnationId, not_carried: BTreeSet<String> },
     RejectedName { reason: String },
@@ -889,16 +889,15 @@ pub enum RetryOn {
 
 ### Fabric status command pairs
 
-The fabric statuses state-commit and ready-for-traffic are carried down on op
-0x1B: CommitState / OpenTraffic carry the status down, StateCommitted / TrafficOpened are
-the check-ins. The four bodies are [StatusRequest](#status-op-0x1b-rdm) positions 12 to 15.
+The fabric status ready-for-traffic is carried down on op 0x1B: OpenTraffic carries the status
+down, TrafficOpened is the check-in. The two bodies are [StatusRequest](#status-op-0x1b-rdm)
+positions 14 and 15; positions 12 and 13 are reserved (Q171).
 Who commands whom, when a check-in is owed and when a primary may report upward are the
 [check-in checklist](lifecycles/states.md#the-check-in-checklist). The payload's node_id/incarnation
 names the commanded or reporting subject; the target names the receiver of that particular
 directed call.
 
-CommitState/StateCommitted use operation `commit-state:<fabric_id>`;
-OpenTraffic/TrafficOpened use `open-traffic:<fabric_id>`. The state's command is scoped to the
+OpenTraffic/TrafficOpened use operation `open-traffic:<fabric_id>`. The state's command is scoped to the
 accepted Build, attempt and planned exact births. A successful admission reply is Applied or
 AlreadyApplied; completion is a separate upward call with its own target and trace context,
 also acknowledged Applied or AlreadyApplied. Status refusals are typed; an unmatched check-in is
@@ -913,18 +912,6 @@ Command and completion hooks use the [state gossip frames](gossip.md#fabric-stat
 Who declares the fabric state is [States](lifecycles/states.md#who-sets-each-state); Rafka
 receives one outer traffic-opened integration notice after the completed check-ins.
 
-### Application state-sync handoff
-
-SyncState and StateSynced name the external RDM/Rafka integration messages, with the
-fields `fabric_id: FabricId`, `build_id: String`, `attempt: u32`,
-`operation: String` (`state-sync:<fabric_id>`) and observability `context: CallContext`.
-SyncState hands state-sync to the application; StateSynced reports its requested work
-complete to the fabric-primary. It triggers state-commit, not ready-for-traffic.
-The integration transport has no Node RPC opcode or target defined here; an application
-message must not be presented as an implemented Node RPC variant. RDM owns no day-0,
-seed or application writer logic. Integration message examples live in
-[Fabric state-sync](lifecycles/fabric-state-sync.md).
-
 ### Node stop command pair
 
 The caller contract is [node.stop / node.delete](#typed-object-contract). The mesh-primary's
@@ -932,7 +919,9 @@ exact-node stop and start hops use [NodeCommand 0x22](#nodecommand-op-0x22-rdm);
 the Build carrier are unchanged. StatusRequest positions 8 `StopNode` and 16 `StartNode` are reserved:
 a receiver refuses each by name and executes nothing. Reply positions 17 `Stopped`, 18 `Started`
 and 19 `StartFailed` stand. Reserved6, Reserved7 and NodeLeft retain positions 6, 7 and 9 and are
-refused by name; Reserved2 retains StatusReply position 2. No position is reordered or reused.
+refused by name; Reserved12 and Reserved13 retain positions 12 and 13 and are refused by name
+(Q171); Reserved2 and Reserved44 retain StatusReply positions 2 and 44. No position is reordered or
+reused.
 
 Stop's whole `node.connections.delete { scope: All }` reports its `ConnectionsReceipt` in
 `StopConnectionsDeleted` (Data), preserving `Established` or `Deadline` evidence; `NodeStopped`
@@ -947,9 +936,7 @@ bodies DeleteMesh and MeshDeleted on op `0x1B`,
 [StatusRequest](#status-op-0x1b-rdm) positions 10 and 11.
 
 DeleteMesh is downward, called by the fabric-primary and served by the mesh's primary; its
-admission starts mesh.deleting. It is sent only for an admitted mesh.delete Build: until the
-initial fabric has first reached ready-for-traffic that Build is refused `fabric-not-ready` at
-build.create ([Build refusals](#fabric-not-ready-refusal)) and no DeleteMesh is sent.
+admission starts mesh.deleting. It is sent only for an admitted mesh.delete Build.
 MeshDeleted is upward, called by that still-running mesh-primary and served by
 the fabric-primary: it carries mesh.deleted, with `receipt_manifest` referencing every other
 member's exact Exited receipt and `final_*` naming the mesh-primary's own running birth. Both
@@ -1352,17 +1339,6 @@ attempt (StaleClaim { held_attempt, held_executor, carried_attempt }). A replace
 gets a fresh claim. The canonical Node RPC target remains node id + op;
 claim validation is the Build-specific execution check.
 
-<a id="fabric-not-ready-refusal"></a>
-build.create refuses by name until the initial fabric has first reached ready-for-traffic: the
-existing `Rejected { reason, detail }` reply with reason `fabric-not-ready`, whose `detail` names
-the refused workflow and the fabric's current status. It refuses a Build that would move a
-fabric-primary or mesh-primary, mesh.delete, and every node.stop, node.start, node.restart,
-node.delete and replace recipe a caller submits. The initial accepted Build, which creates the
-fabric's nodes and brings the fabric to ready-for-traffic, runs as usual, and once the fabric is
-ready-for-traffic these are admitted as usual. A refused Build claims no attempt and sends no call.
-[States](lifecycles/states.md#fabric-not-ready) gives the reason. `NotReady` is not this refusal:
-it stays the serving door's answer.
-
 Every dispatch passes the fabric-primary check and the claim decision. A
 node-admin that is fabric-primary no more cannot dispatch and refuses NotFabricPrimary { node, by }.
 A fabric-primary change ends the outer
@@ -1536,8 +1512,7 @@ is a second entry, node type `fabric`. For the `node-admin` type the successor r
 this call, after it answered; for every other type the mesh-primary records the successor's row from
 the successor's digest, the way it records every member fact it hears. The receiver refuses only:
 
-- RejectedConflictingPayload: the same operation with different content; the row decides;
-- `fabric-not-ready`: before the initial fabric first reached ready-for-traffic.
+- RejectedConflictingPayload: the same operation with different content; the row decides.
 
 There is no RejectedWrongBirth (R-UC1a, R-RX5: a receiver never refuses a call for the node id it
 names), no RejectedStaleRevision and no RejectedNotEligible on the receiver: eligibility is the writer's

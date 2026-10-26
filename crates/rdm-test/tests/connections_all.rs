@@ -234,6 +234,7 @@ fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_a
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let opened = ping_admin(&seams, &admin, &CallOptions::default()).await;
         assert!(matches!(opened, RpcOutcome::Reply(_)), "the node reaches its admin: {opened:?}");
+        seams.connections.observations_landed().await;
         let held: Vec<_> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
         assert_eq!(held.len(), 1, "the node holds the one connection it opened: {held:?}");
 
@@ -359,6 +360,7 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         assert!(matches!(call_on(&admin, &target, &join, None).await, StatusReply::MeshJoined { .. }), "the node joins its mesh again");
         let after = ping_admin(&seams, &admin, &CallOptions::default()).await;
         assert!(matches!(after, RpcOutcome::Reply(_)), "once it joined its mesh again the node opens connections: {after:?}");
+        seams.connections.observations_landed().await;
         let routes = seams.connections.held_routes().await;
         assert_eq!(routes.iter().map(|r| (r.source.name.clone(), r.destination.name.to_string())).collect::<Vec<_>>(), vec![(taken.clone(), "mesh1.admin.1".to_string())], "the next connection names the name the node took: {routes:?}");
         assert_eq!(fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block").len(), 2, "one refusal before the apply and one after it, none after the join");
@@ -454,6 +456,7 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
             assert!(tokio::time::timeout(Duration::from_millis(300), &mut deleting).await.is_err(), "All is not answered while the call it admitted is in flight");
             let out = ping_admin(&seams, &admin, &CallOptions::default()).await;
             assert!(matches!(out, RpcOutcome::Reply(_)), "a connection opened while All waits belongs to its closure: {out:?}");
+            seams.connections.observations_landed().await;
             let opened: Vec<_> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
             assert_eq!(opened.len(), 1, "the node holds the one connection it opened while All waited: {opened:?}");
             pull.release();
@@ -502,6 +505,7 @@ fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
         // Open a data-plane connection so the node's connections log is non-empty.
         let out = ping_admin(&seams, &admin, &CallOptions::default()).await;
         assert!(matches!(out, RpcOutcome::Reply(_)), "ping succeeds: {out:?}");
+        seams.connections.observations_landed().await;
         assert_eq!(seams.connections.held_routes().await.len(), 1, "one open route in log");
 
         // Standalone `LeaveMesh` while holding an open connection is refused `BusyHoldingConnections`.

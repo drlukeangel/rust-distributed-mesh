@@ -114,11 +114,6 @@ pub trait Gate: Send + Sync {
     fn fabric_ready(&self) -> bool {
         true
     }
-    /// The failure the application reported for the state-sync called for attempt `attempt` of Build
-    /// `build_id` (Q158): `(operation, reason)`. A gate with no fabric change holds none.
-    fn state_sync_failed(&self, _build_id: &BuildId, _attempt: u32) -> Option<(String, String)> {
-        None
-    }
 }
 
 /// The node.primary.update that precedes an operation on a primary (R-MT1), named by its operation
@@ -1231,34 +1226,12 @@ impl DriveEnv {
                 // ready-for-traffic, and the reconcile loop drives the Build again. Its first attempt is
                 // always claimed, even with nothing left to execute (build.md §1: every attempt "computes
                 // remaining work"): the fabric's change names the accepted Build's attempt
-                // (fabric-state-sync.md), and that attempt's run hands back at the hold of `plan_dispatch`. Waiting is not
-                // failure; a state-sync the application reports failed fails the Build on that step (Q158:
-                // "a state's check-in or a hook that reports failure fails the Build on that step"): the
-                // next attempt is claimed and ends `Failed` on `fabric-change`, its reason the application's.
+                // (fabric-ready-for-traffic.md), and that attempt's run hands back at the hold of `plan_dispatch`.
+                // Waiting is not failure.
                 if p.attempt > 0 && waits_for_the_fabric_change(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
-                    let Some((operation, reason)) = self.gate.state_sync_failed(&id, p.attempt) else {
-                        let why = format!("{me}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready-for-traffic state is set");
-                        self.blocked(drive, p.attempt, "", "fabric-change", &why);
-                        return self.stalled(&me, drive, why);
-                    };
-                    let (attempt, executor, context) = match self.claim_next(&me, drive, &p, handed_to.take(), &crashed).await {
-                        Ok(c) => c,
-                        Err(end) => return end,
-                    };
-                    let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id.log(), attempt, executor = %executor, node = %me, outcome = "failed", reason = %reason);
-                    if let Some(tp) = &context.traceparent {
-                        rdm_transport::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
-                    }
-                    let why = crate::build_run::bounded_reason(format!("{me}: the application reported the state-sync of Build {id} attempt {} failed: {reason}", p.attempt));
-                    let code = rdm_core::outcome::Code::Unknown;
-                    async {
-                        self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: why.clone(), code } }).await;
-                        self.release_mesh(&id, attempt, &executor).await;
-                    }
-                    .instrument(dspan)
-                    .await;
-                    drive.finish(rdm_core::reply::build::failed(id.to_string(), attempt, operation, "fabric-change".into(), why, code));
-                    return DriveEnd::Terminal;
+                    let why = format!("{me}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready-for-traffic state is set");
+                    self.blocked(drive, p.attempt, "", "fabric-change", &why);
+                    return self.stalled(&me, drive, why);
                 }
                 match self.update_primaries_first(&me, drive, &p).await {
                     Ok(true) => continue,

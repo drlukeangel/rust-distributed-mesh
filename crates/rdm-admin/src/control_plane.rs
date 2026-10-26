@@ -74,14 +74,6 @@ pub struct ControlPlane {
     /// reconciling to the durable write that makes the next one, by every path that starts work
     /// (a submitted change, an opened attempt, the drift check).
     pub admission: Arc<tokio::sync::Mutex<()>>,
-    /// Whether the initial fabric has first reached ready-for-traffic: until it has, a workflow that
-    /// moves a seat or writes a caller's row is refused `fabric-not-ready` (states.md, "The initial
-    /// fabric before ready-for-traffic").
-    pub first_ready: crate::fabric_state::FirstReady,
-    /// The fabric store: the fabric's ready-for-traffic fact on it is the durable fact that it first
-    /// reached ready-for-traffic (states.md, "The initial fabric before ready-for-traffic"). Held in
-    /// memory, empty, until the admin hands its own ([`ControlPlane::with_first_ready`]).
-    pub ready_rows: Arc<dyn crate::fabric_storage::FabricStorage>,
     /// The exact departure proof of a drift lane's claimant (build.md: "after exact departure proof"),
     /// set once the admin's drive is built; none proves nothing.
     pub departure: std::sync::OnceLock<Arc<dyn crate::build_drive::DepartureProof>>,
@@ -118,8 +110,6 @@ impl ControlPlane {
             claims: Arc::new(crate::storage::MemoryMeshStorage::default()),
             time,
             admission: Arc::new(tokio::sync::Mutex::new(())),
-            first_ready: crate::fabric_state::FirstReady::new(),
-            ready_rows: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             departure: std::sync::OnceLock::new(),
             node_rows: std::sync::OnceLock::new(),
             executable_dirs: Vec::new(),
@@ -129,15 +119,6 @@ impl ControlPlane {
     /// This control plane holding `dirs`, the admin's `RDM_EXECUTABLE_DIRS`.
     pub fn with_executable_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
         self.executable_dirs = dirs;
-        self
-    }
-
-    /// This control plane reading whether the initial fabric first reached ready-for-traffic from
-    /// `first_ready`, the handle its admin's fabric state sets, and `ready_rows`, the fabric store, where
-    /// the durable fact is.
-    pub fn with_first_ready(mut self, first_ready: crate::fabric_state::FirstReady, ready_rows: Arc<dyn crate::fabric_storage::FabricStorage>) -> Self {
-        self.first_ready = first_ready;
-        self.ready_rows = ready_rows;
         self
     }
 
@@ -172,40 +153,6 @@ impl ControlPlane {
             return Err(Refusal::NotPrimary(primary.map(|p| p.to_string())));
         }
         Ok(())
-    }
-
-    /// The one admission rule before the initial fabric is ready-for-traffic (states.md, "The initial
-    /// fabric before ready-for-traffic"; R-PB1, R-PC1): `workflow` moves a seat or writes a caller's
-    /// row, so it is refused `fabric-not-ready` until the fabric has first reached ready-for-traffic,
-    /// naming the workflow and the fabric's status. It runs before anything is read, claimed or
-    /// written: a refused workflow opens no attempt and accepts no Build. Decided on the durable fact
-    /// (states.md): what this admin already knows, else a point read of the fabric's ready-for-traffic
-    /// fact on the fabric store, which the fabric state it hears by gossip can lag. A read that fails is
-    /// refused by name.
-    async fn admit_once_ready(&self, route: &'static str, workflow: String, outer: &tracing::Span) -> Result<(), Refusal> {
-        let me = self.held_name().await;
-        let (status, fabric_id) = {
-            let t = self.topology.read().await;
-            (t.fabric.status, t.fabric.id.clone())
-        };
-        match self.first_ready.reached_on_root(&*self.ready_rows, &fabric_id, status).await {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
-            Err(e) => {
-                let detail = format!("{me}: {workflow} cannot be admitted: whether fabric {fabric_id} first reached ready-for-traffic could not be read from the fabric store (it is {}): {e}", status.name());
-                outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-fabric-ready-unreadable", route, workflow = %workflow, status = status.name(), detail = %detail)
-                        .in_scope(|| tracing::info!("build refused: the ready-for-traffic row could not be read"))
-                });
-                return Err(Refusal::Unavailable(detail));
-            }
-        }
-        let reject = BuildReject::FabricNotReady { workflow: workflow.clone(), status: status.name().to_string() };
-        outer.in_scope(|| {
-            tracing::info_span!("rdm.node_admin.build.reject.via-fabric-not-ready", route, workflow = %workflow, status = status.name(), detail = %reject)
-                .in_scope(|| tracing::info!(%reject, "build refused: the initial fabric has not first reached ready-for-traffic"))
-        });
-        Err(Refusal::Reject(reject))
     }
 
     /// The current Build (R-BI3: the Build entities read last in, first out, a failed one skipped),
@@ -434,18 +381,6 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         async {
             self.require_fabric_primary(route).await?;
-            // node.delete and mesh.delete write caller state: refused `fabric-not-ready` until the initial
-            // fabric first reached ready-for-traffic (states.md "The initial fabric before
-            // ready-for-traffic"), before the Build in progress is read, as a recipe and a node
-            // workflow are: the Build that changes the initial fabric is in progress until its ready-for-traffic state is set (Q154).
-            let standalone_delete = match &change {
-                TopologyChange::RemoveNode { node } => Some(format!("node.delete {node}")),
-                TopologyChange::RemoveMesh { mesh } => Some(format!("mesh.delete {mesh}")),
-                _ => None,
-            };
-            if let Some(workflow) = standalone_delete {
-                self.admit_once_ready(route, workflow, &outer).await?;
-            }
             // fabric.delete is the one Build that may interrupt the Build in progress (build.md §1): it is
             // compiled against the current Build whatever its state, and a fabric.delete in force answers
             // a second one, which accepts nothing.
@@ -537,15 +472,6 @@ impl ControlPlane {
                         .in_scope(|| tracing::info!("a topology operation acts in a mesh its own drift attempt holds: one attempt in flight per mesh"))
                 });
                 return Err(Refusal::BuildInProgress(held));
-            }
-            // A Build that deletes a node or a mesh writes caller state: it waits for the initial fabric
-            // to first reach ready-for-traffic (R-PC1).
-            if let Some(workflow) = operations.iter().chain(replacements.iter()).filter(|_| !interrupts).find_map(|op| match op {
-                crate::build::BuildOperation::RetireNode { node, exited: None } => Some(format!("node.delete {node}")),
-                crate::build::BuildOperation::ShutdownMesh { mesh, .. } => Some(format!("mesh.delete {mesh}")),
-                _ => None,
-            }) {
-                self.admit_once_ready(route, workflow, &outer).await?;
             }
             // A Build whose plan would end a seat holder while no other node of its type in its mesh can
             // take its seat is refused before it exists: node.primary.update has no successor (R-MT1, Q7).
@@ -658,8 +584,7 @@ impl ControlPlane {
     /// Open the next attempt of the accepted Build as the recipe `steps` (`BuildChange::Recipe`;
     /// build.md §1: "Rafka's replace recipe is submitted as one Build of node primitives";
     /// lifecycles/node-replace.md), under `span`. The topology is unchanged; the Build stays the
-    /// current one. Refused by name: before the initial fabric first reaches ready-for-traffic
-    /// (`fabric-not-ready`, R-PC1); a recipe with no step, one naming an operation twice, or one
+    /// current one. Refused by name: a recipe with no step, one naming an operation twice, or one
     /// acting on a path that holds no birth and that no earlier step makes
     /// ([`crate::accepted::recipe_action`]); a step in a mesh held by its own drift attempt (R-BI7
     /// caveat 3); a step on a node of a peer mesh this fabric-primary holds unheard (R-D1); a
@@ -670,7 +595,6 @@ impl ControlPlane {
         async {
             self.require_fabric_primary(route).await?;
             let summary = steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(" ");
-            self.admit_once_ready(route, format!("recipe ({summary})"), &outer).await?;
             let (_admitted, current) = self.current_settled().await?;
             for step in &steps {
                 let node = step.node();
@@ -727,20 +651,6 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         async {
             self.require_fabric_primary(route).await?;
-            // A caller's node workflow writes a row, and a node.connections.delete of a seat holder moves its seats: both
-            // wait for the initial fabric to first reach ready-for-traffic (R-PB1, R-PC1).
-            let holds_a_seat = || async {
-                let t = self.topology.read().await;
-                t.node(&path).is_some_and(|n| t.is_fabric_primary(&n.node_id) || t.is_mesh_primary(&n.mesh, &n.node_id))
-            };
-            let workflow = match kind {
-                ActionKind::DeleteConnections if holds_a_seat().await => Some(format!("node.connections.delete {path} (a seat holder)")),
-                ActionKind::DeleteConnections => None,
-                _ => Some(format!("node.{} {path}", kind.name())),
-            };
-            if let Some(workflow) = workflow {
-                self.admit_once_ready(route, workflow, &outer).await?;
-            }
             let (_admitted, current) = self.current_settled().await?;
             // The node's mesh held by its own drift attempt refuses the action, naming the mesh-primary
             // holding it (R-BI7 caveat 3).

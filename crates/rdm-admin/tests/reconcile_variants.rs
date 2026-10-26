@@ -167,16 +167,13 @@ enum Timing {
     During,
     /// It is set once the run handed back and the drive reported the Build Blocked on the fabric's change.
     After,
-    /// The application holds its answer for two passes, then answers.
+    /// The fabric's change holds for two passes, then the fabric is ready-for-traffic.
     HeldThenAnswered,
-    /// The application holds its answer, then answers with a failure by name.
-    HeldThenFailed,
 }
 
 /// The fabric as the drive's gate reads it, and what each node's row records.
 struct Readiness {
     ready: AtomicBool,
-    failed: Mutex<Option<(String, String)>>,
     recorded: Arc<Mutex<Recorded>>,
 }
 
@@ -184,9 +181,6 @@ struct Readiness {
 impl Gate for Readiness {
     fn fabric_ready(&self) -> bool {
         self.ready.load(Ordering::SeqCst)
-    }
-    fn state_sync_failed(&self, _build_id: &BuildId, _attempt: u32) -> Option<(String, String)> {
-        self.failed.lock().unwrap().clone()
     }
     async fn recorded_executables(&self, _topology: &FabricTopology) -> Result<Recorded, String> {
         Ok(self.recorded.lock().unwrap().clone())
@@ -281,7 +275,7 @@ async fn row(variant: Variant, timing: Timing) -> Row {
     let change = TopologyChange::Reconcile { based_on: builds.current().await.unwrap().expect("day 0's Build is current").build_id, nodes: variant.request(&held) };
     let opened = cp.submit("test", change).await.unwrap_or_else(|e| panic!("{variant:?}: the door accepts the request: {e:?}"));
     let recorded = Arc::new(Mutex::new(recorded));
-    let fabric = Arc::new(Readiness { ready: AtomicBool::new(timing == Timing::Before), failed: Mutex::new(None), recorded: recorded.clone() });
+    let fabric = Arc::new(Readiness { ready: AtomicBool::new(timing == Timing::Before), recorded: recorded.clone() });
     let runs = Arc::new(Runs { ran: Mutex::new(Vec::new()), builds: builds.clone(), recorded });
     let loopback = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runs.clone());
     let me = path("mesh1.admin.1");
@@ -352,7 +346,7 @@ async fn check(variant: Variant, timing: Timing) {
     let mut reader = drive.reader(1);
     let ends = match timing {
         Timing::Before | Timing::During => until_terminal(&r, &drive, 4, &what).await,
-        Timing::After | Timing::HeldThenAnswered | Timing::HeldThenFailed => {
+        Timing::After | Timing::HeldThenAnswered => {
             let held = if timing == Timing::HeldThenAnswered { 2 } else { 1 };
             for _ in 0..held {
                 waits_on_the_fabric(&pass(&r, &drive, &what).await, &what);
@@ -361,11 +355,7 @@ async fn check(variant: Variant, timing: Timing) {
             assert!(seen.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "{what}: the Build reports Blocked naming the fabric's change: {seen:?}");
             assert!(!seen.iter().any(|f| matches!(f, Read::Terminal(_) | Read::Frame(BuildReply::Complete { .. } | BuildReply::Failed { .. }))), "{what}: never an end while the fabric changes: {seen:?}");
             assert_ne!(r.builds.read_build(&r.build).await.unwrap().state, BuildState::Complete, "{what}: never Complete while the fabric changes");
-            if timing == Timing::HeldThenFailed {
-                *r.fabric.failed.lock().unwrap() = Some(("state-sync:fabric1".into(), "seed-image-unreadable".into()));
-            } else {
-                r.fabric.ready.store(true, Ordering::SeqCst);
-            }
+            r.fabric.ready.store(true, Ordering::SeqCst);
             until_terminal(&r, &drive, 3, &what).await
         }
     };
@@ -379,14 +369,7 @@ async fn check(variant: Variant, timing: Timing) {
     let mut owed: Vec<String> = variant.owes().into_iter().map(String::from).collect();
     owed.sort();
     assert_eq!(once, owed, "{what}: the request's operations ran, and only those");
-    if timing == Timing::HeldThenFailed {
-        // The fixture records no attempt verdict (`NoVerdicts`): the Build's end is its terminal frame.
-        assert_ne!(done.state, BuildState::Complete, "{what}: a Build whose state-sync failed is never Complete");
-        let seen = frames(&mut reader).await;
-        assert!(seen.iter().any(|f| matches!(f, Read::Terminal(BuildReply::Failed { step, reason, .. }) | Read::Frame(BuildReply::Failed { step, reason, .. }) if step == "fabric-change" && reason.contains("seed-image-unreadable"))), "{what}: it fails on `fabric-change` with the application's reason: {seen:?}");
-    } else {
-        assert_eq!(done.state, BuildState::Complete, "{what}: the Build is Complete after its own ready-for-traffic: {done:?}");
-    }
+    assert_eq!(done.state, BuildState::Complete, "{what}: the Build is Complete after its own ready-for-traffic: {done:?}");
 }
 
 macro_rules! rows {
@@ -405,40 +388,32 @@ rows! {
     day0_admin_named_on_its_recorded_executable_ready_during_the_run: Day0AdminNamedOnItsRecordedExecutable, During;
     day0_admin_named_on_its_recorded_executable_ready_after_the_run: Day0AdminNamedOnItsRecordedExecutable, After;
     day0_admin_named_on_its_recorded_executable_held_then_answered: Day0AdminNamedOnItsRecordedExecutable, HeldThenAnswered;
-    day0_admin_named_on_its_recorded_executable_held_then_failed: Day0AdminNamedOnItsRecordedExecutable, HeldThenFailed;
     every_path_on_its_entrys_executable_ready_before_the_run: EveryPathNamedOnItsEntrysExecutable, Before;
     every_path_on_its_entrys_executable_ready_during_the_run: EveryPathNamedOnItsEntrysExecutable, During;
     every_path_on_its_entrys_executable_ready_after_the_run: EveryPathNamedOnItsEntrysExecutable, After;
     every_path_on_its_entrys_executable_held_then_answered: EveryPathNamedOnItsEntrysExecutable, HeldThenAnswered;
-    every_path_on_its_entrys_executable_held_then_failed: EveryPathNamedOnItsEntrysExecutable, HeldThenFailed;
     unchanged_request_ready_before_the_run: Unchanged, Before;
     unchanged_request_ready_during_the_run: Unchanged, During;
     unchanged_request_ready_after_the_run: Unchanged, After;
     unchanged_request_held_then_answered: Unchanged, HeldThenAnswered;
-    unchanged_request_held_then_failed: Unchanged, HeldThenFailed;
     tags_only_ready_before_the_run: TagsOnly, Before;
     tags_only_ready_during_the_run: TagsOnly, During;
     tags_only_ready_after_the_run: TagsOnly, After;
     tags_only_held_then_answered: TagsOnly, HeldThenAnswered;
-    tags_only_held_then_failed: TagsOnly, HeldThenFailed;
     storage_only_ready_before_the_run: StorageOnly, Before;
     storage_only_ready_during_the_run: StorageOnly, During;
     storage_only_ready_after_the_run: StorageOnly, After;
     storage_only_held_then_answered: StorageOnly, HeldThenAnswered;
-    storage_only_held_then_failed: StorageOnly, HeldThenFailed;
     new_path_ready_before_the_run: NewPath, Before;
     new_path_ready_during_the_run: NewPath, During;
     new_path_ready_after_the_run: NewPath, After;
     new_path_held_then_answered: NewPath, HeldThenAnswered;
-    new_path_held_then_failed: NewPath, HeldThenFailed;
     removed_path_ready_before_the_run: RemovedPath, Before;
     removed_path_ready_during_the_run: RemovedPath, During;
     removed_path_ready_after_the_run: RemovedPath, After;
     removed_path_held_then_answered: RemovedPath, HeldThenAnswered;
-    removed_path_held_then_failed: RemovedPath, HeldThenFailed;
     another_executable_ready_before_the_run: AnotherExecutable, Before;
     another_executable_ready_during_the_run: AnotherExecutable, During;
     another_executable_ready_after_the_run: AnotherExecutable, After;
     another_executable_held_then_answered: AnotherExecutable, HeldThenAnswered;
-    another_executable_held_then_failed: AnotherExecutable, HeldThenFailed;
 }

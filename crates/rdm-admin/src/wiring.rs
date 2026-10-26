@@ -94,69 +94,21 @@ pub struct DriftHold {
 /// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
 pub type ServeApp = Box<dyn FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder + Send>;
 
-/// The state fields of the application hand-off: `fabric_id`, `build_id`, `attempt`,
-/// `operation = state-sync:<fabric_id>` and the observability context (fabric-state-sync.md).
-/// `SyncState` carries them to the application and `StateSynced` carries them back.
+/// The state fields of the `traffic_opened` notice: `fabric_id`, `build_id`, `attempt`,
+/// `operation = open-traffic:<fabric_id>` and the observability context
+/// (lifecycles/fabric-ready-for-traffic.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StateSyncHandoff {
+pub struct TrafficOpened {
     /// The fabric.
     pub fabric_id: rdm_core::FabricId,
     /// The accepted Build the checklist belongs to.
     pub build_id: String,
     /// The Build attempt that holds the checklist.
     pub attempt: u32,
-    /// `state-sync:<fabric_id>`.
+    /// `open-traffic:<fabric_id>`.
     pub operation: String,
     /// The attempt's observability context.
     pub context: CallContext,
-}
-
-/// The application's report that its `sync_state` work failed, by name (Q158; build.md: hooks
-/// "report failure through the lifecycle receipt path"): the Build the fabric changes for fails on
-/// its `fabric-change` step, `reason` carried on its `Failed`. Waiting is not failure: an
-/// application still working answers nothing, and the Build stays Blocked.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StateSyncFailed {
-    /// Why the work failed, named by the application.
-    pub reason: String,
-}
-
-/// The application's answer to `sync_state`: `Ok` is its `StateSynced` for the call's fields, `Err`
-/// its failure by name.
-pub type StateSyncAnswer = Result<StateSyncHandoff, StateSyncFailed>;
-
-impl From<StateSyncHandoff> for StateSyncAnswer {
-    fn from(synced: StateSyncHandoff) -> Self {
-        Ok(synced)
-    }
-}
-
-/// The `sync_state` choice. A configuration with none is refused at start by name: an application
-/// that forgets to register must not get a fabric that skips its day 0 and seed.
-#[derive(Clone)]
-pub enum SyncState {
-    /// The embedding owes no application work in state-sync. RDM's own executables and test
-    /// estates choose this on purpose; state-sync completes at once, naming `no-app-work`.
-    NoAppWork,
-    /// The application's async function: called by the fabric-primary with the `SyncState`
-    /// fields; the answer is its `StateSynced`, or its failure by name ([`StateSyncFailed`]).
-    Hook(Arc<dyn Fn(StateSyncHandoff) -> Pin<Box<dyn Future<Output = StateSyncAnswer> + Send>> + Send + Sync>),
-}
-
-impl SyncState {
-    /// The application's `sync_state` function. It answers its `StateSynced` (a [`StateSyncHandoff`])
-    /// or a [`StateSyncAnswer`], whose `Err` reports the work failed by name.
-    pub fn hook<F, Fut, A>(f: F) -> Self
-    where
-        F: Fn(StateSyncHandoff) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = A> + Send + 'static,
-        A: Into<StateSyncAnswer> + 'static,
-    {
-        Self::Hook(Arc::new(move |fields| {
-            let answer = f(fields);
-            Box::pin(async move { answer.await.into() })
-        }))
-    }
 }
 
 /// The owner is about to record a lifecycle command frame; executable decorations may hold it.
@@ -168,22 +120,20 @@ pub trait CommandFrameSeam: Send + Sync {
 
 /// The one notice the application gets after the open-traffic checklist completed and the fabric is
 /// ready-for-traffic. It gates nothing.
-pub type TrafficOpenedNotice = Arc<dyn Fn(StateSyncHandoff) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+pub type TrafficOpenedNotice = Arc<dyn Fn(TrafficOpened) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// The application hooks the fabric-primary calls ([fabric and node hooks](../../../docs/architecture/fabric-node-hooks.md)).
 #[derive(Default, Clone)]
 pub struct FabricHooks {
-    /// `sync_state`. `None` is refused at start.
-    pub sync_state: Option<SyncState>,
     /// `traffic_opened`: optional, because it gates nothing. Its state fields name the
     /// `open-traffic:<fabric_id>` operation.
     pub traffic_opened: Option<TrafficOpenedNotice>,
 }
 
 impl FabricHooks {
-    /// The hooks of an embedding with no application work: state-sync completes at once.
+    /// The hooks of an embedding with no application work: no notice.
     pub fn no_app_work() -> Self {
-        Self { sync_state: Some(SyncState::NoAppWork), traffic_opened: None }
+        Self { traffic_opened: None }
     }
 }
 
@@ -198,11 +148,10 @@ pub struct Wiring {
     /// [`crate::admin::Running::connections`], and a registration naming RDM's own Node RPC or gossip
     /// ALPN refuses the admin's start by name (fabric-certs.md §On a connection).
     pub alpns: Vec<rdm_transport::connections::Alpn>,
-    /// The application hooks the fabric-primary calls. `sync_state` must be chosen.
+    /// The application hooks the fabric-primary calls.
     pub fabric_hooks: FabricHooks,
-    /// The embedding's own action a node completes before it checks in to a commit-state or
-    /// open-traffic checklist, run after RDM publishes the node's scratchpad to the fabric's store root
-    /// at commit-state ([`crate::fabric_status::StorePublication`]). `None`: RDM's publication alone.
+    /// The embedding's own action a node completes before it checks in to an open-traffic checklist.
+    /// `None`: no action.
     pub state_actions: Option<Arc<dyn crate::fabric_status::StateActions>>,
     /// Asked by the Build topic's NeighborUp catch-up before it sends.
     pub catch_up_seam: Option<Arc<dyn CatchUpSeam>>,

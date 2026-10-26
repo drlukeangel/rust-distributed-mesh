@@ -1,13 +1,11 @@
 //! A caller's node property commands at the node's mesh-primary, the one writer of its mesh's rows
-//! (proposal node-properties-own-commands.md §1, §3; R-OW1, R14, R-TG1): each command but
-//! `node.config.update`, admitted at any time (Q166), is refused `fabric-not-ready` until the initial
-//! fabric has first reached ready-for-traffic, and each runs once through the writer's held record, one
-//! change at a time with every other change to a node record
-//! (`crate::node_config::NodeConfigs::one_at_a_time`). Here: that refusal, shared by every property
-//! command it holds for, and `node.tags.create` / `node.tags.delete` (node-rpc-envelope.md node.tags): each label is
+//! (proposal node-properties-own-commands.md §1, §3; R-OW1, R14, R-TG1): each command is admitted at
+//! any time (Q166, Q171) and runs once through the writer's held record, one change at a time with
+//! every other change to a node record (`crate::node_config::NodeConfigs::one_at_a_time`). Here:
+//! `node.tags.create` / `node.tags.delete` (node-rpc-envelope.md node.tags): each label is
 //! its own key of the node store's tags index, kept with the row by the store adapter (a label the
 //! row stops carrying is tombstoned, one it gains is put); a label the node already carries is ignored
-//! and writes nothing. Neither has a precondition beyond the fabric being ready, neither touches the
+//! and writes nothing. Neither has a precondition, neither touches the
 //! name, and the node is told nothing: its tags live in its row and the index, never in its digest.
 
 use crate::model::PathName;
@@ -18,52 +16,9 @@ use rdm_core::status::{NotPrimary, StatusReply, StatusRequest, TagScope};
 use std::collections::BTreeSet;
 use tokio::sync::RwLock;
 
-/// Whether the initial fabric first reached ready-for-traffic, as a mesh-primary decides it for a
-/// caller's property command: what it knows, and the fabric store, which holds the ready-for-traffic
-/// fact from the moment the fabric-primary put it.
-#[derive(Clone, Copy)]
-pub struct FirstReadyOnRoot<'a> {
-    /// What this admin knows.
-    pub first_ready: &'a crate::fabric_state::FirstReady,
-    /// The fabric store.
-    pub fabric: &'a dyn crate::fabric_storage::FabricStorage,
-}
-
-/// The refusal of a caller's property command `op` (`node.tags.create`, `node.name.update`, ...; never
-/// `node.config.update`, Q166) of
-/// `node_id` while the initial fabric has not first reached ready-for-traffic (states.md, "The initial
-/// fabric before ready-for-traffic"; R-PC1): before state-commit the node's row would live only in this
-/// mesh-primary's scratchpad. Decided on the durable fact, the ready-for-traffic fact on the fabric (the
-/// one the fabric-primary put as it entered ready-for-traffic), which the fabric state this admin hears
-/// by gossip can lag; a store that cannot be read is refused naming it. Nothing is read of the node, claimed or written. The refusal's detail is
-/// recorded on `span`, and one `rdm.node_admin.node.reject.via-fabric-not-ready` span names the
-/// workflow and the fabric's status.
-pub async fn refused_before_first_ready(me: &PathName, view: &RwLock<Topology>, first_ready: FirstReadyOnRoot<'_>, op: &str, node_id: &NodeId, span: &tracing::Span) -> Option<StatusReply> {
-    let (fabric_id, now, subject) = {
-        let now = view.read().await;
-        (now.fabric.id.clone(), now.fabric.status, now.nodes.iter().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_else(|| node_id.to_string()))
-    };
-    let workflow = format!("{op} {subject}");
-    let status = now.name();
-    match first_ready.first_ready.reached_on_root(first_ready.fabric, &fabric_id, now).await {
-        Ok(true) => return None,
-        Ok(false) => {}
-        Err(e) => {
-            let (source, read) = (format!("fabric storage of {me}"), format!("read whether fabric {fabric_id} first reached ready-for-traffic for {workflow}"));
-            span.record("detail", format!("{me}: {workflow} is refused: {source} could not be read to {read}: {e}; nothing is claimed or written").as_str());
-            return Some(rdm_core::reply::status::bounded_source_failed(&source, &read, &e.to_string()));
-        }
-    }
-    let refused = rdm_core::reply::status::bounded_rejected_fabric_not_ready(&workflow, status);
-    span.record("detail", format!("{me}: {workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}, and the fabric store holds no ready-for-traffic fact of fabric {fabric_id}), and before state-commit the row would live only in this mesh-primary's scratchpad; nothing is claimed or written").as_str());
-    tracing::info_span!("rdm.node_admin.node.reject.via-fabric-not-ready", node = %me, workflow = %workflow, status, "otel.kind" = "internal")
-        .in_scope(|| tracing::info!("{op} is refused until the initial fabric has first reached ready-for-traffic"));
-    Some(refused)
-}
-
 /// Serve a caller's `CreateTags` or `DeleteTags` at the admin `me` (born `me_id`): one span holds the
 /// whole command, its outcome the reply's name.
-pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, first_ready: FirstReadyOnRoot<'_>, req: &StatusRequest) -> StatusReply {
+pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, req: &StatusRequest) -> StatusReply {
     let (node_id, incarnation, change) = match req {
         StatusRequest::CreateTags { node_id, incarnation, labels } => (node_id, incarnation, Change::Create(labels)),
         StatusRequest::DeleteTags { node_id, incarnation, scope } => (node_id, incarnation, Change::Delete(scope)),
@@ -83,14 +38,9 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
     };
     let reply = tracing::Instrument::instrument(
         async {
-            match refused_before_first_ready(me, view, first_ready, req.op(), node_id, &span).await {
-                Some(refused) => refused,
-                None => {
-                    // A snapshot of the view: no read lock is held across the row write's I/O.
-                    let now = view.read().await.clone();
-                    write(me, me_id, &now, storage, configs, node_id, incarnation, &change, &span).await
-                }
-            }
+            // A snapshot of the view: no read lock is held across the row write's I/O.
+            let now = view.read().await.clone();
+            write(me, me_id, &now, storage, configs, node_id, incarnation, &change, &span).await
         },
         span.clone(),
     )

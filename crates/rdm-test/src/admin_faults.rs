@@ -100,9 +100,6 @@ pub enum CutSpec {
     /// skips that neighbour's catch-up, so none of its frames is offered to the topic. It models the
     /// one-shot catch-up lost at the send seam.
     CatchUp,
-    /// The testkit application took the fabric's `sync_state` checklist and has not answered it: the
-    /// fabric stays in state-sync until the release (`test_app` mode `hold`).
-    StateSync,
     /// A joining admin has joined and is about to make the topology read (op `0x1E`) of node-start.md
     /// step 4, and has not made it: its start waits there, the node stays Pending and takes no traffic,
     /// until the release. The joiner arms it from `<root>/faults/<name>.boot.json` before its first line.
@@ -135,13 +132,14 @@ pub enum CutSpec {
         /// The state declared, as `NodeState` names it.
         #[serde(default)] state: Option<String>,
     },
-    /// A node-admin's state action (`commit-state` or `open-traffic`) is about to run, after RDM's
-    /// own publication: held until the release, so the checklist's command is answered and its check-in
-    /// not yet owed (i146 e3). `node` narrows the cut to one admin, `command` to one command.
+    /// A node-admin's state action (`open-traffic`) is about to run: held until the release, so the
+    /// checklist's command is answered and its check-in not yet owed (i146 e3); held at the
+    /// fabric-primary, the fabric stays pending (`test_app` mode `hold`). `node` narrows the cut to one
+    /// admin, `command` to one command.
     StateAction {
         /// The acting admin's `path.name`.
         #[serde(default)] node: Option<String>,
-        /// The checklist, as its command names it: `commit-state` or `open-traffic`.
+        /// The checklist, as its command names it: `open-traffic`.
         #[serde(default)] command: Option<String>,
     },
     /// The deployment provider's inspection of the runtimes at `pids` answers `Unknown` while the cut is
@@ -226,13 +224,6 @@ pub enum Probe {
         /// The neighbour.
         neighbour: String,
     },
-    /// The application's answer to a `sync_state` checklist, about to be returned.
-    StateSync {
-        /// The checklist's Build.
-        build_id: String,
-        /// The checklist's attempt.
-        attempt: u32,
-    },
     /// A final aggregate or leadership announcement about to be sent on a channel.
     Announcement {
         /// The announcing node.
@@ -296,7 +287,6 @@ impl CutSpec {
             (CutSpec::ProviderDomain, Probe::ProviderDomain) => true,
             (CutSpec::LeaveAnnouncement { announcements, channel }, Probe::LeaveAnnouncement { announcement, channel: c, .. }) => announcements.contains(announcement) && (channel == "any" || channel == c),
             (CutSpec::CatchUp, Probe::CatchUp { .. }) => true,
-            (CutSpec::StateSync, Probe::StateSync { .. }) => true,
             (CutSpec::TopologyRead, Probe::TopologyRead { .. }) => true,
             (CutSpec::Announcement { announcement, channel }, Probe::Announcement { announcement: a, channel: c, .. }) => announcement == a && (channel == "any" || channel == c),
             (CutSpec::ProviderTerminate { pid }, Probe::ProviderTerminate { pid: p, .. }) => pid.is_none_or(|w| *p == Some(w)),
@@ -321,7 +311,6 @@ impl Probe {
             Probe::ProviderDomain => Hit::ProviderDomain,
             Probe::LeaveAnnouncement { node, announcement, channel } => Hit::LeaveAnnouncement { node: node.clone(), announcement: *announcement, channel: channel.to_string() },
             Probe::CatchUp { node, neighbour } => Hit::CatchUp { node: node.clone(), neighbour: neighbour.clone() },
-            Probe::StateSync { build_id, attempt } => Hit::StateSync { build_id: build_id.clone(), attempt: *attempt },
             Probe::TopologyRead { node, authority } => Hit::TopologyRead { node: node.clone(), reads_from: authority.clone() },
             Probe::Announcement { node, announcement, channel } => Hit::Announcement { node: node.clone(), announcement: announcement.to_string(), channel: channel.to_string() },
             Probe::ProviderTerminate { pid, deployment_id } => Hit::ProviderTerminate { pid: *pid, deployment_id: deployment_id.clone() },
@@ -732,13 +721,9 @@ struct FaultedStateActions(Arc<AdminFaults>);
 
 #[async_trait]
 impl rdm_admin::fabric_status::StateActions for FaultedStateActions {
-    async fn commit_state(&self, node: &rdm_core::PathName) -> Result<(), String> {
-        self.0.hold(Probe::StateAction { node: node.to_string(), command: "commit-state" }).await;
-        Ok(())
-    }
     async fn open_traffic(&self, node: &rdm_core::PathName) -> Result<(), String> {
         self.0.hold(Probe::StateAction { node: node.to_string(), command: "open-traffic" }).await;
-        rdm_admin::fabric_status::StateActions::open_traffic(&rdm_admin::fabric_status::NoScratchpad, node).await
+        rdm_admin::fabric_status::StateActions::open_traffic(&rdm_admin::fabric_status::NoAction, node).await
     }
 }
 

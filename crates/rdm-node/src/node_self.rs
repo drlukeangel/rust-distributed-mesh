@@ -311,7 +311,7 @@ pub struct NodeSelf {
     /// The process's data-plane `ConnectionsRegistry`: `node.connections.delete` closes active
     /// `Connection`s by their row id and blocks new connections under `All`.
     data_connections: Mutex<Option<rdm_transport::connections::ConnectionsRegistry>>,
-    /// What this birth completes before it checks in to a commit-state or open-traffic checklist.
+    /// What this birth completes before it checks in to an open-traffic checklist.
     state_actions: Mutex<Arc<dyn crate::fabric_states::StateActions>>,
     /// The state commands this birth took, by state key, and how far it took each.
     states_seen: Mutex<std::collections::HashMap<crate::fabric_states::StateKey, CheckInProgress>>,
@@ -336,7 +336,7 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         topology_view.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), state_actions: Mutex::new(Arc::new(crate::fabric_states::NoScratchpad)), states_seen: Mutex::new(std::collections::HashMap::new()), acted: Arc::default() }
+        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), state_actions: Mutex::new(Arc::new(crate::fabric_states::NoAction)), states_seen: Mutex::new(std::collections::HashMap::new()), acted: Arc::default() }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -735,7 +735,7 @@ impl NodeSelf {
         *self.state_actions.lock().unwrap() = actions;
     }
 
-    /// Serve `commit-state` or `open-traffic` from `commander`, the primary of this birth's mesh
+    /// Serve `open-traffic` from `commander`, the primary of this birth's mesh
     /// (the caller resolved it). The command is admitted at once; the birth then completes its
     /// action and calls the matching completion at `commander`. A checklist this birth already took,
     /// whichever commander sends it, is answered `AlreadyApplied` and its action is not run again:
@@ -914,13 +914,13 @@ impl NodeSelf {
     /// call's own connection. A state command is served for `commander`, the primary of this birth's
     /// mesh, which its check-in goes to. `None` for any other request.
     pub async fn serve(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &StatusRequest) -> Option<StatusReply> {
-        if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
+        if matches!(req, StatusRequest::OpenTraffic { .. }) {
             return Some(match commander {
                 Some(commander) => self.serve_state(commander, req),
                 None => rdm_core::reply::status::not_ready(format!("{}: no primary of its mesh is known to check {} in to", self.held_name(), req.op())),
             });
         }
-        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. }) {
+        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. }) {
             return Some(refuse_reserved(&self.held_name().to_string(), &named(commander), req));
         }
         if let StatusRequest::LeaveMesh { incarnation, operation, .. } = req {
@@ -1505,8 +1505,8 @@ pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8
 /// A reserved Status position at `receiver` (node-rpc-envelope.md "Node stop command
 /// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
 pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
-    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation }) = req else {
-        unreachable!("refuse_reserved is called for the reserved pair only")
+    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved12 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, attempt, operation, .. }) = req else {
+        unreachable!("refuse_reserved is called for the reserved positions only")
     };
     let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
     tracing::info_span!(

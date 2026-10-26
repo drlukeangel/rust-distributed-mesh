@@ -1,8 +1,5 @@
 //! Fabric state types, gossip hook frames, and [`StateActions`] (`rdm-node`).
 
-#[cfg(feature = "file-backend")]
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use rdm_transport::topology::{Backbone, Frame, TopologyView};
 use rdm_core::StateHook;
@@ -11,11 +8,9 @@ use tracing::Instrument;
 
 use crate::model::{EndpointId, FabricId, IncarnationId, Node, NodeId, PathName};
 
-/// Which of the two checklists.
+/// Which checklist: the fabric's one, open-traffic (Q171).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StateCommand {
-    /// commit-state / state-committed.
-    StateCommit,
     /// open-traffic / traffic-opened.
     OpenTraffic,
 }
@@ -24,7 +19,6 @@ impl StateCommand {
     /// The down op's name.
     pub fn command(self) -> &'static str {
         match self {
-            Self::StateCommit => "commit-state",
             Self::OpenTraffic => "open-traffic",
         }
     }
@@ -32,12 +26,11 @@ impl StateCommand {
     /// The up op's name.
     pub fn completion(self) -> &'static str {
         match self {
-            Self::StateCommit => "state-committed",
             Self::OpenTraffic => "traffic-opened",
         }
     }
 
-    /// The checklist's operation: `commit-state:<fabric_id>` or `open-traffic:<fabric_id>`.
+    /// The checklist's operation: `open-traffic:<fabric_id>`.
     pub fn operation(self, fabric_id: &FabricId) -> String {
         format!("{}:{}", self.command(), fabric_id)
     }
@@ -46,7 +39,6 @@ impl StateCommand {
     pub fn down(self, key: &StateKey, node_id: NodeId, incarnation: IncarnationId) -> StatusRequest {
         let (fabric_id, build_id, attempt, operation) = (key.fabric_id.clone(), key.build_id.clone(), key.attempt, self.operation(&key.fabric_id));
         match self {
-            Self::StateCommit => StatusRequest::CommitState { fabric_id, node_id, incarnation, build_id, attempt, operation },
             Self::OpenTraffic => StatusRequest::OpenTraffic { fabric_id, node_id, incarnation, build_id, attempt, operation },
         }
     }
@@ -55,15 +47,13 @@ impl StateCommand {
     pub fn up(self, key: &StateKey, node_id: NodeId, incarnation: IncarnationId) -> StatusRequest {
         let (fabric_id, build_id, attempt, operation) = (key.fabric_id.clone(), key.build_id.clone(), key.attempt, self.operation(&key.fabric_id));
         match self {
-            Self::StateCommit => StatusRequest::StateCommitted { fabric_id, node_id, incarnation, build_id, attempt, operation },
             Self::OpenTraffic => StatusRequest::TrafficOpened { fabric_id, node_id, incarnation, build_id, attempt, operation },
         }
     }
 }
 
-/// The gossip hook frame of a state op (gossip.md, "Fabric state gossip hooks"): `StateCommitting`
-/// or `TrafficOpening` for a command (`up == false`), `StateCommitted` or `TrafficOpened` for a
-/// check-in. The subject is `node_id`/`incarnation`; `publisher` is the author at this hop.
+/// The gossip hook frame of a state op (gossip.md, "Fabric state gossip hooks"): `TrafficOpening`
+/// for a command (`up == false`), `TrafficOpened` for a check-in. The subject is `node_id`/`incarnation`; `publisher` is the author at this hop.
 pub fn hook_frame(key: &StateKey, up: bool, node_id: NodeId, incarnation: IncarnationId, publisher: &str, event_at_rafka_ms: u64) -> Frame {
     let hook = StateHook {
         fabric_id: key.fabric_id.clone(),
@@ -77,8 +67,6 @@ pub fn hook_frame(key: &StateKey, up: bool, node_id: NodeId, incarnation: Incarn
     };
     let forwarded_by = None;
     match (key.kind, up) {
-        (StateCommand::StateCommit, false) => Frame::StateCommitting { hook, forwarded_by },
-        (StateCommand::StateCommit, true) => Frame::StateCommitted { hook, forwarded_by },
         (StateCommand::OpenTraffic, false) => Frame::TrafficOpening { hook, forwarded_by },
         (StateCommand::OpenTraffic, true) => Frame::TrafficOpened { hook, forwarded_by },
     }
@@ -188,8 +176,6 @@ impl<'a> StateOp<'a> {
     /// The state op `req` is, when it is one.
     pub fn of(req: &'a StatusRequest) -> Option<Self> {
         let (kind, is_down, fabric_id, node_id, incarnation, build_id, attempt, operation) = match req {
-            StatusRequest::CommitState { fabric_id, node_id, incarnation, build_id, attempt, operation } => (StateCommand::StateCommit, true, fabric_id, node_id, incarnation, build_id, *attempt, operation),
-            StatusRequest::StateCommitted { fabric_id, node_id, incarnation, build_id, attempt, operation } => (StateCommand::StateCommit, false, fabric_id, node_id, incarnation, build_id, *attempt, operation),
             StatusRequest::OpenTraffic { fabric_id, node_id, incarnation, build_id, attempt, operation } => (StateCommand::OpenTraffic, true, fabric_id, node_id, incarnation, build_id, *attempt, operation),
             StatusRequest::TrafficOpened { fabric_id, node_id, incarnation, build_id, attempt, operation } => (StateCommand::OpenTraffic, false, fabric_id, node_id, incarnation, build_id, *attempt, operation),
             _ => return None,
@@ -237,30 +223,19 @@ pub struct StateKey {
 }
 
 
-/// What a node does before it checks in to a checklist: the required writes of the phase.
-///
-/// Commit-state: the node writes what its scratchpad holds into the system org (a node its
-/// connection rows, a mesh primary its members' Node rows and its Mesh row, the fabric-primary the
-/// Fabric row). The check-in is owed only after the writes are stored; a refused write is an `Err`
-/// and the node owes no check-in.
+/// What a node does before it checks in to the open-traffic checklist: the embedding's own action.
+/// A refused action is an `Err` and the node owes no check-in.
 #[async_trait]
 pub trait StateActions: Send + Sync {
-    /// The commit-state action of `node`.
-    async fn commit_state(&self, node: &PathName) -> Result<(), String>;
     /// The open-traffic action of `node`.
     async fn open_traffic(&self, node: &PathName) -> Result<(), String>;
 }
 
-/// The actions of an embedding that binds none: nothing is published, and the span says so.
-pub struct NoScratchpad;
+/// The actions of an embedding that binds none: the span says so.
+pub struct NoAction;
 
 #[async_trait]
-impl StateActions for NoScratchpad {
-    async fn commit_state(&self, node: &PathName) -> Result<(), String> {
-        tracing::info_span!("rdm.node_admin.fabric.update.via-state-action", node = %node, command = "commit-state", bound = false, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("no scratchpad publication is bound: this node holds nothing to publish"));
-        Ok(())
-    }
+impl StateActions for NoAction {
     async fn open_traffic(&self, node: &PathName) -> Result<(), String> {
         tracing::info_span!("rdm.node_admin.fabric.update.via-state-action", node = %node, command = "open-traffic", bound = false, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("no traffic-opening action is bound to this node"));
@@ -268,83 +243,9 @@ impl StateActions for NoScratchpad {
     }
 }
 
-
-#[cfg(feature = "file-backend")]
-/// RDM standalone's commit-state action (fabric-state-commit.md step 2: "Each node writes what it
-/// holds in its scratchpad into the store the state-sync work established"; node-admin-lifecycle.md
-/// §7): the node publishes its scratchpad to the fabric's store root, then runs the embedding's own
-/// action, if it binds one. Each node holds only the rows it writes, so a node publishes its
-/// connections rows, a mesh primary also its Mesh row and its members' Node rows, and the
-/// fabric-primary also the Fabric row. A node that opened a root the Fabric row was already
-/// published to holds nothing, and every later checklist's publication finds nothing held. A
-/// publication that fails is an `Err`: the node owes no check-in.
-pub struct StorePublication {
-    /// What this node holds before the fabric's first state-commit; `None` when it opened the store
-    /// root after it.
-    scratchpad: Option<Arc<crate::record_store::Scratchpad>>,
-    /// The embedding's own action, run after the publication.
-    then: Option<Arc<dyn StateActions>>,
-}
-
-#[cfg(feature = "file-backend")]
-impl StorePublication {
-    /// The action publishing `scratchpad`, then running `then`.
-    pub fn new(scratchpad: Option<Arc<crate::record_store::Scratchpad>>, then: Option<Arc<dyn StateActions>>) -> Self {
-        Self { scratchpad, then }
-    }
-}
-
-#[cfg(feature = "file-backend")]
-#[async_trait]
-impl StateActions for StorePublication {
-    async fn commit_state(&self, node: &PathName) -> Result<(), String> {
-        let span = tracing::info_span!(
-            "rdm.node_admin.fabric.update.via-state-action",
-            node = %node,
-            command = "commit-state",
-            bound = true,
-            rows = tracing::field::Empty,
-            stands = tracing::field::Empty,
-            refused = tracing::field::Empty,
-            stores = tracing::field::Empty,
-            error = tracing::field::Empty,
-            "otel.kind" = "internal"
-        );
-        let published = match &self.scratchpad {
-            Some(s) => s.publish().instrument(span.clone()).await,
-            None => Ok(crate::record_store::Publication::default()),
-        };
-        match published {
-            Ok(p) => {
-                span.record("rows", p.written() as u64);
-                span.record("stands", p.stands() as u64);
-                span.record("refused", p.refused() as u64);
-                span.record("stores", p.summary().as_str());
-                span.in_scope(|| tracing::info!("this node wrote what its scratchpad held to the store root, and writes there from now on"));
-            }
-            Err(e) => {
-                span.record("error", tracing::field::display(&e));
-                span.in_scope(|| tracing::info!("this node's scratchpad could not be published to the store root"));
-                return Err(format!("{node}: its scratchpad could not be published to the store root: {e}"));
-            }
-        }
-        match &self.then {
-            Some(then) => then.commit_state(node).await,
-            None => Ok(()),
-        }
-    }
-    async fn open_traffic(&self, node: &PathName) -> Result<(), String> {
-        match &self.then {
-            Some(then) => then.open_traffic(node).await,
-            None => NoScratchpad.open_traffic(node).await,
-        }
-    }
-}
-
 /// Run the action of `kind` for `node` under its span.
 pub async fn run_action(actions: &dyn StateActions, node: &PathName, kind: StateCommand) -> Result<(), String> {
     match kind {
-        StateCommand::StateCommit => actions.commit_state(node).await,
         StateCommand::OpenTraffic => actions.open_traffic(node).await,
     }
 }

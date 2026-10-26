@@ -6,16 +6,17 @@ This page owns the fabric, mesh and node lifecycle states, who sets each, settin
 its checklist, the one routing rule, stopped nodes, and resize and executable replacement. Each workflow's sequence
 lives on its own page; op fields and enums live only in the
 [envelope](../node-rpc-envelope.md#status-op-0x1b-rdm); how a state travels to peers is
-[gossip](../gossip.md#31-frame-catalog). Application state-sync is an external integration contract.
+[gossip](../gossip.md#31-frame-catalog).
 
-- **Fabric:** `pending` → `state-sync` → `state-commit` → `ready-for-traffic`. FabricStatus also carries a `degraded` health marker, set by the fabric-primary at a peer mesh's carrier-edge-lost verdict or on the no-member-answers arm's verdict (both arms, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status ([mesh investigation](mesh-investigation.md)). Until the initial fabric first reaches ready-for-traffic, no primary changes and no caller workflow writes a row ([the initial fabric](#fabric-not-ready)).
+- **Fabric:** `pending` → `ready-for-traffic`. FabricStatus also carries a `degraded` health marker, set by the fabric-primary at a peer mesh's carrier-edge-lost verdict or on the no-member-answers arm's verdict (both arms, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status ([mesh investigation](mesh-investigation.md)).
 - **Mesh:** `pending` → `ready-for-traffic` → `deleting` → `deleted`. MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status. A mesh is alive while it holds a node; only its mesh-primary leaves it, always last, and the mesh is then dead and never restarted. A mesh id is never reissued; deleted is final. A deleted mesh releases its name within the fabric as a deleted node releases its name within its path; a mesh created again under that name is a new mesh with a new id.
 - **Node:** starting → pending → ready-for-traffic → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted under the [node object contract](../node-rpc-envelope.md#typed-object-contract). Stopped is a status: a live, stopped process. Start rejoins that same process and restores readiness only after all start gates pass. Delete proves exact runtime exit, writes the durable row deleted and releases identity/name; it is not a return to readiness.
 - **Node row silence marks:** a node row may carry the observer-inferred marks `PendingReconnect` and `Dead` (TRUE OFFLINE), written by the node's mesh-primary. They are never themselves a reason to act ([node recovery](node-recovery.md)).
 
 A mesh is ready-for-traffic when every planned exact member birth for the accepted
-Build is ready. The fabric enters state-sync when every planned mesh is
-ready-for-traffic. The fabric-primary declares fabric state through the completed check-ins.
+Build is ready. When every planned mesh is ready-for-traffic the fabric-primary runs the
+open-traffic check-ins, and the fabric is ready-for-traffic once they complete. The
+fabric-primary declares fabric state through the completed check-ins.
 Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 
 ## Who sets each state
@@ -35,7 +36,7 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 | mesh ReadyForTraffic | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144) | its mesh-primary's report that every planned birth is ready |
 | mesh deleting | the mesh-primary | the fabric-primary's DeleteMesh admission (mesh.deleting) |
 | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete receipts; never an op |
-| fabric state-sync, state-commit, ready-for-traffic | the fabric-primary | the completed check-ins below it |
+| fabric ready-for-traffic | the fabric-primary | the completed check-ins below it |
 
 The internal report and apply that move a node's status are [node status](node-status.md).
 Which frame carries each state to peers, and who publishes it, is the
@@ -48,12 +49,10 @@ successful admission reply does not set a state: the matching upward completions
 and planned-birth checklist do. Required writes finish before their completion check-ins.
 Gossip disseminates the resulting states and overlays for peer topology and routing; it never
 sets a state, and neither caller progress nor setting a state waits for peers to receive
-gossip. Before state-commit, RDM holds the Fabric and Mesh records in the scratchpad; state-commit publishes them to the configured stores. A Node record is written straight to the store, before state-commit too, because a declared state acknowledged as Applied is on it and is durable before the reply; a successor acquires that fact without creating a new lifecycle transition.
+gossip. Every writer writes its records straight to the store from Day 0: the Fabric record, each Mesh record and each Node record, on which a declared state acknowledged as Applied is durable before the reply; a successor acquires that fact without creating a new lifecycle transition.
 
 | state | carried down | checked in | between |
 |---|---|---|---|
-| state-sync | the state-sync hook | the hook's answer | external: RDM requests application work; Rafka reports completion to the fabric-primary |
-| state-commit | state-commit status | member check-in | internal: fabric-primary → mesh primaries → nodes |
 | ready-for-traffic | ready-for-traffic status | member check-in | internal; one notice to Rafka |
 | deleting (mesh) | mesh.delete | mesh.deleting | [mesh.delete](mesh-delete.md) |
 | deleted (mesh) | none | mesh.deleted | [mesh.delete](mesh-delete.md) |
@@ -61,29 +60,6 @@ gossip. Before state-commit, RDM holds the Fabric and Mesh records in the scratc
 Each workflow's directed calls, stream events and gossip are on its page in the
 [lifecycle index](../fabric-mesh-node-lifecycles.md); Build-backed work follows the
 [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm).
-
-<a id="fabric-not-ready"></a>
-### The initial fabric before ready-for-traffic
-
-Until the initial fabric first reaches ready-for-traffic it is pending, in state-sync or in
-state-commit, and nothing that changes a primary or writes caller state runs. These are refused by
-name, `fabric-not-ready`:
-
-- a Build or update that would change the fabric-primary or a mesh-primary
-  ([node.primary.update and node.fabric-primary.update](node-primary-update.md));
-- [mesh.delete](mesh-delete.md);
-- every node workflow a caller submits that writes a row: node.stop, node.start, node.restart,
-  node.delete, node.update and the [replace recipe](node-replace.md).
-
-`node.config.update` is not among them: it is admitted at any time (Q166).
-
-The initial accepted Build, which creates the fabric's nodes and brings the fabric to
-ready-for-traffic, runs as usual. fabric.delete is admitted before the first ready-for-traffic, the Build in progress or not (build.md §1): it ends the fabric, and its own mesh.delete and node.delete steps, and only those, run exempt from this refusal; launch and delete evidence is retained until the teardown completes. Once the fabric is ready-for-traffic these are admitted as
-usual. A Build is refused at build.create with the Build family's existing `Rejected` refusal
-([Build refusals](../node-rpc-envelope.md#fabric-not-ready-refusal)).
-The reason is that before state-commit the Fabric record and each mesh's Mesh record live only in
-their writers' scratchpads, so a primary change or a record written in that window is lost with its
-writer or cannot be read by its successor.
 
 ## Routing
 
@@ -148,8 +124,7 @@ the sweep; retained storage is not removed by collection.
 
 Node status alone does not change a primary. Ordinary `node.connections.delete { scope: All }`
 or node.stop of a primary requires [node.primary.update](node-primary-update.md) first
-(node.fabric-primary.update for the fabric-primary);
-on the initial fabric no primary changes before ready-for-traffic ([fabric-not-ready](#fabric-not-ready)).
+(node.fabric-primary.update for the fabric-primary).
 What fabric.delete does with the primaries is [fabric.delete](fabric-delete.md) and [Elections §6](../fabric-node-lifecycle-elections.md#6-fabricdelete-moves-no-primary). Traffic eligibility, the election and the runtime's exit
 are separate facts.
 
@@ -170,14 +145,12 @@ are separate facts.
   when the primary changes; never ended by a timer. The primary counts a check-in once per
   (state, birth) and answers a repeat `AlreadyApplied`.
 - A primary counts only check-ins that arrive after it receives this state's command.
-- State-commit is a FABRIC state. A node's or mesh's state-committed reply is a check-in,
-  not a node or mesh state.
+- A node's or mesh's traffic-opened reply is a check-in, not a node or mesh state.
 
 ## Resize and executable replacement
 
 A Build that changes only a node's `config`, `tags`, `storage` or `placement` is neither: it applies them as [build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine) states, and the fabric stays ready-for-traffic.
 
-A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; while the fabric awaits the application's answer the Build reports Blocked naming the blocker, never Complete; a state's check-in or a hook that reports failure fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth checks in. Rafka then answers the state-sync hook at once when no application content work is needed;
-the internal state-commit and ready-for-traffic check-ins still run.
+A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; a state's check-in that reports failure fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth checks in; the open-traffic check-ins then run.
 
-See [Fabric state-sync](fabric-state-sync.md), [Fabric state-commit](fabric-state-commit.md), [Fabric ready-for-traffic](fabric-ready-for-traffic.md) and [mesh.delete](mesh-delete.md).
+See [Fabric ready-for-traffic](fabric-ready-for-traffic.md) and [mesh.delete](mesh-delete.md).

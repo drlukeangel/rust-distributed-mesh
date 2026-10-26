@@ -50,8 +50,8 @@ async fn node_admin(dir: &std::path::Path) -> (Running, Arc<Admin>) {
     let running = start_with(cfg, Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
     let birth = running.digest.lock().unwrap().node.clone();
     let admin = Arc::new(Admin::at(&birth).await.expect("the admin's birth").with_executables(stubs(dir)));
-    // The admin takes the UI's commands once its view names it the fabric-primary and the initial fabric
-    // first reached ready-for-traffic (before that every command is refused fabric-not-ready).
+    // The admin takes the UI's commands once its view names it the fabric-primary and the Day-0 fabric
+    // reached ready-for-traffic (before that the Day-0 Build is in progress).
     let until = std::time::Instant::now() + Duration::from_secs(20);
     let day0 = loop {
         match admin.fabric().await {

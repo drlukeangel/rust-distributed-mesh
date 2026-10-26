@@ -57,8 +57,8 @@ fn requests_match_the_frozen_thirty_two_variant_wire_schema() {
             },
             "0b0c3131323334353637383961620c796e6835673262717a663472011a73687574646f776e2d6d6573683a3131323334353637383961620c3031323334353637383961620c3977637072666777767468790c39726d797a34306d67776563001670726f636573733a626f6f742d613a7069646e732d6100e121c0c4073e796e6835673262717a6634722f312f73687574646f776e2d6d6573683a3131323334353637383961622f6f746865722d6d656d626572732d657869746564",
         ),
-        (CommitState { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "commit-state:fabric1".into() }, "0c0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720114636f6d6d69742d73746174653a66616272696331"),
-        (StateCommitted { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "commit-state:fabric1".into() }, "0d0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720114636f6d6d69742d73746174653a66616272696331"),
+        (Reserved12 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "commit-state:fabric1".into() }, "0c0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720114636f6d6d69742d73746174653a66616272696331"),
+        (Reserved13 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "commit-state:fabric1".into() }, "0d0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720114636f6d6d69742d73746174653a66616272696331"),
         (OpenTraffic { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "open-traffic:fabric1".into() }, "0e0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201146f70656e2d747261666669633a66616272696331"),
         (TrafficOpened { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "open-traffic:fabric1".into() }, "0f0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201146f70656e2d747261666669633a66616272696331"),
         (StartNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() }, "100c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011673746172742d6e6f64653a6d657368312e7270632e31"),
@@ -149,8 +149,8 @@ fn replies_match_the_frozen_fifty_five_variant_wire_schema() {
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31", "00")),
         (
             // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b") | next_expiry None
-            Fabric { fabric: FabricView { next_expiry: None, id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()) } },
-            concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00", "010162", "00"),
+            Fabric { fabric: FabricView { next_expiry: None, id: fabric(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()) } },
+            concat!("23", "0c323132333435363738396162", "0766616272696331", "00", "00", "00", "00", "00", "010162", "00"),
         ),
         (
             Connections {
@@ -175,7 +175,7 @@ fn replies_match_the_frozen_fifty_five_variant_wire_schema() {
         // reason "r"
         (RejectedTags { reason: "r".into() }, "2b0172"),
         // workflow "w" | status "s"
-        (RejectedFabricNotReady { workflow: "w".into(), status: "s".into() }, "2c01770173"),
+        (Reserved44 { workflow: "w".into(), status: "s".into() }, "2c01770173"),
         // node_id | incarnation | already_carried (len 1: "red")
         (TagsCreated { node_id: node(), incarnation: birth(), already_carried: ["red".to_string()].into() }, "2d0c3031323334353637383961620c3977637072666777767468790103726564"),
         // node_id | incarnation | not_carried (len 1: "blue")
@@ -347,7 +347,7 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     ] { golden(status, expected); }
     for (status, expected) in [
         (ScopeStatus::Pending, "00"), (ScopeStatus::ReadyForTraffic, "01"), (ScopeStatus::Leaving, "02"), (ScopeStatus::Dead, "03"),
-        (ScopeStatus::Degraded, "04"), (ScopeStatus::StateSync, "05"), (ScopeStatus::StateCommit, "06"),
+        (ScopeStatus::Degraded, "04"),
     ] { golden(status, expected); }
     golden(ProviderKind::Process, "00");
     golden(ProviderKind::Container, "01");

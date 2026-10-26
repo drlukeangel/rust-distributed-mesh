@@ -308,7 +308,7 @@ fabric-primary accepts Build B21 naming mesh M
     B21 is the current Build
 ```
 
-M comes into being with the `node.create` of its first node-admin ([node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent)). The joining Mesh counts toward Fabric completeness from the moment the accepted Build names it, before its Mesh row exists. A mesh join is a resize: the fabric returns to pending and changes through state-sync, state-commit and ready-for-traffic again ([States](lifecycles/states.md#states)), and what a serving mesh does meanwhile is [States: Resize and executable replacement](lifecycles/states.md#resize-and-executable-replacement).
+M comes into being with the `node.create` of its first node-admin ([node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent)). The joining Mesh counts toward Fabric completeness from the moment the accepted Build names it, before its Mesh row exists. A mesh join is a resize: the fabric returns to pending and changes to ready-for-traffic again ([States](lifecycles/states.md#states)), and what a serving mesh does meanwhile is [States: Resize and executable replacement](lifecycles/states.md#resize-and-executable-replacement).
 
 ### 10.2 Removing Mesh
 
@@ -348,7 +348,7 @@ Node RPC does not own a second Fabric/Mesh state machine or a second topology wr
 
 ## 13. Node-admin storage, restart, and recovery
 
-The node-admin storage interfaces, `fabric.storage` and `builds.storage`, Build retention and crash-safe acceptance are [build.md §5.2](build.md#52-rafka-adapter) and [§5.3](build.md#53-node-admin-storage-boundaries); persisted copies are recovery copies, never topology writers ([§4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)). A fabric-primary change mid-Build continues the same Build. Each topology change is its own Build with its own `build_id`; a workflow that keeps the accepted topology, the node.create of a node-admin into a live mesh and fabric recovery each run as the next attempt of the current Build ([§1](build.md#1-build-is-the-only-topology-mutation-engine), [§4.1](build.md#41-build-identity-is-active-reconciliation-state)). Runtime loss after a Build completed is [node recovery](lifecycles/node-recovery.md), which the lost node's mesh-primary starts. Inside Rafka, the [storage and recovery policy](node-admin-lifecycle.md#7-rafka-storage-and-recovery) owns when records leave the scratchpad and the on-disk last-ready snapshot.
+The node-admin storage interfaces, `fabric.storage` and `builds.storage`, Build retention and crash-safe acceptance are [build.md §5.2](build.md#52-rafka-adapter) and [§5.3](build.md#53-node-admin-storage-boundaries); persisted copies are recovery copies, never topology writers ([§4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)). A fabric-primary change mid-Build continues the same Build. Each topology change is its own Build with its own `build_id`; a workflow that keeps the accepted topology, the node.create of a node-admin into a live mesh and fabric recovery each run as the next attempt of the current Build ([§1](build.md#1-build-is-the-only-topology-mutation-engine), [§4.1](build.md#41-build-identity-is-active-reconciliation-state)). Runtime loss after a Build completed is [node recovery](lifecycles/node-recovery.md), which the lost node's mesh-primary starts. Inside Rafka, the [storage and recovery policy](node-admin-lifecycle.md#7-rafka-storage-and-recovery) owns the on-disk last-ready snapshot.
 
 ### 13.1 Recovery's inputs
 

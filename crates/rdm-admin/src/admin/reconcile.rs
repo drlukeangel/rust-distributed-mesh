@@ -136,10 +136,6 @@ impl crate::build_drive::Gate for SeatGate {
         self.handover.records.fabric_state() == crate::fabric_state::FabricState::ReadyForTraffic
     }
 
-    fn state_sync_failed(&self, build_id: &crate::build::BuildId, attempt: u32) -> Option<(String, String)> {
-        self.handover.records.state_sync_failed(build_id.as_str(), attempt).map(|f| (f.operation, f.reason))
-    }
-
     async fn attempt_completed(&self, build_id: &crate::build::BuildId, _attempt: u32) {
         if let Ok(p) = self.builds.read_build(build_id).await {
             let mut stopped = false;

@@ -49,8 +49,6 @@ fn scope_status(s: crate::model::ScopeStatus) -> ScopeStatus {
         S::Leaving => ScopeStatus::Leaving,
         S::Dead => ScopeStatus::Dead,
         S::Degraded => ScopeStatus::Degraded,
-        S::StateSync => ScopeStatus::StateSync,
-        S::StateCommit => ScopeStatus::StateCommit,
     }
 }
 

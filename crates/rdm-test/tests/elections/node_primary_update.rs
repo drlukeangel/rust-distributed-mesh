@@ -454,8 +454,8 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     let p_old = p.parse::<rdm_core::PathName>().unwrap().renamed().to_string();
     assert_ne!(successor_id, p_id, "P's path holds a new birth");
     assert!(worst <= 1, "a view showed {worst} fabric primaries");
-    // The fabric is ready-for-traffic once its planned births are all ready and the state-sync,
-    // state-commit and open-traffic checklists have run under the new fabric-primary.
+    // The fabric is ready-for-traffic once its planned births are all ready and the open-traffic
+    // checklist has run under the new fabric-primary.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     // The recipe is complete when the caller's last stream ends `Complete` and `build.get` says no step
     // is left, never when a span says so; the fabric is stopped only after.

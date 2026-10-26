@@ -196,46 +196,18 @@ impl HandoverDoor {
         }
     }
 
-    /// The R-PB1 refusal of every node.primary.update call (`side` names who refuses): before the initial
-    /// fabric first reaches ready-for-traffic no primary moves, decided on the ready-for-traffic fact on the
-    /// fabric store, which the fabric state this admin hears by gossip can lag. `None`: the fabric has first
-    /// reached ready-for-traffic. A store that cannot be read is `NotReady`, named.
-    async fn refused_before_first_ready(&self, side: &'static str, operation: &str) -> Option<Reply> {
-        let me = self.held_name();
-        let (fabric_id, status) = {
-            let view = self.topology.read().await;
-            (view.fabric.id.clone(), view.fabric.status)
-        };
-        match self.records.first_ready_on_root(&fabric_id, status).await {
-            Ok(true) => None,
-            Ok(false) => {
-                let detail = format!("{me}: node.primary.update {operation} is refused: the initial fabric has not first reached ready-for-traffic (it is {}, and the fabric store holds no ready-for-traffic fact of fabric {fabric_id}), and no primary moves before it does", status.name());
-                refused(side, "fabric-not-ready", &detail, operation);
-                Some(rdm_core::reply::handover::bounded_fabric_not_ready(&detail))
-            }
-            Err(e) => {
-                let detail = format!("{me}: whether fabric {fabric_id} first reached ready-for-traffic could not be read for node.primary.update {operation}: {e}");
-                refused(side, "not-ready", &detail, operation);
-                Some(rdm_core::reply::handover::not_ready(detail))
-            }
-        }
-    }
-
     // ---- the successor (step 4) ----
 
     /// node.primary.update at its receiver: it installs the election's result the call carries in its own
     /// view and answers node.primary.updated; as a node-admin it then records its own row (the mesh rows
-    /// writer follows its view). It refuses only a conflicting payload and a fabric not first
-    /// ready-for-traffic, never the birth the call names (R-UC1a, R-RX5).
+    /// writer follows its view). It refuses only a conflicting payload, never the birth the call names
+    /// (R-UC1a, R-RX5).
     async fn serve_primary_update(&self, primaries: Vec<Entry>, build_id: String, run: u32, operation: String) -> Reply {
         let answered = &self.memo.answered;
         let _one_at_a_time = self.locks.serving.lock().await;
         let payload = (primaries.clone(), build_id.clone());
         if let Some(r) = answered.before(&operation, &payload) {
             return r;
-        }
-        if let Some(refusal) = self.refused_before_first_ready("successor", &operation).await {
-            return refusal;
         }
         // The span covers the install: its start is the moment the successor begins to install.
         let span = tracing::info_span!("rdm.node_admin.seat.update.via-primary-updated", node = %self.held_name(), fabric = %self.fabric, operation = %operation, build_id = %build_id, run, primaries = %entries_named(&primaries), outcome = tracing::field::Empty);
@@ -333,9 +305,6 @@ impl HandoverDoor {
         let _one_at_a_time = self.locks.updating.lock().await;
         let me_name = self.held_name();
         let me = self.me_birth();
-        if let Some(refusal) = self.refused_before_first_ready("primary", operation).await {
-            return Err(refusal);
-        }
         let primary_view = self.topology_view.primaries();
         // The hand-back repeated once it applied (fabric-recovery.md step 4): the fabric-primary is the
         // birth this admin's view holds at `named` already.
@@ -684,9 +653,6 @@ impl HandoverDoor {
     async fn update_node_type_primary_in(&self, holder: &crate::model::Node, build_id: &str, run: u32, operation: &str) -> Result<Vec<Entry>, Reply> {
         let me = self.held_name();
         let mesh = holder.mesh.clone();
-        if let Some(refusal) = self.refused_before_first_ready("commander", operation).await {
-            return Err(refusal);
-        }
         let primary_view = self.topology_view.primaries();
         if self.me.mesh != mesh || !primary_view.mesh(&mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation)) {
             let reason = format!("{me} is not the mesh-primary of {mesh}, the commander of its {} primary", holder.kind.node_type());

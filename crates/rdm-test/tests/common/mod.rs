@@ -246,16 +246,6 @@ impl TopologySink for Published {
 
 pub use rdm_test::rig::*;
 
-/// The fabric `fabric`'s store under `store`, as its first state-commit left it: the fabric-primary
-/// published the Fabric row, so a node of the fabric opened on it writes to it directly
-/// (`StoreRoot::open`; states.md, Setting a state). A cell that reads a node's rows from the store root runs
-/// its node in a fabric past its first state-commit.
-pub async fn store_past_state_commit(store: &std::path::Path, fabric: &FabricId) {
-    let root = rdm_admin::store_root::StoreRoot::at(&store.join(fabric.to_string()));
-    let fabric_store = rdm_admin::fabric_storage::FileFabricStorage::open(&root, &rdm_admin::store_log::LogWriter::mint()).await.expect("the fabric store opens");
-    rdm_admin::fabric_storage::claim_identity(&fabric_store, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.expect("the Fabric row is published").expect("the fabric name is free");
-}
-
 /// A launch template for `rdm-rpc-node` whose launcher is `admin`: its seed, its fabric and its
 /// data root, so every node launched from it is stopped when `admin` drops.
 pub fn template(admin: &AdminSide) -> LaunchTemplate {

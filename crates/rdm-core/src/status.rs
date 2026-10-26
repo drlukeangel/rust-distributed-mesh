@@ -249,34 +249,34 @@ pub enum StatusRequest {
         /// terminal receipts.
         receipt_manifest: String,
     },
-    /// Downward: the commanding authority tells the exact birth to publish what its scratchpad holds (`commit-state`; fabric-state-commit.md). The reply admits the command; completion is [`Self::StateCommitted`].
-    CommitState {
+    /// Reserved position (Q171): never sent; a receiver refuses this by name.
+    Reserved12 {
         /// The fabric the command belongs to.
         fabric_id: FabricId,
-        /// The subject: the commanded or reporting birth.
+        /// The birth.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The Build the command belongs to.
+        /// The Build.
         build_id: String,
-        /// The Build attempt that holds the command.
+        /// The Build attempt.
         attempt: u32,
-        /// The operation: `commit-state:<fabric_id>`.
+        /// The operation.
         operation: String,
     },
-    /// Upward: the exact birth, or a mesh primary for its mesh, checks in for state-commit (`state-committed`) after its required scratchpad writes are stored. A check-in, never a node or mesh state.
-    StateCommitted {
+    /// Reserved position (Q171): never sent; a receiver refuses this by name.
+    Reserved13 {
         /// The fabric the command belongs to.
         fabric_id: FabricId,
-        /// The subject: the commanded or reporting birth.
+        /// The birth.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The Build the command belongs to.
+        /// The Build.
         build_id: String,
-        /// The Build attempt that holds the command.
+        /// The Build attempt.
         attempt: u32,
-        /// The operation: `commit-state:<fabric_id>`.
+        /// The operation.
         operation: String,
     },
     /// Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; lifecycles/fabric-ready-for-traffic.md). The reply admits the command; completion is [`Self::TrafficOpened`].
@@ -817,8 +817,8 @@ impl StatusRequest {
             Self::NodeLeft { .. } => "node-left",
             Self::DeleteMesh { .. } => "delete-mesh",
             Self::MeshDeleted { .. } => "mesh-deleted",
-            Self::CommitState { .. } => "commit-state",
-            Self::StateCommitted { .. } => "state-committed",
+            Self::Reserved12 { .. } => "reserved-12",
+            Self::Reserved13 { .. } => "reserved-13",
             Self::OpenTraffic { .. } => "open-traffic",
             Self::TrafficOpened { .. } => "traffic-opened",
             Self::StartNode { .. } => "start-node",
@@ -1247,17 +1247,11 @@ pub enum StatusReply {
         /// Why, by name, naming the label; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
-    /// A caller's node property command at a mesh-primary whose fabric has not yet first reached
-    /// ready-for-traffic (states.md "The initial fabric before ready-for-traffic"): before
-    /// state-commit a row lives only in its holder's scratchpad, so the command writes none. Nothing is written
-    /// and no claim is made. The Build family's `Rejected { reason: "fabric-not-ready", detail }`
-    /// is the same refusal at build.create.
-    RejectedFabricNotReady {
-        /// The refused workflow and its subject, by name (`node.name.update <path.name>`); within
-        /// [`MAX_REFUSAL_NODE_BYTES`].
+    /// Reserved position (Q171): never sent.
+    Reserved44 {
+        /// Never read.
         workflow: String,
-        /// The fabric's current status as the refusing admin holds it (`pending`, `state-sync`,
-        /// `state-commit`); within [`MAX_REFUSAL_NODE_BYTES`].
+        /// Never read.
         status: String,
     },
     /// The reply of a `CreateTags` (`node.tags.created`): the mesh-primary wrote the node's row
@@ -1462,11 +1456,6 @@ impl StatusReply {
         Self::RejectedTags { reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
-    /// `RejectedFabricNotReady` for `workflow` while the fabric holds `status`, each within its budget
-    /// so the reply always fits the Status reply bound.
-    pub fn rejected_fabric_not_ready(workflow: &str, status: &str) -> Self {
-        Self::RejectedFabricNotReady { workflow: within(workflow, MAX_REFUSAL_NODE_BYTES), status: within(status, MAX_REFUSAL_NODE_BYTES) }
-    }
 
     /// `NodeRowRefused` for `node`, each field within its budget (as [`Self::config_row_refused`]).
     pub fn node_row_refused(node: &str, reason: &str) -> Self {
@@ -1570,7 +1559,7 @@ impl StatusReply {
             Self::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
             Self::RejectedSourceFailed { .. } => "rejected-source-failed",
             Self::RejectedTags { .. } => "rejected-tags",
-            Self::RejectedFabricNotReady { .. } => "rejected-fabric-not-ready",
+            Self::Reserved44 { .. } => "reserved-44",
             Self::TagsCreated { .. } => "tags-created",
             Self::TagsDeleted { .. } => "tags-deleted",
             Self::RejectedName { .. } => "rejected-name",
@@ -1673,7 +1662,7 @@ impl NodeProtocol for Status {
             StatusReply::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
             StatusReply::RejectedSourceFailed { .. } => "rejected-source-failed",
             StatusReply::RejectedTags { .. } => "rejected-tags",
-            StatusReply::RejectedFabricNotReady { .. } => "rejected-fabric-not-ready",
+            StatusReply::Reserved44 { .. } => "reserved44",
             StatusReply::TagsCreated { .. } => "tags-created",
             StatusReply::TagsDeleted { .. } => "tags-deleted",
             StatusReply::RejectedName { .. } => "rejected-name",
@@ -1737,7 +1726,7 @@ impl NodeProtocol for Status {
             StatusReply::RejectedIncompleteManifest { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RejectedSourceFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RejectedTags { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
-            StatusReply::RejectedFabricNotReady { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::Reserved44 { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::TagsCreated { .. } => ReplyKind::Success,
             StatusReply::TagsDeleted { .. } => ReplyKind::Success,
             StatusReply::RejectedName { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
@@ -1862,7 +1851,7 @@ mod tests {
             (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::Nodes { nodes: vec![node_view()] }, ReplyKind::Success),
             (StatusReply::Meshes { meshes: vec![mesh_view()] }, ReplyKind::Success),
-            (StatusReply::Fabric { fabric: crate::views::FabricView { next_expiry: None, id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::StateSync, provider: crate::views::ProviderKind::Process, fabric_primary: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()) } }, ReplyKind::Success),
+            (StatusReply::Fabric { fabric: crate::views::FabricView { next_expiry: None, id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::Pending, provider: crate::views::ProviderKind::Process, fabric_primary: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()) } }, ReplyKind::Success),
             (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.rpc.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
             (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::new(crate::outcome::Code::NotFound)),
             (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
@@ -1871,7 +1860,7 @@ mod tests {
             (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts 66h8qrqvaajk", "unreached: no path"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
-            (StatusReply::rejected_fabric_not_ready("node.update mesh1.rpc.1", "state-sync"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::Reserved44 { workflow: String::new(), status: String::new() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::TagsCreated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), already_carried: ["red".to_string()].into() }, ReplyKind::Success),
             (StatusReply::TagsDeleted { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), not_carried: ["blue".to_string()].into() }, ReplyKind::Success),
             (StatusReply::RejectedName { reason: "r".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
@@ -1911,8 +1900,8 @@ mod tests {
                 final_runtime: RuntimeFact { deployment_id: crate::fixture_crockford60("dep"), provider: crate::RuntimeProvider::Process, control_domain: "process:boot-a:pidns-a".into(), locator: crate::RuntimeLocator::Process { pid: 4321, start: 123456 } },
                 receipt_manifest: "66h8qrqvaajk/1/mesh.delete:m/other-members-exited".into(),
             },
-            StatusRequest::CommitState { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
-            StatusRequest::StateCommitted { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
+            StatusRequest::Reserved12 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
+            StatusRequest::Reserved13 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
             StatusRequest::OpenTraffic { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
             StatusRequest::TrafficOpened { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
             StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.start:mesh1.rpc.1".into() },

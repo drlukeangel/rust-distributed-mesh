@@ -104,9 +104,8 @@ async fn until_status(meshes: &Meshes, node: &PathName, want: NodeStatus) {
 }
 
 /// The fabric's own status, as the admin's `fabric.get` answers it, once it is ready-for-traffic: the
-/// initial fabric's first ready-for-traffic, until which `node.stop` is refused `fabric-not-ready`
-/// (node-rpc-envelope.md, the node workflows; states.md, "The initial fabric before
-/// ready-for-traffic"). A node's own ready-for-traffic and a Build's `Complete` are not it: a
+/// initial fabric's first ready-for-traffic, until which the Day-0 Build is in progress (Q170). A node's
+/// own ready-for-traffic and a Build's `Complete` are not it: a
 /// `node.create` changes the accepted topology, which takes the fabric's checklists back to pending
 /// before the fabric first reaches it.
 async fn until_fabric_ready(fabrics: &Fabrics) {

@@ -114,7 +114,7 @@ mod current_build;
 mod drift_convergence;
 #[cfg(feature = "file-backend")]
 mod fabric_handover;
-mod fabric_not_ready;
+mod fabric_delete_admission;
 mod status_rpc;
 mod executor_redecide;
 #[cfg(feature = "file-backend")]

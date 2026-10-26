@@ -78,17 +78,17 @@ const DEFAULT_CALL_BUDGET: Duration = Duration::from_secs(10);
 /// yields or whose exact birth is proven gone hands the seat to the lowest ReadyForTraffic NodeId of
 /// its own mesh"): a member's check-in owed to a mesh primary that dies is owed to the holder the seat
 /// names next. mesh2 holds three admins; the member is the non-primary admin the election will not
-/// pick. It is held in the resize's commit-state action, its primary suspended, the action released
+/// pick. It is held in the resize's open-traffic action, its primary suspended, the action released
 /// (the check-in owed to the suspended primary), then the primary killed, all inside the staleness floor
 /// (past it the election names the next holder, Q119 arm A, before the check-in is sent). Whichever reaches the member first, the seat's move (the call to the old holder is
 /// dropped) or the proof of the exit (the call ends `UNAVAILABLE`), the completion is retargeted to the
 /// new holder and answered there, and the fabric reaches ready-for-traffic under the resize. Must NOT
 /// happen: the call ending before the primary was killed, the completion sent to an admin the seat
-/// never named, the fabric held in state-commit.
+/// never named, the fabric held pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_primary() {
     let test = "a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_primary";
-    let mut estate = estate_with(test, "answer:0").await;
+    let mut estate = estate_with(test, "answer").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 3, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 3, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
@@ -101,7 +101,7 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_prima
     let (holder_id, successor_id) = (holder.node_id.to_string(), successor.node_id.to_string());
 
     let door = Door::at(&estate, &member_s).await;
-    door.arm("state-action", json!({"kind": "state-action", "node": member_s, "command": "commit-state"})).await;
+    door.arm("state-action", json!({"kind": "state-action", "node": member_s, "command": "open-traffic"})).await;
     let resize = estate.submit(&rdm_test::typed::BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 3), (NodeKind::RpcNode, 2)])] })).await;
     let resize_id = resize.build_id().to_string();
     door.wait_held("state-action").await;
@@ -123,7 +123,7 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_prima
     estate.stop().await;
     let spans = estate.spans();
     let mine = |name: &str| -> Vec<Value> {
-        let mut v: Vec<Value> = named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node"]) == member_s && sp["attributes"]["completion"] == "state-committed" && s(&sp["attributes"]["build_id"]) == resize_id).cloned().collect();
+        let mut v: Vec<Value> = named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node"]) == member_s && sp["attributes"]["completion"] == "traffic-opened" && s(&sp["attributes"]["build_id"]) == resize_id).cloned().collect();
         v.sort_by_key(start);
         v
     };
@@ -154,7 +154,7 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_prima
 /// restored fabric-primary re-sends the current state's command, the members already done check in again, and the
 /// fabric reaches ready-for-traffic under the resize. Every state action runs once per state key.
 async fn fabric_primary_held(test: &str, mesh1: (u32, u32), state_key: &str) {
-    let mut estate = estate_with(test, "answer:0").await;
+    let mut estate = estate_with(test, "answer").await;
     estate.reconcile_shape("fabric1", &[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
@@ -217,13 +217,12 @@ async fn fabric_primary_held(test: &str, mesh1: (u32, u32), state_key: &str) {
     assert!(!re_sent.is_empty(), "the node restored at {fp_s} ({restored}) ran mesh1's {state_key} checklist after the restore: {re_sent:#?}");
     // Every state action ran once per state key on each node (states.md "The check-in checklist": the key is
     // the Build's attempt and the checklist; the record of what ran is each node's own,
-    // rdm_node::fabric_states::ActedRecord): a primary's own action is its own node's work (commit-state writes
-    // that node's scratchpad to the store root), so the held birth's action and the re-created birth's at
-    // the same path.name are two nodes' actions, each run once; each process's evidence is one birth's.
+    // rdm_node::fabric_states::ActedRecord): a primary's own action is its own node's work, so the held
+    // birth's action and the re-created birth's at the same path.name are two nodes' actions, each run once; each process's evidence is one birth's.
     // mesh1 ran its checklist for every attempt that reached it; mesh2's primary's and each member's ran once
     // per attempt.
     let attempt_of = |sp: &Value| s(&sp["attributes"]["attempt"]);
-    for r in ["commit-state", "open-traffic"] {
+    for r in ["open-traffic"] {
         let mesh1_admins: Vec<String> = [Some(fp_s.clone()), standby.clone()].into_iter().flatten().collect();
         let mesh1_check_ins: Vec<Value> = mesh1_admins.iter().flat_map(|admin| of_resize("rdm.node_admin.fabric.update.via-mesh-checklist", admin, r)).collect();
         let attempts: std::collections::BTreeSet<String> = mesh1_check_ins.iter().map(attempt_of).collect();
@@ -254,32 +253,24 @@ async fn fabric_primary_held(test: &str, mesh1: (u32, u32), state_key: &str) {
 
 /// CONTRACT (Q122; states.md "The check-in checklist": "A new primary, through election or recovery,
 /// re-sends the current state's command. Members already done check in again, and the checklist rebuilds
-/// itself"): a fabric-primary held past the staleness floor during state-commit is re-created at its
-/// path.name by the fabric recovery its mesh's other node-admin runs; the restored fabric-primary re-sends
-/// the checklist, the members check in again from their record and the fabric reaches ready-for-traffic under
-/// the resize. Must NOT happen: another node named fabric-primary, the fabric held in state-commit, a
-/// state action run twice for one key.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_held_during_state_commit_is_re_created_by_fabric_recovery_which_re_sends_the_state_command() {
-    fabric_primary_held("a_fabric_primary_held_during_state_commit_is_re_created_by_fabric_recovery_which_re_sends_the_state_command", (2, 1), "commit-state").await;
-}
-
-/// CONTRACT (Q122): the same for open-traffic: a fabric-primary held past the floor during the
-/// open-traffic checklist is re-created by fabric recovery from its own mesh, the restored fabric-primary
-/// re-sends the checklist, and the fabric reaches ready-for-traffic; no state action runs twice for one key.
+/// itself"): a fabric-primary held past the staleness floor during the open-traffic checklist is
+/// re-created at its path.name by the fabric recovery its mesh's other node-admin runs; the restored
+/// fabric-primary re-sends the checklist, the members check in again from their record and the fabric
+/// reaches ready-for-traffic under the resize. Must NOT happen: another node named fabric-primary, the
+/// fabric held pending, a state action run twice for one key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_held_during_open_traffic_is_re_created_by_fabric_recovery_which_re_sends_the_state_command() {
     fabric_primary_held("a_fabric_primary_held_during_open_traffic_is_re_created_by_fabric_recovery_which_re_sends_the_state_command", (2, 1), "open-traffic").await;
 }
 
-/// CONTRACT (Q122, fabric-recovery.md "Outside its mesh"; node-rpc.md §43; fabric-state-commit.md step 3,
-/// "node → mesh-primary → fabric-primary"): a mesh primary's check-in is owed to the fabric-primary until
+/// CONTRACT (Q122, fabric-recovery.md "Outside its mesh"; node-rpc.md §43; states.md "The check-in
+/// checklist"): a mesh primary's check-in is owed to the fabric-primary until
 /// it answers. A fabric-primary that is its mesh's only node, held past the floor, is probed by mesh2's
 /// primary, which runs fabric recovery from the backbone at mesh investigation's decision step; the node
 /// re-created at the fabric-primary's path.name is restored, re-sends the checklist, and the fabric reaches
 /// ready-for-traffic under the resize. Must NOT happen: mesh2's primary named fabric-primary, the
-/// check-in ending unanswered, the fabric held in state-commit.
+/// check-in ending unanswered, the fabric held pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_re_created_from_the_backbone_which_re_sends_the_state_command() {
-    fabric_primary_held("a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_re_created_from_the_backbone_which_re_sends_the_state_command", (1, 0), "commit-state").await;
+async fn a_fabric_primary_alone_in_its_mesh_held_during_open_traffic_is_re_created_from_the_backbone_which_re_sends_the_state_command() {
+    fabric_primary_held("a_fabric_primary_alone_in_its_mesh_held_during_open_traffic_is_re_created_from_the_backbone_which_re_sends_the_state_command", (1, 0), "open-traffic").await;
 }

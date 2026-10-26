@@ -34,7 +34,7 @@ pub struct LifecycleOp {
 }
 
 /// One fabric state hook on one exact birth (gossip.md, "Fabric state gossip hooks"): the fields
-/// `StateCommitting`, `StateCommitted`, `TrafficOpening` and `TrafficOpened` carry. The subject is the
+/// `TrafficOpening` and `TrafficOpened` carry. The subject is the
 /// commanded or reporting birth; `publisher` is the author at that hop (a `path.name`). Identity is
 /// `(kind, fabric_id, build_id, attempt, operation, node_id, incarnation)`; neither timestamp nor a
 /// forwarded receipt supplies liveness or operation authority.
@@ -50,7 +50,7 @@ pub struct StateHook {
     pub build_id: String,
     /// The Build attempt that holds the checklist.
     pub attempt: u32,
-    /// The operation: `commit-state:<fabric_id>` or `open-traffic:<fabric_id>`.
+    /// The operation: `open-traffic:<fabric_id>`.
     pub operation: String,
     /// The author at this hop, by `path.name`.
     pub publisher: String,

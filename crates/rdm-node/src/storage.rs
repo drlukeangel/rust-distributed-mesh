@@ -104,8 +104,7 @@ struct ConnectionLine {
 /// Every connection fact of every source, one line each of the root's `connections.jsonl` (R-SR1,
 /// connections.md §3): the raw log and the current view are one file, the view the fold's latest line
 /// per (source, destination, alpn, kind), and the by-destination index the same fold keyed the other
-/// way. This store is one node's: it writes that node's facts, held in the root's scratchpad until
-/// the fabric's first state-commit, reads them back as its own (by its writer, or by the path.name it
+/// way. This store is one node's: it writes that node's facts, reads them back as its own (by its writer, or by the path.name it
 /// was opened at), and reads every source's for the fleet's Direct rows and the by-destination index.
 #[derive(Debug)]
 pub struct FileConnectionsStorage {

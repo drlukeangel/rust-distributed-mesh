@@ -504,7 +504,7 @@ pub struct StatusAuthority {
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
     /// Wakes this admin's declarer: a view this authority changed, and a down op's receipt.
     pub wake: Arc<crate::status_declare::DeclareWake>,
-    /// This admin's checklists (commit-state, open-traffic); filled once the admin holds the handles
+    /// This admin's checklists (open-traffic); filled once the admin holds the handles
     /// they act through.
     pub fabric_states: Arc<OnceLock<Arc<crate::fabric_status::FabricStates>>>,
     /// Fabric recovery in a view (Q122): while this admin runs it and the target mesh has no mesh-primary,
@@ -538,9 +538,8 @@ pub struct StatusAuthority {
     /// [`set_member_status`], from the frame or declaration that caused it. `None` only where no admin
     /// owns a digest view.
     pub digest_view: Option<rdm_transport::topology::DigestView>,
-    /// Whether the initial fabric has first reached ready-for-traffic: until it has, a caller's
-    /// property command other than `node.config.update` (Q166) is refused `RejectedFabricNotReady` and
-    /// nothing is written.
+    /// Whether the initial fabric has first reached ready-for-traffic, set as the fabric-primary's
+    /// ready-for-traffic row is put.
     pub first_ready: crate::fabric_state::FirstReady,
     /// This admin's builds store: `fabric.get` answers the current Build from it, read last in, first
     /// out (build.md §4; R-BI3: "Each accepted Build is its own entity in the builds store, written
@@ -646,7 +645,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } => {
+        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } => {
             (crate::node_self::request_not_handled(&me_name.to_string(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -814,8 +813,7 @@ impl StatusAuthority {
             (declared.connections_deleted.get(&birth).cloned(), declared.meshes_left.contains(&birth))
         };
         let doors = crate::node_name_update::NameDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
-        let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, fabric: &*self.fabric_storage };
-        crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), left, first_ready, req).await
+        crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), left, req).await
     }
 
     /// `node.config.update` (`UpdateNodeConfig`) of a Build's create spec at this admin, in-process
@@ -904,7 +902,7 @@ impl StatusAuthority {
             fabric_states.heard_from(&from.node_id);
         }
         match req {
-            StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return crate::node_commands::refuse_reserved(&me_name.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
+            StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return crate::node_commands::refuse_reserved(&me_name.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
             StatusRequest::NodeLeft { node_id, .. } => {
                 let name = view.births().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_default();
                 return crate::node_commands::refuse_node_left(&me_name.to_string(), &name, &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req);
@@ -920,7 +918,7 @@ impl StatusAuthority {
                     .in_scope(|| tracing::info!("a mesh-deleted call naming this admin was decided"));
                 return reply;
             }
-            StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
+            StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
                 return match self.fabric_states.get() {
                     Some(fabric_states) => fabric_states.serve(&view, sender.as_ref(), peer, req, self.own.get()).await,
                     None => rdm_core::reply::status::not_ready(format!("{me_name} has not yet built its checklists; {} is refused", req.op())),
@@ -928,12 +926,10 @@ impl StatusAuthority {
             }
             StatusRequest::UpdateName { .. } => return self.update_name(req).await,
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
-                let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, fabric: &*self.fabric_storage };
-                return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), first_ready, req).await;
+                return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), req).await;
             }
             StatusRequest::UpdateNodeConfig { .. } => {
-                // A caller's config put is admitted at any time (Q166, node-config-update.md): never refused
-                // `fabric-not-ready`, before the initial fabric's first ready-for-traffic or after.
+                // A caller's config put is admitted at any time (Q166, node-config-update.md).
                 return match self.configs.get() {
                     Some(configs) => configs.update(&me_name, &self.node_id, &view, &*self.nodes_storage, req).await,
                     None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet; {} is refused", req.op())),
@@ -2356,7 +2352,7 @@ mod tests {
 
     /// CONTRACT (Q97, node-mesh-join.md step 10: "The node's mesh-primary (the fabric-primary for a
     /// mesh with no primary) records and publishes the node once as Pending when it accepts the node's
-    /// join report"; Q54: an applied declared-state row is durable before state-commit): the Pending
+    /// join report"; Q54: an applied declared-state row is durable before the reply): the Pending
     /// of a birth of another mesh, whose join report this mesh's admin accepted, is put among that
     /// mesh's status rows (`status/<mesh>/`, where its primary and every reader of it look) and never
     /// among this admin's own; a birth of this admin's own mesh is put among its own rows, as every

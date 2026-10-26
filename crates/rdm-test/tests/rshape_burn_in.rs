@@ -5660,7 +5660,7 @@ async fn control_run(cell: &str, shape: Shape) {
         // A message is five sends of one change. The sender may stop early only by losing the seat it publishes
         // for (the formation moves each mesh's primary once, to the lowest NodeId), or because a newer change of
         // the same scope replaced it (`StatusReinforcement::observe`: a change replaces any change still being
-        // reinforced; a lifecycle climbing pending, state-sync, state-commit, ready-for-traffic within
+        // reinforced; a lifecycle changing pending, ready-for-traffic within
         // milliseconds sends only the last of them five times). A sender that holds its seat at the end sent all
         // five of its newest change.
         let (odd, status_messages) = odd_status_messages(spans, &sends, &final_seats);

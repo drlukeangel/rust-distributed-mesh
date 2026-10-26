@@ -328,17 +328,6 @@ async fn primary_at(a: &Admin, seat: Seat, holder: &Primary) {
     a.door.topology_view.primaries().take(seat, holder);
 }
 
-/// `a`'s mesh's status rows on the fabric's store root, holding the ready-for-traffic row of `a`'s
-/// fabric when `ready` (states.md, "The initial fabric before ready-for-traffic").
-async fn status_rows_of(a: &Admin, ready: bool) -> Arc<MemoryFabricStorage> {
-    use rdm_admin::fabric_storage::{FabricRecord, FabricStorage};
-    if ready {
-        let fabric_id = a.door.topology.read().await.fabric.id.clone();
-        a.status.put_fabric(&FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()], provider: None }).await.unwrap();
-    }
-    a.status.clone()
-}
-
 /// The (side, reason, detail) of every refusal span of the primitive.
 fn refusals(spans: &Spans) -> Vec<(String, String, String)> {
     spans.named(REJECTED).iter().map(|f| (f["side"].clone(), f["reason"].clone(), f.get("detail").cloned().unwrap_or_default())).collect()
@@ -863,59 +852,6 @@ fn the_fabric_primary_moved_outside_its_mesh_leaves_its_old_primary_mesh_primary
             assert_eq!(a.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&p, 3)), "{}: P stays mesh1's mesh-primary", a.resolved.name);
         }
         p.door.fabric_primary_updated("mesh1", &op).await.expect("the fabric-primary is no node-admin of mesh1 any more");
-    });
-}
-
-/// CONTRACT (node-primary-update.md "Precondition": "Before the initial fabric first reaches
-/// ready-for-traffic, every call is refused `fabric-not-ready`"; node-rpc-envelope.md 0x21: the receiver
-/// refuses only a conflicting payload and `fabric-not-ready`): N's view holds the initial fabric in
-/// state-sync and its mesh's status rows on the store root hold no ready-for-traffic row. P's call on N
-/// is refused `RejectedFabricNotReady` naming the state, under the successor's refusal span; N installs
-/// nothing.
-#[test]
-fn the_successor_refuses_a_call_before_the_initial_fabric_is_ready() {
-    let cap = trace_capture("fabric-handover");
-    let spans = cap.spans.clone();
-    cap.run(async {
-        let f = primaries_fabric(FabricPrimary::X).await;
-        f.n.door.topology.write().await.fabric.status = ScopeStatus::StateSync;
-        status_rows_of(&f.n, false).await;
-        let op = "node.primary.update:b1:1:node.stop:mesh1.admin.1";
-        let r = send(&f.p, &f.n, Request::PrimaryUpdate { primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)], build_id: "b1".into(), run: 1, operation: op.into() }).await;
-        assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "{r:?}");
-        assert_eq!(f.n.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "N installs nothing");
-        assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "successor" && reason == "fabric-not-ready"), "{:?}", refusals(&spans));
-        let _ = (&f.m, &f.x);
-    });
-}
-
-/// CONTRACT (the same precondition; failure contract: "Refused before the row ...: refused by name,
-/// nothing changed, the Build's step fails by name"; states.md "The initial fabric before
-/// ready-for-traffic": the ready-for-traffic row among the status rows is the durable fact): P holds the
-/// initial fabric in state-sync and the store root holds no ready-for-traffic row. X's command is refused
-/// `RejectedFabricNotReady` before anything: no writes finished, P still mesh-primary. Once the root holds
-/// the ready row, P's view still in state-sync, the identical command is decided on the row and N answers.
-#[test]
-fn the_primary_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_on_the_root_row() {
-    use rdm_admin::fabric_storage::{FabricRecord, FabricStorage};
-    let cap = trace_capture("fabric-handover");
-    let spans = cap.spans.clone();
-    let _file = SpanFile(spans.clone());
-    cap.run(async {
-        let f = primaries_fabric(FabricPrimary::X).await;
-        f.p.door.topology.write().await.fabric.status = ScopeStatus::StateSync;
-        let rows = status_rows_of(&f.p, false).await;
-        let op = "node.primary.update:b1:1:node.stop:mesh1.admin.1";
-        let command = || Request::UpdatePrimary { node_type: "node-admin".into(), build_id: "b1".into(), run: 1, operation: op.into(), successor: None };
-        let r = send(&f.x, &f.p, command()).await;
-        assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "{r:?}");
-        assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "primary" && reason == "fabric-not-ready"), "{:?}", refusals(&spans));
-        assert_eq!(f.p.finished(), 0, "no writes finished for the refused update");
-        assert_eq!(f.p.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "P is still mesh-primary");
-        let fabric_id = f.p.door.topology.read().await.fabric.id.clone();
-        rows.put_fabric(&FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()], provider: None }).await.unwrap();
-        assert_eq!(send(&f.x, &f.p, command()).await, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] }, "decided on the root's ready row");
-        let _ = &f.m;
     });
 }
 

@@ -86,7 +86,7 @@ async fn boot_root(dir: &Path, policy: &[(&'static str, String)]) -> Running {
         }
     })
     .await
-    .expect("the Day-0 state-commit writes the fabric identity");
+    .expect("the Day-0 admin writes the fabric identity");
     root.stop_reconciling();
     root
 }

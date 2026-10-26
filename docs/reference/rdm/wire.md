@@ -235,20 +235,20 @@ A Status call.
 | 11.5 | `final_incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The final mesh-primary's incarnation. |
 | 11.6 | `final_runtime` | `RuntimeFact` | `with = "crate::wire::runtime"` |  | The final mesh-primary's exact runtime, still running. |
 | 11.7 | `receipt_manifest` | `String` |  |  | A bounded reference (at most `MAX_RECEIPT_MANIFEST_BYTES`) to the other members' |
-| 12 | **`CommitState`** |  |  | `op() = "commit-state"` | Downward: the commanding authority tells the exact birth to publish what its scratchpad holds (`commit-state`; fabric-state-commit.md). The reply admits the command; completion is `Self::StateCommitted`. |
+| 12 | **`Reserved12`** |  |  | `op() = "reserved-12"` | Reserved position (Q171): never sent; a receiver refuses this by name. |
 | 12.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belongs to. |
-| 12.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
+| 12.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth. |
 | 12.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 12.3 | `build_id` | `String` |  |  | The Build the command belongs to. |
-| 12.4 | `attempt` | `u32` |  |  | The Build attempt that holds the command. |
-| 12.5 | `operation` | `String` |  |  | The operation: `commit-state:<fabric_id>`. |
-| 13 | **`StateCommitted`** |  |  | `op() = "state-committed"` | Upward: the exact birth, or a mesh primary for its mesh, checks in for state-commit (`state-committed`) after its required scratchpad writes are stored. A check-in, never a node or mesh state. |
+| 12.3 | `build_id` | `String` |  |  | The Build. |
+| 12.4 | `attempt` | `u32` |  |  | The Build attempt. |
+| 12.5 | `operation` | `String` |  |  | The operation. |
+| 13 | **`Reserved13`** |  |  | `op() = "reserved-13"` | Reserved position (Q171): never sent; a receiver refuses this by name. |
 | 13.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belongs to. |
-| 13.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
+| 13.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth. |
 | 13.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 13.3 | `build_id` | `String` |  |  | The Build the command belongs to. |
-| 13.4 | `attempt` | `u32` |  |  | The Build attempt that holds the command. |
-| 13.5 | `operation` | `String` |  |  | The operation: `commit-state:<fabric_id>`. |
+| 13.3 | `build_id` | `String` |  |  | The Build. |
+| 13.4 | `attempt` | `u32` |  |  | The Build attempt. |
+| 13.5 | `operation` | `String` |  |  | The operation. |
 | 14 | **`OpenTraffic`** |  |  | `op() = "open-traffic"` | Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; lifecycles/fabric-ready-for-traffic.md). The reply admits the command; completion is `Self::TrafficOpened`. |
 | 14.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belongs to. |
 | 14.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
@@ -452,9 +452,9 @@ The typed result of a Status call.
 | 42.2 | `cause` | `String` |  |  | Why it failed: the store's, the provider's or the peer's own error, or the party the view |
 | 43 | **`RejectedTags`** |  |  | `name() = "rejected-tags"` | A tags command's labels, or a `GetNodes` tag filter, name something that is not a node's tag |
 | 43.0 | `reason` | `String` |  |  | Why, by name, naming the label; within `MAX_REFUSAL_REASON_BYTES`. |
-| 44 | **`RejectedFabricNotReady`** |  |  | `name() = "rejected-fabric-not-ready"` | A caller's node property command at a mesh-primary whose fabric has not yet first reached |
-| 44.0 | `workflow` | `String` |  |  | The refused workflow and its subject, by name (`node.name.update <path.name>`); within |
-| 44.1 | `status` | `String` |  |  | The fabric's current status as the refusing admin holds it (`pending`, `state-sync`, |
+| 44 | **`Reserved44`** |  |  | `name() = "reserved-44"` | Reserved position (Q171): never sent. |
+| 44.0 | `workflow` | `String` |  |  | Never read. |
+| 44.1 | `status` | `String` |  |  | Never read. |
 | 45 | **`TagsCreated`** |  |  | `name() = "tags-created"` | The reply of a `CreateTags` (`node.tags.created`): the mesh-primary wrote the node's row |
 | 45.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose tags grew. |
 | 45.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
@@ -969,8 +969,8 @@ The answer to a node.primary.update call.
 | 0.0 | `revisions` | `Vec<(String, Birth, Birth, u64)>` → [`Birth`](#t-rdm_core-framing-Birth) |  |  | The entries installed, as `NodePrimaryUpdateRequest::PrimaryUpdate` carries them. |
 | 1 | **`RejectedConflictingPayload`** |  |  | `name() = "rejected-conflicting-payload"` | The operation was answered for another payload. |
 | 1.0 | `operation` | `String` |  |  | The operation in conflict. |
-| 2 | **`RejectedFabricNotReady`** |  |  | `name() = "rejected-fabric-not-ready"` | The initial fabric has not first reached ready-for-traffic (R-PB1): no primary moves. |
-| 2.0 | `reason` | `String` |  |  | The workflow refused and the fabric's state. |
+| 2 | **`Reserved2`** |  |  | `name() = "reserved-2"` | Reserved position (Q171): never sent. |
+| 2.0 | `reason` | `String` |  |  | Never read. |
 | 3 | **`RejectedNotPrimary`** |  |  | `name() = "rejected-not-primary"` | The receiver is not the primary the call needs: a command on a node that is not the primary of |
 | 3.0 | `reason` | `String` |  |  | What the receiver holds instead. |
 | 4 | **`RejectedStaleRevision`** |  |  | `name() = "rejected-stale-revision"` | A take-over at a revision the recorded primary no longer holds. |
@@ -2106,7 +2106,7 @@ One birth's view of its own mesh channel, sampled when it publishes its digest.
 
 ### `Hit`
 
-`crates/rdm-test/src/fault_door.rs` · enum · 16 variants · rdm-test
+`crates/rdm-test/src/fault_door.rs` · enum · 15 variants · rdm-test
 
 The call a cut held first, as the decorator offered it.
 
@@ -2142,29 +2142,26 @@ The call a cut held first, as the decorator offered it.
 | 7 | **`CatchUp`** |  |  | A catch-up about to be sent to a neighbour. |
 | 7.0 | `node` | `String` |  | The sending node. |
 | 7.1 | `neighbour` | `String` |  | The neighbour. |
-| 8 | **`StateSync`** |  |  | The application's answer to a `sync_state` checklist, about to be returned. |
-| 8.0 | `build_id` | `String` |  | The checklist's Build. |
-| 8.1 | `attempt` | `u32` |  | The checklist's attempt. |
-| 9 | **`TopologyRead`** |  |  | A joining admin's topology read, about to be made. |
-| 9.0 | `node` | `String` |  | The joining admin. |
-| 9.1 | `reads_from` | `String` |  | The admin the read goes to: the one that answered the join. |
-| 10 | **`Announcement`** |  |  | A final aggregate or leadership announcement about to be sent on a channel. |
-| 10.0 | `node` | `String` |  | The announcing node. |
-| 10.1 | `announcement` | `String` |  | The announcement (`rdm_transport::topology::Withhold`). |
-| 10.2 | `channel` | `String` |  | The channel it is sent on. |
-| 11 | **`ProviderTerminate`** |  |  | A provider `terminate` refused while the cut is armed. |
-| 11.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
-| 11.1 | `deployment_id` | `String` |  | The deployment the runtime belongs to. |
-| 12 | **`Declaration`** |  |  | A node's declaration at the status door, about to be decided. |
-| 12.0 | `node` | `String` |  | The declaring node. |
-| 12.1 | `state` | `String` |  | The state it declares. |
-| 13 | **`StateAction`** |  |  | A node-admin's state action, about to run. |
-| 13.0 | `node` | `String` |  | The acting admin. |
-| 13.1 | `command` | `String` |  | The checklist, as its command names it. |
-| 14 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
-| 14.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
-| 15 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
-| 15.0 | `node` | `String` |  | The admin whose pass it is. |
+| 8 | **`TopologyRead`** |  |  | A joining admin's topology read, about to be made. |
+| 8.0 | `node` | `String` |  | The joining admin. |
+| 8.1 | `reads_from` | `String` |  | The admin the read goes to: the one that answered the join. |
+| 9 | **`Announcement`** |  |  | A final aggregate or leadership announcement about to be sent on a channel. |
+| 9.0 | `node` | `String` |  | The announcing node. |
+| 9.1 | `announcement` | `String` |  | The announcement (`rdm_transport::topology::Withhold`). |
+| 9.2 | `channel` | `String` |  | The channel it is sent on. |
+| 10 | **`ProviderTerminate`** |  |  | A provider `terminate` refused while the cut is armed. |
+| 10.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
+| 10.1 | `deployment_id` | `String` |  | The deployment the runtime belongs to. |
+| 11 | **`Declaration`** |  |  | A node's declaration at the status door, about to be decided. |
+| 11.0 | `node` | `String` |  | The declaring node. |
+| 11.1 | `state` | `String` |  | The state it declares. |
+| 12 | **`StateAction`** |  |  | A node-admin's state action, about to run. |
+| 12.0 | `node` | `String` |  | The acting admin. |
+| 12.1 | `command` | `String` |  | The checklist, as its command names it. |
+| 13 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
+| 13.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
+| 14 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
+| 14.0 | `node` | `String` |  | The admin whose pass it is. |
 
 <a id="t-rdm_core-ids-IncarnationId"></a>
 
@@ -2855,7 +2852,7 @@ serde: `rename_all = "kebab-case"`
 
 ### `ScopeStatus`
 
-`crates/rdm-core/src/views.rs` · enum · 7 variants · rdm-core
+`crates/rdm-core/src/views.rs` · enum · 5 variants · rdm-core
 
 The lifecycle state of a mesh or of a fabric.
 
@@ -2868,8 +2865,6 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`Leaving`** |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
 | 3 | **`Dead`** |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
 | 4 | **`Degraded`** |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
-| 5 | **`StateSync`** |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its work. |
-| 6 | **`StateCommit`** |  |  | `name() = "state-commit"` | A fabric state: the commit-state and open-traffic check-ins run. |
 
 <a id="t-rdm_core-topology-SourceVersion"></a>
 

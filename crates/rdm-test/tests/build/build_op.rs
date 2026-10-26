@@ -717,9 +717,8 @@ struct Lost {
     carrier: BuildCarrier,
 }
 
-/// The fabric is past its first state-commit, which published the rows its store held in the scratchpad:
-/// a claim from here on is written to the store root, never held in a scratchpad that dies with its
-/// writer. A fabric-primary grows the fabric by mesh2 through `build.create` and is lost at `cut` (the
+/// The fabric reached its first ready-for-traffic (a claim is written to the store root at once, Q171).
+/// A fabric-primary grows the fabric by mesh2 through `build.create` and is lost at `cut` (the
 /// fabric-primary's own Door holds it there), after its claim of mesh2's name landed: mesh2's row is on
 /// the store root. Fabric recovery restores the node it re-creates at the fabric-primary's path.name (Q122), and the caller re-submits the Build there by its id
 /// and follows it to `Complete`. mesh2 is then the mesh the lost fabric-primary's claim wrote.
@@ -732,7 +731,7 @@ struct Lost {
 async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Caller, carrier: &BuildCarrier, cut: Value, survivor_holds: Option<&str>) -> Lost {
     let fp = carrier.fabric_primary().to_string();
     let root = estate.fabric_store_root();
-    // Ready-for-traffic: its first state-commit has published the rows held in the scratchpad.
+    // Ready-for-traffic: the Day-0 Build is Complete and a growth may be accepted (Q170).
     estate.until_fabric_ready(Duration::from_secs(90)).await;
 
     let door = Door::at(&estate, &fp).await;
@@ -812,8 +811,8 @@ fn create_mesh_flame(spans: &[Value], lost: &Lost) -> Option<String> {
 }
 
 /// CONTRACT (node-rpc-envelope.md, Build op 0x20: "completed step receipts are read and replayed, never
-/// executed again"; node-identity-and-state.md §2.7: the same MeshId re-claiming its name is idempotent): the
-/// fabric is past its first state-commit, so a claim is written to its store root. The fabric-primary
+/// executed again"; node-identity-and-state.md §2.7: the same MeshId re-claiming its name is idempotent): a
+/// claim is written to the store root at once (Q171). The fabric-primary
 /// accepts mesh2, minting mesh2's id at that acceptance, runs `create-mesh:mesh2` (the claim of mesh2's
 /// name writes its row, and the step is receipted `Complete`) and is lost before the next step's receipt is
 /// durable: the first admin's `AllocateIdentity`. The loss waits for the receipt to reach the surviving
@@ -845,8 +844,8 @@ async fn a_restored_fabric_primary_reads_the_create_mesh_receipt_and_does_not_cl
 }
 
 /// CONTRACT (node-rpc-envelope.md, Build carrier: "Settle an idempotent uncertain step by its natural key";
-/// node-identity-and-state.md §2.7: "The same MeshId re-claiming its own name, at state-commit, on a retry or
-/// from a replaced primary, is idempotent and accepted"): the fabric is past its first state-commit. The
+/// node-identity-and-state.md §2.7: "The same MeshId re-claiming its own name, on a retry or from a
+/// replaced primary, is idempotent and accepted"): a claim is written to the store root at once. The
 /// fabric-primary accepts mesh2, claims mesh2's name with the MeshId the Build carries (its row lands on
 /// the store root) and is lost before it receipts `create-mesh:mesh2`. The restored fabric-primary resumes
 /// the same Build: the step has no receipt, so it is uncertain and runs by its natural key; the claim

@@ -81,7 +81,7 @@ pub enum MeshClaim {
         over: Option<MeshId>,
     },
     /// This mesh holds its name and its record stands exactly as given: nothing is written (a
-    /// re-claim at the fabric's state-commit, a retry, a replaced primary).
+    /// retry, a replaced primary).
     Held,
 }
 
@@ -182,8 +182,7 @@ pub trait MeshStorage: Send + Sync {
     /// `Won`. A row standing for another attempt, or for the same attempt by another claimant, is
     /// `Held`, naming it: the second claimant of one attempt loses and runs nothing (build.md §5.2, Q142). A row the insert met and the read no longer
     /// finds was released between the two: refused by name, never answered as either outcome. An
-    /// attempt claim is a Build fact, durable when it is taken, before the fabric's first
-    /// state-commit too (Q61, build.md §5.2).
+    /// attempt claim is a Build fact, durable when it is taken (Q61, build.md §5.2).
     async fn take_in_flight(&self, mesh: &str, claim: &InFlight) -> Result<Taken, StorageError>;
     /// Release `mesh`'s in-flight row held for `attempt`, at that attempt's verdict: the row goes only
     /// while it names that attempt, so a release never removes another attempt's row. Its one writer
@@ -306,24 +305,10 @@ fn lock_claim<T: serde::de::DeserializeOwned>(file: &Path, bytes: &[u8], format:
 }
 
 #[cfg(feature = "file-backend")]
-/// A mesh name's lock as this process holds it before the fabric's first state-commit.
-#[derive(Debug, Clone)]
-enum HeldName {
-    /// Taken for the claim.
-    Take(MeshNameClaim),
-    /// Released while it named this mesh.
-    Release(MeshId),
-}
-
-#[cfg(feature = "file-backend")]
-/// The mesh name locks under `locks/name/`, held by this process before the fabric's first
-/// state-commit (states.md, Setting a state) and taken at the publication, each decided again
-/// against the lock then standing, as the held insert of a name claim always was.
+/// The mesh name locks under `locks/name/`.
 struct MeshNames {
     locks: crate::store_log::StoreLocks,
     by: crate::store_log::LogWriter,
-    /// `Some` while this process holds the name locks it takes: until its scratchpad is published.
-    held: tokio::sync::Mutex<Option<BTreeMap<String, HeldName>>>,
 }
 
 #[cfg(feature = "file-backend")]
@@ -333,16 +318,6 @@ impl MeshNames {
     }
 
     async fn read(&self, name: &str) -> Result<Option<MeshNameClaim>, StorageError> {
-        if let Some(held) = self.held.lock().await.as_ref().and_then(|h| h.get(name).cloned()) {
-            return Ok(match held {
-                HeldName::Take(c) => Some(c),
-                HeldName::Release(_) => None,
-            });
-        }
-        self.disk(name).await
-    }
-
-    async fn disk(&self, name: &str) -> Result<Option<MeshNameClaim>, StorageError> {
         match self.locks.read(crate::store_log::LockKind::Name, name).await? {
             Some(bytes) => lock_claim(&self.path(name), &bytes, MESH_NAME_FORMAT).map(Some),
             None => Ok(None),
@@ -350,23 +325,6 @@ impl MeshNames {
     }
 
     async fn take(&self, claim: &MeshNameClaim) -> Result<Result<(), MeshId>, StorageError> {
-        let mut held = self.held.lock().await;
-        if let Some(h) = held.as_mut() {
-            let standing = match h.get(&claim.name) {
-                Some(HeldName::Take(c)) => Some(c.clone()),
-                Some(HeldName::Release(_)) => None,
-                None => self.disk(&claim.name).await?,
-            };
-            return Ok(match standing {
-                Some(c) if c.mesh_id == claim.mesh_id => Ok(()),
-                Some(c) => Err(c.mesh_id),
-                None => {
-                    h.insert(claim.name.clone(), HeldName::Take(claim.clone()));
-                    Ok(())
-                }
-            });
-        }
-        drop(held);
         match self.locks.take(crate::store_log::LockKind::Name, &claim.name, &lock_content(MESH_NAME_FORMAT, claim, &self.by)).await? {
             crate::store_log::LockTaken::Won => Ok(Ok(())),
             crate::store_log::LockTaken::Held(bytes) => {
@@ -377,63 +335,8 @@ impl MeshNames {
     }
 
     async fn release(&self, name: &str, mesh_id: &MeshId) -> Result<(), StorageError> {
-        let mut held = self.held.lock().await;
-        if let Some(h) = held.as_mut() {
-            let standing = match h.get(name) {
-                Some(HeldName::Take(c)) => Some(c.clone()),
-                Some(HeldName::Release(_)) => None,
-                None => self.disk(name).await?,
-            };
-            if standing.is_some_and(|c| c.mesh_id == *mesh_id) {
-                h.insert(name.to_string(), HeldName::Release(mesh_id.clone()));
-            }
-            return Ok(());
-        }
-        drop(held);
         let (file, mesh_id) = (self.path(name), mesh_id.clone());
         self.locks.release(crate::store_log::LockKind::Name, name, move |b| lock_claim::<MeshNameClaim>(&file, b, MESH_NAME_FORMAT).is_ok_and(|c| c.mesh_id == mesh_id)).await.map(|_| ())
-    }
-}
-
-#[cfg(feature = "file-backend")]
-#[async_trait]
-impl crate::record_store::HeldStore for MeshNames {
-    /// Take or release each name lock held, decided again against the lock then standing: a take
-    /// meeting the same mesh's lock stands, another mesh's is refused, naming it.
-    async fn publish(&self) -> Result<crate::record_store::StorePublished, StorageError> {
-        let mut held = self.held.lock().await;
-        let mut done = crate::record_store::StorePublished { store: "locks".into(), ..Default::default() };
-        let Some(h) = held.take() else { return Ok(done) };
-        let mut left = h.clone();
-        for (name, op) in h {
-            match op {
-                HeldName::Take(claim) => match self.locks.take(crate::store_log::LockKind::Name, &name, &lock_content(MESH_NAME_FORMAT, &claim, &self.by)).await {
-                    Ok(crate::store_log::LockTaken::Won) => done.written += 1,
-                    Ok(crate::store_log::LockTaken::Held(bytes)) => match lock_claim::<MeshNameClaim>(&self.path(&name), &bytes, MESH_NAME_FORMAT) {
-                        Ok(c) if c.mesh_id == claim.mesh_id => done.stands += 1,
-                        Ok(c) => done.refused.push(format!("{name}: held by mesh {}", c.mesh_id)),
-                        Err(e) => {
-                            *held = Some(left);
-                            return Err(e);
-                        }
-                    },
-                    Err(e) => {
-                        *held = Some(left);
-                        return Err(e);
-                    }
-                },
-                HeldName::Release(mesh_id) => {
-                    let file = self.path(&name);
-                    if let Err(e) = self.locks.release(crate::store_log::LockKind::Name, &name, move |b| lock_claim::<MeshNameClaim>(&file, b, MESH_NAME_FORMAT).is_ok_and(|c| c.mesh_id == mesh_id)).await {
-                        *held = Some(left);
-                        return Err(e);
-                    }
-                    done.written += 1;
-                }
-            }
-            left.remove(&name);
-        }
-        Ok(done)
     }
 }
 
@@ -458,16 +361,12 @@ impl std::fmt::Debug for FileMeshStorage {
 
 #[cfg(feature = "file-backend")]
 impl FileMeshStorage {
-    /// Open the store under the fabric's store root, written by `writer`: its name locks held in the
-    /// root's scratchpad until it is published, its in-flight locks taken at once (an attempt claim is
-    /// a Build fact, durable when it is taken, before the fabric's first state-commit too: Q61,
+    /// Open the store under the fabric's store root, written by `writer`: its name locks and its
+    /// in-flight locks taken at once (an attempt claim is a Build fact, durable when it is taken: Q61,
     /// build.md §5.2).
     pub async fn open(root: &crate::store_root::StoreRoot, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
         let locks = crate::store_log::StoreLocks::at(root.dir(), writer);
-        let names = std::sync::Arc::new(MeshNames { locks: locks.clone(), by: writer.clone(), held: tokio::sync::Mutex::new(Some(BTreeMap::new())) });
-        if !root.scratchpad().is_some_and(|s| s.enrol(names.clone())) {
-            *names.held.lock().await = None;
-        }
+        let names = std::sync::Arc::new(MeshNames { locks: locks.clone(), by: writer.clone() });
         Ok(Self { records: root.log(crate::store_root::MESHES_FILE, crate::store_log::Formats::new().with::<MeshRecord>(MESH_FORMAT)).await?, names, locks, log_writer: writer.clone() })
     }
 
@@ -475,7 +374,6 @@ impl FileMeshStorage {
     /// (node-primary-update.md step 3).
     pub async fn finish_issued_writes(&self) {
         self.records.finish_issued_writes().await;
-        drop(self.names.held.lock().await);
     }
 
     fn in_flight_path(&self, mesh: &str) -> std::path::PathBuf {
@@ -1044,7 +942,7 @@ pub trait NodesStorage: Send + Sync {
     /// Every node record of `mesh`, a `Withdrawn` one skipped.
     async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError>;
     /// Write `row` whole at its node id, as given (Q109: storage stores and returns what it is given).
-    /// Durable before it answers, before the fabric's first state-commit too (Q54).
+    /// Durable before it answers (Q54).
     async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError>;
     /// The `path.name` index entry at `name` names `node_id`: a blind write of its key.
     async fn index_path(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError>;
@@ -1204,8 +1102,7 @@ type PathIndex = std::sync::Arc<Mutex<BTreeMap<String, NodeId>>>;
 
 #[cfg(feature = "file-backend")]
 /// The nodes' records, their runtime rows and the tags index's changes, each write one line of the
-/// root's `nodes.jsonl` (R-SR1, R-SR2), appended straight to the file, before the fabric's first
-/// state-commit too: a record at its node id, written by its mesh's writer, durable before the answer
+/// root's `nodes.jsonl` (R-SR1, R-SR2), appended straight to the file: a record at its node id, written by its mesh's writer, durable before the answer
 /// (Q54); a runtime row at `<node id>--<incarnation>`, written once by its birth's launching admin, the
 /// durable map a successor proves exits from, as durable as when it stood in the launcher's data dir;
 /// and a tag change at `<node id>/<label>`. The `path.name` index and the tags index are the fold. Each name claim is the
@@ -1774,8 +1671,6 @@ mod tests {
         let (inc1, inc2) = (IncarnationId::mint(), IncarnationId::mint());
         let (n1, n2) = (FileNodesStorage::open(&data1, &root, "mesh1", &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc1)).await.unwrap(), FileNodesStorage::open(&data2, &root, "mesh2", &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc2)).await.unwrap());
         let (m1, m2) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc1)).await.unwrap(), FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &inc2)).await.unwrap());
-        // The fabric's first state-commit published the store: what follows writes to it.
-        root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
         let writes = async |n: &FileNodesStorage, m: &FileMeshStorage, mesh: &str| {
             let w = WrittenRows::default();
             crate::storage::claim_mesh(&*m, None, &MeshRecord::new(MeshId::mint(), mesh)).await.unwrap().expect("each mesh claims a name no mesh holds");
@@ -1935,7 +1830,6 @@ mod tests {
         std::fs::create_dir_all(&store).unwrap();
         let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
         let (n1, n2) = (FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap(), FileNodesStorage::open(&d.join("mesh2.admin.1"), &root, "mesh2", &crate::store_log::LogWriter::mint()).await.unwrap());
-        root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
         let (w1, w2) = (WrittenRows::default(), WrittenRows::default());
         let tags = |l: &[&str]| l.iter().map(|t| t.to_string()).collect::<BTreeSet<String>>();
         let row_a = NodeRow { tags: tags(&["rabbit", "red"]), ..row("mesh1.rpc.1") };
@@ -1979,7 +1873,6 @@ mod tests {
         std::fs::create_dir_all(&store).unwrap();
         let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
         let n1 = FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
-        root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
         let w = WrittenRows::default();
         let tags = |l: &[&str]| l.iter().map(|t| t.to_string()).collect::<BTreeSet<String>>();
         let old = NodeRow { tags: tags(&["rabbit"]), ..row("mesh1.rpc.1.old") };
@@ -1996,11 +1889,9 @@ mod tests {
     }
 
     /// CONTRACT (R14 items 1 and 9, R-SR1; connections.md §3: the raw log and the latest-per-key view
-    /// are one file; states.md, Setting a state): before the fabric's first state-commit a node holds
-    /// its connection facts in its scratchpad, reads them there, and puts nothing on the root; its
-    /// publication appends them as lines of the root's `connections.jsonl`, where a second store opened
-    /// by another process reads the latest fact per key as the current entry and every fact as the raw
-    /// log.
+    /// are one file): a node appends its connection facts as lines of the root's `connections.jsonl`,
+    /// where a second store opened by another process reads the latest fact per key as the current
+    /// entry and every fact as the raw log.
     #[tokio::test]
     async fn an_ordinary_nodes_connection_facts_land_in_connections_jsonl_and_a_second_instance_reads_them() {
         let d = crate::test_support::tempdir("shared-connections");
@@ -2015,11 +1906,8 @@ mod tests {
         writer.append_history(&down).await.unwrap();
         writer.put_connection(&down).await.unwrap();
         let file = root.dir().join(crate::store_root::CONNECTIONS_FILE);
-        assert!(crate::store_log::read_file(&file).unwrap().is_empty(), "nothing reaches the root before the publication");
-        assert_eq!(writer.connections().await.unwrap(), [down.clone()], "the writer reads the entries it holds");
-        assert_eq!(writer.history().await.unwrap(), [up.clone(), down.clone()], "the writer reads the facts it holds");
-        let published = root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
-        assert_eq!(published.summary(), "connections=2", "{published:?}");
+        assert_eq!(writer.connections().await.unwrap(), [down.clone()], "the writer reads the entries it wrote");
+        assert_eq!(writer.history().await.unwrap(), [up.clone(), down.clone()], "the writer reads the facts it wrote");
         assert_eq!(crate::store_log::read_file(&file).unwrap().len(), 2, "one line per fact");
         let reader = FileConnectionsStorage::open(&root, &node, &crate::store_log::LogWriter::mint()).await.unwrap();
         assert_eq!(reader.connections().await.unwrap(), [down.clone()], "the latest fact per (source, destination, alpn, kind)");
@@ -2038,7 +1926,6 @@ mod tests {
         let store = d.join("store");
         std::fs::create_dir_all(&store).unwrap();
         let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
-        root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
         let destination = end("mesh1.rpc.1");
         let row = |source: &str, destination: &ConnectionEnd| NodeConnection { source: end(source), destination: destination.clone(), ..fact(ConnectionState::Connected) };
         let (a, b) = (row("mesh1.rpc.2", &destination), row("mesh2.rpc.1", &destination));

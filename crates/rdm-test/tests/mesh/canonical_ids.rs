@@ -284,7 +284,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // fabric-primary as the acting primary of a mesh with none (R13); the removed mesh2's Mesh row is
     // written Dead, which releases the name; the recreated mesh2 claims the released name under its new
     // MeshId, before the recreated mesh2.admin.1's row is claimed, by the same
-    // writer. No mesh's claim conflicts with itself across creation and the fabric's state-commit.
+    // writer. No mesh's claim conflicts with itself across creation and a re-claim.
     let claims = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
     let claim_of = |id: &str| claims.iter().find(|sp| sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["mesh_id"]) == id && sp["attributes"]["moment"] == "claim" && sp["attributes"]["outcome"] == "row-written").copied();
     let old_claim = claim_of(&mesh_ids["mesh2"]).unwrap_or_else(|| panic!("the removed mesh2's name was claimed: {claims:?}"));

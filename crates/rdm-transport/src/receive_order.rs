@@ -299,8 +299,6 @@ impl HookReceipts {
     /// frames are untouched. The caller serializes admission across local apply and all channels.
     pub(crate) fn admit(&mut self, f: &Frame) -> bool {
         let (kind, hook) = match f.data() {
-            Frame::StateCommitting { hook, .. } => ("state-committing", hook),
-            Frame::StateCommitted { hook, .. } => ("state-committed", hook),
             Frame::TrafficOpening { hook, .. } => ("traffic-opening", hook),
             Frame::TrafficOpened { hook, .. } => ("traffic-opened", hook),
             _ => return true,

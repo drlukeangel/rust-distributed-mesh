@@ -135,7 +135,7 @@ fn state_hook_story(kind: &'static str, story: HookStory) {
         let peer = TopologyView::join(&peer_gossip, &peer_ep, &fabric, "mesh2", &MeshId::mint(), "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let _peer_backbone = Backbone::join(&peer_gossip, &peer_ep, &peer, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let backbone = Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![address(&peer_ep)]).await.unwrap();
-        let key = StateKey { kind: if kind.starts_with("state-") { StateCommand::StateCommit } else { StateCommand::OpenTraffic }, fabric_id: fabric.clone(), build_id: "held-state-build".into(), attempt: 1 };
+        let key = StateKey { kind: StateCommand::OpenTraffic, fabric_id: fabric.clone(), build_id: "held-state-build".into(), attempt: 1 };
         let (subject_id, subject_incarnation) = (NodeId::mint(), IncarnationId::mint());
         sender.set_author(&rdm_core::PublisherId { node: "mesh1.rpc.2".into(), node_id: subject_id.clone(), incarnation: subject_incarnation.clone() });
         let digest_view = Arc::new(Checklists::default());
@@ -167,7 +167,7 @@ fn state_hook_story(kind: &'static str, story: HookStory) {
         }).await.unwrap();
         let changes = receiver.digest_view.birth_changes();
         let before = *changes.borrow();
-        let completion = kind == "state-committed" || kind == "traffic-opened";
+        let completion = kind == "traffic-opened";
         let publisher = if !completion || matches!(story, HookStory::AdminAuthor) { "mesh1.admin.2" } else { "mesh1.rpc.2" };
         let hook = rdm_core::StateHook { fabric_id: fabric.clone(), node_id: subject_id, incarnation: subject_incarnation, build_id: key.build_id.clone(), attempt: key.attempt, operation: key.kind.operation(&fabric), publisher: publisher.into(), event_at_rafka_ms: 1 };
         for receipt in 1..=if matches!(story, HookStory::Repeat | HookStory::ForwardedRepeat) { 2 } else { 1 } {
@@ -176,8 +176,6 @@ fn state_hook_story(kind: &'static str, story: HookStory) {
             offered.event_at_rafka_ms = receipt;
             let forwarded_by = matches!(story, HookStory::ForwardedRepeat).then(|| format!("mesh{receipt}.admin.3"));
             let f = match kind {
-                "state-committing" => Frame::StateCommitting { hook: offered, forwarded_by },
-                "state-committed" => Frame::StateCommitted { hook: offered, forwarded_by },
                 "traffic-opening" => Frame::TrafficOpening { hook: offered, forwarded_by },
                 _ => Frame::TrafficOpened { hook: offered, forwarded_by },
             };
@@ -206,7 +204,7 @@ fn state_hook_story(kind: &'static str, story: HookStory) {
     let spans = capture.spans().unwrap();
     for sp in spans.iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.topology."))) { println!("{}", serde_json::to_string(sp).unwrap()); }
     let applies: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-state-frame" && s["attributes"]["kind"] == kind && s["attributes"]["node"] == "mesh1.admin.1").collect();
-    let completion = kind == "state-committed" || kind == "traffic-opened";
+    let completion = kind == "traffic-opened";
     let expected = usize::from(completion && !matches!(story, HookStory::Closed | HookStory::AdminAuthor));
     assert_eq!(applies.len(), 1, "each identity has exactly one ordinary apply span");
     assert_eq!(carried.load(Ordering::SeqCst), expected, "only an ordinary check-in of an open checklist is carried once");
@@ -228,20 +226,12 @@ macro_rules! state_hook_cells {
         #[test] fn $repeat() { state_hook_story($kind, HookStory::Repeat); }
     };
 }
-state_hook_cells!(state_committing_after_unrelated_traffic_applies, state_committing_repeat_does_nothing, "state-committing");
-state_hook_cells!(state_committed_after_unrelated_traffic_applies, state_committed_repeat_does_nothing, "state-committed");
 state_hook_cells!(traffic_opening_after_unrelated_traffic_applies, traffic_opening_repeat_does_nothing, "traffic-opening");
 state_hook_cells!(traffic_opened_after_unrelated_traffic_applies, traffic_opened_repeat_does_nothing, "traffic-opened");
 
 /// CONTRACT: forwarded ordinary check-ins of open checklists reach the backbone once; metadata never changes identity.
-#[test] fn forwarded_state_check_in_is_carried_once() { state_hook_story("state-committed", HookStory::ForwardedRepeat); }
-/// CONTRACT: both state commands use the same open-checklist carrier after forwarding.
 #[test] fn forwarded_traffic_check_in_is_carried_once() { state_hook_story("traffic-opened", HookStory::ForwardedRepeat); }
 /// CONTRACT: a first hook of a closed checklist spans carried=closed-checklist and is never carried or counted as a check-in.
-#[test] fn closed_state_committed_check_in_is_not_carried() { state_hook_story("state-committed", HookStory::Closed); }
-/// CONTRACT: closed open-traffic checklists have the same named outcome.
 #[test] fn closed_traffic_opened_check_in_is_not_carried() { state_hook_story("traffic-opened", HookStory::Closed); }
 /// CONTRACT: a node-admin author publishes on the backbone itself and is never carried by another admin.
-#[test] fn admin_state_check_in_is_not_carried() { state_hook_story("state-committed", HookStory::AdminAuthor); }
-/// CONTRACT: the author rule also applies to traffic-opened.
 #[test] fn admin_traffic_check_in_is_not_carried() { state_hook_story("traffic-opened", HookStory::AdminAuthor); }

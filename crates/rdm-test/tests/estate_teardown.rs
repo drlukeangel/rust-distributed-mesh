@@ -29,7 +29,7 @@ fn processes_of(root: &Path) -> Vec<u32> {
 }
 
 /// Whether the fabric's store root holds the durable Fabric row (its line in `fabric.jsonl`), which the
-/// fabric-primary publishes at the fabric's first state-commit.
+/// fabric-primary writes at Day 0.
 fn holds_fabric_identity_row(store_root: &Path) -> bool {
     rdm_admin::store_log::read_record(&store_root.join(rdm_admin::store_root::FABRIC_FILE), "fabric-record", None).is_some()
 }

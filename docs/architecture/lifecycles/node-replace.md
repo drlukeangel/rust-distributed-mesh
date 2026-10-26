@@ -11,7 +11,7 @@ A Build provides durable resumable execution, not automatic rollback.
 | Field | Contract |
 |---|---|
 | Recipe owner | Rafka |
-| Precondition | The fabric has first reached ready-for-traffic. Before then the recipe's Build is refused by name, `fabric-not-ready`, and nothing runs ([States](states.md#fabric-not-ready)) |
+| Precondition | The Day-0 Build is Complete. Before then it is the Build in progress, the recipe's Build is refused by name, `build-in-progress` (Q170), and nothing runs |
 | Writer | The node's [row writer](../node-identity-and-state.md#25-one-system-org-one-projection-one-writer-per-mesh) writes every row of this recipe |
 | Successor | Created at `<name>` once the predecessor has released it: a re-birth, with a new node.id, incarnation and runtime; new port; key from its specified data dir; its `Create` step names its executable ([build-deployment.md](../build-deployment.md)) |
 | Predecessor | Its connections deleted, it leaves its mesh, then it is renamed `<name>.old` and stopped, or deleted |

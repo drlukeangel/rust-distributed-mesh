@@ -2412,7 +2412,7 @@ impl Gate for FabricChange {
 /// ready-for-traffic again from this Build's own change ... while the fabric changes, the Build reports
 /// Blocked naming the change, never Complete"; build.md §1: every accepted Build is reconciled, "Every
 /// execution attempt re-reads the accepted topology and current realized/observed state and computes
-/// remaining work"; fabric-state-sync.md: the state-sync handoff names the accepted Build's `attempt`):
+/// remaining work"; fabric-ready-for-traffic.md: the open-traffic checklist names the accepted Build's `attempt`):
 /// a Build whose topology put the fabric back to pending and whose work the view already holds (nothing
 /// left to execute) claims its first attempt, which hands back with nothing run, so the fabric's change
 /// has the attempt to name; it reports Blocked `fabric-change`, never Complete, while the fabric changes,
@@ -2448,7 +2448,7 @@ async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_na
         }
     }
     let p = r.builds.read_build(&r.build).await.unwrap();
-    assert!(p.attempt >= 1, "the fabric's change names the accepted Build's attempt (fabric-state-sync.md): an attempt of the Build is claimed, not none ({:?} at attempt {})", p.state, p.attempt);
+    assert!(p.attempt >= 1, "the fabric's change names the accepted Build's attempt (fabric-ready-for-traffic.md): an attempt of the Build is claimed, not none ({:?} at attempt {})", p.state, p.attempt);
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing is left to execute and nothing ran: {:?}", r.ran.0.lock().unwrap());
     let mut frames = Vec::new();
     while let Some(read) = next_within(&mut reader).await {
@@ -2576,31 +2576,26 @@ async fn a_fabric_ready_for_traffic_while_the_held_run_is_in_flight_completes_th
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran: {:?}", r.ran.0.lock().unwrap());
 }
 
-/// Which backend the Build journal writes to, and the fabric's state, at every write: the application's
-/// `sync_state` switches the backend while it works (Rafka's storage provider), so a fact written between
-/// state-sync's entry and that switch lands on the backend being switched away from.
+/// The fabric's state at every write of the Build journal.
 struct Ledger {
     state: Mutex<&'static str>,
-    backend: Mutex<&'static str>,
-    writes: Mutex<Vec<(String, &'static str, &'static str)>>,
+    writes: Mutex<Vec<(String, &'static str)>>,
 }
 
 impl Ledger {
     fn new() -> Arc<Self> {
-        Arc::new(Self { state: Mutex::new("pending"), backend: Mutex::new("old"), writes: Mutex::new(Vec::new()) })
+        Arc::new(Self { state: Mutex::new("pending"), writes: Mutex::new(Vec::new()) })
     }
     fn note(&self, what: String) {
-        let at = (*self.state.lock().unwrap(), *self.backend.lock().unwrap());
-        self.writes.lock().unwrap().push((what, at.0, at.1));
+        let at = *self.state.lock().unwrap();
+        self.writes.lock().unwrap().push((what, at));
     }
-    fn written(&self) -> Vec<(String, &'static str, &'static str)> {
+    fn written(&self) -> Vec<(String, &'static str)> {
         self.writes.lock().unwrap().clone()
     }
 }
 
-/// The fabric-primary's Build log over a [`Ledger`]: every write is noted with the fabric's state and the
-/// backend it lands on. The fabric enters state-sync at the claim of the Build's first attempt, the earliest
-/// it can (the change waits only for the accepted Build's attempt to name, fabric-state-sync.md).
+/// The fabric-primary's Build log over a [`Ledger`]: every write is noted with the fabric's state.
 struct LedgerBuilds {
     inner: Arc<MemoryBuildStateAdapter>,
     ledger: Arc<Ledger>,
@@ -2630,14 +2625,7 @@ impl BuildStateAdapter for LedgerBuilds {
     }
     async fn claim_attempt(&self, c: &rdm_admin::build_state::BuildAttemptClaim) -> Result<rdm_admin::build_state::ClaimOutcome, BuildStateError> {
         self.ledger.note(format!("claim:{}", c.attempt));
-        let out = self.inner.claim_attempt(c).await;
-        if c.attempt == 1 && matches!(out, Ok(rdm_admin::build_state::ClaimOutcome::Won)) {
-            let mut state = self.ledger.state.lock().unwrap();
-            if *state == "pending" {
-                *state = "state-sync";
-            }
-        }
-        out
+        self.inner.claim_attempt(c).await
     }
     async fn adopt_claim(&self, c: &rdm_admin::build_state::BuildAttemptClaim) -> Result<(), BuildStateError> {
         self.ledger.note(format!("adopted-claim:{}", c.attempt));
@@ -2675,16 +2663,13 @@ impl BuildStateAdapter for LedgerBuilds {
 
 /// CONTRACT (states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
 /// ready-for-traffic again from this Build's own change, as fabric.create's is"; fabric-create.md, Completion:
-/// "`fabric.created` when the fabric is ready-for-traffic"; fabric-state-sync.md: "RDM writes none of its own
-/// records during state-sync ... except ... the Build facts"): the Day-0 Build (fabric.create's: the
+/// "`fabric.created` when the fabric is ready-for-traffic"): the Day-0 Build (fabric.create's: the
 /// bootstrap admin alone, no change submitted) claims its first attempt, which the fabric's change names,
-/// and holds its terminal while the fabric is in state-sync, where the application's `sync_state` switches
-/// the backend the Build journal writes to. Its `Converged` receipt is written once the fabric is
-/// ready-for-traffic, on the backend the application switched to, and the Build reads Complete there.
-/// Must NOT happen: the Day-0 Build's terminal written during state-sync, on the backend being switched
-/// away from, leaving the Build Running on the one the application switched to.
+/// and holds its terminal while the fabric is pending. Its `Converged` receipt is written once the fabric
+/// is ready-for-traffic, and the Build reads Complete. Must NOT happen: the Day-0 Build's terminal written
+/// while the fabric is pending.
 #[tokio::test]
-async fn the_day0_build_writes_its_complete_only_after_its_own_ready_for_traffic_on_the_backend_state_sync_switched_to() {
+async fn the_day0_build_writes_its_complete_only_after_its_own_ready_for_traffic() {
     let mesh_id = MeshId::mint();
     let t = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process },
@@ -2725,31 +2710,27 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready_for_traffic
     });
     let drive = Drive::detached(day0.clone());
     let mut reader = drive.reader(1);
-    // The fabric is in state-sync from the claim of the first attempt on: the drive waits for its change.
+    // The fabric is pending: the drive waits for its change.
     let held = tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("the pass ends");
     let mut frames = Vec::new();
     while let Some(read) = next_within(&mut reader).await {
         frames.push(read);
     }
-    let in_state_sync: Vec<String> = ledger.written().into_iter().filter(|(_, state, _)| *state == "state-sync").map(|(what, _, backend)| format!("{what}@{backend}")).collect();
+    let while_pending: Vec<String> = ledger.written().into_iter().filter(|(_, state)| *state == "pending").map(|(what, _)| what).collect();
     assert!(
         matches!(&held, DriveEnd::Stalled(why) if why.contains("ready-for-traffic")),
-        "the Day-0 Build waits for the fabric's ready-for-traffic, never Complete in state-sync: {held:?}; written in state-sync: {in_state_sync:?}; frames {frames:?}"
+        "the Day-0 Build waits for the fabric's ready-for-traffic, never Complete while pending: {held:?}; written while pending: {while_pending:?}; frames {frames:?}"
     );
     assert!(frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "the Day-0 Build reports Blocked naming the fabric's change: {frames:?}");
     assert!(!frames.iter().any(|f| matches!(f, Read::Terminal(_) | Read::Frame(BuildReply::Complete { .. } | BuildReply::Failed { .. }))), "never Complete while the fabric changes: {frames:?}");
-    // The application's sync_state switched the Build journal's backend, then answered; the fabric changed
-    // through state-commit to ready-for-traffic.
-    *ledger.backend.lock().unwrap() = "new";
+    // The fabric's open-traffic check-ins completed: it is ready-for-traffic.
     *ledger.state.lock().unwrap() = "ready-for-traffic";
     gate.ready.store(true, Ordering::SeqCst);
     assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("the drive ends once the fabric is ready-for-traffic"), DriveEnd::Terminal);
     let written = ledger.written();
-    let terminals: Vec<&(String, &'static str, &'static str)> = written.iter().filter(|(what, _, _)| what.starts_with("attempt:") && (what.ends_with(":converged") || what.ends_with(":failed"))).collect();
-    assert_eq!(terminals.iter().map(|(_, state, backend)| (*state, *backend)).collect::<Vec<_>>(), vec![("ready-for-traffic", "new")], "the Day-0 Build's one terminal is written after ready-for-traffic, on the backend state-sync switched to: {written:?}");
-    let in_state_sync: Vec<&(String, &'static str, &'static str)> = written.iter().filter(|(_, state, _)| *state == "state-sync").collect();
-    assert!(!in_state_sync.iter().any(|(what, _, _)| what.ends_with(":converged") || what.ends_with(":failed")), "no terminal of the Day-0 Build is written in state-sync: {in_state_sync:?}");
-    eprintln!("written between state-sync's entry and its answer: {in_state_sync:?}");
+    let terminals: Vec<&(String, &'static str)> = written.iter().filter(|(what, _)| what.starts_with("attempt:") && (what.ends_with(":converged") || what.ends_with(":failed"))).collect();
+    assert_eq!(terminals.iter().map(|(_, state)| *state).collect::<Vec<_>>(), vec!["ready-for-traffic"], "the Day-0 Build's one terminal is written after ready-for-traffic: {written:?}");
+    eprintln!("written while the fabric was pending: {while_pending:?}");
     let done = builds.read_build(&day0).await.unwrap();
     assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Day-0 Build is Complete after its own ready-for-traffic: {done:?}");
     assert!(ran.0.lock().unwrap().is_empty(), "the Day-0 Build has nothing to execute: {:?}", ran.0.lock().unwrap());

@@ -343,8 +343,8 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
 }
 
 /// Q53: an acknowledged Ready for an exact birth survives acquisition by a new
-/// mesh-primary and is in its first complete member projection. Exercise the
-/// real pre-state-commit store as well as the already-published control.
+/// mesh-primary and is in its first complete member projection, read from the store root its
+/// predecessor wrote straight to the disk.
 #[test]
 fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() {
     use rdm_core::status::{StatusReply, StatusRequest};
@@ -353,8 +353,8 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
     let cap = crate::mesh_delete_resume::capture();
     let observed = cap.run(async {
         let mut observed = Vec::new();
-        for published in [true, false] {
-            let parent = tracing::info_span!("rdm.test.status.update.via-acknowledged-successor", published);
+        {
+            let parent = tracing::info_span!("rdm.test.status.update.via-acknowledged-successor");
             let trace = crate::mesh_delete_resume::trace_id(&parent);
             let result = tracing::Instrument::instrument(async {
                 let dir = std::env::temp_dir().join(format!("status-ack-successor-{}", NodeId::mint()));
@@ -363,9 +363,8 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let a = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").unwrap().clone();
                 let b = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").unwrap().clone();
                 let rpc = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap().clone();
-                let pad = rdm_admin::record_store::Scratchpad::new();
-                let held_root = rdm_admin::store_root::StoreRoot::held_at(&dir, pad.clone());
-                let storage = stores(&held_root, a.incarnation_id.as_ref().unwrap()).await;
+                let predecessor_root = rdm_admin::store_root::StoreRoot::at(&dir);
+                let storage = stores(&predecessor_root, a.incarnation_id.as_ref().unwrap()).await;
                 let authority = rdm_admin::status_rpc::StatusAuthority {
                     certs: None,
                     app_channels: None,
@@ -391,20 +390,14 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 assert_eq!(rdm_admin::status_rpc::Declaration::of_records(&storage.nodes.nodes("mesh1").await.unwrap()).len(), 1, "the predecessor reads the acknowledged row");
                 let disk = rdm_admin::store_root::StoreRoot::at(&dir);
                 let independent = stores(&disk, &IncarnationId::mint()).await;
-                assert_eq!(rdm_admin::status_rpc::Declaration::of_records(&independent.nodes.nodes("mesh1").await.unwrap()).len(), 1, "Applied already made the row durable before publication");
+                assert_eq!(rdm_admin::status_rpc::Declaration::of_records(&independent.nodes.nodes("mesh1").await.unwrap()).len(), 1, "Applied made the row durable before the reply");
                 { let mut r = storage.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.states.insert(MeshState::ReadyForTraffic); storage.meshes.put_mesh(&r).await.unwrap(); }
-                assert!(independent.meshes.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().is_empty(), "Q54 does not publish the other held rows");
-                if published {
-                    assert_eq!(pad.publish().await.unwrap().written(), 1, "only the held mesh row remains to publish");
-                    assert_eq!(independent.meshes.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().len(), 1);
-                }
+                assert_eq!(independent.meshes.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().len(), 1, "the mesh row is on the root at its write");
                 drop(independent);
                 drop(authority);
                 drop(storage);
-                drop(held_root);
-                drop(pad);
-                // A successor is an independent process: it cannot read the lost
-                // predecessor's scratchpad. Its root has already been established.
+                drop(predecessor_root);
+                // A successor is an independent process: it reads what its predecessor wrote to the root.
                 let root = rdm_admin::store_root::StoreRoot::at(&dir);
                 let successor = stores(&root, b.incarnation_id.as_ref().unwrap()).await;
                 let rows = rdm_admin::status_rpc::Declaration::of_records(&successor.nodes.nodes("mesh1").await.unwrap()).len();
@@ -428,14 +421,14 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let _ = std::fs::remove_dir_all(&dir);
                 (rows, first.status)
             }, parent).await;
-            observed.push((published, trace, result));
+            observed.push((trace, result));
         }
         observed
     });
     for row in cap.spans() { println!("Q53_SPAN {}", serde_json::to_string(&row).unwrap()); }
-    for (published, trace, (rows, status)) in observed {
-        println!("Q53 published={published} trace={trace} rows={rows} first={status:?}");
-        assert_eq!((rows, status), (1, MemberStatus::ReadyForTraffic), "Q53: acknowledged exact-birth Ready is in the successor's first full; published={published}, trace={trace}");
+    for (trace, (rows, status)) in observed {
+        println!("Q53 trace={trace} rows={rows} first={status:?}");
+        assert_eq!((rows, status), (1, MemberStatus::ReadyForTraffic), "Q53: acknowledged exact-birth Ready is in the successor's first full; trace={trace}");
     }
 }
 

@@ -1,9 +1,7 @@
-//! The fabric states and the check-in checklist (states.md; fabric-state-sync.md,
-//! fabric-state-commit.md, lifecycles/fabric-ready-for-traffic.md).
+//! The fabric states and the check-in checklist (states.md; lifecycles/fabric-ready-for-traffic.md).
 //!
-//! A fabric is `pending`, then `state-sync` once every mesh is ready-for-traffic, then
-//! `state-commit` once the application answers state-synced, then `ready-for-traffic` once the
-//! commit-state and open-traffic checklists have both completed. Only the fabric-primary moves it.
+//! A fabric is `pending`, then `ready-for-traffic` once every mesh is ready-for-traffic and the
+//! open-traffic checklist has completed (Q171). Only the fabric-primary moves it.
 //!
 //! A checklist is a command pair, fabric-primary → mesh-primary → member, and its completion pair back
 //! up. Each primary keeps a checklist of the planned births of the accepted Build; a member counts
@@ -22,14 +20,10 @@ use tokio::sync::watch;
 /// The state of the fabric: the value of a FabricStatus frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum FabricState {
-    /// Created; a mesh is not yet ready-for-traffic.
+    /// Created; a mesh is not yet ready-for-traffic, or the open-traffic checklist runs.
     #[default]
     Pending,
-    /// Every mesh is ready-for-traffic; the application does its work.
-    StateSync,
-    /// The application answered state-synced; the scratchpads are published and traffic is opened.
-    StateCommit,
-    /// Both checklists completed.
+    /// The open-traffic checklist completed.
     ReadyForTraffic,
 }
 
@@ -38,15 +32,13 @@ impl FabricState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
-            Self::StateSync => "state-sync",
-            Self::StateCommit => "state-commit",
             Self::ReadyForTraffic => "ready-for-traffic",
         }
     }
 
     /// The state a FabricStatus frame's value names, when it names one.
     pub fn parse(s: &str) -> Option<Self> {
-        [Self::Pending, Self::StateSync, Self::StateCommit, Self::ReadyForTraffic].into_iter().find(|f| f.as_str() == s)
+        [Self::Pending, Self::ReadyForTraffic].into_iter().find(|f| f.as_str() == s)
     }
 
     /// The view's scope status for this state.
@@ -54,8 +46,6 @@ impl FabricState {
         use crate::model::ScopeStatus as S;
         match self {
             Self::Pending => S::Pending,
-            Self::StateSync => S::StateSync,
-            Self::StateCommit => S::StateCommit,
             Self::ReadyForTraffic => S::ReadyForTraffic,
         }
     }
@@ -72,8 +62,7 @@ impl FabricState {
 /// mesh's status rows as the first act of entering ready-for-traffic, before it latches or admits
 /// anything, then applies the event at every other mesh primary. An admin of any mesh reads the row among
 /// its own mesh's rows, else among the fabric-primary's mesh's rows on the store root, so a command the
-/// fabric-primary admitted once the fabric was ready finds the fact wherever it lands. The Fabric row on
-/// the store root is published at the first state-commit, before that, and is not the signal.
+/// fabric-primary admitted once the fabric was ready finds the fact wherever it lands.
 #[derive(Debug, Clone, Default)]
 pub struct FirstReady(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
@@ -224,7 +213,6 @@ impl Checklists {
     pub fn carry_check_in(&self, frame: &rdm_transport::topology::Frame, carry: impl FnOnce(&rdm_transport::topology::Frame)) -> rdm_transport::topology::CompletionCarry {
         use rdm_transport::topology::{CompletionCarry, Frame};
         let (hook, kind) = match frame.data() {
-            Frame::StateCommitted { hook, .. } => (hook, StateCommand::StateCommit),
             Frame::TrafficOpened { hook, .. } => (hook, StateCommand::OpenTraffic),
             _ => return CompletionCarry::NotHeld,
         };
@@ -468,7 +456,7 @@ mod tests {
     use crate::model::FabricId;
 
     fn key(build: &str, attempt: u32, f: &FabricId) -> StateKey {
-        StateKey { kind: StateCommand::StateCommit, fabric_id: f.clone(), build_id: build.into(), attempt }
+        StateKey { kind: StateCommand::OpenTraffic, fabric_id: f.clone(), build_id: build.into(), attempt }
     }
 
     fn planned(n: &NodeId, i: &IncarnationId, name: &str) -> BTreeMap<NodeId, Expected> {
@@ -483,13 +471,13 @@ mod tests {
         let (fabric, node, inc) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
         let digest_view = Checklists::default();
         let k = key("66h8qrqvaajk", 1, &fabric);
-        let up = |build: &str, attempt: u32, inc: &IncarnationId| StateCommand::StateCommit.up(&key(build, attempt, &fabric), node.clone(), inc.clone());
+        let up = |build: &str, attempt: u32, inc: &IncarnationId| StateCommand::OpenTraffic.up(&key(build, attempt, &fabric), node.clone(), inc.clone());
         fn sender<'a>(_node: &'a NodeId, held: &'a IncarnationId) -> Option<(Option<&'a IncarnationId>, &'static str)> {
             Some((Some(held), "mesh2.admin.1"))
         }
 
         let early = digest_view.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc));
-        assert!(matches!(&early, StatusReply::NotReady { reason } if reason.contains("no open commit-state checklist")), "a check-in before the down op: {early:?}");
+        assert!(matches!(&early, StatusReply::NotReady { reason } if reason.contains("no open open-traffic checklist")), "a check-in before the down op: {early:?}");
 
         digest_view.open(&k);
         digest_view.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
@@ -525,7 +513,7 @@ mod tests {
         let k = key("66h8qrqvaajk", 1, &fabric);
         digest_view.open(&k);
         digest_view.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
-        let up = StateCommand::StateCommit.up(&k, node.clone(), inc.clone());
+        let up = StateCommand::OpenTraffic.up(&k, node.clone(), inc.clone());
         assert_eq!(digest_view.check_in("mesh1.admin.1", None, &up), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
         assert!(!digest_view.complete(&k), "nothing counted");
     }
@@ -701,8 +689,8 @@ mod tests {
 
     #[test]
     fn the_states_are_ordered_and_named_as_the_frame_carries_them() {
-        assert!(FabricState::Pending < FabricState::StateSync && FabricState::StateSync < FabricState::StateCommit && FabricState::StateCommit < FabricState::ReadyForTraffic);
-        for s in [FabricState::Pending, FabricState::StateSync, FabricState::StateCommit, FabricState::ReadyForTraffic] {
+        assert!(FabricState::Pending < FabricState::ReadyForTraffic);
+        for s in [FabricState::Pending, FabricState::ReadyForTraffic] {
             assert_eq!(FabricState::parse(s.as_str()), Some(s));
             assert_eq!(serde_json::to_value(s.scope()).unwrap(), serde_json::json!(s.as_str()), "the view's scope status names the state the same way");
         }

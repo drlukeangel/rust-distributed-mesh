@@ -157,9 +157,7 @@ async fn seed_runner_completes_every_operation_on_container() {
 
 /// One MN estate whose initial Build settled and whose fabric first reached ready-for-traffic, and a second
 /// Build (two more rpc nodes) accepted and still reconciling: the estate and the stream that follows it.
-/// A restart is refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic
-/// (states.md "The initial fabric before ready-for-traffic"), ahead of `build-in-progress`: the Build in
-/// flight is a second one.
+/// The Build in flight is a second one, accepted after the Day-0 Build completed (Q170).
 async fn estate_with_build_in_flight(cell: &str) -> (Estate, BuildStream) {
     let estate = Estate::bootstrap(owner(cell, "restart-refusals"), "fabric1", "mesh1").await;
     let desired = |rpcs: u32| FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, rpcs)])] };

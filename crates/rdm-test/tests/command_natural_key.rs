@@ -257,9 +257,6 @@ impl HeldActions {
 
 #[async_trait::async_trait]
 impl rdm_admin::fabric_status::StateActions for HeldActions {
-    async fn commit_state(&self, _node: &rdm_core::PathName) -> Result<(), String> {
-        self.run().await
-    }
     async fn open_traffic(&self, _node: &rdm_core::PathName) -> Result<(), String> {
         self.run().await
     }
@@ -379,36 +376,36 @@ fn a_state_command_sent_again_by_the_new_primary_is_the_same_state_key_and_its_a
         .await
         .expect("the birth hears admin2's digest");
 
-        // commit-state: admin1 commands it and the action runs, held.
+        // Attempt 1's checklist: admin1 commands it and the action runs, held.
         birth.record_mesh_primary(&birth.admin, 1).await;
-        assert_eq!(birth.state_from(&birth.admin, StateCommand::StateCommit, 1).await, StatusReply::Applied, "the checklist's first command is admitted");
+        assert_eq!(birth.state_from(&birth.admin, StateCommand::OpenTraffic, 1).await, StatusReply::Applied, "the checklist's first command is admitted");
         actions.entered.notified().await;
         // The seat moves; the new holder sends the same checklist while the action runs.
         birth.record_mesh_primary(&admin2, 2).await;
-        assert_eq!(birth.state_from(&admin2, StateCommand::StateCommit, 1).await, StatusReply::AlreadyApplied, "the same checklist from the new seat holder is the checklist already taken");
+        assert_eq!(birth.state_from(&admin2, StateCommand::OpenTraffic, 1).await, StatusReply::AlreadyApplied, "the same checklist from the new seat holder is the checklist already taken");
         actions.gate.send_replace(true);
-        checked_in(&birth.admin, &spans, "state-committed", 1).await;
-        checked_in(&admin2, &spans, "state-committed", 1).await;
-        assert_eq!(actions.runs(), 1, "the commit-state action runs once for the checklist, whoever commands it");
-
-        // open-traffic: the action is stored before the seat moves; the new holder is checked in at once.
-        birth.record_mesh_primary(&birth.admin, 3).await;
-        assert_eq!(birth.state_from(&birth.admin, StateCommand::OpenTraffic, 1).await, StatusReply::Applied);
         checked_in(&birth.admin, &spans, "traffic-opened", 1).await;
-        birth.record_mesh_primary(&admin2, 4).await;
-        assert_eq!(birth.state_from(&admin2, StateCommand::OpenTraffic, 1).await, StatusReply::AlreadyApplied, "a stored checklist from the new seat holder is the checklist already taken");
         checked_in(&admin2, &spans, "traffic-opened", 1).await;
-        assert_eq!(actions.runs(), 2, "one action per checklist: commit-state once and open-traffic once");
-        for state_key in ["commit-state", "open-traffic"] {
-            let acted = |a: &str| spans_named(&spans, "rdm.node_admin.fabric.update.via-member-check-in").into_iter().filter(|f| f.get("command").map(String::as_str) == Some(state_key) && f.get("acted").map(String::as_str) == Some(a)).count();
-            assert_eq!((acted("true"), acted("false")), (1, 1), "{state_key}: one acted checklist for the first holder and one check-in without acting for the new holder");
+        assert_eq!(actions.runs(), 1, "the open-traffic action runs once for the checklist, whoever commands it");
+
+        // Attempt 2's checklist: the action is stored before the seat moves; the new holder is checked in at once.
+        birth.record_mesh_primary(&birth.admin, 3).await;
+        assert_eq!(birth.state_from(&birth.admin, StateCommand::OpenTraffic, 2).await, StatusReply::Applied);
+        checked_in(&birth.admin, &spans, "traffic-opened", 2).await;
+        birth.record_mesh_primary(&admin2, 4).await;
+        assert_eq!(birth.state_from(&admin2, StateCommand::OpenTraffic, 2).await, StatusReply::AlreadyApplied, "a stored checklist from the new seat holder is the checklist already taken");
+        checked_in(&admin2, &spans, "traffic-opened", 2).await;
+        assert_eq!(actions.runs(), 2, "one action per checklist: once for each attempt");
+        for attempt in ["1", "2"] {
+            let acted = |a: &str| spans_named(&spans, "rdm.node_admin.fabric.update.via-member-check-in").into_iter().filter(|f| f.get("attempt").map(String::as_str) == Some(attempt) && f.get("acted").map(String::as_str) == Some(a)).count();
+            assert_eq!((acted("true"), acted("false")), (1, 1), "attempt {attempt}: one acted checklist for the first holder and one check-in without acting for the new holder");
         }
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }
 
-/// CONTRACT: a member checks in with the primary that commanded it (fabric-state-commit.md, checklist
-/// sequence: "M->>N: commit-state (exact planned birth)" then "N->>M: state-committed"; states.md,
+/// CONTRACT: a member checks in with the primary that commanded it (fabric-ready-for-traffic.md, checklist
+/// sequence: "M->>N: open-traffic (exact planned birth)" then "N->>M: traffic-opened"; states.md,
 /// "The check-in checklist": "A new primary, through election or recovery, re-sends the current state's command.
 /// Members already done check in again, and the checklist rebuilds itself"). The seat moved to
 /// admin2, which commands the birth at once; the birth has not yet heard the seat move, so its seat
@@ -462,9 +459,9 @@ fn a_state_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_check
 
         // The birth's primary view names admin1; admin2, which took the seat, commands the checklist.
         birth.record_mesh_primary(&birth.admin, 1).await;
-        assert_eq!(birth.state_from(&admin2, StateCommand::StateCommit, 1).await, StatusReply::Applied, "the checklist's first command is admitted, whoever sends it");
-        checked_in(&admin2, &spans, "state-committed", 1).await;
-        let at_admin1 = birth.admin.observer.check_ins.borrow().iter().filter(|r| r.op() == "state-committed").count();
+        assert_eq!(birth.state_from(&admin2, StateCommand::OpenTraffic, 1).await, StatusReply::Applied, "the checklist's first command is admitted, whoever sends it");
+        checked_in(&admin2, &spans, "traffic-opened", 1).await;
+        let at_admin1 = birth.admin.observer.check_ins.borrow().iter().filter(|r| r.op() == "traffic-opened").count();
         assert_eq!(at_admin1, 0, "the check-in went to the commander, never to the holder the birth's primary view names");
         // The completion call's span closes once its reply is back at the birth, after admin2 took it.
         let admin2_id = admin2.launcher.node_id.to_string();
@@ -619,7 +616,7 @@ fn the_node_answers_a_connections_delete_on_its_command_stream_in_order_for_both
 /// CONTRACT (i146 Q44, Q39; node-rpc.md §43 and its outcome table, "receiving birth proven exited or
 /// removed ... UNAVAILABLE"): a member's check-in owed to a primary that is removed ends receiver-gone,
 /// `UNAVAILABLE`, and is owed again to the holder the seat names next; the action runs once. The birth
-/// takes admin2's commit-state command, its action held; admin2 goes away (its endpoint closed), the
+/// takes admin2's open-traffic command, its action held; admin2 goes away (its endpoint closed), the
 /// action is released and the check-in is owed to admin2 and resent; admin2's removal reaches the
 /// birth's resolver and ends the call `UNAVAILABLE`; the seat then moves to admin3, and the check-in is
 /// made there. Must NOT happen: the call ending while admin2 was only unreachable, a second completion
@@ -642,7 +639,7 @@ fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next
 
         // admin1 holds the seat at revision 1 from its boot.
         birth.record_mesh_primary(&admin2, 2).await;
-        assert_eq!(birth.state_from(&admin2, StateCommand::StateCommit, 1).await, StatusReply::Applied, "the checklist's command is admitted");
+        assert_eq!(birth.state_from(&admin2, StateCommand::OpenTraffic, 1).await, StatusReply::Applied, "the checklist's command is admitted");
         actions.entered.notified().await;
         // admin2 goes away; the check-in is owed to it and resent. Dropping admin2 does not wait for it to
         // stop serving, so the action is released only once the birth's own call to admin2 (the
@@ -689,7 +686,7 @@ fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next
         assert!(admin3.observer.check_ins.borrow().is_empty(), "nothing is sent to admin3 before the seat names it");
         // The seat names admin3: the check-in is owed to it and made there.
         birth.record_mesh_primary(&admin3, 3).await;
-        checked_in(&admin3, &spans, "state-committed", 1).await;
+        checked_in(&admin3, &spans, "traffic-opened", 1).await;
         let retargeted = spans_named(&spans, "rdm.node_admin.status.update.via-completion-retargeted");
         assert!(
             retargeted.iter().any(|r| r.get("from").map(String::as_str) == Some(gone_id.as_str()) && r.get("to") == Some(&next_id) && r.get("why").is_some_and(|w| w.ends_with(": UNAVAILABLE"))),

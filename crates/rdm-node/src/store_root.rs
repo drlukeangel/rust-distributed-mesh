@@ -29,27 +29,19 @@
 //! step, and refuses by name a root that holds entries and no marker, or a marker of another value,
 //! naming its path and the value found; nothing is migrated.
 //!
-//! The store exists once the fabric's first state-commit published it (states.md, Setting a state;
-//! node-identity-and-state.md §2.7, The write: "Before then `system.ops.nodes` and
-//! `system.ops.meshes` do not exist"). A node that opens a root holding no Fabric row yet holds
-//! every row it writes in its [`Scratchpad`] until its commit-state action publishes them; a node
-//! that opens a root the fabric-primary already published the Fabric row to writes to it directly.
-//! Four writes reach the root from their store's open, before state-commit too, never held: a node's
-//! record with its declared states (an Applied declaration, Q54), a birth's runtime row (its
-//! launching admin's durable map, written once), both lines of `nodes.jsonl`; the Build facts and the
-//! meshes' attempt claims, locks under `locks/in-flight/` (a committed Build fact, Q61, build.md §5.2).
+//! Every write reaches the root from its store's open: the fabric-primary's Fabric and Mesh rows, the
+//! mesh-primaries' Node and Mesh rows, every node's connection rows, the Build facts and the meshes'
+//! attempt claims (Q171).
 
 use crate::model::{FabricId, IncarnationId};
-use crate::record_store::{FileRecords, Scratchpad};
+use crate::record_store::FileRecords;
 use crate::storage_error::StorageError;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// The env variable that names a node's `store_dir`.
 pub use rdm_core::launch::ENV_STORE_DIR;
 
-/// The fabric's store file under the root: the fabric-primary publishes the Fabric record's line to
-/// it at the fabric's first state-commit, so a root whose file holds one is a store that exists.
+/// The fabric's store file under the root: the Fabric record's writes.
 pub const FABRIC_FILE: &str = "fabric.jsonl";
 /// The meshes' store file: every Mesh record's writes.
 pub const MESHES_FILE: &str = "meshes.jsonl";
@@ -66,10 +58,6 @@ pub const LOCKS_DIR: &str = "locks";
 pub const FABRIC_RECORD_KIND: &str = "fabric-record";
 
 /// Whether the root `dir`'s fabric file holds a Fabric record's line: the store exists.
-fn published(dir: &Path) -> Result<bool, StorageError> {
-    Ok(crate::store_log::read_file(&dir.join(FABRIC_FILE))?.iter().any(|l| l.kind() == FABRIC_RECORD_KIND))
-}
-
 /// The fabrics' name index, `<store_dir>/fabrics/`, beside the per-fabric roots (R-FN1).
 pub const FABRIC_NAMES: &str = "fabrics";
 
@@ -135,22 +123,18 @@ pub struct StoreRoot {
     /// roots for a root opened on one ([`Self::open`]); the root's own directory for a root handed in
     /// whole ([`Self::at`]), whose caller chose the fabric's directory and owns nothing above it.
     store_dir: PathBuf,
-    /// What this process holds before the fabric's first state-commit: `Some` when it opened the
-    /// root before the Fabric row was published to it.
-    scratchpad: Option<Arc<Scratchpad>>,
 }
 
 impl std::fmt::Debug for StoreRoot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StoreRoot").field("dir", &self.dir).field("writes_to", &self.writes_to()).finish()
+        f.debug_struct("StoreRoot").field("dir", &self.dir).finish()
     }
 }
 
 impl StoreRoot {
     /// The root of `fabric_id` under `store_dir`: `store_dir` must be a readable directory, refused by
     /// name (its path and the cause) otherwise and never created here; the fabric's directory under it
-    /// is created when absent. A root that holds no Fabric row yet is opened with a scratchpad: the
-    /// stores opened on it hold their rows until it is published.
+    /// is created when absent.
     pub fn open(store_dir: &Path, fabric_id: &FabricId) -> Result<Self, StorageError> {
         let refused = |cause: String| StorageError::Io { file: store_dir.display().to_string(), reason: format!("the store_dir ({ENV_STORE_DIR}) cannot be used: {cause}") };
         let meta = std::fs::metadata(store_dir).map_err(|e| refused(e.to_string()))?;
@@ -168,8 +152,7 @@ impl StoreRoot {
             create_root(store_dir, &dir)?;
         }
         check_layout(&dir)?;
-        let scratchpad = (!published(&dir)?).then(Scratchpad::new);
-        Ok(Self { dir, store_dir: store_dir.to_path_buf(), scratchpad })
+        Ok(Self { dir, store_dir: store_dir.to_path_buf() })
     }
 
     /// The root at `dir` itself, the fabric's directory already chosen and created by the caller (a
@@ -178,13 +161,7 @@ impl StoreRoot {
     /// The caller is the root's creator: a directory with no layout marker is given this build's.
     pub fn at(dir: &Path) -> Self {
         mark(dir);
-        Self { dir: dir.to_path_buf(), store_dir: dir.to_path_buf(), scratchpad: None }
-    }
-
-    /// [`Self::at`], every store opened on it holding its rows in `scratchpad` until it is published.
-    pub fn held_at(dir: &Path, scratchpad: Arc<Scratchpad>) -> Self {
-        mark(dir);
-        Self { dir: dir.to_path_buf(), store_dir: dir.to_path_buf(), scratchpad: Some(scratchpad) }
+        Self { dir: dir.to_path_buf(), store_dir: dir.to_path_buf() }
     }
 
     /// `layout`: the root's layout marker (R-SR1).
@@ -192,47 +169,14 @@ impl StoreRoot {
         self.dir.join(LAYOUT)
     }
 
-    /// What this process holds for the root before the fabric's first state-commit, when it opened
-    /// the root before then.
-    pub fn scratchpad(&self) -> Option<&Arc<Scratchpad>> {
-        self.scratchpad.as_ref()
-    }
-
-    /// Where a write to a store opened on this root goes now: `scratchpad` before its publication,
-    /// `store-root` after it, or when the root already held the Fabric row at open.
-    pub fn writes_to(&self) -> &'static str {
-        match &self.scratchpad {
-            Some(s) if !s.published() => "scratchpad",
-            _ => "store-root",
-        }
-    }
-
     /// Open the store `dir` under `base` (a directory of this root), written by the process born as
-    /// `writer`: held in this root's scratchpad until it is published.
+    /// `writer`.
     pub async fn records(&self, base: &Path, dir: &str, writer: &IncarnationId) -> Result<FileRecords, StorageError> {
-        match &self.scratchpad {
-            Some(scratchpad) => {
-                let store = base.join(dir);
-                let store = store.strip_prefix(&self.dir).unwrap_or(&store).display().to_string().trim_end_matches('/').to_string();
-                FileRecords::open_held(base, dir, writer, scratchpad, store).await
-            }
-            None => FileRecords::open(base, dir, writer).await,
-        }
+        FileRecords::open(base, dir, writer).await
     }
 
-    /// Open the store file `file` of this root, reading `formats`: held in this root's scratchpad
-    /// until it is published, named by its store (the file without `.jsonl`) in the publication.
+    /// Open the store file `file` of this root, reading `formats`.
     pub async fn log(&self, file: &str, formats: crate::store_log::Formats) -> Result<crate::store_log::StoreLog, StorageError> {
-        let path = self.dir.join(file);
-        match &self.scratchpad {
-            Some(scratchpad) => crate::store_log::StoreLog::open_held(&path, formats, scratchpad, file.trim_end_matches(".jsonl").to_string()).await,
-            None => crate::store_log::StoreLog::open(&path, formats).await,
-        }
-    }
-
-    /// Open the store file `file` straight to the disk, never held: a store whose writes are durable
-    /// before the fabric's first state-commit too.
-    pub async fn log_direct(&self, file: &str, formats: crate::store_log::Formats) -> Result<crate::store_log::StoreLog, StorageError> {
         crate::store_log::StoreLog::open(&self.dir.join(file), formats).await
     }
 
@@ -247,13 +191,9 @@ impl StoreRoot {
     }
 
     /// Open `<store_dir>/fabrics/`, the fabrics' name index above the per-fabric roots (R-FN1, Q109: the
-    /// fabric's (path, name) claim sits at the path level, above the per-fabric store roots), written by the process born as `writer`: held in this root's scratchpad until it is
-    /// published, named `fabrics` in the publication, as every store opened on it.
+    /// fabric's (path, name) claim sits at the path level, above the per-fabric store roots), written by the process born as `writer`.
     pub async fn fabric_names(&self, writer: &IncarnationId) -> Result<FileRecords, StorageError> {
-        match &self.scratchpad {
-            Some(scratchpad) => FileRecords::open_held(&self.store_dir, FABRIC_NAMES, writer, scratchpad, FABRIC_NAMES.to_string()).await,
-            None => FileRecords::open(&self.store_dir, FABRIC_NAMES, writer).await,
-        }
+        FileRecords::open(&self.store_dir, FABRIC_NAMES, writer).await
     }
 
     /// `locks/name/<name>`: the claim of a mesh name or a node path.name (R-SR5).

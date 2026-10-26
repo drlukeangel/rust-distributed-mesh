@@ -85,9 +85,9 @@ pub enum NodePrimaryUpdateReply {
         /// The operation in conflict.
         operation: String,
     },
-    /// The initial fabric has not first reached ready-for-traffic (R-PB1): no primary moves.
-    RejectedFabricNotReady {
-        /// The workflow refused and the fabric's state.
+    /// Reserved position (Q171): never sent.
+    Reserved2 {
+        /// Never read.
         reason: String,
     },
     /// The receiver is not the primary the call needs: a command on a node that is not the primary of
@@ -174,17 +174,13 @@ impl NodePrimaryUpdateReply {
         Self::RejectedNotPrimary { reason: crate::status::within(reason, MAX_REASON_BYTES) }
     }
 
-    /// `RejectedFabricNotReady` with `reason` within its budget.
-    pub fn fabric_not_ready(reason: &str) -> Self {
-        Self::RejectedFabricNotReady { reason: crate::status::within(reason, MAX_REASON_BYTES) }
-    }
 
     /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
             Self::PrimaryUpdated { .. } => "primary-updated",
             Self::RejectedConflictingPayload { .. } => "rejected-conflicting-payload",
-            Self::RejectedFabricNotReady { .. } => "rejected-fabric-not-ready",
+            Self::Reserved2 { .. } => "reserved-2",
             Self::RejectedNotPrimary { .. } => "rejected-not-primary",
             Self::RejectedStaleRevision { .. } => "rejected-stale-revision",
             Self::NotReady { .. } => "not-ready",
@@ -222,7 +218,7 @@ impl NodeProtocol for NodePrimaryUpdate {
         match reply {
             NodePrimaryUpdateReply::PrimaryUpdated { .. } => "primary-updated",
             NodePrimaryUpdateReply::RejectedConflictingPayload { .. } => "rejected-conflicting-payload",
-            NodePrimaryUpdateReply::RejectedFabricNotReady { .. } => "rejected-fabric-not-ready",
+            NodePrimaryUpdateReply::Reserved2 { .. } => "reserved-2",
             NodePrimaryUpdateReply::RejectedNotPrimary { .. } => "rejected-not-primary",
             NodePrimaryUpdateReply::RejectedStaleRevision { .. } => "rejected-stale-revision",
             NodePrimaryUpdateReply::NotReady { .. } => "not-ready",
@@ -240,7 +236,7 @@ impl NodeProtocol for NodePrimaryUpdate {
         match reply {
             NodePrimaryUpdateReply::PrimaryUpdated { .. } => ReplyKind::Success,
             NodePrimaryUpdateReply::RejectedConflictingPayload { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
-            NodePrimaryUpdateReply::RejectedFabricNotReady { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodePrimaryUpdateReply::Reserved2 { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             NodePrimaryUpdateReply::RejectedNotPrimary { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             NodePrimaryUpdateReply::RejectedStaleRevision { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             NodePrimaryUpdateReply::NotReady { .. } => ReplyKind::NotReady,

@@ -51,8 +51,6 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         let root = std::env::temp_dir().join(format!("connections-rename-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        // The cell reads the node's kept log on the store root: its fabric is past its first state-commit.
-        crate::common::store_past_state_commit(&store, &fabric).await;
         let born: PathName = "mesh1.rpc.1".parse().unwrap();
         let taken: PathName = born.renamed();
         let peer_name: PathName = "mesh1.rpc.2".parse().unwrap();
@@ -282,8 +280,6 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
         let root = std::env::temp_dir().join(format!("join-row-name-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        // The cell reads the node's kept log on the store root: its fabric is past its first state-commit.
-        crate::common::store_past_state_commit(&store, &fabric).await;
         let born: PathName = "mesh1.rpc.1".parse().unwrap();
         let taken: PathName = born.renamed();
         let dir = root.join(born.to_string());

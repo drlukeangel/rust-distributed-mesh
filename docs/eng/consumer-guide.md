@@ -22,7 +22,7 @@ the linked page before asking: every answer here was already on one.
 |---|---|
 | create, resize or reshape meshes and nodes | the Build: [build.md §1–2](../architecture/build.md#1-build-is-the-only-topology-mutation-engine), the wire on [node-rpc-envelope.md, Build op 0x20](../architecture/node-rpc-envelope.md#build-op-0x20-rdm) |
 | name the executable each node runs, and replace it | [build-deployment.md](../architecture/build-deployment.md) |
-| know when the fabric is usable | [states.md](../architecture/lifecycles/states.md): pending → state-sync → state-commit → ready-for-traffic; a Build that changes the fabric is Complete only after its own ready-for-traffic (Q154/Q158) |
+| know when the fabric is usable | [states.md](../architecture/lifecycles/states.md): pending → ready-for-traffic; a Build that changes the fabric is Complete only after its own ready-for-traffic (Q154) |
 | stop, start, restart, delete one node | the lifecycle pages under [lifecycles/](../architecture/fabric-mesh-node-lifecycles.md) (`node-stop.md`, `node-start.md`, `node-restart.md`, `node-delete.md`) |
 | delete the whole fabric | [fabric-delete.md](../architecture/lifecycles/fabric-delete.md): wait for the fabric.delete stream's `Complete` (fabric.deleted), then `node.delete` of the fabric-primary to its `node.deleted`; the process then exits by itself. Kill nothing before that |
 
@@ -81,8 +81,7 @@ count against the config cap.
 |---|---|
 | before a node is ready (`before_ready`; `inherited` says whether the data dir was carried) | [fabric-node-hooks.md, before_ready](../architecture/fabric-node-hooks.md#before_ready) |
 | after it is ready | [after_ready](../architecture/fabric-node-hooks.md#after_ready) |
-| the fabric's state-sync (my Day-0 work) | [sync_state](../architecture/fabric-node-hooks.md#sync_state); [fabric-state-sync.md](../architecture/lifecycles/fabric-state-sync.md) |
-| traffic opening | [traffic_opened](../architecture/fabric-node-hooks.md#traffic_opened) |
+| traffic opening (and my Day-0 work, which is my own) | [traffic_opened](../architecture/fabric-node-hooks.md#traffic_opened) |
 | the clock | [rafka-time](../architecture/fabric-node-hooks.md#rafka-time) |
 
 ## Talking between nodes

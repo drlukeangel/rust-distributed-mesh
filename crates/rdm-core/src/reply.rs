@@ -73,8 +73,6 @@ pub fn rejected_incomplete_manifest(missing: u32, without_exit: Vec<String>, rea
 pub fn rejected_source_failed(source: String, op: String, cause: String) -> StatusReply { StatusReply::RejectedSourceFailed { source, op, cause } }
 /// Construct the typed rejected-tags outcome.
 pub fn rejected_tags(reason: String) -> StatusReply { StatusReply::RejectedTags { reason } }
-/// Construct the typed rejected-fabric-not-ready outcome.
-pub fn rejected_fabric_not_ready(workflow: String, status: String) -> StatusReply { StatusReply::RejectedFabricNotReady { workflow, status } }
 /// Construct the typed rejected-name outcome.
 pub fn rejected_name(reason: String) -> StatusReply { StatusReply::RejectedName { reason } }
 /// Construct the typed busy-holding-connections outcome.
@@ -89,8 +87,6 @@ pub fn bounded_config_not_applied(node: &str, answered: &str, reason: &str) -> S
 pub fn bounded_blocked(node_id: NodeId, incarnation: IncarnationId, reason: &str, retry_on: RetryOn) -> StatusReply { StatusReply::blocked(node_id, incarnation, reason, retry_on) }
 /// Construct the bounded rejected-tags outcome.
 pub fn bounded_rejected_tags(reason: &str) -> StatusReply { StatusReply::rejected_tags(reason) }
-/// Construct the bounded rejected-fabric-not-ready outcome.
-pub fn bounded_rejected_fabric_not_ready(workflow: &str, status: &str) -> StatusReply { StatusReply::rejected_fabric_not_ready(workflow, status) }
 /// Construct the bounded node-row-refused outcome.
 pub fn bounded_node_row_refused(node: &str, reason: &str) -> StatusReply { StatusReply::node_row_refused(node, reason) }
 /// Construct the bounded rejected-name outcome.
@@ -276,8 +272,6 @@ use serde::{Deserialize, Serialize};
 pub fn rejected_conflicting_payload(operation: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedConflictingPayload { operation } }
 /// Construct the typed already-applied outcome of a take-over applied already.
 pub fn already_applied(revisions: Vec<(String, crate::framing::Birth, crate::framing::Birth, u64)>) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::AlreadyApplied { revisions } }
-/// Construct the typed rejected-fabric-not-ready outcome.
-pub fn rejected_fabric_not_ready(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedFabricNotReady { reason } }
 /// Construct the typed rejected-not-primary outcome.
 pub fn rejected_not_primary(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedNotPrimary { reason } }
 /// Construct the typed rejected-stale-revision outcome.
@@ -298,8 +292,6 @@ pub fn failed(step: String, reason: String, code: crate::outcome::Code) -> NodeP
 pub fn bounded_failed(step: &str, reason: &str, code: crate::outcome::Code) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::failed(step, reason, code) }
 /// Construct the bounded not-primary outcome.
 pub fn bounded_not_primary(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::not_primary(reason) }
-/// Construct the bounded fabric-not-ready outcome.
-pub fn bounded_fabric_not_ready(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::fabric_not_ready(reason) }
 }
 
 /// Constructors for the TopologyReply family.

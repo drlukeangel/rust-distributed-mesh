@@ -40,12 +40,11 @@ pub struct NameDoors<'a> {
     pub rename: &'a crate::status_rpc::Rename,
 }
 
-pub use crate::node_properties::FirstReadyOnRoot;
 
 /// Serve an `UpdateName` at the admin `me` (born `me_id`): one span holds the whole command, its
 /// outcome the reply's name.
 #[allow(clippy::too_many_arguments)]
-pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool, first_ready: FirstReadyOnRoot<'_>, req: &StatusRequest) -> StatusReply {
+pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool, req: &StatusRequest) -> StatusReply {
     let StatusRequest::UpdateName { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateName only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.name.update.via-writer",
@@ -55,14 +54,9 @@ pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
     );
     let reply = tracing::Instrument::instrument(
         async {
-            match crate::node_properties::refused_before_first_ready(me, view, first_ready, req.op(), node_id, &span).await {
-                Some(refused) => refused,
-                None => {
-                    // A snapshot of the view: no read lock is held across the row write's I/O.
-                    let now = view.read().await.clone();
-                    rename(me, me_id, &now, storage, doors, deleted, left, node_id, incarnation, name, &span).await
-                }
-            }
+            // A snapshot of the view: no read lock is held across the row write's I/O.
+            let now = view.read().await.clone();
+            rename(me, me_id, &now, storage, doors, deleted, left, node_id, incarnation, name, &span).await
         },
         span.clone(),
     )

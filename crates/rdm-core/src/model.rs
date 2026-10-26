@@ -66,12 +66,6 @@ pub enum ScopeStatus {
     Dead,
     /// The fabric primary has decided a peer mesh is reborn (`investigate`).
     Degraded,
-    /// A fabric state: every mesh is ready-for-traffic and the application does its day-0 and seed
-    /// work (fabric-state-sync.md).
-    StateSync,
-    /// A fabric state: commit-state publishes what the scratchpads hold
-    /// (fabric-state-commit.md); open-traffic runs inside it.
-    StateCommit,
 }
 
 impl ScopeStatus {
@@ -83,8 +77,6 @@ impl ScopeStatus {
             Self::Leaving => "leaving",
             Self::Dead => "dead",
             Self::Degraded => "degraded",
-            Self::StateSync => "state-sync",
-            Self::StateCommit => "state-commit",
         }
     }
 }

@@ -222,7 +222,7 @@ Size:
 
 #### Reserved lifecycle frame positions
 
-The six reserved type names in the receive table retain their historical page positions; their
+The eight reserved type names in the receive table retain their historical page positions; their
 old numeric wire discriminants are not reused. None is published. Each type is refused before data
 decode as via-reserved; an unknown type is refused distinctly. node.connections.delete and node.stop are calls, not gossip: connections-deleting,
 connections-deleted and stopping reach peers as the member's status in its mesh-primary's member
@@ -237,6 +237,8 @@ NodeLeaving             { op: LifecycleOp, forwarded_by: Option<String> }, // re
 NodeLeft                { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
 NodeConnectionsDeleted  { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
 NewFabricPrimary        { primary: Primary, endpoint_id: String, transport_addr: SocketAddr, admin_api_base: Option<String> }, // reserved (R-G3): never published
+Reserved15              { hook: StateHook, forwarded_by: Option<String> }, // reserved (Q171): never published
+Reserved16              { hook: StateHook, forwarded_by: Option<String> }, // reserved (Q171): never published
 
 LifecycleOp {
     build_id: String,
@@ -289,13 +291,11 @@ announced the same way. Best-effort dissemination: a stop does not wait for it (
 
 #### Fabric state gossip hooks
 
-The fabric state-commit and traffic-opening pairs run these hooks in the same accepted
-command/completion paths as their [Status calls](node-rpc-envelope.md#fabric-status-command-pairs):
+The fabric's traffic-opening pair runs these hooks in the same accepted command/completion paths
+as its [Status calls](node-rpc-envelope.md#fabric-status-command-pairs):
 
 | directed call | hook frame | author |
 |---|---|---|
-| commit-state | StateCommitting | the commanding primary |
-| state-committed | StateCommitted | subject sending its completed check-in |
 | open-traffic | TrafficOpening | the commanding primary |
 | traffic-opened | TrafficOpened | subject sending its completed check-in |
 
@@ -515,8 +515,9 @@ P(n) is the 20-digit zero-padded decimal representation of the existing u64 vers
 | `NodeDeleted` (`rdm.node.deleted`) | operation fact, terminal | the author birth / `(build_id, attempt, operation, node_id, incarnation)` | absent; stands after unrelated traffic | kind and the complete operation identity |
 | `MeshStatus`, `FabricStatus` (`rdm.mesh.status`, `rdm.fabric.status`) | replacement state | the author birth / stable mesh or fabric status scope | `P(the primary's revision) + "." + P(changed_at_rafka_ms)`, lexical order; the publisher takes its revision from the Mesh row. A predecessor's later timestamp loses to the successor's higher revision; within one primary its change time orders changes | subject and composite sequence; equal sequence is duplicate with identical content, inconsistent with different content |
 | `Concern` (`rdm.mesh.concern`, position 10) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
-| `StateCommitting`, `StateCommitted`, `TrafficOpening`, `TrafficOpened` (`rdm.fabric.state.committing`, `rdm.fabric.state.committed`, `rdm.fabric.traffic.opening`, `rdm.fabric.traffic.opened`) | operation fact | the original author birth / `(fabric_id, build_id, attempt, operation, node_id, incarnation)` | absent; Q21 stands: no checklist or reopening, ordinary span and the existing open-checklist carrier only; a closed or superseded checklist is carried nowhere | kind and complete state operation identity; a repeat invokes no carrier |
+| `TrafficOpening`, `TrafficOpened` (`rdm.fabric.traffic.opening`, `rdm.fabric.traffic.opened`) | operation fact | the original author birth / `(fabric_id, build_id, attempt, operation, node_id, incarnation)` | absent; Q21 stands: no checklist or reopening, ordinary span and the existing open-checklist carrier only; a closed or superseded checklist is carried nowhere | kind and complete state operation identity; a repeat invokes no carrier |
 | `NodeConnectionsDeleting`, `NodeLeaving`, `NodeLeft`, `NodeConnectionsDeleted`, `NewFabricPrimary` (`rdm.node.connections.deleting`, `rdm.node.leaving`, `rdm.node.left`, `rdm.node.connections.deleted`, `rdm.fabric.primary.new`) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
+| `Reserved15`, `Reserved16` (`rdm.fabric.state.committing`, `rdm.fabric.state.committed`, positions 16 and 17, Q171) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
 
 A publisher change: a delayed predecessor cannot replace the successor's status: the author's
 the primary's revision is the first component of status sequence, before change time. The other

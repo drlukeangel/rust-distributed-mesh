@@ -14,14 +14,14 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
 | Field | Contract |
 |---|---|
 | Caller / driver | The topology Build that adds the mesh ([build.md §12.1](../build.md#121-create-a-new-mesh)); the fabric-primary accepts it and drives it through the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) |
-| Precondition | The fabric has first reached ready-for-traffic; before then the Build is refused `fabric-not-ready` ([States](states.md#fabric-not-ready)) |
+| Precondition | The Day-0 Build is Complete; before its ready-for-traffic it is the Build in progress, and the Build is refused `build-in-progress` (Q170) |
 | MeshId | Minted once, when the mesh enters the accepted topology, and carried by every Build after it; never reissued |
 | Name | `mesh<#>` by default, the Build's `mesh_name`; the first node-admin, as the mesh's primary, claims it at `(path, name)`, unique within its path; held by a different MeshId answers `NameHeld` |
 | Executor / maker | The fabric-primary: it is the maker of the mesh's first node-admin and writes the mesh's rows until the mesh has a primary (R-OW1) |
 | Channel | `f(FabricId, MeshId)`, created by its first listener, the node-admin |
 | Members | The first node-admin only. The mesh's other nodes are created afterwards by that node-admin as mesh-primary, under the same accepted Build's attempts |
 | Mesh states | `pending`, set by the node-admin that launched the mesh's first admin, one `ApplyMeshState(Pending)` after the launched birth answers Ping; `ready-for-traffic`, set by the fabric-primary on its mesh-primary's report that every planned birth is ready ([States](states.md)) |
-| Rows | The mesh row, written by the mesh-primary at creation and again at state-commit; the node row, written by the fabric-primary until the mesh has a primary, then by the mesh-primary |
+| Rows | The mesh row, written by the mesh-primary at creation; the node row, written by the fabric-primary until the mesh has a primary, then by the mesh-primary |
 | Completion | The node-admin's `node.created`; the mesh is in the topology from acceptance and in traffic from `ready-for-traffic` |
 | Not this | A node-admin created into a mesh that already exists and lost its node-admins is [mesh investigation](mesh-investigation.md#a-node-admin-joins-the-live-mesh): same MeshId, same Build, no mesh create |
 

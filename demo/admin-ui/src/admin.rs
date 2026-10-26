@@ -167,8 +167,7 @@ impl Admin {
     }
 
     /// Put `key` = `value` on the config of the entry admin's own row, beside what the row holds: one
-    /// `node.config.update` to its mesh's primary for its exact birth. Refused `fabric-not-ready` before
-    /// the fabric first reaches ready-for-traffic; the caller puts it again then.
+    /// `node.config.update` to its mesh's primary for its exact birth, admitted at any time (Q166).
     pub async fn put_own_config(&self, key: &str, value: &str) -> Result<rdm_core::status::StatusReply, String> {
         let rows = self.rows().await.map_err(|e| format!("fabric.nodes.get: {e:?}"))?;
         let own = rows.iter().find(|n| n.name == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds {}", self.entry))?;

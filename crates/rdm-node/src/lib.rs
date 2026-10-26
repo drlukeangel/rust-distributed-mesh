@@ -130,7 +130,7 @@ pub async fn run_with_alpns(
     run_on(role, crate::storage_backend::file_node_backend(), types, alpns, before_ready, serve_app).await
 }
 
-/// [`run_with_alpns`] on `storage`: the node's connections rows and its commit-state action are the
+/// [`run_with_alpns`] on `storage`: the node's connections rows and its open-traffic action are the
 /// ones it opens.
 pub async fn run_on(
     role: Role,

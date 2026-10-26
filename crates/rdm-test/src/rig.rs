@@ -525,7 +525,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
                 let (commands, check_ins, receiver, digest_view) = (commands.clone(), check_ins.clone(), receiver.clone(), digest_view.clone());
                 async move {
                     use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest as R};
-                    if matches!(req, R::StateCommitted { .. } | R::TrafficOpened { .. }) {
+                    if matches!(req, R::TrafficOpened { .. }) {
                         check_ins.send_modify(|held| held.push(req));
                         return Ok(rdm_core::reply::applied());
                     }

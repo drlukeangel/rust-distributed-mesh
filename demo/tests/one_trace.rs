@@ -108,16 +108,16 @@ async fn a_call_from_the_node_admin_to_the_gateway_is_one_trace_under_the_consum
     let dir = std::env::temp_dir().join(format!("demo-trace-{}", NodeId::mint()));
     let root_dir = dir.join("admin");
     let root = start_with(config(&root_dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.unwrap();
-    // The Day-0 change reaches state-sync; then this admin reconciles nothing more, so the hand-launched
-    // gateway is no drift pass's surplus.
+    // The Day-0 change begins its open-traffic checklist; then this admin reconciles nothing more, so the
+    // hand-launched gateway is no drift pass's surplus.
     let reached = |name: &str| exporter.get_finished_spans().unwrap().iter().any(|s| s.name == name);
     tokio::time::timeout(BOUND, async {
-        while !reached("rdm.node_admin.fabric.update.via-sync-state-called") {
+        while !reached("rdm.node_admin.fabric.update.via-every-mesh-ready") {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .expect("the Day-0 change calls sync_state");
+    .expect("the Day-0 change begins its open-traffic checklist");
     root.stop_reconciling();
     let (g, gateway_id) = gateway(&root, &dir.join("gateway.1"), &root_dir).await;
 

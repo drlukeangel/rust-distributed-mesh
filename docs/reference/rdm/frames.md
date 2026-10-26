@@ -84,16 +84,16 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 13.1 | `endpoint_id` | `String` |  | The holder's endpoint key. |
 | 13.2 | `transport_addr` | `std::net::SocketAddr` |  | The holder's bound QUIC UDP address. |
 | 13.3 | `admin_api_base` | `Option<String>` |  | The holder's control API base URL with its bound HTTP port, when it runs one. |
-| 14 | **`StateCommitting`** |  |  | The commanding authority sent `commit-state:<fabric_id>` to the exact birth in `hook` |
-| 14.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | The state key, the subject birth and the author. |
-| 14.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
-| 15 | **`StateCommitted`** |  |  | The exact birth in `hook` sent its `state-committed` check-in after its scratchpad writes were |
-| 15.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | The state key, the subject birth and the author. |
-| 15.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
-| 16 | **`TrafficOpening`** |  |  | The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook`; same |
+| 14 | **`Reserved15`** |  |  | Reserved position (Q171): never sent; a receiver refuses it by name. |
+| 14.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | Never read. |
+| 14.1 | `forwarded_by` | `Option<String>` |  | Never read. |
+| 15 | **`Reserved16`** |  |  | Reserved position (Q171): never sent; a receiver refuses it by name. |
+| 15.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | Never read. |
+| 15.1 | `forwarded_by` | `Option<String>` |  | Never read. |
+| 16 | **`TrafficOpening`** |  |  | The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook` |
 | 16.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | The state key, the subject birth and the author. |
 | 16.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
-| 17 | **`TrafficOpened`** |  |  | The exact birth in `hook` sent its `traffic-opened` check-in; same channels and carrying as |
+| 17 | **`TrafficOpened`** |  |  | The exact birth in `hook` sent its `traffic-opened` check-in: a check-in, never a node or mesh |
 | 17.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | The state key, the subject birth and the author. |
 | 17.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
 | 18 | **`NodeStopped`** |  |  | The mesh executor holding `op` (`node.stop:<path>`) received the exact birth's `left` on the |
@@ -243,7 +243,7 @@ One fabric state hook on one exact birth (gossip.md, "Fabric state gossip hooks"
 | 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of that birth. |
 | 3 | `build_id` | `String` |  | The Build the checklist belongs to. |
 | 4 | `attempt` | `u32` |  | The Build attempt that holds the checklist. |
-| 5 | `operation` | `String` |  | The operation: `commit-state:<fabric_id>` or `open-traffic:<fabric_id>`. |
+| 5 | `operation` | `String` |  | The operation: `open-traffic:<fabric_id>`. |
 | 6 | `publisher` | `String` |  | The author at this hop, by `path.name`. |
 | 7 | `event_at_rafka_ms` | `u64` |  | When the event happened, in Rafka-time; evidence only. |
 

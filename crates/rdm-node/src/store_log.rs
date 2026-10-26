@@ -461,13 +461,6 @@ enum Reconciled {
     Absent,
 }
 
-/// The held side of a store file opened before the fabric's first state-commit.
-struct Held {
-    store: String,
-    holding: Mutex<bool>,
-    lines: Mutex<Vec<(LogWriter, Line)>>,
-}
-
 /// One store file: `<store root>/<store>.jsonl`.
 #[derive(Clone)]
 pub struct StoreLog(Arc<Inner>);
@@ -482,7 +475,6 @@ struct Inner {
     reading: tokio::sync::Mutex<()>,
     /// One append at a time, holding this store's pending append.
     append: Arc<tokio::sync::Mutex<Option<Pending>>>,
-    held: Option<Held>,
     /// Shown every line the fold reads, once each, in file order: an index the store folds beside
     /// the latest line per key.
     observer: Option<Observer>,
@@ -502,26 +494,15 @@ impl StoreLog {
     /// blocking pool, recorded on the [`OPEN_SPAN`] span. A file this build cannot fold whole is
     /// refused by name.
     pub async fn open(path: &Path, formats: Formats) -> Result<Self, StorageError> {
-        Self::opened(path, formats, Arc::new(DiskIo), None, None).await
+        Self::opened(path, formats, Arc::new(DiskIo), None).await
     }
 
     /// [`Self::open`], showing `observer` every line the fold reads, once each, in file order.
     pub async fn open_observed(path: &Path, formats: Formats, observer: Observer) -> Result<Self, StorageError> {
-        Self::opened(path, formats, Arc::new(DiskIo), None, Some(observer)).await
+        Self::opened(path, formats, Arc::new(DiskIo), Some(observer)).await
     }
 
-    /// [`Self::open`], holding every write in `scratchpad` until it is published, named `store` in
-    /// the publication. A scratchpad already published opens the store straight to the disk.
-    pub async fn open_held(path: &Path, formats: Formats, scratchpad: &crate::record_store::Scratchpad, store: String) -> Result<Self, StorageError> {
-        let held = Held { store, holding: Mutex::new(true), lines: Mutex::new(Vec::new()) };
-        let log = Self::opened(path, formats, Arc::new(DiskIo), Some(held), None).await?;
-        if !scratchpad.enrol(Arc::new(log.clone())) {
-            *log.0.held.as_ref().expect("opened held").holding.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        }
-        Ok(log)
-    }
-
-    async fn opened(path: &Path, formats: Formats, io: Arc<dyn AppendIo>, held: Option<Held>, observer: Option<Observer>) -> Result<Self, StorageError> {
+    async fn opened(path: &Path, formats: Formats, io: Arc<dyn AppendIo>, observer: Option<Observer>) -> Result<Self, StorageError> {
         let span = tracing::info_span!("rdm.store.open.via-fold", file = %path.display(), bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, fold_ms = tracing::field::Empty, outcome = tracing::field::Empty, offset = tracing::field::Empty, cause = tracing::field::Empty);
         let began = std::time::Instant::now();
         let p = path.to_path_buf();
@@ -543,7 +524,7 @@ impl StoreLog {
                 return Err(e);
             }
         };
-        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: tokio::sync::Mutex::new(()), append: Arc::new(tokio::sync::Mutex::new(None)), held, observer }));
+        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: tokio::sync::Mutex::new(()), append: Arc::new(tokio::sync::Mutex::new(None)), observer }));
         match log.advance().await {
             Ok(()) => {
                 let f = log.0.fold.lock().unwrap_or_else(|e| e.into_inner());
@@ -570,14 +551,9 @@ impl StoreLog {
         &self.0.path
     }
 
-    /// Whether this store holds its writes in its scratchpad now.
-    pub fn holding(&self) -> bool {
-        self.0.held.as_ref().is_some_and(|h| *h.holding.lock().unwrap_or_else(|e| e.into_inner()))
-    }
-
-    /// The store's publication name, else its file.
+    /// The store's file.
     pub fn store_name(&self) -> String {
-        self.0.held.as_ref().map(|h| h.store.clone()).unwrap_or_else(|| self.0.path.display().to_string())
+        self.0.path.display().to_string()
     }
 
     /// The fold's consumed offset.
@@ -604,37 +580,23 @@ impl StoreLog {
         Ok(())
     }
 
-    /// The latest line of (`kind`, `key`) after reading the tail: the held line when this store
-    /// holds one there, else the fold's.
+    /// The latest line of (`kind`, `key`) after reading the tail.
     pub async fn latest(&self, kind: &str, key: &str) -> Result<Option<Line>, StorageError> {
-        if let Some(l) = self.held_latest(kind, key) {
-            return Ok(Some(l));
-        }
         self.advance().await?;
         Ok(self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).latest.get(&(kind.to_string(), key.to_string())).cloned())
     }
 
-    /// The latest line of every key of `kind`, in key order, after reading the tail; the lines this
-    /// store holds over the fold's.
+    /// The latest line of every key of `kind`, in key order, after reading the tail.
     pub async fn latest_of(&self, kind: &str) -> Result<Vec<Line>, StorageError> {
         self.advance().await?;
-        let mut out: BTreeMap<String, Line> = self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).latest.iter().filter(|((k, _), _)| k == kind).map(|((_, key), l)| (key.clone(), l.clone())).collect();
-        if let Some(h) = &self.0.held {
-            for (_, l) in h.lines.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, l)| l.kind() == kind) {
-                out.insert(l.key.clone(), l.clone());
-            }
-        }
+        let out: BTreeMap<String, Line> = self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).latest.iter().filter(|((k, _), _)| k == kind).map(|((_, key), l)| (key.clone(), l.clone())).collect();
         Ok(out.into_values().collect())
     }
 
-    /// Every line of the file, in file order, read whole from byte 0 (the raw log), then the lines
-    /// this store holds.
+    /// Every line of the file, in file order, read whole from byte 0 (the raw log).
     pub async fn lines(&self) -> Result<Vec<Line>, StorageError> {
         let inner = self.0.clone();
-        let (mut lines, _) = blocking_io(move || inner.read_whole(0)).await?;
-        if let Some(h) = &self.0.held {
-            lines.extend(h.lines.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, l)| l.clone()));
-        }
+        let (lines, _) = blocking_io(move || inner.read_whole(0)).await?;
         Ok(lines)
     }
 
@@ -643,26 +605,14 @@ impl StoreLog {
         self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).ops.clone()
     }
 
-    fn held_latest(&self, kind: &str, key: &str) -> Option<Line> {
-        let h = self.0.held.as_ref()?;
-        h.lines.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().find(|(_, l)| l.kind() == kind && l.key == key).map(|(_, l)| l.clone())
-    }
-
-    /// Append `record` as one line in `format` at `key`, written by `writer` (R-SR3): held in the
-    /// scratchpad while the store holds its writes; otherwise this store's pending append is
-    /// reconciled first, then the line is written in one `write` and fsynced, and success is
+    /// Append `record` as one line in `format` at `key`, written by `writer` (R-SR3): this store's
+    /// pending append is reconciled first, then the line is written in one `write` and fsynced, and success is
     /// answered only after the fsync.
     pub async fn append<T: Serialize + ?Sized>(&self, writer: &LogWriter, format: &str, key: &str, record: &T) -> Result<(), StorageError> {
         let bytes = serde_json::to_vec(record).map_err(|e| StorageError::Io { file: self.0.path.display().to_string(), reason: format!("the {format} record at {key:?} does not encode: {e}") })?;
         let value: serde_json::Value = serde_json::from_slice(&bytes).expect("encoded JSON parses");
         self.0.formats.check(format, &value).map_err(|why| StorageError::Unrecognised { file: self.0.path.display().to_string(), reason: format!("a write refused: {why}") })?;
         let guard = self.0.append.clone().lock_owned().await;
-        if let Some(h) = &self.0.held {
-            if *h.holding.lock().unwrap_or_else(|e| e.into_inner()) {
-                h.lines.lock().unwrap_or_else(|e| e.into_inner()).push((writer.clone(), Line { offset: None, op: None, format: format.to_string(), key: key.to_string(), record: value }));
-                return Ok(());
-            }
-        }
         let inner = self.0.clone();
         let (writer, format, key) = (writer.clone(), format.to_string(), key.to_string());
         blocking_io(move || {
@@ -690,7 +640,7 @@ impl StoreLog {
 
     #[cfg(test)]
     pub(crate) async fn open_with(path: &Path, formats: Formats, io: Arc<dyn AppendIo>) -> Result<Self, StorageError> {
-        Self::opened(path, formats, io, None, None).await
+        Self::opened(path, formats, io, None).await
     }
 
     /// Forget the `seq`s this process handed out for `path`: what a restart of the process is.
@@ -1016,38 +966,6 @@ impl NameMutex {
                 return Err(io(e));
             }
         }
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::record_store::HeldStore for StoreLog {
-    /// Append every line held, in the order written, each under its writer's next `op`, and append
-    /// from now on.
-    async fn publish(&self) -> Result<crate::record_store::StorePublished, StorageError> {
-        let Some(h) = &self.0.held else { return Ok(Default::default()) };
-        let mut done = crate::record_store::StorePublished { store: h.store.clone(), ..Default::default() };
-        let guard = self.0.append.clone().lock_owned().await;
-        if !*h.holding.lock().unwrap_or_else(|e| e.into_inner()) {
-            return Ok(done);
-        }
-        let held: Vec<(LogWriter, Line)> = h.lines.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let inner = self.0.clone();
-        let written = blocking_io(move || {
-            let mut guard = guard;
-            let h = inner.held.as_ref().expect("a held store");
-            let mut written = 0;
-            for (writer, line) in held {
-                let bytes = serde_json::to_vec(&line.record).expect("a held record encodes");
-                inner.append_line(&mut *guard, &writer, &line.format, &line.key, &bytes)?;
-                h.lines.lock().unwrap_or_else(|e| e.into_inner()).remove(0);
-                written += 1;
-            }
-            *h.holding.lock().unwrap_or_else(|e| e.into_inner()) = false;
-            Ok::<usize, StorageError>(written)
-        })
-        .await?;
-        done.written = written;
-        Ok(done)
     }
 }
 

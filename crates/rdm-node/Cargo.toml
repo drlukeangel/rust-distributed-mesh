@@ -12,7 +12,7 @@ doctest = false
 [features]
 default = ["file-backend"]
 # RDM standalone's durable-file backend of the storage boundaries (the record store, the store
-# root, the connections file store, the scratchpad's publication). Off, the build holds the
+# root, the connections file store). Off, the build holds the
 # boundaries and their memory backends only.
 file-backend = []
 # Forward testkit fault seams on rdm-transport to rdm-test; absent from production builds.

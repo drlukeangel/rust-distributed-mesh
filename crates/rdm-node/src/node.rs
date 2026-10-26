@@ -378,7 +378,7 @@ pub async fn start_with_rafka_time_before_ready_alpns_and(
 }
 
 /// [`start_with_rafka_time_before_ready_alpns_and`] on `storage`: the node's connections rows and its
-/// commit-state action are the ones it opens.
+/// open-traffic action are the ones it opens.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_on(
     launch: &Launch,
@@ -465,8 +465,6 @@ async fn start_booted(
     // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
     // The storage fault the originate door arms (testkit only): the backend's storage, decorated.
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name, writes_to = tracing::field::Empty);
-    // Before the fabric's first state-commit the file backend holds the node's connections rows in
-    // its scratchpad; its commit-state action publishes them (states.md, Setting a state).
     let node_storage = storage.open(launch).await.map_err(|e| anyhow!("{e}"))?;
     step.record("writes_to", node_storage.writes_to.as_str());
     let base_storage = node_storage.connections.clone();
@@ -1436,7 +1434,7 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 /// re-publishes its presence on the channel it is on (the check-in it owes, states.md "The check-in
 /// checklist") and answers its current state; no transition: a birth its authority holds off
 /// its mesh is commanded back through `node.mesh.join` (node-tickle.md, Q87), never by a probe. While its `before_ready` hook is Blocked it answers `Blocked` with
-/// the hook's blocker and republishes nothing. The reserved Status positions (`Reserved6`, `Reserved7`, `StopNode`, `StartNode`) go to
+/// the hook's blocker and republishes nothing. The reserved Status positions (`Reserved6`, `Reserved7`, `StopNode`, `StartNode`, `Reserved12`, `Reserved13`) go to
 /// `crate::node_self`, which refuses them by name: node commands ride op 0x22. A stale incarnation is refused with the one held. Nothing
 /// checks who is calling (node-rpc.md §14) or the node id a call names (R-RX5): every request is
 /// decided on the op and the exact birth it names; the caller, the birth holding the call's endpoint key in the member
@@ -1461,16 +1459,16 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // Every call addressed this birth from its endpoint: a hook blocked on its authority's word
             // counts it, whether or not a record names the caller.
             me.addressed.note(&peer.endpoint_id);
-            if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. }) {
+            if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. }) {
                 let commander = sender.as_ref().map(|d| d.node.node_id.clone());
                 let reply = me.own.serve(commander.as_ref(), Some(peer.endpoint_id), &req).await.expect("a command");
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.topology_view.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a node command naming this node was decided"));
                 return Ok(reply);
             }
-            if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
-                // A member checks in with the primary that commanded it (fabric-state-commit.md, checklist
-                // sequence: "M->>N: commit-state", "N->>M: state-committed"): the caller, which a new
+            if matches!(req, StatusRequest::OpenTraffic { .. }) {
+                // A member checks in with the primary that commanded it (fabric-ready-for-traffic.md, checklist
+                // sequence: "M->>N: open-traffic", "N->>M: traffic-opened"): the caller, which a new
                 // primary is before this node hears it take the seat. Only a caller no projection this
                 // node holds names is checked in at the node-admin its primary view names.
                 let mesh = me.digest.node.name.mesh.clone();

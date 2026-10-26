@@ -2281,7 +2281,7 @@ fn record_key(fact: &BuildFact) -> Result<String, BuildStateError> {
 #[cfg(feature = "file-backend")]
 /// `builds.storage`: the Build journal on the fabric's shared store root, one line of its `builds.jsonl`
 /// per fact at its own key (`<build_id>/<key>`, [`record_key`]; build.md §5.3; R-SR1), appended when
-/// it is committed, before the fabric's first state-commit too (Q61). A successor folds the lines.
+/// it is committed (Q61). A successor folds the lines.
 pub struct FileJournal {
     /// The root's `builds.jsonl`.
     file: crate::store_log::StoreLog,
@@ -3137,7 +3137,7 @@ mod tests {
         assert_eq!(fold(&a.facts().await.unwrap()), fold(&log()));
     }
 
-    /// A Build log on a store root at `dir` (no scratchpad: written straight to the disk).
+    /// A Build log on a store root at `dir`.
     async fn open_at(dir: &Path) -> Result<FileJournal, BuildStateError> {
         FileJournal::open_on_root(&crate::store_root::StoreRoot::at(dir), &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &writer())).await
     }
@@ -3913,12 +3913,11 @@ mod tests {
     /// needed to reconstruct the Fabric and continue an active Build", §5.3: "a successor reads them
     /// there"): a fabric-primary's committed Build facts (the accepted Build, its attempt claim, a step
     /// receipt, the attempt's completion) stand on the shared root before the fabric's first
-    /// state-commit, so the same fabric-primary restarted (a new process of its birth on the root, its
-    /// scratchpad empty) and a successor opened on the root each read every one of them, and the
-    /// Build complete. Must NOT happen: a committed fact lost with the process that held it, or read
-    /// only after a state-commit.
+    /// ready-for-traffic, so the same fabric-primary restarted (a new process of its birth on the root)
+    /// and a successor opened on the root each read every one of them, and the Build complete. Must NOT
+    /// happen: a committed fact lost with the process that held it.
     #[tokio::test]
-    async fn every_build_fact_committed_before_the_first_state_commit_is_recovered_by_a_restart_and_by_a_successor() {
+    async fn every_build_fact_committed_before_the_first_ready_for_traffic_is_recovered_by_a_restart_and_by_a_successor() {
         let d = crate::test_support::tempdir("q61-recovery");
         let store = d.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -3926,18 +3925,16 @@ mod tests {
         let birth = writer();
         {
             let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
-            assert_eq!(root.writes_to(), "scratchpad", "the fabric has had no state-commit");
             let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &birth)).await.unwrap();
             j.publish_accepted(&intent("b1")).await.unwrap();
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
             j.append_step_receipt(&step("b1", 1, "admit-node:mesh1.admin.1")).await.unwrap();
             j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
-            // The process ends here, its scratchpad never published.
+            // The process ends here.
         }
         let id = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         for (who, writer) in [("the same fabric-primary restarted", birth.clone()), ("a successor", writer())] {
             let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
-            assert_eq!(root.writes_to(), "scratchpad", "{who}: the fabric has still had no state-commit");
             let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &writer)).await.unwrap();
             let kinds: Vec<&str> = j.facts().await.unwrap().iter().map(|f| match f {
                 BuildFact::Accepted(_) => "accepted",
@@ -3956,8 +3953,7 @@ mod tests {
     /// row at `build_id`, one at `(build_id, mesh, attempt)`, one claim at `(build_id, mesh, attempt)`,
     /// one receipt per step of an attempt. No record is written twice"; R-BI6, Q61): a `FileJournal`
     /// opened on a `StoreRoot` appends each fact as one line at its own key (`<build_id>/<key>`) of the
-    /// root's `builds.jsonl`, when it is committed, before the first state-commit too,
-    /// never under a per-admin data dir; an attempt in a mesh is keyed with its mesh; a fact written
+    /// root's `builds.jsonl`, when it is committed, never under a per-admin data dir; an attempt in a mesh is keyed with its mesh; a fact written
     /// again writes nothing; and a successor, open already or opened after a restart, reads every
     /// record from the root without gossip.
     #[tokio::test]
@@ -3967,7 +3963,6 @@ mod tests {
         std::fs::create_dir_all(&store).unwrap();
         let fabric_id = crate::model::FabricId::mint();
         let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
-        assert_eq!(root.writes_to(), "scratchpad");
         let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &writer())).await.unwrap();
         j.publish_accepted(&intent("b1")).await.unwrap();
         j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
@@ -3977,12 +3972,9 @@ mod tests {
         assert_eq!(
             record_files(root.dir()),
             [format!("{b1}/1-claim"), format!("{b1}/1-step-admit-node:mesh1.admin.1-DeployRuntime"), format!("{b1}/accepted")],
-            "before state-commit, each committed fact is one record at its own key on the store root, and a receipt written again writes nothing"
+            "each committed fact is one record at its own key on the store root, and a receipt written again writes nothing"
         );
         assert_eq!(crate::store_log::read_file(&root.dir().join(crate::store_root::BUILDS_FILE)).unwrap().len(), 3, "one line per fact: the receipt written again is not appended");
-        assert!(crate::store_log::read_file(&root.dir().join(crate::store_root::FABRIC_FILE)).unwrap().is_empty(), "nothing else of RDM's rows is on the root before state-commit");
-        let published = root.scratchpad().unwrap().publish().await.unwrap();
-        assert!(!published.stores.iter().any(|s| s.store == "builds"), "state-commit publishes no Build record: none was held: {published:?}");
         j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         j.open_attempt(&lane_open("b1", "mesh2", 1, "mesh2.rpc.2")).await.unwrap();
         assert_eq!(j.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.1")).await.unwrap(), ClaimOutcome::Won);

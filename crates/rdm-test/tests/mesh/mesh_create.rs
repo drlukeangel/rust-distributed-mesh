@@ -92,8 +92,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
-    // mesh2 is created on a fabric past its first state-commit, so its rows are written to the store
-    // (node-identity-and-state.md §2.7: "the scratchpad before state-commit, the store after"), where
+    // mesh2's rows are written to the store at once (node-identity-and-state.md §2.7, Q171), where
     // mesh2's own primary finds the row the fabric-primary's claim wrote. The Build is Complete only after
     // the fabric's change from it (Q154; build.md §10); the wait records that the fabric has started.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -199,13 +198,13 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     }
     assert!(continued >= 1, "the first attempt continues the request's trace");
     // node-identity-and-state.md §2.7: "The mesh's primary node-admin claims the mesh's name and writes
-    // its row, at creation and at state-commit ... at the key `(path, name)`", the
+    // its row at creation ... at the key `(path, name)`", the
     // same MeshId re-claiming its own name accepted; R13: the fabric-primary writes as the acting
     // primary of a mesh with no primary; CLAUDE.md: the claim is the first durable write of a create,
-    // nothing is written for the entity until it wins. mesh1's name is claimed by its Day-0 primary
-    // (held in its scratchpad until the fabric's state-commit). mesh2's is claimed at CreateMesh by the
-    // fabric-primary that creates mesh2's first admin, before that admin's node row is claimed; mesh2's
-    // own primary re-claiming it finds its row. No claim is refused across creation and state-commit.
+    // nothing is written for the entity until it wins. mesh1's name is claimed by its Day-0 primary.
+    // mesh2's is claimed at CreateMesh by the fabric-primary that creates mesh2's first admin, before
+    // that admin's node row is claimed; mesh2's own primary re-claiming it finds its row. No claim is
+    // refused across creation and a re-claim.
     let claims = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
     let written = |mesh: &str, id: &str| {
         claims

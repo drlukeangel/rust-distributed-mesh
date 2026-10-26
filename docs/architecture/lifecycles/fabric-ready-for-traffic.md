@@ -2,9 +2,9 @@
 
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Op contracts](../node-rpc-envelope.md#the-op-ledger)
 
-Fabric ready-for-traffic is the state that opens traffic. When every mesh has checked in for
-[state-commit](fabric-state-commit.md), the fabric-primary carries the ready-for-traffic status
-down: fabric-primary → mesh-primaries → nodes. Once every member has checked in under
+Fabric ready-for-traffic is the state that opens traffic. When every mesh the accepted Build names
+is ready-for-traffic, the fabric-primary carries the ready-for-traffic status down: fabric-primary
+→ mesh-primaries → nodes. Once every member has checked in under
 the [check-in checklist](states.md#the-check-in-checklist), the fabric is ready-for-traffic and Rafka
 receives one notice, on which it opens client traffic.
 

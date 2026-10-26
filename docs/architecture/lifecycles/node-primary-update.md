@@ -31,7 +31,7 @@ seat row, no move log, nothing to fold.
 | Roles | For the `node-admin` type the primary is the mesh-primary and the commander is the fabric-primary; the successor writes. For any other type the mesh-primary is commander and writer, and the primary only makes the call |
 | The record | `is_primary` (and `is_fabric_primary`) at the next revision on the successor's row, written by the mesh-primary after the successor installed itself. The record follows the role; it never makes it. There is no path back |
 | Both primaries | When the mesh-primary is also the fabric-primary and the successor is in the same mesh, the successor becomes both and records both on its own row |
-| Precondition | Before the initial fabric first reaches ready-for-traffic, every call is refused `fabric-not-ready` ([States](states.md#fabric-not-ready)) |
+| Precondition | None on the fabric's state (Q171) |
 | Completion | `node.primary.updated { revisions }`, answered by the successor on the primary's call; `node.fabric-primary.updated` for the fabric-primary |
 | Wire | [PrimaryUpdate / PrimaryUpdated on 0x21](../node-rpc-envelope.md#primaryupdate-op-0x21-rdm) |
 

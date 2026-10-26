@@ -5,8 +5,6 @@ pub mod fabric_create;
 pub mod fabric_delete;
 pub mod fabric_ready_for_traffic;
 pub mod fabric_recovery;
-pub mod fabric_state_commit;
-pub mod fabric_state_sync;
 pub mod mesh_create;
 pub mod mesh_delete;
 pub mod mesh_investigation;

@@ -97,8 +97,7 @@ async fn fixture(cell: &str) -> Fixture {
     let attempt_before = estate.attempt_of_build(&accepted).await;
     // Control goes through the fabric primary's advertised API, which no fault here touches.
     estate.enter(&Estate::path(&fabric_primary)).await;
-    // The fault falls on an established fabric: a cut that falls while the commit-state or
-    // open-traffic checklist runs holds that checklist on the planned birth it cuts (states.md, "The check-in
+    // The fault falls on an established fabric: a cut that falls while the open-traffic checklist runs holds that checklist on the planned birth it cuts (states.md, "The check-in
     // checklist"), so the cells that assert the fabric stays ready start from ready-for-traffic.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     Fixture { estate, accepted, attempt_before, fabric_primary, lost, lost_mesh_id, before }

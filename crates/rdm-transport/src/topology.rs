@@ -484,36 +484,34 @@ pub enum Frame {
         /// The holder's control API base URL with its bound HTTP port, when it runs one.
         admin_api_base: Option<String>,
     },
-    /// The commanding authority sent `commit-state:<fabric_id>` to the exact birth in `hook`
+    /// Reserved position (Q171): never sent; a receiver refuses it by name.
+    Reserved15 {
+        /// Never read.
+        hook: StateHook,
+        /// Never read.
+        forwarded_by: Option<String>,
+    },
+    /// Reserved position (Q171): never sent; a receiver refuses it by name.
+    Reserved16 {
+        /// Never read.
+        hook: StateHook,
+        /// Never read.
+        forwarded_by: Option<String>,
+    },
+    /// The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook`
     /// (gossip.md, "Fabric state gossip hooks"): command intent, never completion. A node-admin
     /// author publishes it on its own mesh channel and the backbone; a peer mesh's primary forwards
     /// it onto its own channel (`forwarded_by`), the authored fields unchanged.
-    StateCommitting {
-        /// The state key, the subject birth and the author.
-        hook: StateHook,
-        /// The primary that forwards the frame onto its own channel.
-        forwarded_by: Option<String>,
-    },
-    /// The exact birth in `hook` sent its `state-committed` check-in after its scratchpad writes were
-    /// stored: a phase check-in, never a node or mesh lifecycle state. A node-admin publishes it on
-    /// its own mesh channel and the backbone; an ordinary node on its own mesh channel, and its
-    /// mesh-admin carries it onto the backbone naming itself in `forwarded_by`.
-    StateCommitted {
-        /// The state key, the subject birth and the author.
-        hook: StateHook,
-        /// The admin or primary that forwards the frame.
-        forwarded_by: Option<String>,
-    },
-    /// The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook`; same
-    /// channels as [`Frame::StateCommitting`].
     TrafficOpening {
         /// The state key, the subject birth and the author.
         hook: StateHook,
         /// The primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
     },
-    /// The exact birth in `hook` sent its `traffic-opened` check-in; same channels and carrying as
-    /// [`Frame::StateCommitted`].
+    /// The exact birth in `hook` sent its `traffic-opened` check-in: a check-in, never a node or mesh
+    /// lifecycle state. A node-admin publishes it on its own mesh channel and the backbone; an
+    /// ordinary node on its own mesh channel, and its mesh-admin carries it onto the backbone naming
+    /// itself in `forwarded_by`.
     TrafficOpened {
         /// The state key, the subject birth and the author.
         hook: StateHook,
@@ -1147,8 +1145,6 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeStopped { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
         Frame::NodeConnectionsDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeConnectionsDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me.to_string()) }),
-        Frame::StateCommitting { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::StateCommitting { hook, forwarded_by: Some(me.to_string()) }),
-        Frame::StateCommitted { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::StateCommitted { hook, forwarded_by: Some(me.to_string()) }),
         Frame::TrafficOpening { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::TrafficOpening { hook, forwarded_by: Some(me.to_string()) }),
         Frame::TrafficOpened { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::TrafficOpened { hook, forwarded_by: Some(me.to_string()) }),
         Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
@@ -2060,10 +2056,8 @@ impl View {
                 span.record("applied", self.digest_view.depart(op.clone()));
                 Vec::new()
             }
-            Frame::StateCommitting { hook, forwarded_by } | Frame::StateCommitted { hook, forwarded_by } | Frame::TrafficOpening { hook, forwarded_by } | Frame::TrafficOpened { hook, forwarded_by } => {
+            Frame::TrafficOpening { hook, forwarded_by } | Frame::TrafficOpened { hook, forwarded_by } => {
                 let kind = match f.data() {
-                    Frame::StateCommitting { .. } => "state-committing",
-                    Frame::StateCommitted { .. } => "state-committed",
                     Frame::TrafficOpening { .. } => "traffic-opening",
                     _ => "traffic-opened",
                 };
@@ -2086,7 +2080,7 @@ impl View {
                 // Forwarding metadata never changes the fact's identity or its eligibility. The
                 // admin's carrier alone consults its open-checklist view; passive receipt needs no
                 // check-in evidence and drives no checklist (Q21: x).
-                let carried = if matches!(f.data(), Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }) {
+                let carried = if matches!(f.data(), Frame::TrafficOpened { .. }) {
                     if via == "mesh-channel" {
                         self.completion_carrier.lock().unwrap().clone().map(|carry| carry(f).as_str()).unwrap_or("no-carrier")
                     } else {
@@ -3831,7 +3825,6 @@ impl Backbone {
         let context = frame.context().cloned();
         let carried = match frame.into_data() {
             Frame::NodeConnectionsDeleted { op, .. } => Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me_name) },
-            Frame::StateCommitted { hook, .. } => Frame::StateCommitted { hook, forwarded_by: Some(me_name) },
             Frame::TrafficOpened { hook, .. } => Frame::TrafficOpened { hook, forwarded_by: Some(me_name) },
             _ => return,
         };

@@ -78,7 +78,7 @@ fn replies_match_the_frozen_thirteen_variant_wire_schema() {
         // revisions (len 1) | "fabric" | primary | successor | revision 8
         (PrimaryUpdated { revisions: vec![fabric_entry()] }, format!("00 01 06 666162726963 {PRIMARY} {SUCCESSOR} 08")),
         (RejectedConflictingPayload { operation: "o".into() }, "01 01 6f".to_string()),
-        (RejectedFabricNotReady { reason: "r".into() }, "02 01 72".to_string()),
+        (Reserved2 { reason: "r".into() }, "02 01 72".to_string()),
         (RejectedNotPrimary { reason: "a".into() }, "03 01 61".to_string()),
         // node_type "fabric" | expected | current
         (RejectedStaleRevision { node_type: "fabric".into(), expected: 3, current: 4 }, "04 06 666162726963 03 04".to_string()),
@@ -114,7 +114,7 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
     assert_eq!(NodePrimaryUpdate::classify_reply(&PrimaryUpdated { revisions: vec![fabric_entry()] }), ReplyKind::Success);
     for (r, code) in [
         (RejectedConflictingPayload { operation: "o".into() }, Code::Aborted),
-        (RejectedFabricNotReady { reason: "r".into() }, Code::FailedPrecondition),
+        (Reserved2 { reason: "r".into() }, Code::FailedPrecondition),
         (RejectedNotPrimary { reason: "a".into() }, Code::FailedPrecondition),
         (RejectedStaleRevision { node_type: "fabric".into(), expected: 1, current: 2 }, Code::Aborted),
         (Failed { step: "s".into(), reason: "r".into(), code: Code::FailedPrecondition }, Code::FailedPrecondition),

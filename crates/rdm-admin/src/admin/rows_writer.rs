@@ -436,8 +436,7 @@ pub(crate) async fn claim_fabric_name(storage: &dyn crate::fabric_storage::Fabri
 
 /// `fabric/` on the fabric's store root, written by the fabric-primary alone (R14 item 2): while this
 /// birth holds the fabric seat it writes the Fabric identity it is configured for, so a seat that
-/// came to it before the fabric's first state-commit, from a holder whose held rows were dropped,
-/// still leaves the Fabric row on the store root. Who is primary is no `fabric/` row: it is the
+/// came to it from a lost holder still leaves the Fabric row on the store root. Who is primary is no `fabric/` row: it is the
 /// election's result, recorded as `is_primary` and `is_fabric_primary` on the node rows (build.md
 /// §5.3). The Fabric row carries no pointer to the newest Build (R-BI3). The claim of the
 /// fabric's name comes first: nothing else is written to `fabric/` until it wins, and a name another

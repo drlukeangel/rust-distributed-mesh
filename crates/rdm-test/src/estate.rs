@@ -591,8 +591,8 @@ pub struct FabricReady(pub(crate) ());
 
 impl FabricReady {
     /// The witness from one fabric read, `status` as `fabric.get` answers it. An interactive fault panel
-    /// (the demo admin-ui's Chaos tab) reads the fabric before each kill and is refused `fabric-not-ready`
-    /// without one; a cell waits with [`Estate::until_fabric_ready`] instead, so its refusal is the same
+    /// (the demo admin-ui's Chaos tab) reads the fabric before each kill and refuses the kill without
+    /// one; a cell waits with [`Estate::until_fabric_ready`] instead, so its refusal is the same
     /// on every run.
     pub fn read(status: rdm_client::ScopeStatus) -> Option<FabricReady> {
         (status == rdm_client::ScopeStatus::ReadyForTraffic).then_some(FabricReady(()))
@@ -751,11 +751,10 @@ impl Estate {
         // work is done before a cell submits anything: a cell's first build.create is never refused
         // for a Build in progress it did not start. The Day-0 Build is Complete only from its own
         // ready-for-traffic (states.md "Resize and executable replacement": "as fabric.create's is"): an
-        // application that answers Day 0's `sync_state` (`RDM_TEST_APP` unset, `answer[:<ms>]` or
-        // `after-day0:<mode>`) is followed to that Complete; one that holds or refuses Day 0's state-sync
-        // (any other) to the Blocked frame naming the fabric's change, its attempt handed back with nothing
-        // left and nothing of it in flight.
-        let answers = extra_env.iter().find(|(k, _)| *k == "RDM_TEST_APP").is_none_or(|(_, v)| v.trim().is_empty() || v.starts_with("answer") || v.starts_with("after-day0:"));
+        // application that holds nothing (`RDM_TEST_APP` unset or `answer`) is followed to that Complete;
+        // one that holds the open-traffic action (`hold`) to the Blocked frame naming the fabric's change,
+        // its attempt handed back with nothing left and nothing of it in flight.
+        let answers = extra_env.iter().find(|(k, _)| *k == "RDM_TEST_APP").is_none_or(|(_, v)| v.trim() != "hold");
         let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
         let id = rdm_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
         let mut stream = estate.carrier().await.resubmit(&id, 1).await.unwrap_or_else(|e| panic!("the bootstrap admin does not stream its Day-0 Build {id}: {e}"));

@@ -46,8 +46,8 @@ impl StorageScope {
 /// A node's own connections rows, opened once its `path.name` is decided.
 pub type OpenConnections = Arc<dyn Fn(PathName) -> BoxFuture<'static, Result<Arc<dyn ConnectionsStorage>, StorageError>> + Send + Sync>;
 
-/// The storage a node-admin runs on, opened by its backend: the five boundaries, what the backend does
-/// at a commit-state checklist, and how it finishes the writes it has issued.
+/// The storage a node-admin runs on, opened by its backend: the five boundaries, the open-traffic
+/// action, and how it finishes the writes it has issued.
 pub struct StorageBoundaries {
     /// `fabric.storage`: the Fabric record, its name's claim and its events.
     pub fabric: Arc<dyn FabricStorage>,
@@ -66,7 +66,7 @@ pub struct StorageBoundaries {
     pub connections: OpenConnections,
     /// The Build journal: the Build facts, and each attempt's context.
     pub builds: Arc<dyn LocalBuildLog>,
-    /// The node's commit-state and open-traffic actions: the backend's own, then the embedding's.
+    /// The node's open-traffic action: the embedding's, else none.
     pub state_actions: Arc<dyn StateActions>,
     /// Finishes every write the boundaries have issued: a primary runs it before it calls its successor
     /// (node-primary-update.md step 3).
@@ -129,10 +129,8 @@ impl StorageBackend for FileBackend {
     async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn StateActions>>) -> Result<StorageBoundaries, String> {
         let storage_err = |e: StorageError| e.to_string();
         let root = crate::store_root::StoreRoot::open(&self.store_dir, &scope.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
-        // Before the fabric's first state-commit every row this admin writes is held in its
-        // scratchpad; its commit-state action publishes them (states.md, Setting a state).
-        let writes_to = root.writes_to().to_string();
-        let state_actions: Arc<dyn StateActions> = Arc::new(crate::fabric_status::StorePublication::new(root.scratchpad().cloned(), embedding));
+        let writes_to = "store-root".to_string();
+        let state_actions: Arc<dyn StateActions> = embedding.unwrap_or_else(|| Arc::new(crate::fabric_status::NoAction));
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.log_writer()).await.map_err(storage_err)?);
@@ -203,8 +201,7 @@ impl StorageBackend for MemoryBackend {
             root_runtimes: None,
             connections,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
-            // Nothing is held for a later publication: the embedding's actions alone, or none.
-            state_actions: embedding.unwrap_or_else(|| Arc::new(crate::fabric_status::NoScratchpad)),
+            state_actions: embedding.unwrap_or_else(|| Arc::new(crate::fabric_status::NoAction)),
             finish_writes,
             writes_to: "memory".into(),
         })

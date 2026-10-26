@@ -276,20 +276,6 @@ pub(crate) fn node_status(s: MemberStatus) -> NodeStatus {
     }
 }
 
-/// A state-sync the application reported failed by name (Q158): the Build and attempt the fabric-primary
-/// called `sync_state` for, the operation (`state-sync:<fabric_id>`) and the application's reason.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StateSyncFailure {
-    /// The Build the state-sync was called for.
-    pub build_id: String,
-    /// Its attempt.
-    pub attempt: u32,
-    /// `state-sync:<fabric_id>`.
-    pub operation: String,
-    /// The application's reason.
-    pub reason: String,
-}
-
 /// What this admin's pipelines published and removed, and the meshes its
 /// Builds created: merged into the topology projection.
 #[derive(Default)]
@@ -351,9 +337,6 @@ pub struct Records {
     pub first_ready: crate::fabric_state::FirstReady,
     /// What keeps the fabric in its state, named (`None`: nothing, or not the fabric-primary).
     pub(crate) fabric_blocker: Mutex<Option<String>>,
-    /// The state-sync the application last reported failed (Q158), for the Build and attempt it was
-    /// called for: the drive fails that Build on its `fabric-change` step (`None`: none reported).
-    pub(crate) state_sync_failed: Mutex<Option<StateSyncFailure>>,
     /// The fabric state the fabric-primary last put in a FabricStatus frame. The change enters the
     /// next state only after the current one went out, so every state is its own frame.
     pub(crate) published_fabric_state: Mutex<Option<crate::fabric_state::FabricState>>,
@@ -556,22 +539,6 @@ impl Records {
         }
     }
 
-    /// Whether the initial fabric `fabric_id` has first reached ready-for-traffic, decided on the durable
-    /// fact (states.md, "The initial fabric before ready-for-traffic"): what this admin already knows
-    /// ([`crate::fabric_state::FirstReady`], or `now`, its view's fabric status), else a point read of the
-    /// ready-for-traffic fact on the fabric store (the one the fabric-primary put as it entered
-    /// ready-for-traffic), while the fabric state this admin hears by gossip can still lag it. A read
-    /// that fails is named.
-    pub async fn first_ready_on_root(&self, fabric_id: &FabricId, now: ScopeStatus) -> Result<bool, String> {
-        if self.first_ready.reached(now) {
-            return Ok(true);
-        }
-        let Some(fold) = self.status.get() else {
-            return Err(format!("no fabric store is held to read whether fabric {fabric_id} first reached ready-for-traffic"));
-        };
-        self.first_ready.reached_on_root(&**fold.fabric(), fabric_id, now).await.map_err(|e| format!("the fabric store, read for the ready-for-traffic fact of fabric {fabric_id}: {e}"))
-    }
-
     /// The tick a waiter arms on to see the view change.
     pub fn subscribe_view(&self) -> tokio::sync::watch::Receiver<u64> {
         self.view_tick.subscribe()
@@ -671,20 +638,6 @@ impl Records {
     /// Name (or clear) what keeps the fabric in its state.
     pub fn set_fabric_blocker(&self, blocker: Option<String>) {
         *self.fabric_blocker.lock().unwrap() = blocker;
-    }
-
-    /// The state-sync the application reported failed for attempt `attempt` of Build `build_id`, if it
-    /// did (Q158).
-    pub fn state_sync_failed(&self, build_id: &str, attempt: u32) -> Option<StateSyncFailure> {
-        self.state_sync_failed.lock().unwrap().clone().filter(|f| f.build_id == build_id && f.attempt == attempt)
-    }
-
-    /// Hold the application's reported failure of a state-sync; the drive is woken to fail its Build.
-    pub fn set_state_sync_failed(&self, failed: StateSyncFailure) {
-        let changed = self.state_sync_failed.lock().unwrap().replace(failed.clone()).as_ref() != Some(&failed);
-        if changed {
-            self.wake.poke();
-        }
     }
 
     /// Every peer mesh the fabric primary gave a new node-admin that has not yet reported its checklist.

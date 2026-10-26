@@ -155,9 +155,8 @@ follows the `path.name` (§2.2), so nothing stored changes when a node is replac
 ### Day zero
 
 node.create mints a node's id and hands it to the process at launch, so a node knows its own id
-before any store exists to read it from. Its `ops.nodes` row is held in its mesh-primary's
-scratchpad until the fabric's state-commit writes it ([States](lifecycles/states.md#states)).
-**Nothing on the boot path reads the store:**
+before it reads anything from a store. Its mesh-primary writes its row to the store at once
+([States](lifecycles/states.md#states)). **Nothing on the boot path reads the store:**
 a node that cannot reach a broker still has its identity, its name and its id, because all three
 came down with it.
 
@@ -272,14 +271,9 @@ It writes the nodes store when a node workflow step or a node.update reaches it,
 INORGANICALLY — a node lost, a role moved, anything the mesh observes rather than was asked for.
 Those are the two events that author a row; nothing else does.
 
-**Day zero is the one special case.** Until the fabric's state-commit, the mesh-primary holds its
-members' rows in the scratchpad; state-commit writes them to the nodes store
-([States](lifecycles/states.md#states)), the Build facts and the declared state excepted (Q61, Q54).
-Before that moment there is no store to take the write,
-which is why a node carries its identity down with it (§ Day zero) rather than reading it from a
-store that cannot yet exist.
-
-**After day zero there is no special case.** Every update to the projection follows the ordinary
+**There is no special case, Day 0 included.** Every writer writes its rows to the store from Day 0
+(Q171); a node still carries its identity down with it at launch (§ Day zero) rather than reading it
+from the store. Every update to the projection follows the ordinary
 path: the write goes to the nodes store, is durable before its caller is answered, and the projection
 updates from the record; no bespoke node path.
 
@@ -301,17 +295,15 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
   takes `RDM_MESH` (`mesh1` when unset), and a mesh a Build creates takes the Build's `mesh_name`. The name is never derived from the mesh's
   channel. It is the first segment of every member's path.name (`mesh1.broker.1`, §2.2). The mesh's
   own path is opaque (§2).
-- **The mesh's primary node-admin claims the mesh's name and writes its row, at creation and at
-  state-commit.** The mesh's first node-admin is its primary (the only candidate of its election),
+- **The mesh's primary node-admin claims the mesh's name and writes its row at creation.** The
+  mesh's first node-admin is its primary (the only candidate of its election),
   and the mesh-primary keeps that mesh's row in the mesh store: it claims the mesh's name at the key
   `(path, name)`, unique within its path, the path opaque (a deployment may name it after the
   fabric, as it names a node's after its mesh; that is its choice, not the key's shape), writes
-  the row when the mesh is created (the scratchpad before state-commit, the store after) and
-  again at fabric state-commit,
-  and writes every status from then on. Held means held by a different MeshId: `NameHeld` names
-  that holder. The same MeshId re-claiming its own name, at state-commit, on a retry or from a
-  replaced primary, is idempotent and accepted. The fabric-primary does the same for the fabric's
-  row on its own `(path, name)`, at Day 0 and at state-commit, idempotent for the same FabricId. At Day 0 the fabric-primary is its mesh's mesh-primary too and creates the fabric row and its own mesh's row, the latter as that mesh's primary; every other mesh's row is created by that mesh's primary. It writes its own members' `Node` rows; no other
+  the row to the store when the mesh is created and writes every status from then on. Held means held by a different MeshId: `NameHeld` names
+  that holder. The same MeshId re-claiming its own name, on a retry or from a replaced primary, is
+  idempotent and accepted. The fabric-primary does the same for the fabric's row on its own
+  `(path, name)`, at Day 0, idempotent for the same FabricId. At Day 0 the fabric-primary is its mesh's mesh-primary too and creates the fabric row and its own mesh's row, the latter as that mesh's primary; every other mesh's row is created by that mesh's primary. It writes its own members' `Node` rows; no other
   node-admin writes them (a secondary writes none, a WAL reset's rewrite included).
 - **A mesh outage moves no row.** The fabric-primary observes it
   ([mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation)) and never writes the
@@ -341,10 +333,9 @@ records the role and does not grant it.
   its own row. Every row of the mesh, the predecessor's included, is the successor's to write from then and
   nothing is rewritten; the successor rebuilds from its mesh's rows in the fabric's store before it
   writes. A node-admin that is not the mesh-primary writes no row.
-- **The write.** The mesh-primary writes the `Mesh` row and every member's `Node` row once the fabric is
-  `state-commit` ([States](lifecycles/states.md#states)), through the mesh rows writer, and every
-  node writes its connections rows; each finishes its writes before its state-committed check-in. Before then
-  the rows wait in the scratchpad. After that it writes each create and update at once. A write the
+- **The write.** The mesh-primary writes the `Mesh` row and every member's `Node` row through the
+  mesh rows writer, and every node writes its connections rows, each create and update at once,
+  from Day 0 (Q171; [States](lifecycles/states.md#states)). A write the
   store refuses or fails is owed: the writer retries the row's current state under the one backoff
   rule ([Node RPC §43](node-rpc.md#43-owed-messages-delivery-is-the-runtimes)) until the store
   acknowledges it, on its own clock, never waiting for a birth, a digest or a primary change, and marks
@@ -373,12 +364,10 @@ node in one mesh is a fabric of one mesh.
 - **The first node-admin creates it.** The node-admin that is both mesh-primary and fabric-primary, `is_primary` and `is_fabric_primary` (the
   first node of the first mesh), mints the fabric and its mesh together and holds both in memory; the sequence is
   [fabric.create](lifecycles/fabric-create.md).
-- **It is written at Day 0 and at state-commit.** The fabric-primary claims the fabric's name at
-  its `(path, name)`, the path opaque, idempotent for the same FabricId and
-  `NameHeld` naming a different one, and writes the fabric's row at Day 0, into the scratchpad, and
-  writes it durably to the fabric store when the fabric can first take a write, during fabric
-  state-commit once the required system stores are established. See [States](lifecycles/states.md#states). The identity is never written
-  again; the record is rewritten whole with each fabric event, by the fabric-primary.
+- **It is written at Day 0.** The fabric-primary claims the fabric's name at its `(path, name)`, the
+  path opaque, idempotent for the same FabricId and `NameHeld` naming a different one, and writes the
+  fabric's row to the fabric store at Day 0. See [States](lifecycles/states.md#states). The identity
+  is never written again; the record is rewritten whole with each fabric event, by the fabric-primary.
 - **Every node holds it through gossip.** The fabric row lives in `topology-nodes` (§2.6), filled from gossip only;
   no node hydrates it from the broker. node-admin's spawn records (`spawned_meta`) carry the fabric each spawned node
   belongs to, as they carry its mesh.
@@ -495,7 +484,7 @@ grants no readiness of its own (Q69). Its admission is the [Join schema](node-rp
 
 ### 4.4 Fabric, mesh and node readiness
 
-Fabric and mesh states, the checklists, state-sync, state-commit and traffic opening are
+Fabric and mesh states, the checklists and traffic opening are
 [States](lifecycles/states.md#states); a node's own readiness is §5.
 
 ## 5. Readiness — when a node takes traffic

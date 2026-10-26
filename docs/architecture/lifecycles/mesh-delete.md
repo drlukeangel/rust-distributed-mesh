@@ -14,7 +14,7 @@ executor, deletes it afterwards.
 | Field | Contract |
 |---|---|
 | Caller / driver | Typed caller; the fabric-primary runs it as one Build through the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) |
-| Precondition | The fabric has first reached ready-for-traffic. Before then the Build is refused by name, `fabric-not-ready`, and nothing runs ([States](states.md#fabric-not-ready)) |
+| Precondition | The Day-0 Build is Complete. Before then it is the Build in progress, the Build is refused by name, `build-in-progress` (Q170), and nothing runs |
 | Fabric-primary | If the mesh's mesh-primary is the fabric-primary, [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) runs first with this mesh excluded from the successor search; under [fabric.delete](fabric-delete.md) the fabric-primary's own mesh is deleted last and it stays fabric-primary |
 | Mesh state | `mesh.deleting`: the mesh-primary publishes its mesh's status, deleting, as its [MeshStatus](../gossip.md#31-frame-catalog) frame; peers learn it only from the mesh-primary |
 | Targets | Every member of the accepted roster except the mesh-primary |

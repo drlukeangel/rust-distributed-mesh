@@ -821,8 +821,8 @@ mod tests {
     }
 
     /// CONTRACT (node-identity-and-state.md §2.7: "Who mints it. The Build that creates a mesh's first
-    /// node-admin mints the mesh id, never reissued"; "The same MeshId re-claiming its own name, at
-    /// state-commit, on a retry or from a replaced primary, is idempotent and accepted"): the accepted
+    /// node-admin mints the mesh id, never reissued"; "The same MeshId re-claiming its own name, on a
+    /// retry or from a replaced primary, is idempotent and accepted"): the accepted
     /// Build that creates mesh2 is planned by its fabric-primary and, after that admin is lost, by its
     /// successor, which holds nothing of its predecessor's memory. Each runs the plan's
     /// `create-mesh:mesh2` over the one mesh store: the first claim writes mesh2's row, and the

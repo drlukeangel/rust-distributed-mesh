@@ -38,7 +38,6 @@ enum CutWire {
     ProviderDomain,
     LeaveAnnouncement { announcements: Vec<u32>, channel: String },
     CatchUp,
-    StateSync,
     TopologyRead,
     Announcement { announcement: String, channel: String },
     ProviderTerminate { pid: Option<u32> },
@@ -153,13 +152,6 @@ pub enum Hit {
         /// The neighbour.
         neighbour: String,
     },
-    /// The application's answer to a `sync_state` checklist, about to be returned.
-    StateSync {
-        /// The checklist's Build.
-        build_id: String,
-        /// The checklist's attempt.
-        attempt: u32,
-    },
     /// A joining admin's topology read, about to be made.
     TopologyRead {
         /// The joining admin.
@@ -222,7 +214,6 @@ impl Hit {
             Hit::ProviderDomain => json!({"control_domain": "reported foreign"}),
             Hit::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Hit::CatchUp { node, neighbour } => json!({"node": node, "neighbour": neighbour}),
-            Hit::StateSync { build_id, attempt } => json!({"build_id": build_id, "attempt": attempt}),
             Hit::TopologyRead { node, reads_from } => json!({"node": node, "reads_from": reads_from}),
             Hit::Announcement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Hit::ProviderTerminate { pid, deployment_id } => json!({"pid": pid, "deployment_id": deployment_id}),
@@ -437,7 +428,7 @@ mod tests {
             CutSpec::ProviderDomain,
             CutSpec::LeaveAnnouncement { announcements: vec![1, 3], channel: "mesh".into() },
             CutSpec::CatchUp,
-            CutSpec::StateSync,
+            CutSpec::StateAction { node: None, command: Some("open-traffic".into()) },
             CutSpec::TopologyRead,
             CutSpec::Announcement { announcement: "aggregate-in-flight".into(), channel: "any".into() },
             CutSpec::ProviderTerminate { pid: Some(4242) },

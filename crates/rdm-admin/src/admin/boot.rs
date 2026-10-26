@@ -248,7 +248,7 @@ pub(crate) fn overlays_from_facts(facts: &[crate::build_state::BuildFact], diges
 /// control API, the projection and the executor.
 #[cfg(feature = "file-backend")]
 pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
-    // `start` carries no hook and no wrapper, so it is an embedding with no application work in state-sync.
+    // `start` carries no hook and no wrapper, so it is an embedding with no application work.
     start_with(cfg, crate::wiring::Wiring { fabric_hooks: crate::wiring::FabricHooks::no_app_work(), ..crate::wiring::Wiring::no_certs() }).await
 }
 
@@ -296,11 +296,6 @@ pub async fn start_on(cfg: AdminConfig, wiring: crate::wiring::Wiring, storage: 
 pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, storage: Arc<dyn crate::storage_backend::StorageBackend>, boot: tracing::Span) -> Result<Running, String> {
     // Every task this admin runs is spawned behind this gate: a stop holds it, and a start opens it again.
     let stop_gate = crate::stop_gate::StopGate::new();
-    // The `sync_state` choice is made on purpose: an embedding with no application work says so
-    // (`SyncState::NoAppWork`); one that registered nothing would skip its day 0 and seed unnoticed.
-    if wiring.fabric_hooks.sync_state.is_none() {
-        return Err("refusing to start: no `sync_state` choice was made; pass SyncState::NoAppWork for an embedding with no application work in state-sync, or the application's sync_state hook".into());
-    }
     // The app's declared secrets (Q150): a name RDM sets or passes through, or a name declared twice,
     // refuses the start here, by name and naming the fabric's provider (R-D3.3), before anything is
     // bootstrapped. Each value is read once: from the values this admin's data dir keeps, else from the
@@ -316,8 +311,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // here, by name, before anything is bootstrapped.
     let listener_names = crate::deployment::endpoint::ListenerNames::read(&wiring.listeners)?;
     let fabric_hooks = wiring.fabric_hooks.clone();
-    // The embedding's own state action, if it binds one: run after this admin publishes its
-    // scratchpad at commit-state (bound once the store root is open, below).
+    // The embedding's own open-traffic action, if it binds one (bound once the store root is open, below).
     let embedding_state_actions = wiring.state_actions.take();
     // The Rafka-time this process composes: held by no one until the join (or the Day-0 root's
     // boot) adopts it. Every gossip stamp, lifecycle event and fleet judgement this admin makes
@@ -1081,7 +1075,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // The fabric's ready-for-traffic fact on the fabric store is the durable fact that the fabric
                 // first reached ready-for-traffic (states.md, "The initial fabric before ready-for-traffic"): an
                 // admin booting on a root that holds it knows it whatever status it hears next (a resize puts the
-                // fabric back to pending). The Fabric row is published at the first state-commit, before it.
+                // fabric back to pending).
                 records.first_ready.read_from(&*fabric_storage, &cfg.fabric_id).await.map_err(storage_err)?;
                 records.set_digest_view(topology_view.digest_view.clone());
                 let builds = Arc::new(
@@ -1145,8 +1139,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             submitted_change: None,
                                             submitted_at_ms: rafka_time.now_ms(),
                                         };
-                                        // The fabric-primary claims the Fabric's identity at Day 0, into its scratchpad until
-                                        // the fabric's first state-commit (node-identity-and-state.md §2.8; fabric-create.md).
+                                        // The fabric-primary claims the Fabric's identity at Day 0 (node-identity-and-state.md
+                                        // §2.8; fabric-create.md).
                                         if let Err(held) = claim_fabric_name(&*fabric_storage, &fabric_identity, &node_id).await? {
                                             return Err(format!("refusing to start: this admin is configured for Fabric {}: {held}", cfg.fabric_id));
                                         }
@@ -1221,10 +1215,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         rafka_time.clone(),
                                     )
                                     .with_contexts(attempt_contexts.clone())
-                                    .with_first_ready(
-                                        records.first_ready.clone(),
-                                        fabric_storage.clone(),
-                                    )
                                     .with_claims(mesh_claims.clone())
                                     .with_executable_dirs(cfg.executable_dirs.clone()),
                                 );
@@ -2249,7 +2239,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (commands, backbone, fabric_states) = (commands.clone(), backbone.clone(), states_slot.get().cloned().expect("the fabric states are built before the carrier"));
                                         topology_view.set_completion_carrier(Arc::new(move |f: &rdm_transport::topology::Frame| {
                                             use rdm_transport::topology::{CompletionCarry, Frame};
-                                            if matches!(f.data(), Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }) {
+                                            if matches!(f.data(), Frame::TrafficOpened { .. }) {
                                                 return fabric_states.mesh_checklists.carry_check_in(f, |f| {
                                                     let (backbone, f) = (backbone.clone(), f.clone());
                                                     tokio::spawn(async move { backbone.carry_completion(f).await });
@@ -2741,7 +2731,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let turn = stop.turn("hierarchy").await;
                                                 let me = view_digest_view.held_path_name().unwrap_or_else(|| me.clone());
                                                 // A claim this admin's door wins from here on, during the turn included, ends the
-                                                // turn's wait: the attempt it opens is the one state-sync names.
+                                                // turn's wait: the attempt it opens is the one the open-traffic checklist names.
                                                 let door = claim_door.get().cloned();
                                                 let mut claimed = door.as_ref().map(|d| Box::pin(d.claimed.notified()));
                                                 if let Some(c) = claimed.as_mut() {
@@ -2899,10 +2889,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // held member gone stale is dialled by §6's repair alone (gossip.md §6, §8; Q84).
                                                 drop(turn);
                                                 // The next turn is due after one gossip interval, or at once when what the turn
-                                                // decides on moved: a checklist the fabric-primary waits on, or the application's
-                                                // answer; an attempt claimed; or the view changes a member's status or a primary,
+                                                // decides on moved: a checklist the fabric-primary waits on; an attempt claimed; or the view changes a member's status or a primary,
                                                 // its mesh's or a node type's (this admin's own roles among them), or a mesh's status.
-                                                // The fabric enters state-sync when every planned mesh is ready-for-traffic, and a
+                                                // The open-traffic checklist begins when every planned mesh is ready-for-traffic, and a
                                                 // status change is sent at once (states.md; gossip.md §3.2: timers only for
                                                 // heartbeat and anti-entropy).
                                                 let decides = |v: &Topology| (v.members().map(|n| (n.name.clone(), n.status, n.is_primary, n.is_fabric_primary)).collect::<Vec<_>>(), v.meshes.iter().map(|m| (m.name.clone(), m.status)).collect::<Vec<_>>());

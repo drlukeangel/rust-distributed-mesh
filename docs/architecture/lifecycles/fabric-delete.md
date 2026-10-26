@@ -13,7 +13,7 @@ itself is then deleted by a separate `node.delete`, called from outside the fabr
 | Field | Contract |
 |---|---|
 | Caller | Typed caller |
-| Precondition | None on the fabric's state: admitted before the first ready-for-traffic, and while a Build is in progress, which it interrupts as [build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine) states ([States](states.md#fabric-not-ready)) |
+| Precondition | None on the fabric's state: admitted before the first ready-for-traffic, and while a Build is in progress, which it interrupts as [build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine) states |
 | Driver | The fabric-primary, one Build |
 | Steps | [mesh.delete](mesh-delete.md) of each mesh, the fabric-primary's own mesh last; then [node.delete](node-delete.md) of each other mesh's mesh-primary, after its mesh.deleted |
 | Executor | The fabric-primary executes each other mesh-primary's node.delete and proves its exit |

@@ -168,7 +168,7 @@ impl Day0 {
         ready_event_on(&self.fabric().join(rdm_admin::store_root::FABRIC_FILE))
     }
 
-    /// Day 0 to the end of the fabric's first change: the Fabric row published at state-commit, the admin saying it
+    /// Day 0 to the end of the fabric's first change: the Fabric row written at Day 0, the admin saying it
     /// reached ready-for-traffic, and, when `row` is set, the fabric event's row put on the root. Returns the
     /// running admin.
     fn day0_until_ready(&self, row: bool) -> Running {
@@ -280,12 +280,12 @@ fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_befor
 const INHERITED_CONFIG: [(&str, &str); 1] = [("zone", "a")];
 const INHERITED_TAGS: [&str; 1] = ["edge"];
 
-/// What a prepared root holds beside the fabric's own record and the accepted topology: a fabric in
-/// state-commit (its Fabric row published, no ready-for-traffic row), or one that first reached
-/// ready-for-traffic (the ready-for-traffic fabric event's row among its mesh's status rows).
+/// What a prepared root holds beside the fabric's own record and the accepted topology: a fabric that
+/// has never been ready-for-traffic (its Fabric row, no ready-for-traffic row), or one that first
+/// reached ready-for-traffic (the ready-for-traffic fabric event's row among its mesh's status rows).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum History {
-    StateCommit,
+    NeverReady,
     ReadyForTraffic,
 }
 
@@ -293,9 +293,8 @@ enum History {
 /// adapters with no previous process (R-SB1): the Fabric row and the fabric's name claim, mesh1's row,
 /// the admin's own row (fabric1, mesh1, `mesh1.admin.1`, its node key), the accepted Build of the root
 /// topology in the Build journal on the shared store root (R-BI6) and, for [`History::ReadyForTraffic`], the
-/// ready-for-traffic row. The rows the fabric's state-commit publishes are held in the root's
-/// scratchpad and published by it, as the fabric-primary's commit-state action does. The store names no
-/// node but the admin itself: nothing is alive.
+/// ready-for-traffic row, each written straight to the root. The store names no node but the admin
+/// itself: nothing is alive.
 struct Prepared {
     dir: std::path::PathBuf,
     store: std::path::PathBuf,
@@ -324,7 +323,6 @@ impl Prepared {
         std::fs::write(data_dir.join("node-key"), hex::encode(key.to_bytes())).unwrap();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
-            assert_eq!(root.writes_to(), "scratchpad", "an empty root holds its rows until the fabric's state-commit");
             let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::NodeId::mint(), &incarnation)).await.unwrap();
             let identity = rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
             rdm_admin::fabric_storage::claim_identity(&fabric, &identity).await.unwrap().expect("the fabric's name is free");
@@ -388,7 +386,6 @@ impl Prepared {
                 submitted_at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
             };
             rdm_admin::build_state::accept(&journal, &accepted, None, "mesh1.admin.1", "prepared-root").await.unwrap();
-            root.scratchpad().expect("held until the state-commit").publish().await.unwrap();
         });
         let prepared = Self { dir, store, data_dir, fabric_id, mesh_id, node_id, incarnation, build_id };
         assert_eq!(fabric_dirs(&prepared.store), vec![prepared.fabric_id.to_string()], "one fabric on the root");
@@ -533,7 +530,7 @@ const BOOTS_WITHIN: Duration = Duration::from_secs(10);
 /// is not there, or the name refused as held by the inherited birth.
 #[test]
 fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_fabric_and_mesh_ids() {
-    let root = Prepared::at("an_admin_started_on_a_prepared_root_boots_as_a_new_node", History::StateCommit);
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_boots_as_a_new_node", History::NeverReady);
     let mut running = root.start();
     let spans = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
     let adopted = assert_zero_contact_recovery(&spans);
@@ -624,19 +621,15 @@ fn an_admin_started_on_a_prepared_root_holding_the_ready_for_traffic_row_knows_a
     println!("trace_id={}", said["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (R-SB1: "a root whose fabric is in state-commit with no prior ready-for-traffic (the latch is
-/// not set)"; states.md "The initial fabric before ready-for-traffic": "Until the initial fabric first
-/// reaches ready-for-traffic it is pending, in state-sync or in state-commit, and nothing that moves a
-/// seat or writes caller state runs"; store_root.rs: the Fabric row is published at the fabric's first
-/// STATE-COMMIT): a prepared root holding the Fabric row and no ready-for-traffic row is a fabric that
-/// has not first reached ready-for-traffic. An admin started on it, on the zero-contact recovery path,
-/// does not know at boot that the fabric reached it: by the time it reloads its Build it has said no
-/// first-ready from the store, and every first-ready it ever says is its own change's
-/// (`ready-for-traffic`). What must NOT happen: the Fabric row taken as the signal, so that a seat move or
-/// a caller's workflow is admitted while the fabric is in state-commit.
+/// CONTRACT (R-SB1: "a root whose fabric has no prior ready-for-traffic (the latch is not set)"): a
+/// prepared root holding the Fabric row and no ready-for-traffic row is a fabric that has not first
+/// reached ready-for-traffic. An admin started on it, on the zero-contact recovery path, does not know at
+/// boot that the fabric reached it: by the time it reloads its Build it has said no first-ready from the
+/// store, and every first-ready it ever says is its own change's (`ready-for-traffic`). What must NOT
+/// happen: the Fabric row taken as the signal.
 #[test]
-fn an_admin_started_on_a_prepared_root_whose_fabric_is_in_state_commit_does_not_know_it_reached_ready_for_traffic() {
-    let root = Prepared::at("an_admin_started_on_a_prepared_root_whose_fabric_is_in_state_commit", History::StateCommit);
+fn an_admin_started_on_a_prepared_root_whose_fabric_was_never_ready_does_not_know_it_reached_ready_for_traffic() {
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_whose_fabric_was_never_ready", History::NeverReady);
     let mut running = root.start();
     let spans = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
     assert_zero_contact_recovery(&spans);
@@ -663,7 +656,7 @@ fn an_admin_started_on_a_prepared_root_whose_fabric_is_in_state_commit_does_not_
 /// joining it.
 #[test]
 fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_never_joins_a_mesh_created_again_under_its_name() {
-    let root = Prepared::at("an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id", History::StateCommit);
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id", History::NeverReady);
     let fabric_root = root.store.join(root.fabric_id.to_string());
     let meshes = fabric_root.join(rdm_admin::store_root::MESHES_FILE);
     let name_claim = fabric_root.join("locks").join("name").join("mesh1");
@@ -819,7 +812,7 @@ impl Prepared {
     /// [`Prepared::at`] as a fabric whose one admin, the fabric-primary, is lost: its birth's row records
     /// it its mesh's primary and the fabric-primary, and the Fabric record names its provider, `process`.
     fn adoptable(name: &str) -> Self {
-        let root = Self::at(name, History::StateCommit);
+        let root = Self::at(name, History::NeverReady);
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let store = rdm_admin::store_root::StoreRoot::open(&root.store, &root.fabric_id).unwrap();
             let writer = rdm_admin::model::IncarnationId::mint();
@@ -1145,7 +1138,7 @@ fn member_cert_installed(dir: &std::path::Path, pid: u32, node: &str, within: Du
 /// re-created admin installing no cert (its app-protocol dials refused `no-credential`).
 #[test]
 fn an_admin_re_created_at_its_path_over_its_inherited_data_dir_holds_a_member_cert() {
-    let root = Prepared::at("an_admin_re_created_at_its_path_holds_a_member_cert", History::StateCommit);
+    let root = Prepared::at("an_admin_re_created_at_its_path_holds_a_member_cert", History::NeverReady);
     let mut running = root.start();
     let _ = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
     let installed = member_cert_installed(&root.dir, running.pid, "mesh1.admin.1", Duration::from_secs(20));
