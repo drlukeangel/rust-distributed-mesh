@@ -30,6 +30,17 @@ pub struct StorageScope {
     pub own_mesh: String,
     /// The incarnation this process writes as.
     pub writer: IncarnationId,
+    /// The node id this process writes as: with `writer`, the writer every store line's `op` names
+    /// (R-SR3).
+    pub node_id: crate::model::NodeId,
+}
+
+impl StorageScope {
+    /// The writer of every store file line this process appends.
+    #[cfg(feature = "file-backend")]
+    pub fn log_writer(&self) -> crate::store_log::LogWriter {
+        crate::store_log::LogWriter::new(&self.node_id, &self.writer)
+    }
 }
 
 /// A node's own connections rows, opened once its `path.name` is decided.
@@ -122,7 +133,7 @@ impl StorageBackend for FileBackend {
         // scratchpad; its commit-state action publishes them (states.md, Setting a state).
         let writes_to = root.writes_to().to_string();
         let state_actions: Arc<dyn StateActions> = Arc::new(crate::fabric_status::StorePublication::new(root.scratchpad().cloned(), embedding));
-        let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
+        let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
         let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(Arc::new(crate::storage::FileNodesStorage::open_with_root_runtimes(&root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?));
@@ -262,7 +273,7 @@ mod tests {
             file.put_own_row(&data_dir, &own.incarnation_id, &own).await.unwrap();
             assert_eq!(file.own_row(&data_dir, &IncarnationId::mint()).await.unwrap(), Some(own.clone()), "the next process of the data dir reads it back whole");
             assert_eq!(file.own_row(&other, &IncarnationId::mint()).await.unwrap(), None, "another data dir holds none");
-            let scope = StorageScope { data_dir: data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint() };
+            let scope = StorageScope { data_dir: data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() };
             let opened = file.open(&scope, None).await.unwrap_or_else(|e| panic!("the boundaries open: {e}"));
             assert!(opened.nodes.nodes("mesh1").await.unwrap().is_empty(), "the nodes store holds no copy of the own row");
         }
@@ -280,7 +291,7 @@ mod tests {
         let store = crate::test_support::tempdir("file-backend-reborn-store");
         let data_dir = crate::test_support::tempdir("file-backend-reborn-data");
         let fabric_id = FabricId::mint();
-        let at = |data_dir: PathBuf| StorageScope { data_dir, fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint() };
+        let at = |data_dir: PathBuf| StorageScope { data_dir, fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() };
         a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(&FileBackend::at(&store), &at(data_dir.clone()), &at(data_dir), &at(crate::test_support::tempdir("file-backend-reborn-other"))).await;
     }
 }

@@ -165,7 +165,7 @@ impl Day0 {
 
     /// The ready-for-traffic row of the fabric, in the status rows of mesh1: the file the fabric event is put as.
     fn ready_rows(&self) -> Vec<std::path::PathBuf> {
-        ready_event_on(&self.fabric().join("fabric").join("record.json"))
+        ready_event_on(&self.fabric().join(rdm_admin::store_root::FABRIC_FILE))
     }
 
     /// Day 0 to the end of the fabric's first change: the Fabric row published at state-commit, the admin saying it
@@ -175,7 +175,7 @@ impl Day0 {
         let running = self.run();
         let until = Instant::now() + Duration::from_secs(30);
         loop {
-            let published = fabric_dirs(&self.store).first().is_some_and(|f| self.store.join(f).join("fabric").join("record.json").exists());
+            let published = fabric_dirs(&self.store).first().is_some_and(|f| rdm_admin::store_log::read_record(&self.store.join(f).join(rdm_admin::store_root::FABRIC_FILE), "fabric-record", None).is_some());
             let said: Vec<String> = first_ready_reasons(&spans_of(&self.dir, running.pid));
             if published && said == ["ready-for-traffic"] && (!row || !self.ready_rows().is_empty()) {
                 return running;
@@ -201,7 +201,7 @@ fn first_ready_reasons(spans: &[serde_json::Value]) -> Vec<String> {
 /// primary"; states.md, "Who sets each state": the fabric-primary sets the fabric's
 /// ready-for-traffic): the fabric-primary puts the ready-for-traffic fabric event on the fabric and
 /// applies it at every mesh primary, its own mesh's included. On a one-mesh fabric the Day-0 admin is
-/// that primary: the event stands on the Fabric record, `fabric/record.json`, on the root once the
+/// that primary: the event stands on the Fabric record, its line in `fabric.jsonl`, on the root once the
 /// fabric first reaches ready-for-traffic. What must NOT happen: the fact that the fabric first reached ready-for-traffic
 /// written on every mesh but the fabric-primary's, so that no row says it on a fabric of one mesh.
 #[test]
@@ -212,7 +212,7 @@ fn the_fabric_primary_puts_the_ready_for_traffic_row_on_its_own_mesh() {
     let rows = day0.ready_rows();
     assert_eq!(rows.len(), 1, "one ready-for-traffic row on the root: {rows:?}");
     let fabric = fabric_dirs(&day0.store).remove(0);
-    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&rows[0]).unwrap()).unwrap();
+    let record = rdm_admin::store_log::read_record(&rows[0], "fabric-record", None).expect("the Fabric record's line");
     assert_eq!(record["record"]["fabric_id"].as_str(), Some(fabric.as_str()), "the event stands on the fabric's own record: {record}");
     let put = spans.iter().find(|s| s["name"] == "rdm.node_admin.status.update.via-declare" && format!("{}", s["attributes"]["key"]).contains("FabricEventAt")).unwrap_or_else(|| panic!("the fabric-primary declared no fabric event: {:?}", spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()));
     assert_eq!(put["attributes"]["via"].as_str(), Some("self"), "the Day-0 admin is its own mesh's primary: {put}");
@@ -325,7 +325,7 @@ impl Prepared {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
             assert_eq!(root.writes_to(), "scratchpad", "an empty root holds its rows until the fabric's state-commit");
-            let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&root, &incarnation).await.unwrap();
+            let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::NodeId::mint(), &incarnation)).await.unwrap();
             let identity = rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
             rdm_admin::fabric_storage::claim_identity(&fabric, &identity).await.unwrap().expect("the fabric's name is free");
             let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &incarnation).await.unwrap();
@@ -392,7 +392,7 @@ impl Prepared {
         });
         let prepared = Self { dir, store, data_dir, fabric_id, mesh_id, node_id, incarnation, build_id };
         assert_eq!(fabric_dirs(&prepared.store), vec![prepared.fabric_id.to_string()], "one fabric on the root");
-        assert!(prepared.fabric_row().exists(), "the Fabric row stands on the root");
+        assert!(rdm_admin::store_log::read_record(&prepared.fabric_row(), "fabric-record", None).is_some(), "the Fabric row stands on the root");
         assert!(prepared.store.join(prepared.fabric_id.to_string()).join(format!("fabric/builds/{}/accepted.json", prepared.build_id)).exists(), "the accepted Build stands on the shared store root as its own record");
         assert!(!prepared.data_dir.join("fabric").exists(), "no per-admin Build journal in data_dir");
         assert_eq!(prepared.ready_rows().len(), usize::from(history == History::ReadyForTraffic), "{history:?}: the ready-for-traffic rows on the root");
@@ -400,7 +400,7 @@ impl Prepared {
     }
 
     fn fabric_row(&self) -> std::path::PathBuf {
-        self.store.join(self.fabric_id.to_string()).join("fabric").join("record.json")
+        self.store.join(self.fabric_id.to_string()).join(rdm_admin::store_root::FABRIC_FILE)
     }
 
     fn ready_rows(&self) -> Vec<std::path::PathBuf> {
@@ -707,7 +707,7 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
 /// The Fabric record at `file` when it holds the ready-for-traffic event: the fact the fabric first
 /// reached it, as a list of the one record that holds it (empty while it holds none).
 fn ready_event_on(file: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let held = std::fs::read(file).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).is_some_and(|v| v["record"]["events"].as_array().is_some_and(|e| e.iter().any(|x| x == "ready-for-traffic")));
+    let held = rdm_admin::store_log::read_record(file, "fabric-record", None).is_some_and(|v| v["record"]["events"].as_array().is_some_and(|e| e.iter().any(|x| x == "ready-for-traffic")));
     if held { vec![file.to_path_buf()] } else { Vec::new() }
 }
 
@@ -821,11 +821,12 @@ impl Prepared {
             let birth = row.births.last_mut().unwrap();
             (birth.is_primary, birth.is_fabric_primary) = (Some(1), Some(1));
             nodes.write_record(&row).await.unwrap();
+            use rdm_admin::fabric_storage::FabricStorage as _;
+            let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&store, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
+            let mut record = fabric.fabric().await.unwrap().expect("the Fabric record");
+            record.provider = Some(rdm_admin::model::ProviderKind::Process);
+            fabric.put_fabric(&record).await.unwrap();
         });
-        let record = root.fabric_row();
-        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
-        v["record"]["provider"] = serde_json::json!("process");
-        std::fs::write(&record, serde_json::to_vec(&v).unwrap()).unwrap();
         root
     }
 
@@ -858,7 +859,7 @@ fn an_adoption_launch_whose_store_root_holds_no_such_fabric_is_refused_by_name_n
     let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch neither refused nor ended: it ran, as a Day 0 of the given id would");
     assert!(!status.success(), "{status:?} {err}");
     assert!(err.contains("refusing to start") && err.contains(&fabric_id) && err.contains(&d.store.display().to_string()) && err.contains("holds no Fabric record"), "the refusal names the fabric id and the store root: {err}");
-    assert!(!d.store.join(&fabric_id).join("fabric").join("record.json").exists(), "a Fabric record was written for the given id");
+    assert!(rdm_admin::store_log::read_record(&d.store.join(&fabric_id).join(rdm_admin::store_root::FABRIC_FILE), "fabric-record", None).is_none(), "a Fabric record was written for the given id");
     let claims: Vec<std::path::PathBuf> = std::fs::read_dir(d.store.join(rdm_admin::store_root::FABRIC_NAMES)).map(|e| e.flatten().map(|e| e.path()).collect()).unwrap_or_default();
     assert!(claims.is_empty(), "the fabric's name was claimed: {claims:?}");
 }

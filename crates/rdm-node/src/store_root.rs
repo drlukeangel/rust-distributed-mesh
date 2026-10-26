@@ -38,9 +38,27 @@ use std::sync::Arc;
 /// The env variable that names a node's `store_dir`.
 pub use rdm_core::launch::ENV_STORE_DIR;
 
-/// The Fabric row's file under the root: the fabric-primary publishes it at the fabric's first
-/// state-commit, so a root that holds it is a store that exists.
-const FABRIC_ROW: &str = "fabric/record.json";
+/// The fabric's store file under the root: the fabric-primary publishes the Fabric record's line to
+/// it at the fabric's first state-commit, so a root whose file holds one is a store that exists.
+pub const FABRIC_FILE: &str = "fabric.jsonl";
+/// The meshes' store file: every Mesh record's writes.
+pub const MESHES_FILE: &str = "meshes.jsonl";
+/// The nodes' store file: every node record's writes, runtime rows and tag rows.
+pub const NODES_FILE: &str = "nodes.jsonl";
+/// The connections' store file: every connection fact of every source.
+pub const CONNECTIONS_FILE: &str = "connections.jsonl";
+/// The builds' store file: every Build fact.
+pub const BUILDS_FILE: &str = "builds.jsonl";
+/// The locks' directory: the attempt in flight on each mesh name and every name claim.
+pub const LOCKS_DIR: &str = "locks";
+
+/// The kind of the Fabric record's lines.
+pub const FABRIC_RECORD_KIND: &str = "fabric-record";
+
+/// Whether the root `dir`'s fabric file holds a Fabric record's line: the store exists.
+fn published(dir: &Path) -> Result<bool, StorageError> {
+    Ok(crate::store_log::read_file(&dir.join(FABRIC_FILE))?.iter().any(|l| l.kind() == FABRIC_RECORD_KIND))
+}
 
 /// The fabrics' name index, `<store_dir>/fabrics/`, beside the per-fabric roots (R-FN1).
 pub const FABRIC_NAMES: &str = "fabrics";
@@ -140,7 +158,7 @@ impl StoreRoot {
             create_root(store_dir, &dir)?;
         }
         check_layout(&dir)?;
-        let scratchpad = (!dir.join(FABRIC_ROW).exists()).then(Scratchpad::new);
+        let scratchpad = (!published(&dir)?).then(Scratchpad::new);
         Ok(Self { dir, store_dir: store_dir.to_path_buf(), scratchpad })
     }
 
@@ -190,6 +208,27 @@ impl StoreRoot {
             }
             None => FileRecords::open(base, dir, writer).await,
         }
+    }
+
+    /// Open the store file `file` of this root, reading `formats`: held in this root's scratchpad
+    /// until it is published, named by its store (the file without `.jsonl`) in the publication.
+    pub async fn log(&self, file: &str, formats: crate::store_log::Formats) -> Result<crate::store_log::StoreLog, StorageError> {
+        let path = self.dir.join(file);
+        match &self.scratchpad {
+            Some(scratchpad) => crate::store_log::StoreLog::open_held(&path, formats, scratchpad, file.trim_end_matches(".jsonl").to_string()).await,
+            None => crate::store_log::StoreLog::open(&path, formats).await,
+        }
+    }
+
+    /// Open the store file `file` straight to the disk, never held: a store whose writes are durable
+    /// before the fabric's first state-commit too.
+    pub async fn log_direct(&self, file: &str, formats: crate::store_log::Formats) -> Result<crate::store_log::StoreLog, StorageError> {
+        crate::store_log::StoreLog::open(&self.dir.join(file), formats).await
+    }
+
+    /// `fabric.jsonl`.
+    pub fn fabric(&self) -> PathBuf {
+        self.dir.join(FABRIC_FILE)
     }
 
     /// `<store_dir>/<fabric_id>/`.

@@ -78,10 +78,10 @@ fn day0_config(dir: &Path, policy: &[(&'static str, String)]) -> AdminConfig {
 /// root is the cells' shared store, `dir`), reconciling nothing.
 async fn boot_root(dir: &Path, policy: &[(&'static str, String)]) -> Running {
     let cfg = day0_config(dir, policy);
-    let identity = dir.join(cfg.fabric_id.to_string()).join("fabric").join("record.json");
+    let identity = dir.join(cfg.fabric_id.to_string()).join(rdm_admin::store_root::FABRIC_FILE);
     let root = start_with(cfg, Wiring { certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
     tokio::time::timeout(BOUND, async {
-        while !identity.exists() {
+        while rdm_admin::store_log::read_record(&identity, "fabric-record", None).is_none() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })

@@ -381,7 +381,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         (None, Some(own)) => own.name.mesh.clone(),
         _ => cfg.mesh.clone(),
     };
-    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone() };
+    // The node id this birth runs as: a launched node's given one, else minted now, before any store
+    // opens, so every store line this process appends names it (R-SR3).
+    let minted_node_id = cfg.launch.as_ref().map(|l| l.node_id.clone()).unwrap_or_else(NodeId::mint);
+    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone(), node_id: minted_node_id.clone() };
     let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, root_runtimes, connections: open_connections, builds: journal, state_actions, finish_writes, writes_to } = storage.open(&scope, embedding_state_actions).await?;
     storage_step.record("writes_to", writes_to.as_str());
     // The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
@@ -499,7 +502,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             // or, under an in-force fabric.delete, at its own new path.name (Q159). Its claim of the
             // fabric-recovery attempt, or of the delete's next attempt, is its first recovery mutation (Q156);
             // a lost claim refuses the start by name, having written nothing else.
-            let node_id = NodeId::mint();
+            let node_id = minted_node_id.clone();
             let a = adoption.as_ref().expect("an adoption launch read its store");
             let at = match (&a.delete, &cfg.adopt) {
                 (Some(_), Some(new)) => new.clone(),
@@ -536,7 +539,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             (at, node_id, incarnation.clone(), None, SocketAddr::new(cfg.api_bind.ip(), 0), seeds)
         }
         (None, Some(own)) => {
-            let node_id = NodeId::mint();
+            let node_id = minted_node_id.clone();
             let step = tracing::info_span!(
                 parent: &boot,
                 "rdm.node_admin.node.create.via-inherited-root",
@@ -588,7 +591,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         }
         (None, None) => {
             let name = PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1);
-            let node_id = NodeId::mint();
+            let node_id = minted_node_id.clone();
             // Day 0 (R-OW1 item 2): the bootstrap admin, its mesh's primary, claims its own path.name,
             // the first write of its birth, before Ready (`claim_day0_name`). A name another
             // node holds refuses the start by name. A recovery start (both primary flags) is no Day 0: its row

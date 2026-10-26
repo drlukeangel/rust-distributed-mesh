@@ -28,10 +28,10 @@ fn processes_of(root: &Path) -> Vec<u32> {
         .collect()
 }
 
-/// Whether the fabric's store root holds the durable Fabric row (`fabric/record.json`), which the
+/// Whether the fabric's store root holds the durable Fabric row (its line in `fabric.jsonl`), which the
 /// fabric-primary publishes at the fabric's first state-commit.
 fn holds_fabric_identity_row(store_root: &Path) -> bool {
-    store_root.join("fabric/record.json").is_file()
+    rdm_admin::store_log::read_record(&store_root.join(rdm_admin::store_root::FABRIC_FILE), "fabric-record", None).is_some()
 }
 
 /// CONTRACT: the node-admin an estate restarted on its own data dir is the estate's process like the

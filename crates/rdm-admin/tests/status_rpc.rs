@@ -628,7 +628,7 @@ impl FabricStorage for Refusing {
         self.fabric.fabric().await
     }
     async fn put_fabric(&self, record: &rdm_admin::fabric_storage::FabricRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check("fabric/record.json")?;
+        self.check("fabric.jsonl")?;
         self.fabric.put_fabric(record).await
     }
     async fn name_claim(&self, name: &str) -> Result<Option<rdm_admin::fabric_storage::FabricIdentity>, rdm_admin::storage_error::StorageError> {

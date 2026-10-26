@@ -343,16 +343,22 @@ async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members:
     estate.record_trace_url(&s(&root["trace_id"]));
 }
 
-/// Every row under the fabric's store root, as a path relative to it, sorted. A row is a file: the
-/// directories the stores open are not rows.
+/// Every row under the fabric's store root, sorted: each record of a store file as
+/// `<file>#<kind>/<key>` (its latest line), and every other file as a path relative to the root. The
+/// directories the stores open, an empty store file and the layout marker are not rows.
 fn rows_on(root: &std::path::Path) -> Vec<String> {
     fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<String>) {
         for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let p = e.path();
+            let rel = p.strip_prefix(root).unwrap().display().to_string();
             if p.is_dir() {
                 walk(&p, root, out);
-            } else {
-                out.push(p.strip_prefix(root).unwrap().display().to_string());
+            } else if rel.ends_with(".jsonl") && dir == root {
+                // A store file read while its nodes append: a line caught mid-write is read again.
+                let latest = (0..50).find_map(|_| rdm_admin::store_log::latest_in(&p).ok().or_else(|| { std::thread::sleep(std::time::Duration::from_millis(20)); None })).unwrap_or_else(|| panic!("{} reads whole", p.display()));
+                out.extend(latest.into_keys().map(|(kind, key)| format!("{rel}#{kind}/{key}")));
+            } else if rel != rdm_admin::store_root::LAYOUT {
+                out.push(rel);
             }
         }
     }
@@ -622,13 +628,13 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     assert_eq!(claimed["record"]["fabric_id"].as_str(), root.file_name().and_then(|n| n.to_str()), "the name claim names this fabric: {claimed}");
     let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     let holds = |prefix: &str| after.iter().any(|r| r.starts_with(prefix));
-    assert!(holds("fabric/record.json"), "the fabric-primary published the Fabric record: {after:#?}");
+    assert!(holds("fabric.jsonl#fabric-record/"), "the fabric-primary published the Fabric record: {after:#?}");
     assert!(holds("fabric/builds/"), "the fabric-primary's Build journal stands under fabric/builds/ (R-BI6): {after:#?}");
     // The per-seat rows under `fabric/seats` go (the approved proposal
     // node-primary-update-fabric-mesh-and-node-type.md, Part C2: "the leadership view is folded from the
     // transfer rows"): under fabric/ the fabric-primary holds its identity row, its `fabric/builds/`
     // Build journal (R-BI6) and the fabric's events (storage-by-object.md), and nothing else.
-    let only_identity_builds_and_events = |rows: &[String]| rows.iter().filter(|r| r.starts_with("fabric/")).all(|r| r == "fabric/record.json" || r.starts_with("fabric/builds/"));
+    let only_identity_builds_and_events = |rows: &[String]| rows.iter().filter(|r| r.starts_with("fabric/")).all(|r| r.starts_with("fabric/builds/")) && rows.iter().filter(|r| r.starts_with("fabric.jsonl#")).all(|r| r.starts_with("fabric.jsonl#fabric-record/"));
     assert!(only_identity_builds_and_events(&after), "the Fabric row carries no pointer to the newest Build and no seat row stands beside it: the fabric-primary's fabric/ rows are the identity, fabric/builds/ and fabric/events/ and nothing else: {after:#?}");
     for mesh in ["mesh1", "mesh2"] {
         assert!(holds(&format!("mesh-names/{mesh}.json")), "{mesh}'s primary published its Mesh name claim: {after:#?}");

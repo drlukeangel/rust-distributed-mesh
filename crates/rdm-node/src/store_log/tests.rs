@@ -18,8 +18,14 @@ fn formats() -> Formats {
     Formats::new().with::<Rec>("rec/1")
 }
 
+/// The writer `tag` names, one per tag for the whole binary.
 fn writer(tag: &str) -> LogWriter {
-    LogWriter { node_id: format!("node-{tag}"), incarnation_id: format!("inc-{tag}") }
+    static WRITERS: Mutex<BTreeMap<String, LogWriter>> = Mutex::new(BTreeMap::new());
+    WRITERS.lock().unwrap().entry(tag.to_string()).or_insert_with(LogWriter::mint).clone()
+}
+
+fn op_of(w: &LogWriter, seq: u64) -> Op {
+    Op { node_id: w.node_id.to_string(), incarnation_id: w.incarnation_id.to_string(), seq }
 }
 
 fn file(tag: &str) -> PathBuf {
@@ -30,7 +36,7 @@ fn file(tag: &str) -> PathBuf {
 /// descriptor.
 fn other_appends(path: &Path, w: &LogWriter, seq: u64, key: &str, record: &Rec) {
     use std::io::Write as _;
-    let op = Op { node_id: w.node_id.clone(), incarnation_id: w.incarnation_id.clone(), seq };
+    let op = op_of(w, seq);
     let line = line_of(&encode_object(&op, "rec/1", key, &serde_json::to_vec(record).unwrap()));
     std::fs::OpenOptions::new().append(true).open(path).unwrap().write_all(&line).unwrap();
 }
@@ -131,7 +137,7 @@ async fn two_writers_appending_at_once_leave_every_line_whole_and_in_order() {
     jb.await.unwrap();
     let lines = reopen(&path).await.unwrap().lines().await.unwrap();
     assert_eq!(lines.len(), 400, "every line found whole");
-    for w in ["node-a", "node-b"] {
+    for w in [writer("a").node_id.to_string(), writer("b").node_id.to_string()] {
         let seqs: Vec<u64> = lines.iter().filter_map(|l| l.op.as_ref()).filter(|o| o.node_id == w).map(|o| o.seq).collect();
         assert_eq!(seqs, (1..=200).collect::<Vec<_>>(), "{w}'s lines stand in the order it wrote them");
     }
@@ -150,7 +156,7 @@ async fn a_partial_object_followed_by_another_writers_line_refuses_the_read() {
     log.append(&writer("a"), "rec/1", "k", &rec("first", 1)).await.unwrap();
     assert_eq!(current(&log, "k").await, Some(rec("first", 1)));
     let at = std::fs::metadata(&path).unwrap().len() + 1;
-    let partial = line_of(&encode_object(&Op { node_id: "node-a".into(), incarnation_id: "inc-a".into(), seq: 2 }, "rec/1", "k", br#"{"name":"second","n":2}"#));
+    let partial = line_of(&encode_object(&op_of(&writer("a"), 2), "rec/1", "k", br#"{"name":"second","n":2}"#));
     append_raw(&path, &partial[..partial.len() - 30]);
     other_appends(&path, &writer("b"), 1, "k", &rec("third", 3));
     let e = log.latest("rec", "k").await.unwrap_err().to_string();
@@ -200,7 +206,7 @@ async fn a_line_with_a_wrong_checksum_refuses_the_open_by_name() {
     log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
     let mut bytes = std::fs::read(&path).unwrap();
     let at = bytes.len() as u64 + 1;
-    let mut obj = encode_object(&Op { node_id: "node-a".into(), incarnation_id: "inc-a".into(), seq: 2 }, "rec/1", "k", br#"{"name":"b","n":2}"#);
+    let mut obj = encode_object(&op_of(&writer("a"), 2), "rec/1", "k", br#"{"name":"b","n":2}"#);
     let n = obj.len();
     obj[n - 3] = if obj[n - 3] == b'0' { b'1' } else { b'0' };
     assert!(serde_json::from_slice::<serde_json::Value>(&obj).is_ok(), "the damaged line still parses");
@@ -303,7 +309,7 @@ async fn a_valid_last_object_missing_only_its_newline_is_ended_at_open_and_folde
     let path = file("store-log-unended");
     let log = reopen(&path).await.unwrap();
     log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
-    let line = line_of(&encode_object(&Op { node_id: "node-a".into(), incarnation_id: "inc-a".into(), seq: 2 }, "rec/1", "k", br#"{"name":"b","n":2}"#));
+    let line = line_of(&encode_object(&op_of(&writer("a"), 2), "rec/1", "k", br#"{"name":"b","n":2}"#));
     append_raw(&path, &line[..line.len() - 1]);
     let faulted = Arc::new(Faulted::default());
     let reopened = StoreLog::open_with(&path, formats(), faulted.clone()).await.unwrap();
@@ -428,7 +434,8 @@ async fn a_restart_never_reuses_an_earlier_op() {
     log.append(&writer("a"), "rec/1", "k", &rec("a", 2)).await.unwrap();
     StoreLog::forget_issued(&path);
     let restarted = reopen(&path).await.unwrap();
-    assert_eq!(restarted.writers().get(&writer("a")), Some(&2), "the fold holds the writer's greatest seq");
+    let a = writer("a");
+    assert_eq!(restarted.writers().get(&(a.node_id.to_string(), a.incarnation_id.to_string())), Some(&2), "the fold holds the writer's greatest seq");
     restarted.append(&writer("a"), "rec/1", "k", &rec("a", 3)).await.unwrap();
     let twin = reopen(&path).await.unwrap();
     twin.append(&writer("a"), "rec/1", "k", &rec("a", 4)).await.unwrap();
@@ -453,7 +460,9 @@ async fn the_open_span_carries_the_files_bytes_lines_and_duration() {
     let len = std::fs::metadata(&path).unwrap().len().to_string();
     assert_eq!(open.1.get("bytes"), Some(&len), "{open:?}");
     assert_eq!(open.1.get("lines").map(String::as_str), Some("2"), "{open:?}");
-    assert_eq!(open.1.get("writers").map(String::as_str), Some("node-a/inc-a:1,node-b/inc-b:1"), "{open:?}");
+    let mut expected = vec![format!("{}:1", writer("a")), format!("{}:1", writer("b"))];
+    expected.sort();
+    assert_eq!(open.1.get("writers"), Some(&expected.join(",")), "{open:?}");
     assert!(open.1.contains_key("fold_ms") && open.1.get("outcome").map(String::as_str) == Some("folded"), "{open:?}");
     let at = std::fs::metadata(&path).unwrap().len() + 1;
     append_raw(&path, b"\n{\"len\":5}\n");

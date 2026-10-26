@@ -73,22 +73,28 @@ pub struct Op {
 
 /// The process writing through a store: its node id and incarnation, the first two fields of every
 /// `op` it writes.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LogWriter {
     /// The writer's node id.
-    pub node_id: String,
+    pub node_id: crate::model::NodeId,
     /// The writer's incarnation.
-    pub incarnation_id: String,
+    pub incarnation_id: crate::model::IncarnationId,
 }
 
 impl LogWriter {
     /// The writer born as `incarnation` of `node`.
     pub fn new(node: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Self {
-        Self { node_id: node.to_string(), incarnation_id: incarnation.to_string() }
+        Self { node_id: node.clone(), incarnation_id: incarnation.clone() }
     }
 
-    fn of(op: &Op) -> Self {
-        Self { node_id: op.node_id.clone(), incarnation_id: op.incarnation_id.clone() }
+    /// A writer of a newly minted node id and incarnation: a store a cell opens.
+    pub fn mint() -> Self {
+        Self { node_id: crate::model::NodeId::mint(), incarnation_id: crate::model::IncarnationId::mint() }
+    }
+
+    /// `(node id, incarnation)`, as an `op` names them.
+    fn ids(&self) -> (String, String) {
+        (self.node_id.to_string(), self.incarnation_id.to_string())
     }
 }
 
@@ -136,7 +142,11 @@ type Check = Arc<dyn Fn(&serde_json::Value) -> Result<(), String> + Send + Sync>
 /// The formats a store reads in one file, each with the check its records must pass: a line in any
 /// other format, or whose record fails its check, refuses the fold by name.
 #[derive(Clone, Default)]
-pub struct Formats(BTreeMap<String, Check>);
+pub struct Formats {
+    checks: BTreeMap<String, Check>,
+    /// Every format is read, unchecked: a look at a file, never a store's fold.
+    any: bool,
+}
 
 impl Formats {
     /// No format.
@@ -144,24 +154,63 @@ impl Formats {
         Self::default()
     }
 
+    /// Every format, its records unchecked: a look at a whole file ([`read_file`]).
+    pub fn any() -> Self {
+        Self { checks: BTreeMap::new(), any: true }
+    }
+
     /// `format`, whose records decode as `T`.
     pub fn with<T: DeserializeOwned + 'static>(mut self, format: &str) -> Self {
-        self.0.insert(format.to_string(), Arc::new(|v: &serde_json::Value| T::deserialize(v).map(|_| ()).map_err(|e| e.to_string())));
+        self.checks.insert(format.to_string(), Arc::new(|v: &serde_json::Value| T::deserialize(v).map(|_| ()).map_err(|e| e.to_string())));
         self
     }
 
     fn check(&self, format: &str, record: &serde_json::Value) -> Result<(), String> {
-        match self.0.get(format) {
+        match self.checks.get(format) {
             Some(check) => check(record).map_err(|e| format!("its {format} record does not decode: {e}")),
-            None => Err(format!("format {format:?}, this build reads {:?} here", self.0.keys().collect::<Vec<_>>())),
+            None if self.any => Ok(()),
+            None => Err(format!("format {format:?}, this build reads {:?} here", self.checks.keys().collect::<Vec<_>>())),
         }
     }
 }
 
 impl std::fmt::Debug for Formats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.0.keys()).finish()
+        f.debug_list().entries(self.checks.keys()).finish()
     }
+}
+
+/// Every line of the store file at `path`, in file order, its records unchecked, read on the calling
+/// thread and changing nothing: a missing file holds none; a malformed line is refused by name with
+/// its offset, and a valid object with no final newline is read as a line.
+pub fn read_file(path: &Path) -> Result<Vec<Line>, StorageError> {
+    let named = |at: u64, why: String| StorageError::Unrecognised { file: path.display().to_string(), reason: format!("the line at byte offset {at} is malformed: {why}") };
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
+    };
+    let formats = Formats::any();
+    let s = scan(&bytes, 0, &formats).map_err(|(at, why)| named(at, why))?;
+    let mut lines = s.lines;
+    if let Some((at, tail)) = s.tail {
+        lines.push(verify(&tail, at, &formats).map_err(|why| named(at, why))?);
+    }
+    Ok(lines)
+}
+
+/// The latest record of `kind` (at `key`, when given) in the store file at `path`, as
+/// `{"format": …, "record": …}`; `None` when there is none, or when the file cannot be read whole: a
+/// look a cell takes at a root while its nodes write it.
+pub fn read_record(path: &Path, kind: &str, key: Option<&str>) -> Option<serde_json::Value> {
+    let lines = read_file(path).ok()?;
+    let l = lines.into_iter().rev().find(|l| l.kind() == kind && key.is_none_or(|k| l.key == k))?;
+    Some(serde_json::json!({ "format": l.format, "key": l.key, "record": l.record }))
+}
+
+/// The latest line of each (kind, key) of the store file at `path` ([`read_file`]).
+pub fn latest_in(path: &Path) -> Result<BTreeMap<(String, String), Line>, StorageError> {
+    Ok(read_file(path)?.into_iter().map(|l| ((l.kind().to_string(), l.key.clone()), l)).collect())
 }
 
 // ---------------------------------------------------------------- the line's bytes
@@ -337,15 +386,14 @@ struct Fold {
     consumed: u64,
     latest: BTreeMap<(String, String), Line>,
     lines: u64,
-    ops: BTreeMap<LogWriter, u64>,
+    ops: BTreeMap<(String, String), u64>,
 }
 
 impl Fold {
     fn take(&mut self, lines: Vec<Line>) {
         for l in lines {
             if let Some(op) = &l.op {
-                let w = LogWriter::of(op);
-                let seq = self.ops.entry(w).or_default();
+                let seq = self.ops.entry((op.node_id.clone(), op.incarnation_id.clone())).or_default();
                 *seq = (*seq).max(op.seq);
             }
             self.lines += 1;
@@ -356,8 +404,8 @@ impl Fold {
 
 /// Each writer's last `seq` handed out in this process, per file: two stores of one process writing
 /// one file as one writer never share an `op`.
-fn issued() -> &'static Mutex<BTreeMap<(PathBuf, LogWriter), u64>> {
-    static ISSUED: std::sync::OnceLock<Mutex<BTreeMap<(PathBuf, LogWriter), u64>>> = std::sync::OnceLock::new();
+fn issued() -> &'static Mutex<BTreeMap<(PathBuf, (String, String)), u64>> {
+    static ISSUED: std::sync::OnceLock<Mutex<BTreeMap<(PathBuf, (String, String)), u64>>> = std::sync::OnceLock::new();
     ISSUED.get_or_init(Default::default)
 }
 
@@ -455,7 +503,7 @@ impl StoreLog {
         match log.advance().await {
             Ok(()) => {
                 let f = log.0.fold.lock().unwrap_or_else(|e| e.into_inner());
-                let writers: Vec<String> = f.ops.iter().map(|(w, seq)| format!("{w}:{seq}")).collect();
+                let writers: Vec<String> = f.ops.iter().map(|((n, i), seq)| format!("{n}/{i}:{seq}")).collect();
                 span.record("bytes", f.consumed).record("lines", f.lines).record("writers", writers.join(",")).record("fold_ms", began.elapsed().as_millis() as u64).record("outcome", "folded");
                 Ok(log.clone())
             }
@@ -541,8 +589,8 @@ impl StoreLog {
         Ok(lines)
     }
 
-    /// The greatest `seq` of each writer the fold has read.
-    pub fn writers(&self) -> BTreeMap<LogWriter, u64> {
+    /// The greatest `seq` of each writer the fold has read, by (node id, incarnation).
+    pub fn writers(&self) -> BTreeMap<(String, String), u64> {
         self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).ops.clone()
     }
 
@@ -654,11 +702,12 @@ impl Inner {
     /// The next `op` of `writer` in this file: past every `seq` of it the fold has read and this
     /// process has handed out.
     fn next_op(&self, writer: &LogWriter) -> Op {
-        let durable = self.fold.lock().unwrap_or_else(|e| e.into_inner()).ops.get(writer).copied().unwrap_or(0);
+        let ids = writer.ids();
+        let durable = self.fold.lock().unwrap_or_else(|e| e.into_inner()).ops.get(&ids).copied().unwrap_or(0);
         let mut issued = issued().lock().unwrap_or_else(|e| e.into_inner());
-        let last = issued.entry((self.path.clone(), writer.clone())).or_insert(0);
+        let last = issued.entry((self.path.clone(), ids.clone())).or_insert(0);
         *last = (*last).max(durable) + 1;
-        Op { node_id: writer.node_id.clone(), incarnation_id: writer.incarnation_id.clone(), seq: *last }
+        Op { node_id: ids.0, incarnation_id: ids.1, seq: *last }
     }
 
     fn append_line(&self, pending: &mut Option<Pending>, writer: &LogWriter, format: &str, key: &str, record: &[u8]) -> Result<(), StorageError> {
