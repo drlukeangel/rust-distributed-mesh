@@ -380,7 +380,7 @@ impl Prepared {
             if history == History::ReadyForTraffic {
                 { let mut r = fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric_id.clone(), name: "fabric1".into(), events: Vec::new(), provider: None }); r.events.push("ready-for-traffic".into()); fabric.put_fabric(&r).await.unwrap(); }
             }
-            let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &data_dir, &incarnation).await.unwrap();
+            let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &data_dir, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
             let accepted = rdm_admin::build_state::BuildAccepted {
                 build_id: build_id.clone(),
                 topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
@@ -393,7 +393,7 @@ impl Prepared {
         let prepared = Self { dir, store, data_dir, fabric_id, mesh_id, node_id, incarnation, build_id };
         assert_eq!(fabric_dirs(&prepared.store), vec![prepared.fabric_id.to_string()], "one fabric on the root");
         assert!(rdm_admin::store_log::read_record(&prepared.fabric_row(), "fabric-record", None).is_some(), "the Fabric row stands on the root");
-        assert!(prepared.store.join(prepared.fabric_id.to_string()).join(format!("fabric/builds/{}/accepted.json", prepared.build_id)).exists(), "the accepted Build stands on the shared store root as its own record");
+        assert!(rdm_admin::store_log::read_record(&prepared.store.join(prepared.fabric_id.to_string()).join(rdm_admin::store_root::BUILDS_FILE), "build-record", Some(&format!("{}/accepted", prepared.build_id))).is_some(), "the accepted Build stands on the shared store root as its own record");
         assert!(!prepared.data_dir.join("fabric").exists(), "no per-admin Build journal in data_dir");
         assert_eq!(prepared.ready_rows().len(), usize::from(history == History::ReadyForTraffic), "{history:?}: the ready-for-traffic rows on the root");
         prepared
@@ -1013,7 +1013,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         let reader = rdm_admin::model::IncarnationId::mint();
         let nodes = rdm_admin::storage::FileNodesStorage::open(&d.dir.join("reader"), &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
         let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
-        let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader"), &reader).await.unwrap();
+        let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
         (nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap(), meshes.in_flight("mesh1").await.unwrap(), journal.facts().await.unwrap())
     });
     let row = row.expect("the live fabric-primary's row");
@@ -1032,7 +1032,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
-        rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader-after"), &reader).await.unwrap().facts().await.unwrap()
+        rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader-after"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap().facts().await.unwrap()
     });
     let opened_after: Vec<&rdm_admin::build_state::BuildFact> = later.iter().filter(|f| matches!(f, rdm_admin::build_state::BuildFact::Opened(o) if o.mesh.as_deref() == Some("mesh1") && o.attempt.to_string() != attr_of(&claim, "attempt"))).collect();
     assert!(opened_after.is_empty(), "an attempt in mesh1's lane was opened after the refused one: {opened_after:?}");
@@ -1049,7 +1049,7 @@ impl Prepared {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
             let writer = rdm_admin::model::IncarnationId::mint();
-            let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &self.dir.join("fixture"), &writer).await.unwrap();
+            let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &self.dir.join("fixture"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
             let delete = rdm_admin::build_state::BuildAccepted {
                 build_id: rdm_admin::build::BuildId::mint(),
                 topology: rdm_admin::accepted::FabricTopology { fabric: "fabric1".into(), meshes: Default::default() },

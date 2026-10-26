@@ -252,16 +252,6 @@ impl StoreRoot {
         self.dir.join("meshes").join(mesh)
     }
 
-    /// `fabric/builds/`: the fabric-primary's Build journal on the shared store root (R-BI6).
-    pub fn fabric_builds(&self) -> PathBuf {
-        self.dir.join("fabric").join("builds")
-    }
-
-    /// `meshes/<mesh>/builds/`: `mesh`'s primary's Build receipts on the shared store root (R-BI6).
-    pub fn mesh_builds(&self, mesh: &str) -> PathBuf {
-        self.meshes(mesh).join("builds")
-    }
-
 }
 
 /// Give the root `dir` a caller chose this build's layout marker when it holds none: created

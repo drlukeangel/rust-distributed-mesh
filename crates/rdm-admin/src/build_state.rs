@@ -13,9 +13,9 @@
 //! - [`MemoryBuildStateAdapter`]: the in-memory fact log that backs the live
 //!   fabric control projection;
 //! - [`FileJournal`]: the file adapter's journal on the fabric's shared store
-//!   root (`fabric/builds/` written by the fabric-primary, `meshes/<mesh>/builds/`
-//!   written by each mesh's primary under the writer ladder; R-BI6), so a
-//!   successor reads it there.
+//!   root, its `builds.jsonl` (R-BI6, R-SR1): one line per fact, written by the
+//!   fabric-primary for a topology attempt and by a mesh's primary for its drift
+//!   attempt, the mesh in the key (R-BI7), so a successor reads it there.
 
 use crate::accepted::{AttemptAction, FabricTopology, TopologyChange};
 use crate::build::BuildId;
@@ -2239,18 +2239,10 @@ const CONTEXT_DIR: &str = "attempt-context";
 const CONTEXT_FORMAT: &str = "attempt-context/1";
 
 #[cfg(feature = "file-backend")]
-/// The retired Build journal file (one JSON line per fact, one file per writer): a store root holding
-/// one is refused by name.
-const REFUSED_JOURNAL_FILE: &str = "build-journal.jsonl";
-
-#[cfg(feature = "file-backend")]
-/// The format of one Build record at its own key under `fabric/builds/<build_id>/` ([`FileJournal`]).
+/// The format of one Build record's line in `builds.jsonl`, at `<build_id>/<key>` ([`FileJournal`]).
 pub const RECORD_FORMAT: &str = "build-record/1";
-
 #[cfg(feature = "file-backend")]
-/// The format of the Build facts an older build kept under `rev-<R>/<seq>` keys in `fabric/builds/` and each
-/// `meshes/<mesh>/builds/`: a store root holding one is refused by name.
-const REFUSED_FACT_FORMAT: &str = "build-fact/1";
+const RECORD_KIND: &str = "build-record";
 
 #[cfg(feature = "file-backend")]
 /// One Build record as it is stored: the fact, and `seq`, its place in the order its writer wrote the
@@ -2263,16 +2255,7 @@ struct StoredFact {
 }
 
 #[cfg(feature = "file-backend")]
-/// A record as the file holds it (`crate::record_store`'s `{ format, record }`), read here without a
-/// store per Build.
-#[derive(serde::Deserialize)]
-struct OnDisk {
-    format: String,
-    record: StoredFact,
-}
-
-#[cfg(feature = "file-backend")]
-/// The key `fact` is written at in its Build's directory: one record per fact (build.md §5.3): the
+/// The key `fact` is written at, after its Build's id (`<build_id>/<key>`): one record per fact (build.md §5.3): the
 /// acceptance at `accepted`, an attempt's open, claim and result at `<attempt>-opened`, `-claim` and
 /// `-result` (`<mesh>-<attempt>` for an attempt in a mesh), one receipt per step at
 /// `<attempt>-step-<operation>-<step>`, and a forget at `forget`.
@@ -2296,17 +2279,16 @@ fn record_key(fact: &BuildFact) -> Result<String, BuildStateError> {
 }
 
 #[cfg(feature = "file-backend")]
-/// `builds.storage`: the Build journal on the fabric's shared store root, one directory per Build under
-/// `fabric/builds/` and one record per fact at its own key ([`record_key`]; build.md §5.3), written
-/// when it is committed, before the fabric's first state-commit too (Q61). A successor reads the
-/// records there.
+/// `builds.storage`: the Build journal on the fabric's shared store root, one line of its `builds.jsonl`
+/// per fact at its own key (`<build_id>/<key>`, [`record_key`]; build.md §5.3; R-SR1), appended when
+/// it is committed, before the fabric's first state-commit too (Q61). A successor folds the lines.
 pub struct FileJournal {
-    /// `<store root>/fabric/builds/`.
-    builds_dir: PathBuf,
-    /// The birth that writes through this journal.
-    birth: crate::model::IncarnationId,
-    /// Each Build's records as this process opened them, by Build id.
-    stores: Mutex<BTreeMap<String, crate::record_store::FileRecords>>,
+    /// The root's `builds.jsonl`.
+    file: crate::store_log::StoreLog,
+    /// The lines the file's fold has read and no turn has taken yet, in file order.
+    unread: Arc<Mutex<Vec<(String, StoredFact)>>>,
+    /// The process writing through this journal.
+    log_writer: crate::store_log::LogWriter,
     /// Every record this journal took or wrote, `<build_id>/<key>`: a read takes only the others.
     seen: Arc<Mutex<std::collections::HashSet<String>>>,
     /// The `seq` the next record is written at: past every record read or written.
@@ -2422,20 +2404,23 @@ fn store_io(e: crate::storage_error::StorageError) -> BuildStateError {
 
 #[cfg(feature = "file-backend")]
 impl FileJournal {
-    /// Open the Build journal on the fabric's shared `root`, written by the process born as `writer`
-    /// (R-BI6). A root holding an older build's journal file or `build-fact/1` keys is refused by name.
-    pub async fn open_on_root(root: &crate::store_root::StoreRoot, own_data_dir: &Path, writer: &crate::model::IncarnationId) -> Result<Self, BuildStateError> {
-        let dir = root.dir().to_path_buf();
-        crate::blocking::blocking_io(move || {
-            refuse_journal_file(&dir)?;
-            refuse_fact_keys(&dir)
-        })
-        .await?;
-        let contexts = crate::record_store::FileRecords::open(own_data_dir, CONTEXT_DIR, writer).await.map_err(|e| BuildStateError::Io(format!("attempt contexts: {e}")))?;
+    /// Open the Build journal on the fabric's shared `root`, written by `writer` (R-BI6): its
+    /// `builds.jsonl`, appended straight to the file. Its attempt contexts are this admin's own, in
+    /// `own_data_dir`.
+    pub async fn open_on_root(root: &crate::store_root::StoreRoot, own_data_dir: &Path, writer: &crate::store_log::LogWriter) -> Result<Self, BuildStateError> {
+        let contexts = crate::record_store::FileRecords::open(own_data_dir, CONTEXT_DIR, &writer.incarnation_id).await.map_err(|e| BuildStateError::Io(format!("attempt contexts: {e}")))?;
+        let unread: Arc<Mutex<Vec<(String, StoredFact)>>> = Arc::default();
+        let queue = unread.clone();
+        let observe: crate::store_log::Observer = Arc::new(move |l: &crate::store_log::Line| {
+            if let Ok(stored) = StoredFact::deserialize(&l.record) {
+                queue.lock().unwrap_or_else(|e| e.into_inner()).push((l.key.clone(), stored));
+            }
+        });
+        let file = crate::store_log::StoreLog::open_observed(&root.dir().join(crate::store_root::BUILDS_FILE), crate::store_log::Formats::new().with::<StoredFact>(RECORD_FORMAT), observe).await.map_err(store_io)?;
         Ok(Self {
-            builds_dir: root.fabric_builds(),
-            birth: writer.clone(),
-            stores: Mutex::new(BTreeMap::new()),
+            file,
+            unread,
+            log_writer: writer.clone(),
             seen: Arc::default(),
             next_seq: std::sync::atomic::AtomicU64::new(1),
             reads_root: std::sync::OnceLock::new(),
@@ -2516,46 +2501,12 @@ impl FileJournal {
         out
     }
 
-    /// The records on the store root this journal has not taken yet, each with its key: every Build
-    /// directory is listed, and only the keys not taken before are read. Nothing is marked taken here.
+    /// The records on the store root this journal has not taken yet, each with its key: the file's
+    /// lines past the fold's offset, read now, and any a read could not take before. Nothing is marked
+    /// taken here.
     async fn read_new(&self) -> Result<Vec<(String, StoredFact)>, BuildStateError> {
-        let (dir, seen) = (self.builds_dir.clone(), self.seen.clone());
-        crate::blocking::blocking_io(move || -> Result<Vec<(String, StoredFact)>, BuildStateError> {
-            let io = |p: &Path, e: std::io::Error| BuildStateError::Io(format!("{}: {e}", p.display()));
-            let builds = match std::fs::read_dir(&dir) {
-                Ok(entries) => entries.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>(),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-                Err(e) => return Err(io(&dir, e)),
-            };
-            let mut out = Vec::new();
-            for build in builds {
-                let at = dir.join(&build);
-                let files = match std::fs::read_dir(&at) {
-                    Ok(entries) => entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect::<Vec<_>>(),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(e) => return Err(io(&at, e)),
-                };
-                for file in files {
-                    let key = format!("{build}/{}", file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
-                    if seen.lock().unwrap().contains(&key) {
-                        continue;
-                    }
-                    let bytes = match std::fs::read(&file) {
-                        Ok(b) => b,
-                        // Removed after the listing: a record that is gone.
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(e) => return Err(io(&file, e)),
-                    };
-                    let stored: OnDisk = serde_json::from_slice(&bytes).map_err(|e| BuildStateError::Io(format!("{}: {e}", file.display())))?;
-                    if stored.format != RECORD_FORMAT {
-                        return Err(BuildStateError::Io(format!("{}: format {:?}, this build reads {RECORD_FORMAT:?}", file.display(), stored.format)));
-                    }
-                    out.push((key, stored.record));
-                }
-            }
-            Ok(out)
-        })
-        .await
+        self.file.advance().await.map_err(store_io)?;
+        Ok(std::mem::take(&mut *self.unread.lock().unwrap_or_else(|e| e.into_inner())))
     }
 
     /// Take the records `read` from the store root into the log under the writer's turn `w`, in the
@@ -2613,79 +2564,33 @@ impl FileJournal {
             return Ok(());
         }
         let read = self.read_new().await?;
-        if let Ok(w) = self.writer.try_lock() {
-            let _holder = ReadHolder::name(self, op);
-            self.take_read(&w, read);
+        match self.writer.try_lock() {
+            Ok(w) => {
+                let _holder = ReadHolder::name(self, op);
+                self.take_read(&w, read);
+            }
+            // Untaken: the next read takes them, before the lines it reads.
+            Err(_) => {
+                let mut unread = self.unread.lock().unwrap_or_else(|e| e.into_inner());
+                let later = std::mem::take(&mut *unread);
+                *unread = read.into_iter().chain(later).collect();
+            }
         }
         Ok(())
     }
 
-    /// Build `build_id`'s records as this process opened them.
-    async fn store_of(&self, build_id: &BuildId) -> Result<crate::record_store::FileRecords, BuildStateError> {
-        let name = build_id.to_string();
-        if let Some(s) = self.stores.lock().unwrap().get(&name) {
-            return Ok(s.clone());
-        }
-        let opened = crate::record_store::FileRecords::open(&self.builds_dir, &name, &self.birth).await.map_err(store_io)?;
-        Ok(self.stores.lock().unwrap().entry(name).or_insert(opened).clone())
-    }
-
-    /// Write `fact` at its own key and publish it, under the writer's turn `w` that has read the store
+    /// Append `fact` at its own key and publish it, under the writer's turn `w` that has read the store
     /// root. Nothing is written when the log holds the fact already: a record is written once.
     async fn append(&self, w: &Derived, fact: BuildFact) -> Result<(), BuildStateError> {
         if !is_new(&snapshot(&self.log), &fact) {
             return Ok(());
         }
-        let key = record_key(&fact)?;
-        let store = self.store_of(fact.build_id()).await?;
+        let key = format!("{}/{}", fact.build_id(), record_key(&fact)?);
         let stored = StoredFact { seq: self.next_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed), fact };
-        self.store_call(store.write(&key, RECORD_FORMAT, &stored)).await.map_err(store_io)?;
-        self.seen.lock().unwrap().insert(format!("{}/{key}", stored.fact.build_id()));
+        self.store_call(self.file.append(&self.log_writer, RECORD_FORMAT, &key, &stored)).await.map_err(store_io)?;
+        self.seen.lock().unwrap().insert(key);
         publish(&self.log, w.0.as_ref(), vec![stored.fact]);
         Ok(())
-    }
-}
-
-#[cfg(feature = "file-backend")]
-/// A store root an older build left a Build journal file on (`fabric/builds/` or any
-/// `meshes/<mesh>/builds/`) is refused by name, the file named.
-fn refuse_journal_file(root: &Path) -> Result<(), BuildStateError> {
-    let refuse = |file: PathBuf| BuildStateError::Io(format!("{}: the Build journal format {REFUSED_JOURNAL_FILE} is retired: this build reads one record per fact under fabric/builds/<build_id>/ ({RECORD_FORMAT})", file.display()));
-    let fabric = root.join("fabric").join("builds").join(REFUSED_JOURNAL_FILE);
-    if fabric.exists() {
-        return Err(refuse(fabric));
-    }
-    let meshes = match std::fs::read_dir(root.join("meshes")) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(BuildStateError::Io(format!("{}: {e}", root.join("meshes").display()))),
-    };
-    let mut files: Vec<PathBuf> = meshes.flatten().map(|e| e.path().join("builds").join(REFUSED_JOURNAL_FILE)).filter(|f| f.exists()).collect();
-    files.sort();
-    match files.into_iter().next() {
-        Some(f) => Err(refuse(f)),
-        None => Ok(()),
-    }
-}
-
-#[cfg(feature = "file-backend")]
-/// A store root an older build left Build facts on at `rev-<R>/<seq>` keys (`build-fact/1`, in
-/// `fabric/builds/` or any `meshes/<mesh>/builds/`) is refused by name, the directory named.
-fn refuse_fact_keys(root: &Path) -> Result<(), BuildStateError> {
-    let refuse = |dir: PathBuf| BuildStateError::Io(format!("{}: the Build fact format {REFUSED_FACT_FORMAT} at rev-<R>/<seq> keys is refused: this build reads one record per fact under fabric/builds/<build_id>/ ({RECORD_FORMAT})", dir.display()));
-    let revs = |builds: PathBuf| -> Vec<PathBuf> {
-        std::fs::read_dir(&builds).map(|e| e.flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rev-"))).collect()).unwrap_or_default()
-    };
-    let mut found = revs(root.join("fabric").join("builds"));
-    if let Ok(meshes) = std::fs::read_dir(root.join("meshes")) {
-        for m in meshes.flatten() {
-            found.extend(revs(m.path().join("builds")));
-        }
-    }
-    found.sort();
-    match found.into_iter().next() {
-        Some(dir) => Err(refuse(dir)),
-        None => Ok(()),
     }
 }
 
@@ -2723,13 +2628,10 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn stored_accepted(&self, build_id: &BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
-        if !self.builds_dir.join(build_id.to_string()).is_dir() {
-            return Ok(None);
-        }
-        let store = self.store_of(build_id).await?;
         // The acceptance's own key ([`record_key`]).
-        match store.read::<StoredFact>("accepted", RECORD_FORMAT).await.map_err(store_io)? {
-            Some(StoredFact { fact: BuildFact::Accepted(a), .. }) => Ok(Some(a)),
+        let Some(line) = self.file.latest(RECORD_KIND, &format!("{build_id}/accepted")).await.map_err(store_io)? else { return Ok(None) };
+        match line.decode::<StoredFact>(self.file.path()).map_err(store_io)? {
+            StoredFact { fact: BuildFact::Accepted(a), .. } => Ok(Some(a)),
             _ => Ok(None),
         }
     }
@@ -3237,7 +3139,7 @@ mod tests {
 
     /// A Build log on a store root at `dir` (no scratchpad: written straight to the disk).
     async fn open_at(dir: &Path) -> Result<FileJournal, BuildStateError> {
-        FileJournal::open_on_root(&crate::store_root::StoreRoot::at(dir), &crate::test_support::tempdir("attempt-context"), &writer()).await
+        FileJournal::open_on_root(&crate::store_root::StoreRoot::at(dir), &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &writer())).await
     }
 
     fn writer() -> crate::model::IncarnationId {
@@ -3246,18 +3148,7 @@ mod tests {
 
     /// Every Build record on the store root at `root`, sorted: `<build_id>/<key>` under `fabric/builds/`.
     fn record_files(root: &Path) -> Vec<String> {
-        let builds = root.join("fabric").join("builds");
-        let mut out = Vec::new();
-        for b in std::fs::read_dir(&builds).into_iter().flatten().flatten() {
-            for r in std::fs::read_dir(b.path()).into_iter().flatten().flatten() {
-                let p = r.path();
-                if p.extension().is_some_and(|x| x == "json") {
-                    out.push(p.strip_prefix(&builds).unwrap().with_extension("").display().to_string());
-                }
-            }
-        }
-        out.sort();
-        out
+        crate::store_log::keys_in(&root.join(crate::store_root::BUILDS_FILE), "build-record").unwrap()
     }
 
     fn tmp() -> PathBuf {
@@ -3387,22 +3278,26 @@ mod tests {
         // The records as a writer before the fields wrote them: no `executable` and no `tags` on any entry,
         // and, before Q166, the map named `path_config_by_path`, each entry without its `path` and its
         // `config`.
+        // Each line's record is rewritten as its writer then wrote it and the line framed again around it
+        // (its len and crc32), its op, format and key kept.
         let mut rewritten = 0;
-        for b in std::fs::read_dir(dir.join("fabric").join("builds")).unwrap().flatten() {
-            for r in std::fs::read_dir(b.path()).unwrap().flatten() {
-                let text = std::fs::read_to_string(r.path()).unwrap();
-                if text.contains("\"executable\":null") {
-                    let mut old = text.replace(",\"executable\":null", "").replace(",\"tags\":[]", "").replace(",\"config\":{}", "").replace("\"spec_by_path\"", "\"path_config_by_path\"");
-                    while let Some(at) = old.find("{\"path\":\"") {
-                        let end = old[at + 9..].find("\",").expect("the path's closing quote") + at + 9;
-                        old.replace_range(at + 1..end + 2, "");
-                    }
-                    assert!(!old.contains("\"path\"") && !old.contains("\"config\"") && old.contains("\"path_config_by_path\""), "{old}");
-                    std::fs::write(r.path(), old).unwrap();
-                    rewritten += 1;
+        let file = dir.join(crate::store_root::BUILDS_FILE);
+        let mut out = Vec::new();
+        for line in std::fs::read_to_string(&file).unwrap().split('\n').filter(|l| !l.is_empty()) {
+            let parsed = crate::store_log::read_record_bytes(line.as_bytes()).expect("a whole line");
+            let mut text = parsed.record_json.clone();
+            if text.contains("\"executable\":null") {
+                text = text.replace(",\"executable\":null", "").replace(",\"tags\":[]", "").replace(",\"config\":{}", "").replace("\"spec_by_path\"", "\"path_config_by_path\"");
+                while let Some(at) = text.find("{\"path\":\"") {
+                    let end = text[at + 9..].find("\",").expect("the path's closing quote") + at + 9;
+                    text.replace_range(at + 1..end + 2, "");
                 }
+                assert!(!text.contains("\"path\"") && !text.contains("\"config\"") && text.contains("\"path_config_by_path\""), "{text}");
+                rewritten += 1;
             }
+            out.extend(crate::store_log::encode_line(&parsed.op, &parsed.format, &parsed.key, text.as_bytes()));
         }
+        std::fs::write(&file, out).unwrap();
         assert_eq!(rewritten, 1, "the accepted Build's record carries the field, once");
         let j = open_at(&dir).await.unwrap(); // the admin restarted over the old store
         let current = j.current().await.unwrap().expect("the old Build is current");
@@ -3843,26 +3738,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// CONTRACT: opening the journal (its read of every record on the store root) never waits on the
-    /// disk on a runtime worker: it runs on the blocking pool, as every write does. The admin opens it
-    /// inside its boot, on the runtime. The cell opens a journal whose record file holds the read: the
-    /// runtime's only thread keeps running, and the read answers the recorded Build.
-    #[test]
-    fn opening_the_journal_waits_on_the_disk_off_the_runtime_thread() {
-        let dir = crate::test_support::tempdir("journal-offload");
-        let line = serde_json::to_vec(&serde_json::json!({"format": RECORD_FORMAT, "record": {"seq": 1, "fact": BuildFact::Accepted(intent("b1"))}})).unwrap();
-        let build = dir.join("fabric").join("builds").join(rdm_core::fixture_crockford60("b1"));
-        std::fs::create_dir_all(&build).unwrap();
-        let fifo = build.join("accepted.json");
-        let (ran, active) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, line, Box::pin(async move { open_at(&dir).await.unwrap().list_active().await.unwrap().len() }));
-        assert!(ran, "the runtime thread ran while the journal's replay waited on the disk");
-        assert_eq!(active, 1);
-    }
-
-    /// CONTRACT (Q28 A: "a mesh-audit ratchet for the store layout"): the store root's layout, byte for
-    /// byte: a Build record at `fabric/builds/<build_id>/<key>.json` (`build-record/1`, build.md §5.3) and
-    /// a mesh's in-flight row (`mesh-in-flight/2`). A layout that moves moves this cell with it (`durable
-    /// format moved`).
+    /// CONTRACT (Q28 A: "a mesh-audit ratchet for the store layout"; R-SR1, R-SR3): the store root's
+    /// layout, byte for byte: a Build record is one line of `builds.jsonl` at `<build_id>/<key>`
+    /// (`build-record/1`, build.md §5.3), its object exactly the protocol's (`len`, `op`, `format`,
+    /// `key`, the record nested, `crc32`); and a mesh's in-flight row (`mesh-in-flight/2`). A layout
+    /// that moves moves this cell with it (`durable format moved`).
     #[tokio::test]
     async fn the_store_layout_is_frozen_byte_for_byte() {
         let d = crate::test_support::tempdir("store-layout");
@@ -3871,7 +3751,12 @@ mod tests {
         let b1 = rdm_core::fixture_crockford60("b1");
         let j = open_at(&d).await.unwrap();
         j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
-        assert_eq!(read(&format!("fabric/builds/{b1}/1-result.json")), format!(r#"{{"format":"build-record/1","record":{{"seq":1,"fact":{{"fact":"attempt","build_id":"{b1}","attempt":1,"outcome":"converged"}}}}}}"#));
+        let lines = crate::store_log::read_file(&d.join(crate::store_root::BUILDS_FILE)).unwrap();
+        assert_eq!(lines.len(), 1);
+        let op = lines[0].op.clone().unwrap();
+        let record = format!(r#"{{"seq":1,"fact":{{"fact":"attempt","build_id":"{b1}","attempt":1,"outcome":"converged"}}}}"#);
+        let line = crate::store_log::encode_line(&op, "build-record/1", &format!("{b1}/1-result"), record.as_bytes());
+        assert_eq!(read(crate::store_root::BUILDS_FILE), String::from_utf8(line).unwrap());
         use crate::storage::MeshStorage as _;
         let claims = crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
         let row = crate::mesh_claims::InFlight { build_id: BuildId::parse(&b1).unwrap(), lane: None, attempt: 1, claimant: "mesh1.admin.1".into(), claimant_node: None };
@@ -3879,30 +3764,22 @@ mod tests {
         assert_eq!(read("meshes/mesh2/claims/in-flight.json"), format!(r#"{{"format":"mesh-in-flight/2","record":{{"build_id":"{b1}","attempt":1,"claimant":"mesh1.admin.1"}}}}"#));
     }
 
-    /// A Build record that does not decode is refused by name, its file named, never read as no record;
-    /// a store root holding an older build's journal file, or Build facts at an older build's `rev-<R>/<seq>`
-    /// keys (`build-fact/1`), is refused by name at the open.
+    /// CONTRACT (R-SR3): a line of `builds.jsonl` that is not a Build record refuses the journal's read
+    /// by name, the file and the offset named, never read as no record. Must NOT happen: the facts
+    /// before it answered as the journal.
     #[tokio::test]
-    async fn a_corrupt_build_record_and_an_older_builds_journal_formats_are_refused_by_name() {
+    async fn a_corrupt_build_line_is_refused_by_name() {
         let dir = tmp();
-        let build = dir.join("fabric").join("builds").join(rdm_core::fixture_crockford60("b1"));
-        std::fs::create_dir_all(&build).unwrap();
-        std::fs::write(build.join("accepted.json"), serde_json::to_vec(&serde_json::json!({"format": RECORD_FORMAT, "record": {"seq": 1, "fact": BuildFact::Accepted(intent("b1"))}})).unwrap()).unwrap();
-        std::fs::write(build.join("1-opened.json"), b"not json").unwrap();
-        let err = open_at(&dir).await.unwrap().list_active().await.unwrap_err();
-        assert!(matches!(&err, BuildStateError::Io(e) if e.contains(&format!("{}/1-opened.json", rdm_core::fixture_crockford60("b1")))), "{err}");
-        let older = tmp();
-        std::fs::create_dir_all(older.join("meshes").join("mesh2").join("builds")).unwrap();
-        std::fs::write(older.join("meshes").join("mesh2").join("builds").join("build-journal.jsonl"), b"").unwrap();
-        let err = open_at(&older).await.unwrap_err();
-        assert!(matches!(&err, BuildStateError::Io(e) if e.contains("meshes/mesh2/builds/build-journal.jsonl") && e.contains("retired")), "{err}");
-        let keyed = tmp();
-        std::fs::create_dir_all(keyed.join("fabric").join("builds").join("rev-00000000000000000000")).unwrap();
-        let err = open_at(&keyed).await.unwrap_err();
-        assert!(matches!(&err, BuildStateError::Io(e) if e.contains("fabric/builds/rev-00000000000000000000") && e.contains("build-fact/1") && e.contains("refused")), "{err}");
-        for d in [dir, older, keyed] {
-            let _ = std::fs::remove_dir_all(&d);
-        }
+        let j = open_at(&dir).await.unwrap();
+        j.publish_accepted(&intent("b1")).await.unwrap();
+        let file = dir.join(crate::store_root::BUILDS_FILE);
+        let at = std::fs::metadata(&file).unwrap().len() + 1;
+        std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&file).unwrap(), b"\nnot json\n").unwrap();
+        let err = open_at(&dir).await.unwrap_err();
+        assert!(matches!(&err, BuildStateError::Io(e) if e.contains(&file.display().to_string()) && e.contains(&format!("byte offset {at}"))), "{err}");
+        let err = j.list_active().await.unwrap_err();
+        assert!(matches!(&err, BuildStateError::Io(e) if e.contains(&format!("byte offset {at}"))), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// PRD §1.4 / §7: no test, and no code outside this module and the file backend's construction
@@ -4046,7 +3923,7 @@ mod tests {
         {
             let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
             assert_eq!(root.writes_to(), "scratchpad", "the fabric has had no state-commit");
-            let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &birth).await.unwrap();
+            let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &birth)).await.unwrap();
             j.publish_accepted(&intent("b1")).await.unwrap();
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
             j.append_step_receipt(&step("b1", 1, "admit-node:mesh1.admin.1")).await.unwrap();
@@ -4057,7 +3934,7 @@ mod tests {
         for (who, writer) in [("the same fabric-primary restarted", birth.clone()), ("a successor", writer())] {
             let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
             assert_eq!(root.writes_to(), "scratchpad", "{who}: the fabric has still had no state-commit");
-            let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &writer).await.unwrap();
+            let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &writer)).await.unwrap();
             let kinds: Vec<&str> = j.facts().await.unwrap().iter().map(|f| match f {
                 BuildFact::Accepted(_) => "accepted",
                 BuildFact::Claim(_) => "claim",
@@ -4074,8 +3951,8 @@ mod tests {
     /// CONTRACT (build.md §5.3: "The Build journal holds one record per fact at the fact's own key: one
     /// row at `build_id`, one at `(build_id, mesh, attempt)`, one claim at `(build_id, mesh, attempt)`,
     /// one receipt per step of an attempt. No record is written twice"; R-BI6, Q61): a `FileJournal`
-    /// opened on a `StoreRoot` writes each fact as one record at its own key under
-    /// `fabric/builds/<build_id>/`, on the root when it is committed, before the first state-commit too,
+    /// opened on a `StoreRoot` appends each fact as one line at its own key (`<build_id>/<key>`) of the
+    /// root's `builds.jsonl`, when it is committed, before the first state-commit too,
     /// never under a per-admin data dir; an attempt in a mesh is keyed with its mesh; a fact written
     /// again writes nothing; and a successor, open already or opened after a restart, reads every
     /// record from the root without gossip.
@@ -4087,7 +3964,7 @@ mod tests {
         let fabric_id = crate::model::FabricId::mint();
         let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
         assert_eq!(root.writes_to(), "scratchpad");
-        let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &writer()).await.unwrap();
+        let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &writer())).await.unwrap();
         j.publish_accepted(&intent("b1")).await.unwrap();
         j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
         j.append_step_receipt(&step("b1", 1, "admit-node:mesh1.admin.1")).await.unwrap();
@@ -4098,9 +3975,10 @@ mod tests {
             [format!("{b1}/1-claim"), format!("{b1}/1-step-admit-node:mesh1.admin.1-DeployRuntime"), format!("{b1}/accepted")],
             "before state-commit, each committed fact is one record at its own key on the store root, and a receipt written again writes nothing"
         );
-        assert!(!root.dir().join("fabric/record.json").exists(), "nothing else of RDM's rows is on the root before state-commit");
+        assert_eq!(crate::store_log::read_file(&root.dir().join(crate::store_root::BUILDS_FILE)).unwrap().len(), 3, "one line per fact: the receipt written again is not appended");
+        assert!(crate::store_log::read_file(&root.dir().join(crate::store_root::FABRIC_FILE)).unwrap().is_empty(), "nothing else of RDM's rows is on the root before state-commit");
         let published = root.scratchpad().unwrap().publish().await.unwrap();
-        assert!(!published.stores.iter().any(|s| s.store.starts_with("fabric/builds")), "state-commit publishes no Build record: none was held: {published:?}");
+        assert!(!published.stores.iter().any(|s| s.store == "builds"), "state-commit publishes no Build record: none was held: {published:?}");
         j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         j.open_attempt(&lane_open("b1", "mesh2", 1, "mesh2.rpc.2")).await.unwrap();
         assert_eq!(j.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.1")).await.unwrap(), ClaimOutcome::Won);
@@ -4113,7 +3991,7 @@ mod tests {
         let in_mesh2: Vec<String> = record_files(root.dir()).into_iter().filter(|k| k.starts_with(&format!("{b1}/mesh2-1-"))).collect();
         assert_eq!(in_mesh2, [format!("{b1}/mesh2-1-claim"), format!("{b1}/mesh2-1-opened"), format!("{b1}/mesh2-1-result"), format!("{b1}/mesh2-1-step-node.delete:mesh2.rpc.2-DeployRuntime")], "the attempt in mesh2 is keyed (build_id, mesh, attempt)");
         let id = BuildId::parse(&b1).unwrap();
-        let successor = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root.dir()), &crate::test_support::tempdir("attempt-context"), &writer()).await.unwrap();
+        let successor = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root.dir()), &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &writer())).await.unwrap();
         let read = serde_json::to_value(successor.read_build(&id).await.unwrap()).unwrap();
         assert_eq!(read["state"], "complete", "{read}");
         assert_eq!(read["lanes"]["mesh2"]["state"], "complete", "a successor reads the attempt in mesh2 from the store root: {read}");

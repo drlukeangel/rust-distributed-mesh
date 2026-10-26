@@ -612,12 +612,12 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     }
     // Q61: a committed Build fact stands on the root when it is committed: the lanes' keys and the
     // meshes' attempt claims are there before state-commit, beside the declarations.
-    let (build_facts, rows): (Vec<String>, Vec<String>) = before.iter().cloned().partition(|r| r.starts_with("fabric/builds/") || (r.starts_with("meshes/") && (r.contains("/builds/") || r.contains("/claims/"))));
+    let (build_facts, rows): (Vec<String>, Vec<String>) = before.iter().cloned().partition(|r| r.starts_with("builds.jsonl#") || (r.starts_with("meshes/") && r.contains("/claims/")));
     // A birth's runtime row is its launching admin's durable map, appended at once, before
     // state-commit too (R-SR1: the fourth writer to the root before it).
     let (runtimes, rows): (Vec<String>, Vec<String>) = rows.into_iter().partition(|r| r.starts_with("nodes.jsonl#node-runtime/"));
     assert!(runtimes.len() <= want.len(), "at most one runtime row per launched birth before state-commit: {runtimes:#?}");
-    assert!(build_facts.iter().any(|r| r.starts_with("fabric/builds/")), "Q61: the two-mesh Build's committed facts stand on {} before state-commit: {before:#?}", root.display());
+    assert!(build_facts.iter().any(|r| r.starts_with("builds.jsonl#build-record/")), "Q61: the two-mesh Build's committed facts stand on {} before state-commit: {before:#?}", root.display());
     assert_eq!(rows, declarations, "Q54, Q97: of every other row, only the four births' node records, each with its name claim and its path.name entry, reach {} before state-commit; the rest stay held", root.display());
     // R-FN1: the fabric's claim of its name sits beside the per-fabric roots, at
     // `<store_dir>/fabrics/fabric1`, and is held in the fabric-primary's scratchpad like every row.
@@ -633,12 +633,12 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     let holds = |prefix: &str| after.iter().any(|r| r.starts_with(prefix));
     assert!(holds("fabric.jsonl#fabric-record/"), "the fabric-primary published the Fabric record: {after:#?}");
-    assert!(holds("fabric/builds/"), "the fabric-primary's Build journal stands under fabric/builds/ (R-BI6): {after:#?}");
+    assert!(holds("builds.jsonl#build-record/"), "the fabric-primary's Build journal stands in builds.jsonl (R-BI6): {after:#?}");
     // The per-seat rows under `fabric/seats` go (the approved proposal
     // node-primary-update-fabric-mesh-and-node-type.md, Part C2: "the leadership view is folded from the
     // transfer rows"): under fabric/ the fabric-primary holds its identity row, its `fabric/builds/`
     // Build journal (R-BI6) and the fabric's events (storage-by-object.md), and nothing else.
-    let only_identity_builds_and_events = |rows: &[String]| rows.iter().filter(|r| r.starts_with("fabric/")).all(|r| r.starts_with("fabric/builds/")) && rows.iter().filter(|r| r.starts_with("fabric.jsonl#")).all(|r| r.starts_with("fabric.jsonl#fabric-record/"));
+    let only_identity_builds_and_events = |rows: &[String]| !rows.iter().any(|r| r.starts_with("fabric/")) && rows.iter().filter(|r| r.starts_with("fabric.jsonl#")).all(|r| r.starts_with("fabric.jsonl#fabric-record/"));
     assert!(only_identity_builds_and_events(&after), "the Fabric row carries no pointer to the newest Build and no seat row stands beside it: the fabric-primary's fabric/ rows are the identity, fabric/builds/ and fabric/events/ and nothing else: {after:#?}");
     for mesh in ["mesh1", "mesh2"] {
         assert!(holds(&format!("mesh-names/{mesh}.json")), "{mesh}'s primary published its Mesh name claim: {after:#?}");

@@ -208,6 +208,29 @@ pub fn read_record(path: &Path, kind: &str, key: Option<&str>) -> Option<serde_j
     Some(serde_json::json!({ "format": l.format, "key": l.key, "record": l.record }))
 }
 
+/// One object's fields as its bytes hold them: its `op`, `format` and `key`, and its record exactly as
+/// written (a cell rewriting an older writer's record keeps the bytes it does not change).
+#[derive(Debug, Clone)]
+pub struct RawObject {
+    /// The write.
+    pub op: Op,
+    /// `<kind>/<n>`.
+    pub format: String,
+    /// The record's key.
+    pub key: String,
+    /// The record's JSON, byte for byte.
+    pub record_json: String,
+}
+
+/// The fields of the object `obj` (no newlines) when it verifies, its record as written.
+pub fn read_record_bytes(obj: &[u8]) -> Result<RawObject, String> {
+    let line = verify(obj, 0, &Formats::any())?;
+    let text = std::str::from_utf8(obj).map_err(|e| e.to_string())?;
+    let start = text.find(",\"record\":").ok_or("no record field")? + ",\"record\":".len();
+    let record_json = text[start..text.len() - CRC_SUFFIX].to_string();
+    Ok(RawObject { op: line.op.expect("a line on the disk has its op"), format: line.format, key: line.key, record_json })
+}
+
 /// The keys of `kind` the store file at `path` holds a line of, sorted ([`read_file`]).
 pub fn keys_in(path: &Path, kind: &str) -> Result<Vec<String>, StorageError> {
     Ok(latest_in(path)?.into_keys().filter(|(k, _)| k == kind).map(|(_, key)| key).collect())

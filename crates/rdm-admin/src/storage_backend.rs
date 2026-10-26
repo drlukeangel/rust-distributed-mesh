@@ -138,7 +138,7 @@ impl StorageBackend for FileBackend {
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.log_writer()).await.map_err(storage_err)?);
         // Every runtime row is a line of the root's nodes.jsonl: the root's rows are the nodes store's.
         let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(nodes.clone() as Arc<dyn NodesStorage>);
-        let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.writer).await.map_err(|e| e.to_string())?);
+        let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.log_writer()).await.map_err(|e| e.to_string())?);
         let finish_writes: FinishWrites = {
             let (meshes, nodes, fabric) = (meshes.clone(), nodes.clone(), fabric.clone());
             Arc::new(move || {
