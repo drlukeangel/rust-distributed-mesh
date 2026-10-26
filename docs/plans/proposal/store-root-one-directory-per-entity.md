@@ -185,12 +185,11 @@ instead of `fabric/builds/<id>/` plus every `meshes/<mesh>/builds/<id>/`.
 leadership election replaced them, Q107), and the word is banned. The new layout has no primary-move
 line, constant or fixture; an older root is refused by the layout marker (lead, 2026-10-25).
 
-**Before the first state-commit nothing changes.** Rows stay in the scratchpad until the commit-state
-action publishes them (fabric-state-sync.md), and the scratchpad publishes as lines appended to §4's
-files. Four writes reach the root before state-commit, appended to the new files at once: the Build
-facts to `builds.jsonl`, the attempt claim to `locks/in-flight/`, the declaration to `nodes.jsonl`,
-and a birth's runtime row to `nodes.jsonl`, its launching admin's durable map, written once, as
-durable as when it stood in the launcher's data dir (lead, 2026-10-25).
+**From Day 0 every write goes to disk.** There is no scratchpad and no state-commit (Q171,
+`688c32241`): a writer's first line lands in its file the moment it is written, the Build facts in
+`builds.jsonl`, the attempt claim under `locks/in-flight/`, a birth's declaration and its runtime row
+in `nodes.jsonl` (Luke, 2026-10-26: "storage isn't in a scratchpad, it's written to disk as JSONL").
+R14 item 9, "before state-commit nothing changes", is superseded by Q171 (§5.3).
 
 **What open costs, and the measured trigger.** A fold reads each file once from byte 0. At the
 record's size and count (142 nodes in the largest estate in the record) a long run's `nodes.jsonl` is
@@ -289,6 +288,8 @@ connections.jsonl, the view the fold's latest line per key.`
 - R-ML2 item 4 gains: `Amended 2026-10-25 (R-SR1): the recreated mesh shares the name locks under
   locks/name/ and the in-flight lock under its name, not a directory.` Item 5's reason stands: no
   MeshId is in a name claim's key.
+- R14 item 9 (`Before state-commit nothing changes: rows stay in the scratchpad`) is struck: superseded
+  by Q171, every write reaching its file from Day 0.
 - R-BI6 is unchanged: the journal's location was the adapter's choice, and `builds.jsonl` is it.
 - R-FN1 is unchanged.
 
@@ -336,8 +337,7 @@ connections.jsonl, the view the fold's latest line per key.`
   re-created mesh's name finds the lock naming another attempt and releases nothing; a re-born node
   at the same path.name appends the same connection keys and the fold's current view shows the new
   birth's; the adoption launch reads the runtime line; a new mesh-primary's rebuild folds its mesh's
-  records; a Build with a topology attempt and a drift attempt folds from `builds.jsonl`; rows written
-  before the first state-commit publish from the scratchpad as lines.
+  records; a Build with a topology attempt and a drift attempt folds from `builds.jsonl`.
 
 ## 6. Arms
 
