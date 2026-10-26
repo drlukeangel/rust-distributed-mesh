@@ -11,7 +11,9 @@ through `fabrics.atlas.get`.** It updates immediately when commands are admitted
 returned; delayed events cannot move it backward.
 
 **The rule (Luke, 2026-10-26, Q197):** nothing starts, stops or does any action through gossip; gossip is the
-side effect of an op, never the reverse. Nothing waits for gossip.
+side effect of an op, never the reverse. Nothing waits for gossip. Not every op comes through the fabric-primary: a mesh-primary's
+self-healing (node recovery, re-create; R-BI7) is an op it runs itself, and the fabric-primary learns its result
+through gossip and the store's records; the atlas takes those results in (Luke, same day).
 
 ## What it replaces
 
