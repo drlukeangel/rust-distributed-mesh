@@ -837,18 +837,21 @@ fn plans_replacements(p: &BuildProjection) -> bool {
     p.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::plans_replacements)
 }
 
-/// Whether `p`'s Build puts the fabric back to pending (states.md "Resize and executable replacement";
-/// Q154): every Build a change was submitted for, a resize and an executable replacement alike, except
-/// fabric.delete, after which the fabric is never ready-for-traffic again. Day 0's Build carries no
-/// change and is not one of them (Q154: "day 0 ... unchanged"). A Build
-/// whose topology the change left as it was puts nothing back, and the fabric it finds ready-for-traffic
-/// holds it.
+/// Whether `p`'s Build changes the fabric to ready-for-traffic (states.md "Resize and executable
+/// replacement": "Its Build is Complete only when the fabric is ready-for-traffic again from this Build's
+/// own change, as fabric.create's is"; Q154): the Day-0 Build, fabric.create's, which carries no submitted
+/// change and whose fabric is pending from its mint (fabric-create.md, Completion: "`fabric.created` when
+/// the fabric is ready-for-traffic"), and every Build a change was submitted for, a resize and an
+/// executable replacement alike, except fabric.delete, after which the fabric is never ready-for-traffic
+/// again. A Build whose topology the change left as it was puts nothing back, and the fabric it finds
+/// ready-for-traffic holds it.
 fn changes_the_fabric(p: &BuildProjection) -> bool {
-    p.submitted_change.as_ref().is_some_and(|c| !matches!(c, crate::accepted::TopologyChange::DeleteFabric))
+    !p.submitted_change.as_ref().is_some_and(|c| matches!(c, crate::accepted::TopologyChange::DeleteFabric))
 }
 
 /// Whether `p`'s attempt waits for the fabric's ready-for-traffic before its Build is Complete: the
-/// Build's own topology change (Q154; states.md "Resize and executable replacement"), up to the Build's
+/// Build's own change of the fabric, Day 0's or a submitted topology change's (Q154; states.md "Resize and
+/// executable replacement"), up to the Build's
 /// first Complete, which comes only from its own ready-for-traffic. Every later attempt of the Build
 /// (node.stop, node.start, node.restart, a primary change, node recovery, drift: attempts of an
 /// unchanged topology, build.md §1) ends at its own completion and never waits on the fabric's change
@@ -1113,7 +1116,7 @@ impl DriveEnv {
             plan.operations.truncate(i);
             plan.hand_off_to = Some(me.to_string());
         }
-        // The last run of a Build that put the fabric back to pending hands back here rather than
+        // The last run of a Build that changes the fabric (Day 0's, or one that put it back to pending) hands back here rather than
         // ending `Complete` while the fabric's ready-for-traffic state is not set (Q154; states.md "Resize
         // and executable replacement"): the next pass waits for it. A later attempt of a Build that completed
         // once ends at its own completion ([`waits_for_the_fabric_change`]).
@@ -1221,8 +1224,8 @@ impl DriveEnv {
                 if let Some(end) = self.idle_until_moved(&me, drive, &p).await {
                     return end;
                 }
-                // A Build that put the fabric back to pending and never completed, its work all done, is Complete only once
-                // the fabric's ready-for-traffic state is set from its change (Q154; states.md "Resize and
+                // A Build that changes the fabric (Day 0's, or one that put it back to pending) and never completed, its
+                // work all done, is Complete only once the fabric's ready-for-traffic state is set from its change (Q154; states.md "Resize and
                 // executable replacement": "while the fabric changes, the Build reports Blocked naming the
                 // change, never Complete"): no further attempt is claimed until the fabric holds
                 // ready-for-traffic, and the reconcile loop drives the Build again. Its first attempt is
@@ -1474,6 +1477,31 @@ impl DriveEnv {
             let Some(executor) = p.executor.as_deref().and_then(parse_path) else {
                 return Interrupted::Open(format!("{me}: attempt {} of Build {id} is claimed by {:?}, which is not a path.name", p.attempt, p.executor));
             };
+            // An attempt this fabric-primary executes is in this process: its runtime is the one running the
+            // delete, whose exit is never proven while it runs it. With no run of the attempt live here, it
+            // ends the attempt itself now, its verdict written through the held run (no later verdict of
+            // a run of it follows); a live run stops at its next operation and hands back (build.md §1).
+            if executor == *me {
+                let Some(held) = self.dispatcher.hold(me, id, p.attempt) else {
+                    return Interrupted::Open(format!(
+                        "{me}: attempt {} of Build {id}, which fabric.delete {} interrupts, runs in this process: the teardown waits for its run to stop at its next operation",
+                        p.attempt, delete.build_id
+                    ));
+                };
+                span.record("executor", executor.to_string().as_str());
+                span.record("attempt", p.attempt);
+                let reason = crate::build_state::interrupted_reason(id, &delete.build_id);
+                let terminal = rdm_core::reply::build::failed(id.to_string(), p.attempt, String::new(), "fabric.delete".into(), crate::build_run::bounded_reason(reason.clone()), rdm_core::outcome::Code::Aborted);
+                held.finish(terminal, self.release_mesh(id, p.attempt, &executor)).instrument(span.clone()).await;
+                return match self.builds.read_build(id).await {
+                    Ok(ended) if ended.state == BuildState::Failed && ended.failed_at == Some(p.attempt) => {
+                        span.in_scope(|| tracing::info!(%reason, "the interrupted Build's attempt ran at this fabric-primary with no run live here: it ends Failed naming the fabric.delete"));
+                        Interrupted::Ended { attempt: p.attempt, reason }
+                    }
+                    Ok(other) => Interrupted::Open(format!("{me}: the terminal of attempt {} of Build {id}, which fabric.delete {} interrupts, was not recorded: the Build reads {:?} at attempt {}", p.attempt, delete.build_id, other.state, other.attempt)),
+                    Err(e) => Interrupted::Open(format!("{me}: Build {id}, which fabric.delete {} interrupts, could not be read after its terminal: {e}", delete.build_id)),
+                };
+            }
             if let Err(not_proven) = self.departure.proven(&executor).await {
                 return Interrupted::Open(format!(
                     "{me}: attempt {} of Build {id}, which fabric.delete {} interrupts, runs at {executor} ({not_proven}): the teardown waits for it to end within its bound",
