@@ -6,7 +6,7 @@
 
 ## The requirement (Lukes words)
 
-**`FabricAtlas` combines command acceptance, execution progress and gossip observations, and is exposed
+**`FabricAtlas` combines command accept or deny, execution progress and gossip observations, and is exposed
 through `fabrics.atlas.get`.** It updates immediately when commands are accepted and before completion is
 returned; delayed events cannot move it backward.
 
@@ -18,7 +18,7 @@ through gossip and the store's records; the atlas takes those results in (Luke, 
 ## What it replaces
 
 The fabric-primary accepts a Build from a projection rebuilt per request from the `DigestView` (the gossip
-view and everything in flight) and the store rows (`control_plane.rs` acceptance, `boot.rs` `view_now`,
+view and everything in flight) and the store rows (`control_plane.rs` accept or deny, `boot.rs` `view_now`,
 `projection.rs` `project_with`). A completed stop is already applied before `Complete`, but through the gossip view, which Q197 rules out: `SeatGate::attempt_completed`
 (`admin/reconcile.rs:139-152`, awaited at `build_drive.rs:1306`) takes each completed `node.stop:` receipt into
 the fabric-primarys view (span `rdm.mesh.topology.remove.via-node-stopped`, `publisher=` empty). No other
@@ -29,13 +29,13 @@ gossip-view and everything that is inflight\").
 
 ## Requirements
 
-- **R-FA1.** The fabric-primary holds one `FabricAtlas`. Build acceptance for every change (Stop, Start,
-  Delete, Reconcile, the rest) reads it, and nothing else. Its acceptance and progress entries are the
+- **R-FA1.** The fabric-primary holds one `FabricAtlas`. The fabric-primary accepts or denies every request (Stop, Start,
+  Delete, Reconcile, the rest) reads it, and nothing else. Its accept and progress entries are the
   fabric-primary's own ops (what it accepted, the receipts its commands returned, directly or through
   `build.attempt.run` for a peer mesh), never a gossip frame.
-- **R-FA2.** Command acceptance writes it at acceptance; execution progress writes it from each attempts
+- **R-FA2.** Accepting a request writes it; execution progress writes it from each attempts
   receipts as they stream up `build.attempt.run`, before the caller is answered `Complete`.
-- **R-FA3.** Gossip observations are context in the atlas and decide no acceptance; they merge in only what the fabric-primary did not do itself, each under the
+- **R-FA3.** Gossip observations are context in the atlas and decide no accept or deny; they merge in only what the fabric-primary did not do itself, each under the
   receiver rules ordering (gossip.md §3.1: a frame older than the newest held for its key is ignored; a
   births `digest_seq`; a Builds attempt number), so a delayed event never moves it backward.
 - **R-FA4.** `fabrics.atlas.get` returns it (Q167s read naming); `fabrics.get` is unchanged.
@@ -45,7 +45,7 @@ gossip-view and everything that is inflight\").
 
 ## Open
 
-- Its page: node-identity-and-state.md beside the `DigestView` text, or build.md §4 acceptance; the exact
+- Its page: node-identity-and-state.md beside the `DigestView` text, or build.md §4 accept or deny; the exact
   text goes to Luke before landing.
 - The existing `FabricState` (`fabric_state.rs`, the fabrics pending / ready-for-traffic state) keeps
   its name.
