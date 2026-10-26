@@ -259,20 +259,26 @@ async fn a_launched_admins_create_sets_the_declared_value_and_no_file_of_the_run
 }
 
 /// Q150 §0.1 ("read back on a start from disk without a launcher"): on `provider`, the bootstrap admin
-/// reads the value from its environment once and keeps it beside its data dir; every node-admin is
-/// lost; a person starts a node-admin again on that data dir with no launcher and without the value in
-/// its environment (fabric recovery); the broker it then creates holds the value unchanged.
+/// reads the value from its environment once and keeps it beside its data dir; it launches an rpc node,
+/// so the store names a node beside its own birth and its loss is a fabric recovery, not Q200's Day 0;
+/// every node-admin is lost; a person starts a node-admin again on that data dir with no launcher and
+/// without the value in its environment (fabric recovery); the broker it then creates holds the value
+/// unchanged.
 async fn an_admin_started_again_from_its_data_dir_launches_the_named_kinds_with_the_value(test: &str, provider: &str) {
     assert!(std::env::var(DECLARED_SECRET).is_err(), "the cell's own environment holds no {DECLARED_SECRET}: the restarted admin is started without it");
     let value = fresh_value();
     let mut estate = estate_holding(test, provider, &value).await;
     estate.until_fabric_ready(SETTLE).await;
+    let launched = MeshDesired { name: "mesh1".into(), node_admin: 1, rpc_node: 1, broker: 0, gateway: 0, compute: 0 };
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![launched] }).await;
+    let before: BTreeSet<String> = [BOOTSTRAP.to_string(), "mesh1.rpc.1".to_string()].into();
+    estate.settles_to_named(&before, SETTLE).await;
     let data_dir = estate.bootstrap_data_dir("mesh1");
     assert_eq!(kept_in(&data_dir).as_deref(), Some(value.as_str()), "the bootstrap admin keeps the value it read beside its data dir");
     estate.kill_bootstrap();
     let restarted = estate.restart_admin_with(&data_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
     estate.enter(&restarted).await;
-    estate.settles_to_named(&BTreeSet::from([BOOTSTRAP.to_string()]), SETTLE).await;
+    estate.settles_to_named(&before, SETTLE).await;
     estate.until_fabric_ready_at(&restarted, SETTLE).await;
     let mesh1 = MeshDesired { name: "mesh1".into(), node_admin: 1, rpc_node: 0, broker: 1, gateway: 0, compute: 1 };
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] }).await;
