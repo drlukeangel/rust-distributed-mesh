@@ -607,7 +607,7 @@ impl ControlPlane {
         }
         tracing::info!(build_id = %current.build_id.log(), attempt = opened.attempt, lane = lane.unwrap_or("fabric"), "attempt opened");
         if let Some(action) = &opened.action {
-            self.atlas.accept(&opened.build_id, opened.attempt, action);
+            self.atlas.note_accepted(&opened.build_id, opened.attempt, action);
         }
         self.build_submitted.notify_waiters();
         Ok(Opened { build_id: current.build_id.clone(), attempt: opened.attempt, mesh: opened.mesh })

@@ -143,7 +143,7 @@ fn lifecycle_of(operation: &str) -> Option<(Lifecycle, PathName)> {
 impl FabricAtlas {
     /// The operations `action` acts with, accepted as attempt `attempt` of `build_id`: written at
     /// acceptance, before the attempt can be claimed (R-FA2).
-    pub(crate) fn accept(&self, build_id: &crate::build::BuildId, attempt: u32, action: &AttemptAction) {
+    pub(crate) fn note_accepted(&self, build_id: &crate::build::BuildId, attempt: u32, action: &AttemptAction) {
         let mut held = self.held.lock().unwrap();
         for (path, operation) in accepted_on(action) {
             held.accepted.insert(path.to_string(), Accepted { operation, build_id: build_id.to_string(), attempt });
