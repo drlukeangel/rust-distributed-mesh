@@ -89,6 +89,13 @@ pub trait StorageBackend: Send + Sync {
     async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError>;
     /// Opens the five boundaries of `scope`.
     async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String>;
+    /// Delete the topology storage of the Fabric `fabric_id`: its five stores and the admin's own row and
+    /// Build attempt contexts in `data_dir`. Persistence only: the admin's boot decides when (Q200). A
+    /// backend that deletes nothing refuses by name.
+    async fn delete_fabric(&self, data_dir: &Path, fabric_id: &FabricId) -> Result<(), String> {
+        let _ = (data_dir, fabric_id);
+        Err("this topology storage provider deletes no fabric's storage".into())
+    }
     /// This backend's five stores as their lines and its claims for the fabric `fabric_id`, registered
     /// as `provider`: what a storage change's copy reads from the old provider and appends to the new
     /// one (storage.md §2 Copy, [`rdm_node::storage_copy`]). A backend that answers none refuses by name.
@@ -129,6 +136,24 @@ impl StorageBackend for FileBackend {
 
     async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
         crate::storage::FileNodesStorage::put_own_in(data_dir, writer, record).await
+    }
+
+    async fn delete_fabric(&self, data_dir: &Path, fabric_id: &FabricId) -> Result<(), String> {
+        // The fabric's root on the store dir (R14), then the admin's own stores in its data dir: its own
+        // row (`nodes/`) and its Build attempt contexts. Custody (`node-key`, `ca-secret`, `fabric-ca`,
+        // `declared-secrets`) is no topology storage and stays.
+        let dirs = [self.store_dir.join(fabric_id.to_string()), data_dir.join("nodes"), data_dir.join(crate::build_state::CONTEXT_DIR)];
+        crate::blocking::blocking_io(move || {
+            for dir in &dirs {
+                match std::fs::remove_dir_all(dir) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(format!("{}: {e}", dir.display())),
+                }
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn lines(&self, provider: &str, fabric_id: &FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, String> {

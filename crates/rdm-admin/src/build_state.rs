@@ -2183,7 +2183,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
 
 #[cfg(feature = "file-backend")]
 /// Where a node-admin keeps its attempts' contexts in its own data dir, and their format.
-const CONTEXT_DIR: &str = "attempt-context";
+pub(crate) const CONTEXT_DIR: &str = "attempt-context";
 #[cfg(feature = "file-backend")]
 const CONTEXT_FORMAT: &str = "attempt-context/1";
 

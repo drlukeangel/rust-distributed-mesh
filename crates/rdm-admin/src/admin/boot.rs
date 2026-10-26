@@ -280,15 +280,69 @@ pub async fn start_with(cfg: AdminConfig, wiring: crate::wiring::Wiring) -> Resu
 /// [`start_with`] on the topology storage `providers` its executable registers (storage.md §2): every
 /// durable read and write of the admin goes through the six boundaries the one its
 /// `topology_storage_provider` names opens.
-pub async fn start_on(cfg: AdminConfig, wiring: crate::wiring::Wiring, providers: crate::storage_backend::TopologyStorageProviders) -> Result<Running, String> {
+pub async fn start_on(mut cfg: AdminConfig, wiring: crate::wiring::Wiring, providers: crate::storage_backend::TopologyStorageProviders) -> Result<Running, String> {
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step is a child that lives exactly as long as the step, and `via-ready` closes it.
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = tracing::field::Empty, node_id = tracing::field::Empty, incarnation_id = tracing::field::Empty, kind = "node-admin");
-    let started = start_booted(cfg, wiring, providers, boot.clone()).await;
+    let started = match lone_birth_storage_deleted(&cfg, &providers, &boot).await {
+        Ok(deleted) => {
+            if deleted {
+                // Day 0 (Q200): a recovery's flags, seeds and mesh id name a fabric that is no more.
+                (cfg.mesh_primary, cfg.fabric_primary, cfg.mesh_id) = (false, false, None);
+                cfg.seeds.clear();
+            }
+            start_booted(cfg, wiring, providers, boot.clone()).await
+        }
+        Err(e) => Err(e),
+    };
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
     }
     started
+}
+
+/// Q200 (fabric-recovery.md "Nothing alive": "A store that names no node but the launching admin's own
+/// lost birth holds no fabric to recover: the launch deletes that storage and starts as Day 0, a new
+/// fabric-primary."): a launch on its own data dir (no launcher, no adoption) whose own row names a
+/// Fabric whose store names no node but that row's birth deletes that Fabric's storage before anything of
+/// its boot reads it, and its boot then finds no own row: Day 0. A store naming any other node is a
+/// recovery, left as it is; a fabric id handed in that differs from the own row's is refused by the boot.
+/// Whether the storage was deleted.
+async fn lone_birth_storage_deleted(cfg: &AdminConfig, providers: &crate::storage_backend::TopologyStorageProviders, boot: &tracing::Span) -> Result<bool, String> {
+    if cfg.launch.is_some() || cfg.adopt.is_some() {
+        return Ok(false);
+    }
+    let storage = providers.named(&cfg.topology_storage_provider).map_err(|e| format!("refusing to start: {e}"))?;
+    let reader = IncarnationId::mint();
+    let Some(own) = storage.own_row(&cfg.data_dir, &reader).await.map_err(|e| e.to_string())? else { return Ok(false) };
+    if cfg.fabric_id_named && cfg.fabric_id != own.fabric_id {
+        return Ok(false);
+    }
+    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: own.name.mesh.clone(), writer: reader, node_id: NodeId::mint() };
+    let unreadable = |e: &dyn std::fmt::Display| format!("refusing to start: {}: the store of Fabric {} could not be read: {e}", cfg.data_dir.display(), own.fabric_id);
+    let handle = crate::storage_backend::TopologyStorageHandle::open(providers, &cfg.topology_storage_provider, scope).await?;
+    let others = crate::storage::live_records(&*handle.meshes(), &*handle.nodes(), &own.name.mesh).await.map_err(|e| unreadable(&e))?.into_iter().filter(|r| r.node_id != own.node_id).count();
+    if others > 0 {
+        return Ok(false);
+    }
+    let step = tracing::info_span!(parent: boot, "rdm.node_admin.fabric.delete.via-lone-birth", node = %own.name, inherited_node_id = %own.node_id, fabric_id = %own.fabric_id, data_dir = %cfg.data_dir.display(), name_released = tracing::field::Empty, outcome = tracing::field::Empty);
+    // The deleted fabric releases its name (R-FN1: "a deleted fabric releases it"), then its storage goes.
+    let deleted = async {
+        let fabric = handle.fabric();
+        if let Some(record) = fabric.fabric().await.map_err(|e| unreadable(&e))? {
+            let identity = crate::fabric_storage::FabricIdentity { fabric_id: record.fabric_id.clone(), name: record.name.clone() };
+            let released = crate::fabric_storage::release_name(&*fabric, &identity).await.map_err(|e| format!("the name {} of Fabric {} could not be released: {e}", record.name, record.fabric_id))?;
+            tracing::Span::current().record("name_released", released);
+        }
+        drop(fabric);
+        drop(handle);
+        storage.delete_fabric(&cfg.data_dir, &own.fabric_id).await
+    }
+    .instrument(step.clone())
+    .await;
+    step.record("outcome", if deleted.is_ok() { "deleted" } else { "refused" });
+    step.in_scope(|| tracing::info!("the store names no node but this launch's own lost birth: no fabric to recover; its storage is deleted and the launch starts as Day 0"));
+    deleted.map(|()| true).map_err(|e| format!("refusing to start: {}: the store of Fabric {} names no node but the lost birth {} at {}, and its storage could not be deleted: {e}", cfg.data_dir.display(), own.fabric_id, own.node_id, own.name))
 }
 
 pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, providers: crate::storage_backend::TopologyStorageProviders, boot: tracing::Span) -> Result<Running, String> {
