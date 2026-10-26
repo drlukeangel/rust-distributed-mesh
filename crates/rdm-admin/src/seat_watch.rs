@@ -47,25 +47,6 @@ fn birth(n: &Node) -> Option<Birth> {
     n.incarnation_id.clone().map(|i| (n.node_id.clone(), i))
 }
 
-/// The hand-over of committed Build facts a pass owes when the fabric seat record this birth held names another
-/// birth now, the move planned or not (the handover door's commit, or the record heard on the
-/// backbone first): why, and the admin the seat moved to, by the node id the record names (a
-/// member of the view whether or not its seat flags have moved yet; the handover door names it the
-/// same way). `held` carries whether this birth held the record on an earlier pass.
-pub fn seat_yield(record: Option<&Primary>, me: &Birth, held: &mut bool, view: &Topology) -> Option<(String, Option<String>)> {
-    match record {
-        Some(h) if h.is_birth(&me.0, &me.1) => {
-            *held = true;
-            None
-        }
-        Some(h) if *held => {
-            *held = false;
-            Some((format!("the seat is now {} {}", h.mesh, h.node_id), view.own(&h.node_id).map(|n| n.name.to_string())))
-        }
-        _ => None,
-    }
-}
-
 /// What the fabric-primary record this admin holds says of `me`'s Build log: the election's result it
 /// installed (lifecycles/node-primary-update.md step 4: the successor "becomes primary" when it installs
 /// it; nothing is written). A record naming this birth, naming none, or naming a birth proven gone
@@ -222,8 +203,6 @@ pub struct Watch {
     pub records: Arc<Records>,
     /// What it looks at a birth with.
     pub looker: Looker,
-    /// This admin's Build log: its committed facts are handed on when the fabric seat's record names another birth.
-    pub builds: Arc<crate::fabric_builds::FabricBuildStateAdapter>,
     /// The recovery submitter: the fabric-primary's recovery of an unheard peer-mesh primary (node-recovery.md step 3).
     pub recovery: Option<crate::admin::RecoverySubmitter>,
     /// Fabric recovery (Q122): this watch starts it at the first tick after the fabric-primary's mark when
@@ -237,19 +216,10 @@ pub async fn run(w: Watch) {
     let mut said = Said::default();
     let me_birth = (w.me_id.clone(), w.incarnation.clone());
     let mut seats_changed = w.topology_view.primaries().subscribe();
-    let mut held_the_fabric_seat = false;
-    // A turn runs from the gate to the next idle wait: the pass below, then the yield check at the
-    // top of the loop, which can hand facts on. It is held in an Option so it ends (`take`) right
-    // before the idle wait and begins again right after it.
+    // A turn runs from the gate to the next idle wait: the pass below. It is held in an Option so it
+    // ends (`take`) right before the idle wait and begins again right after it.
     let mut turn = Some(w.gate.turn("seat-watch").await);
     loop {
-        // A fabric seat this birth held, now recorded to another birth: the record already fences
-        // its Build log; the committed facts are handed to the neighbours before the new holder acts.
-        let record = w.topology_view.primaries().fabric();
-        let owed = seat_yield(record.as_ref(), &me_birth, &mut held_the_fabric_seat, &*w.topology.read().await);
-        if let Some((by, to)) = owed {
-            w.builds.hand_over_facts(&by, to).await;
-        }
         drop(turn.take());
         tokio::select! {
             _ = seats_changed.changed() => {}
@@ -414,23 +384,6 @@ mod tests {
         let mut outsider = admin("mesh2.admin.1", "100000000000", "o1", NodeStatus::ReadyForTraffic);
         outsider.is_primary = true;
         (view(vec![holder.clone(), standby.clone(), outsider.clone()]), holder, standby, outsider)
-    }
-
-    /// CONTRACT: a birth that held the fabric seat record and finds it naming another birth owes one
-    /// hand-over of its committed Build facts, naming that birth's path.name (resolved by the node id
-    /// the record names), whether the record moved by the handover door's commit or was heard on the
-    /// backbone first. Once per move; a birth that never held the record owes nothing. The moved
-    /// record itself is the fence (`fabric_seat_record`); this pass writes none.
-    #[test]
-    fn a_held_fabric_seat_record_that_moves_owes_one_hand_over_naming_the_new_holder() {
-        let (t, holder, standby, outsider) = world();
-        let record = |n: &Node, revision: u64| Primary { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), revision };
-        let (me, mut held) = (me_of(&holder), false);
-        assert_eq!(seat_yield(Some(&record(&holder, 1)), &me, &mut held, &t), None, "the record names this birth: nothing yields");
-        assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me, &mut held, &t), Some(("the seat is now mesh2 100000000000".to_string(), Some("mesh2.admin.1".to_string()))), "the fence names the holder the record names");
-        assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me, &mut held, &t), None, "once per move");
-        let mut never = false;
-        assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me_of(&standby), &mut never, &t), None, "a birth that never held the record owes nothing");
     }
 
     /// CONTRACT (Q23): a silent fabric holder is investigated from each admin's own view,

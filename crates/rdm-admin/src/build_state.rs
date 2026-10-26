@@ -1127,11 +1127,6 @@ pub trait BuildStateAdapter: Send + Sync {
     /// same drift) changes nothing and succeeds; one that asks for another action is refused
     /// `AttemptTaken`, so no caller is told an attempt is open for an action it does not carry.
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError>;
-    /// Tell the fabric the Fabric record, its identity, on the Build topic. A local-only adapter has
-    /// no fabric to tell.
-    async fn publish_fabric(&self, _record: &crate::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
-        Ok(())
-    }
     /// The folded view of `build_id`.
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError>;
     /// The current Build ([`CurrentBuild`], R-BI3): the acceptance-order index read last in, first
@@ -1155,8 +1150,8 @@ pub trait BuildStateAdapter: Send + Sync {
     /// Builds that are neither complete nor failed.
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
     /// The accepted Build `build_id` as builds.storage records it (the fabric's shared store root, build.md
-    /// §5.3), read there whoever reads it: the one record that carries each entry's executable, which the
-    /// Build topic does not (proposal executable-bindings-at-create.md rule 7). A log whose own facts are
+    /// §5.3), read there whoever reads it: the one record that carries each entry's executable, which a Build
+    /// message does not carry (proposal executable-bindings-at-create.md rule 7). A log whose own facts are
     /// the record (one process's, an application's builds.storage) answers the acceptance it holds, the
     /// topology its fold plans from. `Ok(None)`: no record of it.
     async fn stored_accepted(&self, build_id: &BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
@@ -1234,8 +1229,7 @@ pub trait BuildStateAdapter: Send + Sync {
     /// A point read by the Build: every adapter answers it from its index (or delegates to the adapter
     /// it decorates), never by reading or folding the fact log.
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError>;
-    /// The path name this admin's topology view holds (`Some` once the fabric Build topic joined
-    /// with the endpoint's location view).
+    /// The path name this admin's topology view holds (`Some` once its location view holds one).
     fn held_name(&self) -> Option<crate::model::PathName> {
         None
     }
@@ -1860,10 +1854,10 @@ fn publish(log: &Mutex<FactLog>, derive: Option<&FactDerivation>, new: Vec<Build
 
 /// The accepted Builds `stored`, as the store root records them, in place of the copies `log` holds of
 /// them, each at its own position (build.md §5.3: the Build facts are "written by the fabric-primary,
-/// so a successor reads them there; they also reach every admin through the Build channel"). The Build
-/// topic's copy carries no executable (proposal executable-bindings-at-create.md rule 7): an admin that
-/// heard a Build there and reads the store root as the fabric-primary holds the Build as it was
-/// written. The derivation runs over the log as it will stand, as for any publication.
+/// so a successor reads them there"). A Build message's copy (`FetchBuildFacts` 0x1F, a
+/// build.attempt.run's intent) carries no executable (proposal executable-bindings-at-create.md rule
+/// 7): an admin that absorbed a Build from one holds the Build as the store root records it once it
+/// reads it there. The derivation runs over the log as it will stand, as for any publication.
 #[cfg(feature = "file-backend")]
 fn take_stored_acceptances(log: &Mutex<FactLog>, derive: Option<&FactDerivation>, stored: Vec<BuildAccepted>) {
     if stored.is_empty() {
@@ -2039,12 +2033,13 @@ impl MemoryBuildStateAdapter {
     }
 }
 
-/// The local fact log a Build-topic adapter holds and absorbs the fabric's facts into: in memory
-/// for runs that need no restart survival, or the admin's own journal (`builds.storage`).
+/// The fact log an admin's Build state is over, which absorbs the facts a Build message carries: in
+/// memory for runs that need no restart survival, or the fabric's Build journal on the shared store
+/// root (`builds.storage`).
 #[async_trait]
 pub trait LocalBuildLog: BuildStateAdapter {
-    /// Merge facts heard from the fabric (append the unseen ones; intents, opens and claims are
-    /// insert-and-fail, receipts deduplicate).
+    /// Merge the facts a Build message carried (`FetchBuildFacts` 0x1F, a build.attempt.run's intent):
+    /// append the unseen ones; intents, opens and claims are insert-and-fail, receipts deduplicate.
     async fn absorb_facts(&self, facts: &[BuildFact]);
     /// Run `derive` over the facts of the Builds it reads ([`FactDerivation::reads`]: the current
     /// Build and the held ones, then also those the new facts belong to), once now and again each
@@ -2063,9 +2058,6 @@ pub trait LocalBuildLog: BuildStateAdapter {
     async fn put_attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), crate::storage_error::StorageError>;
     /// The context of `(build_id, lane, attempt)`, when one was put: a point read of its key.
     async fn attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, crate::storage_error::StorageError>;
-    /// Read the shared Build journal only while `fabric_primary` says this admin is the fabric-primary,
-    /// the one writer of the Build records (set once at boot). A log held in one process reads none.
-    fn read_while_fabric_primary(&self, _fabric_primary: Arc<dyn Fn() -> bool + Send + Sync>) {}
 }
 
 /// The key of attempt `(build_id, lane, attempt)`'s context: `<build_id>-<attempt>` for the fabric
@@ -2130,10 +2122,6 @@ impl LocalBuildLog for FileJournal {
 
     async fn attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, crate::storage_error::StorageError> {
         self.contexts.read(&attempt_context_key(build_id, lane, attempt), CONTEXT_FORMAT).await
-    }
-
-    fn read_while_fabric_primary(&self, fabric_primary: Arc<dyn Fn() -> bool + Send + Sync>) {
-        let _ = self.reads_root.set(fabric_primary);
     }
 }
 
@@ -2293,11 +2281,6 @@ pub struct FileJournal {
     seen: Arc<Mutex<std::collections::HashSet<String>>>,
     /// The `seq` the next record is written at: past every record read or written.
     next_seq: std::sync::atomic::AtomicU64,
-    /// Whether this admin reads the store root now: while it is the fabric-primary, the one writer
-    /// of the Build records (build.md §5.3), set once at boot. Unset, it reads it (a journal of no
-    /// admin's boot, and an admin's on an inherited root before boot sets it). An admin that is not
-    /// the fabric-primary holds what reaches it on the Build channel and its fetches (§4.2).
-    reads_root: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
     /// `<own data dir>/attempt-context/`: each attempt's context, local to this admin.
     contexts: crate::record_store::FileRecords,
     root_dir: PathBuf,
@@ -2423,7 +2406,6 @@ impl FileJournal {
             log_writer: writer.clone(),
             seen: Arc::default(),
             next_seq: std::sync::atomic::AtomicU64::new(1),
-            reads_root: std::sync::OnceLock::new(),
             contexts,
             root_dir: root.dir().to_path_buf(),
             log: Mutex::new(FactLog::default()),
@@ -2434,10 +2416,6 @@ impl FileJournal {
             holder_facts: std::sync::atomic::AtomicU64::new(0),
             released: Mutex::new(None),
         })
-    }
-
-    fn reads_root(&self) -> bool {
-        self.reads_root.get().is_none_or(|f| f())
     }
 
     /// The writer's turn for `op`, spanned ([`Turn`]).
@@ -2544,11 +2522,9 @@ impl FileJournal {
         publish(&self.log, w.0.as_ref(), new);
     }
 
-    /// Read the records not taken yet, under the writer's turn `w`, while this admin reads the root.
+    /// Read the records not taken yet, under the writer's turn `w`: every admin reads the store root
+    /// (Q185), the fabric-primary or not.
     async fn sync(&self, w: &Derived) -> Result<(), BuildStateError> {
-        if !self.reads_root() {
-            return Ok(());
-        }
         let read = self.store_call(self.read_new()).await?;
         self.take_read(w, read);
         Ok(())
@@ -2560,9 +2536,6 @@ impl FileJournal {
     /// never waits behind a writer either. While it takes, `op` (the reader) is the holder a waiting
     /// turn names. Records a read could not take stay untaken for the next read.
     async fn sync_for_read(&self, op: &'static str) -> Result<(), BuildStateError> {
-        if !self.reads_root() {
-            return Ok(());
-        }
         let read = self.read_new().await?;
         match self.writer.try_lock() {
             Ok(w) => {
@@ -3317,17 +3290,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// CONTRACT (build.md §5.3 l.390: "The Build facts are the Build journal on the fabric's shared store
-    /// root (§5.3), each record at its own key, written by the fabric-primary, so a successor reads them
-    /// there; they also reach every admin through the Build channel and FetchBuildFacts"; proposal
-    /// executable-bindings-at-create.md rule 7, Luke 2026-10-24: "the executable is not gossiped, it's only
-    /// in the node storage"): an admin that heard an accepted Build on the Build topic holds it with no
-    /// executable; once it is the fabric-primary and reads the store root, it holds the accepted Build as
-    /// the fabric-primary wrote it there, every entry's executable with it, at the same place in its log.
-    /// Must NOT happen: the Build-topic copy kept over the stored record (a successor planning a Build's
-    /// replacements against entries that name no executable).
+    /// CONTRACT (build.md §5.3: "The Build facts are the Build journal on the fabric's shared store root
+    /// (§5.3), each record at its own key, written by the fabric-primary, so a successor reads them
+    /// there"; proposal executable-bindings-at-create.md rule 7, Luke 2026-10-24: "the executable is not
+    /// gossiped, it's only in the node storage"): an admin that absorbed an accepted Build from a Build
+    /// message (`FetchBuildFacts` 0x1F, a build.attempt.run's intent), which carries no executable, holds
+    /// the accepted Build as the fabric-primary wrote it on the store root, every entry's executable
+    /// with it, at the same place in its log. Must NOT happen: the message's copy kept over the stored
+    /// record (a successor planning a Build's replacements against entries that name no executable).
     #[tokio::test]
-    async fn a_successor_holds_the_accepted_build_as_the_store_root_records_it_not_as_the_build_topic_carried_it() {
+    async fn an_admin_holds_the_accepted_build_as_the_store_root_records_it_not_as_a_build_message_carried_it() {
         let dir = tmp();
         let mut stored = intent("b1");
         let rpc: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
@@ -3340,54 +3312,18 @@ mod tests {
         writer.publish_accepted(&stored).await.unwrap();
         writer.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
 
-        // Another admin, not the fabric-primary: it holds what the Build topic carried.
-        let successor = open_at(&dir).await.unwrap();
-        let primary = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let is = primary.clone();
-        successor.read_while_fabric_primary(Arc::new(move || is.load(std::sync::atomic::Ordering::SeqCst)));
+        // Another admin absorbs the Build as a Build message carries it: no executable.
+        let other = open_at(&dir).await.unwrap();
         let mut heard = stored.clone();
         for c in heard.topology.meshes.get_mut("mesh1").unwrap().spec_by_path.values_mut() {
             c.executable = None;
         }
-        successor.absorb_facts(&[BuildFact::Accepted(heard.clone()), BuildFact::Claim(claim("b1", 1, "mesh1.admin.1"))]).await;
+        other.absorb_facts(&[BuildFact::Accepted(heard.clone()), BuildFact::Claim(claim("b1", 1, "mesh1.admin.1"))]).await;
         let id = stored.build_id.clone();
-        assert_eq!(successor.read_build(&id).await.unwrap().topology, heard.topology, "the Build topic carries no executable");
-
-        // The fabric-primary now: it reads the store root.
-        primary.store(true, std::sync::atomic::Ordering::SeqCst);
-        let read = successor.read_build(&id).await.unwrap();
+        let read = other.read_build(&id).await.unwrap();
         assert_eq!(read.topology, stored.topology, "the accepted Build as the store root records it, its entries' executables with it");
         assert_eq!((read.attempt, read.executor.as_deref()), (1, Some("mesh1.admin.1")), "the rest of its log as it was");
-        assert_eq!(successor.current().await.unwrap().map(|c| c.topology), Some(stored.topology.clone()), "the current Build likewise");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// CONTRACT (Q185, Luke 2026-10-26: "Every admin reads Build records from the store"; build.md §5.3:
-    /// "The Build facts are the Build journal on the fabric's shared store root (§5.3), each record at its
-    /// own key, written by the fabric-primary, so a successor reads them there"): an admin that is not
-    /// the fabric-primary holds the Build records the fabric-primary wrote on the shared store root, with
-    /// no Build channel to carry them: the accepted Build, its claim, and a receipt written after its
-    /// first read, so it can read the current Build, run a drift attempt of it in its own mesh and take
-    /// it over. Must NOT happen: an admin that is not the fabric-primary holding no Build (UnknownBuild,
-    /// no current Build) because its facts were to reach it on a gossip channel.
-    #[tokio::test]
-    async fn an_admin_that_is_not_the_fabric_primary_reads_every_build_record_from_the_store_root() {
-        let dir = tmp();
-        let writer = open_at(&dir).await.unwrap();
-        writer.publish_accepted(&intent("b1")).await.unwrap();
-        writer.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
-
-        // Another admin on the same store root, not the fabric-primary (its boot's gate, as boot.rs sets it).
-        let other = open_at(&dir).await.unwrap();
-        other.read_while_fabric_primary(Arc::new(|| false));
-        let id = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
-        let read = other.read_build(&id).await.unwrap_or_else(|e| panic!("an admin that is not the fabric-primary reads the Build from the store root: {e}"));
-        assert_eq!((read.state, read.attempt, read.executor.as_deref()), (BuildState::Running, 1, Some("mesh1.admin.1")), "the accepted Build and its claim, as the store root records them");
-        assert_eq!(other.current_build().await.unwrap(), CurrentBuild::InProgress(id.clone()), "the current Build, from the store root");
-
-        // A record written after its first read reaches it the same way.
-        writer.append_step_receipt(&step("b1", 1, "node.create:mesh1.rpc.2")).await.unwrap();
-        assert_eq!(other.read_build(&id).await.unwrap().steps.len(), 1, "a record written later is read from the store root");
+        assert_eq!(other.current().await.unwrap().map(|c| c.topology), Some(stored.topology.clone()), "the current Build likewise");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

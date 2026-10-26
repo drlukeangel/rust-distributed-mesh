@@ -244,7 +244,7 @@ impl ControlPlane {
     /// executor is lost with the attempt unfinished, after exact departure proof. A live run is
     /// reattached, never re-claimed"). The lane's running attempt, claimed by another admin than this
     /// one, whose exact birth in this admin's view has its exit recorded, ends `Failed` naming that
-    /// departure (on this admin's Build log and the Build topic, so every fold holds the lane free and
+    /// departure (on the fabric's Build journal on the store root, so every fold holds the lane free and
     /// the exits the attempt was recovering are owed a submit again: node-recovery.md "Failure and
     /// receipts"), and its in-flight row of the mesh is released. Answers whether it ended one. An
     /// attempt this admin claimed, an attempt whose claimant is not proven departed, and the fabric
@@ -512,11 +512,6 @@ impl ControlPlane {
                 .put(&build_id, 1, &crate::build_claim::current_context())
                 .await
                 .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
-            // The Build topic carries the Fabric record, its identity, before the Build is accepted: a
-            // refusal here (the seat moved) accepts nothing.
-            if let Some(identity) = self.accepted.record().await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))? {
-                self.builds.publish_fabric(&identity).await.map_err(Refusal::State)?;
-            }
             // The Build is current the moment it is durable in the builds store: nothing else is written.
             // It is the door's last write: the reconcile loop drives a current Build at once, and its first
             // step can move the fabric seat (a retire of this admin's own mesh), which refuses every gated

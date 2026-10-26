@@ -2,14 +2,14 @@
 //! "Build-facts, op `0x1F`, rdm"; i143 R-G6).
 //!
 //! A node-admin that does not hold the facts of a Build asks another node-admin for them. The responder ([`BuildFactsDoor`]) reads its own local Build log
-//! once and streams the facts of the one Build, packed by the method the Build topic's catch-up
-//! uses ([`crate::fabric_builds::encode_chunks`]): it provides what it holds and decides nothing.
+//! once and streams the facts of the one Build, packed into Build messages
+//! by ([`crate::fabric_builds::encode_chunks`]): it provides what it holds and decides nothing.
 //! `FetchBuildFacts` names the Build; `FetchCurrentBuild` names none, and the responder streams the
 //! facts of its current accepted Build (its builds store read last in, first out, R-BI3), whose id
 //! `End` carries, or answers `NoCurrentBuild`.
 //! The caller ([`fetch_build_facts`], [`fetch_current_build`]) returns the facts only for a stream that ended with its `End`,
-//! whose chunks all arrived and whose count agrees; the facts then go through the same absorption
-//! the Build topic's facts go through ([`crate::build_state::LocalBuildLog::absorb_facts`]).
+//! whose chunks all arrived and whose count agrees; the facts then go through the absorption
+//! a build.attempt.run's intent goes through ([`crate::build_state::LocalBuildLog::absorb_facts`]).
 
 use crate::build::BuildId;
 use crate::build_state::{BuildFact, BuildStateAdapter};

@@ -1033,21 +1033,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 if let Some(own) = &inherited {
                     topology_view.digest_view.seats.mark_gone(own.incarnation_id.clone());
                 }
-                // The current Build: Day 0 accepts the first Build itself; every other admin fetches it from
-                // its entry pull or the fabric control topic.
+                // The current Build: Day 0 accepts the first Build itself; every other admin reads it from
+                // the store root, its entry pull naming it.
                 let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
                 let records = Arc::new(Records { caches: caches.clone(), ..Records::default() });
                 records.set_me(node_id.clone());
-                {
-                    if inherited.is_some() {
-                        // Recovery on an inherited root (fabric-recovery.md): read the Build journal once
-                        // before this admin reads it only as the fabric-primary, so `builds_dyn.current()`
-                        // during boot holds the accepted Build and preserves stored MeshIds.
-                        let _ = journal.current_build().await;
-                    }
-                    let fabric_primary = fabric_seat_source(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone());
-                    journal.read_while_fabric_primary(Arc::new(move || matches!((fabric_primary.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })));
-                }
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a sweep on every
                 // seat change.
                 {
@@ -1072,9 +1062,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 records.set_status(nodes_storage.clone(), mesh_storage.clone(), fabric_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
                 records.set_digest_view(topology_view.digest_view.clone());
                 let builds = Arc::new(
-                    FabricBuildStateAdapter::join(&gossip, &topology_view.location_view(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), name.to_string(), fabric_seat_source(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone()), wiring.catch_up_seam.take())
-                        .await
-                        .map_err(|e| e.to_string())?
+                    FabricBuildStateAdapter::new(journal.clone(), &topology_view.location_view(), name.to_string(), fabric_seat_source(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone()))
                         .with_mesh_seat(mesh_seat_source(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, &own_mesh, view_slot.clone())),
                 );
                 // The Build state every consumer after the fetch shares: the control routes, the executor, the
@@ -1102,8 +1090,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let policy = match joined {
                                 Some(answer) => {
                                     // Fetch the current Build from the launching admin, and record the attempt floor its
-                                    // answer names; without them this admin is not started. The Build it names arrives on
-                                    // the Build topic, or is fetched from a node-admin that holds it (`FetchBuildFacts`,
+                                    // answer names; without them this admin is not started. The Build it names is read from
+                                    // the store root, or fetched from a node-admin that holds it (`FetchBuildFacts`,
                                     // node.start's Build-floor step after the hook).
                                     take_entry_control(&answer, &accepted, &entry_floor, &records, &cfg.mesh, &mesh_id).await;
                                     tracing::info_span!("rdm.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
@@ -2637,7 +2625,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             topology: control.topology.clone(),
                                             records: records.clone(),
                                             looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: Some(commands.clone()) },
-                                            builds: builds.clone(),
                                             recovery: Some(recovery.clone()),
                                             fabric_recovery: fabric_recovery.clone(),
                                         };
@@ -2646,7 +2633,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
 
                                     // The open lifecycle overlays, derived from the Build facts inside each append to this admin's
-                                    // log (its own appends and the facts it absorbs from the fabric alike), before the append
+                                    // log (its own appends and the records it reads from the store root alike), before the append
                                     // returns: a hold opens with its pre-event's receipt and closes with its operation's `Complete`
                                     // or its attempt's `Converged`, and no reader of the log sees that fact while the view still
                                     // holds the hold (a log on a plane other admins write converges at the derivation instead:
@@ -2675,7 +2662,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // Members aggregate: that is the anti-entropy's timer, below.
                                     {
                                         let (roles, roles_moved) = (roles.clone(), roles_moved.clone());
-                                        let (backbone, topology_view, topology, me, mesh, builds) = (backbone.clone(), topology_view.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
+                                        let (backbone, topology_view, topology, me, mesh) = (backbone.clone(), topology_view.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone());
                                         let (view_fabric, view_fabric_id, view_provider, view_digest_view) = (cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, digest_view.clone());
                                         let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
                                         let adapter = runner.builds.clone();
@@ -2844,7 +2831,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 fabric_states.address_changed_mesh_primaries(&t, fabric_primary);
                                                 let addr = rdm_transport::topology::gossip_addr;
                                                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
-                                                builds.join_admins(admins.clone()).await;
                                                 backbone.join_admins(admins).await;
                                                 // The turn dials no member of its own mesh: a member joins through this admin, and a
                                                 // held member gone stale is dialled by §6's repair alone (gossip.md §6, §8; Q84).

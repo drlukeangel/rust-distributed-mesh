@@ -27,7 +27,6 @@ use rdm_admin::build_state::{
 };
 use rdm_admin::deployment::pipeline::LifecycleEvents;
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rdm_admin::fabric_storage::FabricIdentity;
 use rdm_admin::lifecycle::{HookContext, HookPhase, LifecycleHook, LifecycleHookSpec, LifecycleScope, LifecycleState, ShapePredicate, TransitionKey};
 use rdm_admin::model::ProviderKind;
 use rdm_admin::wiring::{FabricHooks, Wiring};
@@ -95,11 +94,6 @@ pub enum CutSpec {
         /// The channel: `mesh`, `backbone` or `any`.
         channel: String,
     },
-    /// The admin withholds the catch-up it sends every neighbour that comes up on the Build topic
-    /// (the shutdown in force, the Fabric record and the active Builds' facts): the NeighborUp task
-    /// skips that neighbour's catch-up, so none of its frames is offered to the topic. It models the
-    /// one-shot catch-up lost at the send seam.
-    CatchUp,
     /// A joining admin has joined and is about to make the topology read (op `0x1E`) of node-start.md
     /// step 4, and has not made it: its start waits there, the node stays Pending and takes no traffic,
     /// until the release. The joiner arms it from `<root>/faults/<name>.boot.json` before its first line.
@@ -207,13 +201,6 @@ pub enum Probe {
         /// The channel it is published on.
         channel: &'static str,
     },
-    /// A catch-up about to be sent to a neighbour.
-    CatchUp {
-        /// The sending node.
-        node: String,
-        /// The neighbour.
-        neighbour: String,
-    },
     /// A final aggregate or leadership announcement about to be sent on a channel.
     Announcement {
         /// The announcing node.
@@ -269,7 +256,6 @@ impl CutSpec {
             (CutSpec::ClaimedAttempt { attempt }, Probe::Claimed { attempt: a, .. }) => attempt.is_none_or(|w| w == *a),
             (CutSpec::ProviderDomain, Probe::ProviderDomain) => true,
             (CutSpec::LeaveAnnouncement { announcements, channel }, Probe::LeaveAnnouncement { announcement, channel: c, .. }) => announcements.contains(announcement) && (channel == "any" || channel == c),
-            (CutSpec::CatchUp, Probe::CatchUp { .. }) => true,
             (CutSpec::TopologyRead, Probe::TopologyRead { .. }) => true,
             (CutSpec::Announcement { announcement, channel }, Probe::Announcement { announcement: a, channel: c, .. }) => announcement == a && (channel == "any" || channel == c),
             (CutSpec::ProviderTerminate { pid }, Probe::ProviderTerminate { pid: p, .. }) => pid.is_none_or(|w| *p == Some(w)),
@@ -292,7 +278,6 @@ impl Probe {
             Probe::Claimed { build_id, attempt, executor } => Hit::Claimed { build_id: build_id.clone(), attempt: *attempt, executor: executor.clone() },
             Probe::ProviderDomain => Hit::ProviderDomain,
             Probe::LeaveAnnouncement { node, announcement, channel } => Hit::LeaveAnnouncement { node: node.clone(), announcement: *announcement, channel: channel.to_string() },
-            Probe::CatchUp { node, neighbour } => Hit::CatchUp { node: node.clone(), neighbour: neighbour.clone() },
             Probe::TopologyRead { node, authority } => Hit::TopologyRead { node: node.clone(), reads_from: authority.clone() },
             Probe::Announcement { node, announcement, channel } => Hit::Announcement { node: node.clone(), announcement: announcement.to_string(), channel: channel.to_string() },
             Probe::ProviderTerminate { pid, deployment_id } => Hit::ProviderTerminate { pid: *pid, deployment_id: deployment_id.clone() },
@@ -359,7 +344,7 @@ impl AdminFaults {
         // A cut that held nothing is spent by its release too: it can no longer hold.
         c.released = true;
         // A condition (not a held call) has no held caller to clear it.
-        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::CatchUp | CutSpec::Announcement { .. } | CutSpec::ProviderTerminate { .. } | CutSpec::ProviderUnproven { .. }) {
+        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::Announcement { .. } | CutSpec::ProviderTerminate { .. } | CutSpec::ProviderUnproven { .. }) {
             c.held = false;
             c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
             // Dropping the span ends it: the hold span lasts from the first consultation to here.
@@ -472,9 +457,6 @@ impl BuildStateAdapter for FaultedBuilds {
     }
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(opened).await
-    }
-    async fn publish_fabric(&self, record: &FabricIdentity) -> Result<(), BuildStateError> {
-        self.inner.publish_fabric(record).await
     }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
@@ -646,15 +628,6 @@ impl LifecycleHook for FaultedHook {
     }
 }
 
-/// The Build topic's catch-up seam: an armed [`CutSpec::CatchUp`] withholds that neighbour's catch-up.
-struct FaultedCatchUp(Arc<AdminFaults>);
-
-impl rdm_admin::wiring::CatchUpSeam for FaultedCatchUp {
-    fn withholds(&self, node: &str, neighbour: &str) -> bool {
-        self.0.in_force(Probe::CatchUp { node: node.to_string(), neighbour: neighbour.to_string() })
-    }
-}
-
 /// The leave's seam: an armed [`CutSpec::LeaveAnnouncement`] that matches withholds that publish.
 struct FaultedLeave(Arc<AdminFaults>);
 
@@ -727,7 +700,6 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
     Wiring { types: Vec::new(), alpns: Vec::new(), declared: Vec::new(), listeners: Vec::new(),
         leave_seam: Some(Arc::new(FaultedLeave(faults.clone()))),
         announcement_seam: Some(Arc::new(FaultedAnnouncement(faults.clone()))),
-        catch_up_seam: Some(Arc::new(FaultedCatchUp(faults.clone()))),
         read_seam: Some(Arc::new(FaultedRead(faults.clone()))),
         declaration_seam: Some(Arc::new(FaultedDeclaration(faults.clone()))),
         command_frame_seam: Some(Arc::new(FaultedCommandFrame(faults.clone()))),

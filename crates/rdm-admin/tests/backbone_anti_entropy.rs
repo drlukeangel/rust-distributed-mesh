@@ -21,7 +21,6 @@ use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_core::PathName;
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, CurrentBuild, OwedExit};
-use rdm_admin::fabric_storage::FabricIdentity;
 use rdm_admin::investigate::Rungs;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use serde_json::{json, Value};
@@ -67,9 +66,6 @@ impl BuildStateAdapter for HeldBuilds {
     }
     async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(o).await
-    }
-    async fn publish_fabric(&self, record: &FabricIdentity) -> Result<(), BuildStateError> {
-        self.inner.publish_fabric(record).await
     }
     async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(id).await

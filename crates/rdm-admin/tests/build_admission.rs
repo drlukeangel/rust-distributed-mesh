@@ -72,10 +72,6 @@ impl BuildStateAdapter for Held {
         }
         Ok(())
     }
-    async fn publish_fabric(&self, record: &rdm_admin::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
-        self.refused_once_moved()?;
-        self.inner.publish_fabric(record).await
-    }
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(opened).await
     }

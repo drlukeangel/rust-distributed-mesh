@@ -97,7 +97,6 @@ mod mesh_delete_resume;
 mod mesh_delete_workflow;
 mod mesh_delete_source;
 mod mesh_delete_view;
-mod build_catch_up;
 mod build_admission;
 mod build_claim;
 mod build_drive;

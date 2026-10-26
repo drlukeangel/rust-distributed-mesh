@@ -543,7 +543,7 @@ impl AdminRunner {
     /// node.create of `node`, its name claimed for `claim_for` (a plain create, or a replace
     /// successor's at the name its predecessor released), launching the executable the step names, else
     /// the path's entry in the accepted Build as builds.storage records it ([`Self::entry_executable`];
-    /// proposal executable-bindings-at-create.md rules 1-2: the Build topic carries none, rule 7, so this
+    /// proposal executable-bindings-at-create.md rules 1-2: a Build message carries none, rule 7, so this
     /// admin's own copy of the Build may name none), else the row's ([`Self::create_template`]).
     pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, pre_node_ready: Option<crate::deployment::pipeline::PreNodeReady>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
         let stored = match executable {

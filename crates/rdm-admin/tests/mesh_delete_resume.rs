@@ -95,8 +95,8 @@ impl Capture {
     }
 }
 
-/// The Build state as a node-admin holds it: every fact is sent in its gossip wire shape
-/// (`BuildMessage::to_bytes`, the Build-fact codec `fabric_builds` broadcasts with) and the fact
+/// The Build state as a node-admin holds it: every fact is sent in its wire shape
+/// (`BuildMessage::to_bytes`, the Build-fact codec of `FetchBuildFacts` and a build.attempt.run's intent) and the fact
 /// the wire gives back is the one recorded. A step output with no wire shape is refused here
 /// exactly as `FabricBuildStateAdapter` refuses it.
 #[derive(Default)]
@@ -104,7 +104,7 @@ struct WireBuilds(MemoryBuildStateAdapter);
 
 impl WireBuilds {
     fn wire(fact: BuildFact) -> Result<BuildFact, BuildStateError> {
-        let bytes = BuildMessage { nonce: 1, facts: vec![fact], fabric: None }.to_bytes()?;
+        let bytes = BuildMessage { nonce: 1, facts: vec![fact] }.to_bytes()?;
         let mut back = BuildMessage::from_bytes(&bytes).map_err(|e| BuildStateError::Unencodable(e.to_string()))?;
         Ok(back.facts.pop().expect("one fact sent, one fact read"))
     }

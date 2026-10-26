@@ -228,7 +228,7 @@ pub trait InnerStream: Send {
 #[async_trait::async_trait]
 pub trait Dispatcher: Send + Sync {
     /// `build.attempt.run` for `attempt` of `build_id` at `executor`, carrying the won claim, the
-    /// Build's intent (`intent`: postcard frames of the Build topic's message) and the run the
+    /// Build's intent (`intent`: postcard frames of a Build message) and the run the
     /// fabric-primary planned (`plan`): the operations the executor runs and nothing else. `turn` is
     /// the drive pass's turn of the admin's gate: a run this admin makes itself begins its own turn
     /// under it, never waiting at the gate for the pass that waits on it.
@@ -771,7 +771,7 @@ fn node_of_key(key: &str) -> Option<PathName> {
 /// `Complete` frame the executor's stream reply carried to `drive` ([`Drive::completed_in`]). What a
 /// run completed is read from those, never from the view: a view that has not absorbed a completed
 /// operation yet still lists it, and it is not planned, claimed or dispatched again. The stream reply
-/// is the authority: a remote executor's receipt reaches this admin's log by the Build topic, and
+/// is the authority: a remote executor's receipt reaches this admin's log from the store root, and
 /// nothing waits for that copy. A lost executor's run reported nothing: what it left is planned from
 /// the view again, and the create pipeline's fence decides against the world.
 /// Whether an attempt ended incomplete: `me` ran it as its executor and it was handed back to `me`
@@ -1158,7 +1158,7 @@ impl DriveEnv {
                     // This drive made no call of the Build: a fabric-primary that took over after
                     // the Build ended holds no frame of it. The executor of the last attempt replays
                     // it from the receipts it wrote itself, and the facts of earlier attempts are
-                    // read; the Build topic's step facts are never the answer for the last attempt.
+                    // read; the step facts on the store root are never the answer for the last attempt.
                     if let Some(end) = self.reattach_to_ended(&me, &turn, drive, &p).await {
                         return end;
                     }
@@ -1735,9 +1735,9 @@ impl DriveEnv {
     }
 
     /// The Build as the claim was decided on it: its acceptance and every attempt opened, claimed and
-    /// ended, packed as the Build topic's catch-up packs facts, but not its step receipts (those are
+    /// ended, packed into Build messages, but not its step receipts (those are
     /// the recovery contract of the projection). What an executor needs to fold the same current
-    /// attempt and to plan, carried by the call, so a run never waits for the Build topic.
+    /// attempt and to plan, carried by the call, so a run never waits for the store root.
     async fn intent_of(&self, id: &BuildId) -> Vec<Vec<u8>> {
         intent_frames(&*self.builds, id).await
     }
@@ -1849,7 +1849,7 @@ impl DriveEnv {
 }
 
 /// The Build's intent as the executor absorbs it before it plans (`build.attempt.run`'s `intent`):
-/// postcard frames of the Build topic's message, every fact of `id` but its step receipts.
+/// postcard frames of a Build message, every fact of `id` but its step receipts.
 pub(crate) async fn intent_frames(builds: &dyn BuildStateAdapter, id: &BuildId) -> Vec<Vec<u8>> {
     let facts = match builds.facts().await {
         Ok(f) => f
@@ -1867,7 +1867,7 @@ pub(crate) async fn intent_frames(builds: &dyn BuildStateAdapter, id: &BuildId) 
     };
     let (frames, refused) = crate::fabric_builds::encode_chunks(facts);
     for e in refused {
-        tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id.log(), detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor holds it only if the Build topic delivered it"));
+        tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id.log(), detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor holds it only once it reads it from the store root"));
     }
     frames.into_iter().map(|b| b.to_vec()).collect()
 }

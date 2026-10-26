@@ -297,9 +297,6 @@ impl BuildStateAdapter for FramedBuilds {
     async fn open_attempt(&self, opened: &crate::build_state::AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(opened).await
     }
-    async fn publish_fabric(&self, record: &crate::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
-        self.inner.publish_fabric(record).await
-    }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         // A reporting run reads the receipts it reported as it reads its own (a later step reuses an
         // earlier step's decision) until the fabric-primary's are read back.
@@ -455,9 +452,6 @@ impl BuildStateAdapter for LaneBuilds {
     }
     async fn open_attempt(&self, opened: &crate::build_state::AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(&crate::build_state::AttemptOpened { mesh: self.lane(), ..opened.clone() }).await
-    }
-    async fn publish_fabric(&self, record: &crate::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
-        self.inner.publish_fabric(record).await
     }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         Ok(self.inner.read_build(build_id).await?.in_lane(Some(&self.lane)))
@@ -787,7 +781,7 @@ impl RunDoor {
             return Attached::Live { disposition: Disposition::Reattached, replay, reader };
         }
         // The intent the fabric-primary decided the claim on is absorbed before anything is planned:
-        // insert-and-fail on the facts' own keys, so what the Build topic delivers too changes nothing.
+        // insert-and-fail on the facts' own keys, so what the store root holds too changes nothing.
         let mut facts = Vec::new();
         for (i, frame) in intent.iter().enumerate() {
             match crate::fabric_builds::BuildMessage::from_bytes(frame) {
@@ -944,7 +938,7 @@ pub enum RecoveryNotRun {
 /// claimed at `control` (this admin's door) on the mesh's rows, planned from the lane's receipts
 /// (only what is left of node.delete, then node.create), run through `door` (this admin's
 /// executor) in the mesh's lane and followed to its terminal. Its verdict is the executor's receipt,
-/// on this admin's Build log and the Build topic, where the fabric-primary learns it; at the verdict
+/// on the fabric's Build journal on the store root, where the fabric-primary reads it; at the verdict
 /// this admin, which took the mesh's in-flight row for the attempt, releases it (R-BI7 caveat 3:
 /// "one attempt in flight per mesh"). An attempt with no verdict (its run refused or broken) keeps
 /// the mesh held, named in the error.

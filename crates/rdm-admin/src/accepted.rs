@@ -309,7 +309,7 @@ pub enum TopologyChange {
     /// `fabric.delete` (lifecycles/fabric-delete.md).
     DeleteFabric,
     /// A stored change of the removed per-kind executable-set operation (proposal
-    /// executable-bindings-at-create.md §1, Q157), read from the journal or the Build topic as history
+    /// executable-bindings-at-create.md §1, Q157), read from the journal or a Build message as history
     /// only: it owes no replacement (the repair is a [`Self::Reconcile`] naming the executables) and
     /// nothing submits it to [`compile`]. Its set is not kept: the topology it was accepted with had
     /// its entries filled from that set when it was read ([`FabricTopology`]).
@@ -1372,7 +1372,7 @@ fn plan_with(
 }
 
 /// The Fabric identity as this admin holds it: the identity row in `fabric.storage`, or, while the
-/// store holds none, the identity it learned (its entry answer, the Build topic) as its own runtime
+/// store holds none, the identity it learned (its entry answer) as its own runtime
 /// state, never as a row. `fabric/` has one writer, the fabric-primary (R14 item 2). The Fabric row
 /// carries no pointer to the newest Build (R-BI3): which Build is current is read from the Build
 /// entities alone ([`BuildStateAdapter::current_build`]).
@@ -1396,7 +1396,7 @@ impl AcceptedStore {
         Ok(held.or_else(|| self.learned.lock().unwrap().clone()))
     }
 
-    /// A Fabric identity heard in an entry answer or on the Build topic (`from`), taken as this
+    /// A Fabric identity heard in an entry answer (`from`), taken as this
     /// admin's runtime state (nothing is written: the fabric-primary writes `fabric/`). One naming
     /// another Fabric than the one held is not taken.
     pub async fn learn(&self, identity: FabricIdentity, from: &str) {
@@ -1830,7 +1830,7 @@ mod tests {
     /// that birth's row deleted with no `TerminateRuntime` and releases the name, then node.create at the
     /// path.name"): fabric recovery's backbone attempt plans the same two operations as every recovery,
     /// the delete keyed on the lost birth, then the create; what differs is its delete's runtime step,
-    /// which the action carries, and the action crosses the Build topic as itself. Must NOT happen: a
+    /// which the action carries, and the action crosses a Build message as itself. Must NOT happen: a
     /// backbone attempt planned without its delete, so a path.name whose row stands is never freed.
     #[test]
     fn a_backbone_recovery_plans_the_delete_of_the_lost_birth_then_the_create() {
@@ -1844,7 +1844,7 @@ mod tests {
             vec![BuildOperation::RetireNode { node: path.clone(), exited: Some(lost.clone()) }, BuildOperation::CreateNode { node: path.clone(), over: Some(lost), executable: None }]
         );
         let wire = crate::wire::action_round_trip(&backbone);
-        assert_eq!(wire, backbone, "the backbone action crosses the Build topic as itself");
+        assert_eq!(wire, backbone, "the backbone action crosses a Build message as itself");
     }
 
     /// The replace recipe of `node` (lifecycles/node-replace.md steps 1-3, the predecessor retained).
@@ -2784,7 +2784,7 @@ mod tests {
     /// an old store reads its current Build as it is, never as malformed"; durable format moved): a topology
     /// written before `NodeSpec.executable` (its path configs carrying no such field) decodes with none,
     /// validates, and plans no replacement; a complete-topology request compiles over it. The new field
-    /// crosses, unchanged, through the journal's JSON (the Build topic carries no executable, rule 7:
+    /// crosses, unchanged, through the journal's JSON (a Build message carries no executable, rule 7:
     /// `gossip_frames_wire`).
     #[test]
     fn a_topology_written_before_the_executable_field_is_valid_history() {

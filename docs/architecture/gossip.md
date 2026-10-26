@@ -134,9 +134,7 @@ version and the digest view under one hold of the receiver. A reader of that ver
 an older digest view.
 
 Two channels carry the topology: a Mesh's topology channel (one per MeshId) and the node-admin
-backbone (one per FabricId). The Build channel is a third, separate channel for Build facts
-(`Accepted`, `Opened`, `Claim`, `Step`, `Attempt`, `Forget`); it is not topology and is not in
-this catalog. No other channel exists.
+backbone (one per FabricId). No other channel exists.
 
 Four orderings, four jobs, never substituted for one another:
 

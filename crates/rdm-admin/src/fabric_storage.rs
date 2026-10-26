@@ -6,7 +6,7 @@
 //! ([`crate::build_state::BuildStateAdapter::current_build`]). The Fabric record has one writer, the
 //! fabric-primary (R14 item 2): it writes the identity, never again, and the fabric events applied,
 //! the record written whole with each event (storage-whole-records.md). Every other admin reads it,
-//! and holds the identity it learns (its join answer, the Build topic) as its own runtime state,
+//! and holds the identity it learns (its join answer) as its own runtime state,
 //! never as a record here.
 //!
 //! Two implementations: [`MemoryFabricStorage`] for runs that need no restart survival, and

@@ -257,9 +257,6 @@ impl BuildStateAdapter for NoCurrentWhileHeld {
     async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(o).await
     }
-    async fn publish_fabric(&self, record: &rdm_admin::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
-        self.inner.publish_fabric(record).await
-    }
     async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(id).await
     }
@@ -316,15 +313,6 @@ impl BuildStateAdapter for NoCurrentWhileHeld {
     }
 }
 
-/// The Day-0 admin's Build-topic catch-up, withheld from every neighbour while `held` is set.
-struct CatchUpWhileHeld(Arc<AtomicBool>);
-
-impl rdm_admin::wiring::CatchUpSeam for CatchUpWhileHeld {
-    fn withholds(&self, _node: &str, _neighbour: &str) -> bool {
-        self.0.load(Ordering::SeqCst)
-    }
-}
-
 const ENTRY_REPEAT: &str = "rdm.node_admin.fabric.update.via-entry-repeat";
 const JOIN_SERVED: &str = "rdm.node_admin.node.update.via-join";
 const FETCH_FACTS: &str = "rdm.node_admin.build.update.via-fetch-facts";
@@ -365,7 +353,6 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
             node_hooks: NodeHooks::none(),
             fabric_hooks: FabricHooks::no_app_work(),
             builds: Some(Box::new(wrap)),
-            catch_up_seam: Some(Arc::new(CatchUpWhileHeld(held.clone()))),
             ..Wiring::no_certs()
         };
         let root = start_with(day0_config(&root_dir), wiring).await.expect("the Day-0 admin comes up");

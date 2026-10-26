@@ -1,4 +1,5 @@
-//! The wire shape of the Build topic (`fabric_builds`): every type here is positional postcard
+//! The wire shape of a Build message (`fabric_builds::BuildMessage`: `FetchBuildFacts` 0x1F and a
+//! build.attempt.run's intent): every type here is positional postcard
 //! (`rdm_transport::wire`), carrying every field and no internally tagged enum.
 //!
 //! The domain types (`BuildFact`, `FabricIdentity`, the accepted topology) are JSON elsewhere: the
@@ -21,7 +22,6 @@ use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Iden
 use crate::mesh_delete::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
-use crate::fabric_storage::FabricIdentity;
 use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use rdm_core::LifecycleOp;
@@ -117,7 +117,7 @@ struct WireMesh {
     spec_by_path: BTreeMap<PathName, WireSpec>,
 }
 
-/// A create spec as the Build topic carries it: storage and placement, positional. The executable, the
+/// A create spec as a Build message carries it: storage and placement, positional. The executable, the
 /// tags and the config never ride gossip (proposal executable-bindings-at-create.md rule 7; Q166): the
 /// store root's record of the accepted Build carries them.
 #[derive(Serialize, Deserialize)]
@@ -263,7 +263,7 @@ impl From<WireAction> for AttemptAction {
         }
     }
 }
-/// An action through its wire form and back, as the Build topic carries it.
+/// An action through its wire form and back, as a Build message carries it.
 #[cfg(test)]
 pub(crate) fn action_round_trip(a: &AttemptAction) -> AttemptAction {
     let wire = WireAction::from(a);
@@ -281,7 +281,7 @@ impl From<&NodeSpec> for WireSpec {
     }
 }
 impl WireSpec {
-    /// The create spec at `path` heard on the Build topic: it names no executable, no tags and no config
+    /// The create spec at `path` heard in a Build message: it names no executable, no tags and no config
     /// (proposal executable-bindings-at-create.md rule 7; Q166): the store root's record of the accepted
     /// Build is the one that does.
     fn at(self, path: PathName) -> NodeSpec {
@@ -711,38 +711,37 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
     })
 }
 
-/// The Fabric identity: the Fabric record of the Build topic's frame and a join answer carry it. A
-/// receiver reads its current Build from its own Build entities (R-BI3), never from the record.
+/// The Fabric identity at the reserved position of [`WireMessage`]: kept so the frame keeps its bytes.
 #[derive(Serialize, Deserialize)]
 struct WireFabricIdentity {
     fabric_id: FabricId,
     name: String,
 }
 
-/// The message of the Build topic as it travels: one postcard frame.
+/// A Build message as it travels (`FetchBuildFacts` 0x1F, a build.attempt.run's intent): one
+/// postcard frame.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct WireMessage {
     nonce: u64,
     facts: Vec<WireFact>,
+    /// Reserved position: the removed Fabric record of the Build channel (Q185). Sent as none; a frame
+    /// carrying one is refused by name. Kept so the frame keeps its bytes.
     fabric: Option<WireFabricIdentity>,
 }
 
 impl WireMessage {
     /// `m` in its wire shape, or the refusal naming the step whose output has none.
     pub(crate) fn of(m: &BuildMessage) -> Result<Self, WireRefusal> {
-        Ok(Self {
-            nonce: m.nonce,
-            facts: m.facts.iter().map(fact_to_wire).collect::<Result<_, _>>()?,
-            fabric: m.fabric.as_ref().map(|r| WireFabricIdentity { fabric_id: r.fabric_id.clone(), name: r.name.clone() }),
-        })
+        Ok(Self { nonce: m.nonce, facts: m.facts.iter().map(fact_to_wire).collect::<Result<_, _>>()?, fabric: None })
     }
 
-    pub(crate) fn into_message(self) -> Result<BuildMessage, WireRefusal> {
-        Ok(BuildMessage {
-            nonce: self.nonce,
-            facts: self.facts.into_iter().map(fact_from_wire).collect::<Result<_, _>>()?,
-            fabric: self.fabric.map(|r| FabricIdentity { fabric_id: r.fabric_id, name: r.name }),
-        })
+    /// The message this frame carries, or why it is not one: a frame carrying the removed Fabric
+    /// record (the reserved position) is refused by name, as a fact this build does not read is.
+    pub(crate) fn into_message(self) -> Result<BuildMessage, String> {
+        if let Some(r) = self.fabric {
+            return Err(format!("a Build message carrying the Fabric record of Fabric {} ({}): the Build channel's record is removed (Q185) and its position is reserved", r.fabric_id, r.name));
+        }
+        Ok(BuildMessage { nonce: self.nonce, facts: self.facts.into_iter().map(fact_from_wire).collect::<Result<_, _>>().map_err(|e| e.to_string())? })
     }
 }
 

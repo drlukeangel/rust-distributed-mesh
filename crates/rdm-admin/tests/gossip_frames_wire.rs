@@ -3,8 +3,8 @@
 //! no estate, no spans.
 //!
 //! CONTRACT: every internal mesh gossip frame is postcard. Every `Frame` variant of the
-//! topology channels and every shape the Build topic's `BuildMessage` carries (each Build fact,
-//! each typed step output, the Fabric record, the shutdown) encodes, decodes to the value it was
+//! topology channels and every shape a `BuildMessage` carries (each Build fact,
+//! each typed step output, the shutdown; the removed Fabric record refused) encodes, decodes to the value it was
 //! made from, and re-encodes to the same bytes; a chunk the packers produce encodes under
 //! `MAX_MESSAGE_BYTES`; a frame this build does not read is refused with a named reason, a
 //! JSON frame included; a step output that has no wire shape is refused naming its Build,
@@ -22,7 +22,6 @@ use rdm_admin::deployment::pipeline::Bound;
 use rdm_admin::deployment::pipeline::{CommandAdmission, Completion, CreateStep, RetireStep, StorageDisposition};
 use rdm_admin::deployment::provider::DeploymentHandle;
 use rdm_admin::fabric_builds::{encode_chunks, BuildMessage};
-use rdm_admin::fabric_storage::FabricIdentity;
 use rdm_admin::model::{DeploymentId, ProviderKind};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -245,7 +244,7 @@ fn facts() -> Vec<BuildFact> {
         executor: None,
     }));
     // An unreached birth's TerminateRuntime: refused by the provider, then the receipt of what the step
-    // read at its instant (node-recovery.md step 3), on the Build topic.
+    // read at its instant (node-recovery.md step 3), in a Build message.
     out.push(BuildFact::Step(BuildStepReceipt {
         mesh: Some("mesh2".into()),
         build_id: bid("3qcfk1kq47m9"),
@@ -341,16 +340,22 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
         assert_eq!(messages.len(), 1);
         let back = BuildMessage::from_bytes(&messages[0]).unwrap_or_else(|e| panic!("{fact:?} does not decode: {e}"));
         assert_eq!(back.facts, vec![fact.clone()], "a fact decodes to the fact it was made from");
-        assert!(back.fabric.is_none());
     }
     result.insert("build_fact_shapes_round_tripped".into(), json!(all_facts.len()));
 
-    // The Fabric record (the Fabric's identity) rides a message of its own.
-    let record = FabricIdentity { fabric_id: fabric(), name: "fabric-1".into() };
-    let m = BuildMessage { nonce: 7, facts: vec![], fabric: Some(record.clone()) };
-    let bytes = m.to_bytes().unwrap();
-    let back = BuildMessage::from_bytes(&bytes).unwrap();
-    assert_eq!((back.nonce, back.fabric), (7, Some(record)));
+    // The removed Build channel's Fabric record (Q185): its position is reserved, and a message
+    // carrying one is refused by name.
+    #[derive(serde::Serialize)]
+    struct WithFabricRecord {
+        nonce: u64,
+        facts: Vec<u8>,
+        fabric: Option<(FabricId, String)>,
+    }
+    let bytes = rdm_transport::wire::encode(&WithFabricRecord { nonce: 7, facts: vec![], fabric: Some((fabric(), "fabric-1".into())) }).unwrap();
+    let refused = BuildMessage::from_bytes(&bytes).err().expect("a message carrying the Fabric record is refused").to_string();
+    assert!(refused.contains("Fabric record") && refused.contains("reserved"), "{refused}");
+    let none = rdm_transport::wire::encode(&WithFabricRecord { nonce: 7, facts: vec![], fabric: None }).unwrap();
+    assert_eq!(BuildMessage { nonce: 7, facts: vec![] }.to_bytes().unwrap().as_ref(), none.as_slice(), "the reserved position keeps the frame's bytes");
 
     // ---- the packers keep every message under the ceiling and lose no fact ----
     let many: Vec<BuildFact> = all_facts.iter().cloned().cycle().take(all_facts.len() * 8).collect();
@@ -470,7 +475,7 @@ fn twelve_node_topology() -> FabricTopology {
     t
 }
 
-/// `t` with no entry naming an executable, tags or a config: what the Build topic carries of it.
+/// `t` with no entry naming an executable, tags or a config: what a Build message carries of it.
 fn without_executables(t: &FabricTopology) -> FabricTopology {
     let mut t = t.clone();
     for m in t.meshes.values_mut() {
@@ -485,12 +490,12 @@ fn without_executables(t: &FabricTopology) -> FabricTopology {
 
 /// CONTRACT (proposal executable-bindings-at-create.md rule 7: "Nothing about executables rides gossip or
 /// `node.topology.get`"; Luke 2026-10-24: "the executable is not gossiped, it's only in the node storage"):
-/// the accepted fact on the Build topic carries no executable (nor an entry's tags or config, Q166), of its topology's
+/// the accepted fact in a Build message carries no executable (nor an entry's tags or config, Q166), of its topology's
 /// entries or of the complete-topology change it was submitted with; its bytes are those of the same fact
 /// naming none, so
 /// a twelve-node fabric's accepted fact fits one gossip message, as it did before the field. The stored
 /// accepted Build (builds.storage) keeps them. Must NOT happen: an executable, or a table of them, in a
-/// Build-topic message.
+/// Build message.
 #[test]
 fn the_accepted_fact_on_the_build_topic_carries_no_executable_and_a_twelve_node_fabric_fits_one_message() {
     let named = twelve_node_topology();
@@ -506,7 +511,7 @@ fn the_accepted_fact_on_the_build_topic_carries_no_executable_and_a_twelve_node_
     assert_eq!(messages.len(), 1);
     assert!(messages[0].len() <= MAX_MESSAGE_BYTES);
     let back = BuildMessage::from_bytes(&messages[0]).unwrap();
-    assert_eq!(back.facts, vec![without.clone()], "the Build topic carries the fact with no executable");
-    let bytes = |f: &BuildFact| BuildMessage { nonce: 7, facts: vec![f.clone()], fabric: None }.to_bytes().unwrap();
-    assert_eq!(bytes(&with), bytes(&without), "the executables add no byte to the Build topic's frame");
+    assert_eq!(back.facts, vec![without.clone()], "a Build message carries the fact with no executable");
+    let bytes = |f: &BuildFact| BuildMessage { nonce: 7, facts: vec![f.clone()] }.to_bytes().unwrap();
+    assert_eq!(bytes(&with), bytes(&without), "the executables add no byte to a Build message's frame");
 }

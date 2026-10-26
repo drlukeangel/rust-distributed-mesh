@@ -13,8 +13,8 @@
 //! The file backend keeps it as the lock `locks/in-flight/<mesh>` on the fabric's shared store root
 //! (R14, R-SR5): a create-exclusive file naming the attempt and its claimant.
 //!
-//! The row decides; the facts do not move here: the claim fact is appended to the Build log and
-//! broadcast on the Build topic only after the take won, exactly as before.
+//! The row decides; the facts do not move here: the claim fact is appended to the Build journal on
+//! the store root only after the take won, exactly as before.
 
 use crate::build::BuildId;
 use serde::{Deserialize, Serialize};

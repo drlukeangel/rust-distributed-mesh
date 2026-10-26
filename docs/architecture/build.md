@@ -307,9 +307,6 @@ node-admin start
 
 first connection / JoinNode (op `0x1D`)
     -> Fabric identity + the Build to hold
-
-Build-topic catch-up
-    -> active Build facts
 ```
 
 Join admission and its answer are defined by [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm). An older completed Build is history, never the topology; the current Build is.
@@ -368,7 +365,7 @@ RDM proves the contract without inventing a broker-backed database:
 - fabric-projected **active** Build facts for the fabric recovery workflow's executor;
 - local-file journal for same-node-admin restart, replay, and evidence artifacts.
 
-Neighbor/catch-up does not ship every completed birth receipt forever. Single-writer safety comes from one writer per record: the fabric-primary writes every Build record (acceptance, attempts, claims, step receipts, results) through the configured Build storage; a mesh-primary runs its mesh's attempt and reports each receipt up the attempt's `build.attempt.run` stream, and writes only its own mesh's rows. With that come idempotent operation keys and stable logical topology identities. When an unheard peer mesh is heard again, the election converges and the current fabric-primary reconciles reality rather than trusting attempt history.
+Single-writer safety comes from one writer per record: the fabric-primary writes every Build record (acceptance, attempts, claims, step receipts, results) through the configured Build storage; a mesh-primary runs its mesh's attempt and reports each receipt up the attempt's `build.attempt.run` stream, and writes only its own mesh's rows. With that come idempotent operation keys and stable logical topology identities. When an unheard peer mesh is heard again, the election converges and the current fabric-primary reconciles reality rather than trusting attempt history.
 
 ### 5.2 Rafka adapter
 
@@ -408,7 +405,7 @@ Rafka persists each accepted Build (its complete topology), written once, with i
 
 The current Build cannot be deleted (build.delete refuses by name); an older Build is deletable history once a newer Build is current.
 
-A recovery-critical Build fact (the accepted Build, an attempt claim, a step receipt, a completion) is not committed until it is durable in storage that survives the loss of the current fabric-primary. Storage local to the active fabric-primary alone is insufficient for failover. The Build facts are the Build journal on the fabric's shared store root (§5.3), each record at its own key, written by the fabric-primary, so a successor reads them there; they also reach every admin through the Build channel and FetchBuildFacts (`0x1F`).
+A recovery-critical Build fact (the accepted Build, an attempt claim, a step receipt, a completion) is not committed until it is durable in storage that survives the loss of the current fabric-primary. Storage local to the active fabric-primary alone is insufficient for failover. The Build facts are the Build journal on the fabric's shared store root (§5.3), each record at its own key, written by the fabric-primary, so a successor reads them there, as every admin does; they also reach an admin through FetchBuildFacts (`0x1F`).
 
 Acceptance is crash-safe because a Build is accepted by one durable write of the Build itself:
 

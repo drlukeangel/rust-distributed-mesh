@@ -37,7 +37,6 @@ enum CutWire {
     ClaimedAttempt { attempt: Option<u32> },
     ProviderDomain,
     LeaveAnnouncement { announcements: Vec<u32>, channel: String },
-    CatchUp,
     TopologyRead,
     Announcement { announcement: String, channel: String },
     ProviderTerminate { pid: Option<u32> },
@@ -144,13 +143,6 @@ pub enum Hit {
         /// The channel it is published on.
         channel: String,
     },
-    /// A catch-up about to be sent to a neighbour.
-    CatchUp {
-        /// The sending node.
-        node: String,
-        /// The neighbour.
-        neighbour: String,
-    },
     /// A joining admin's topology read, about to be made.
     TopologyRead {
         /// The joining admin.
@@ -205,7 +197,6 @@ impl Hit {
             Hit::Claimed { build_id, attempt, executor } => json!({"build_id": build_id, "attempt": attempt, "executor": executor}),
             Hit::ProviderDomain => json!({"control_domain": "reported foreign"}),
             Hit::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
-            Hit::CatchUp { node, neighbour } => json!({"node": node, "neighbour": neighbour}),
             Hit::TopologyRead { node, reads_from } => json!({"node": node, "reads_from": reads_from}),
             Hit::Announcement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Hit::ProviderTerminate { pid, deployment_id } => json!({"pid": pid, "deployment_id": deployment_id}),
@@ -418,7 +409,6 @@ mod tests {
             CutSpec::ClaimedAttempt { attempt: Some(2) },
             CutSpec::ProviderDomain,
             CutSpec::LeaveAnnouncement { announcements: vec![1, 3], channel: "mesh".into() },
-            CutSpec::CatchUp,
             CutSpec::TopologyRead,
             CutSpec::Announcement { announcement: "aggregate-in-flight".into(), channel: "any".into() },
             CutSpec::ProviderTerminate { pid: Some(4242) },
@@ -447,7 +437,7 @@ mod tests {
         let cuts: BTreeMap<String, CutRow> = [
             ("a".to_string(), row(CutSpec::TopologyRead, Some(Hit::TopologyRead { node: "mesh1.admin.4".into(), reads_from: "mesh1.admin.1".into() }))),
             ("b".to_string(), row(CutSpec::ClaimedAttempt { attempt: None }, Some(Hit::Claimed { build_id: "b".into(), attempt: 1, executor: "mesh1.admin.1".into() }))),
-            ("c".to_string(), row(CutSpec::CatchUp, None)),
+            ("c".to_string(), row(CutSpec::ProviderDomain, None)),
         ]
         .into();
         let all = [

@@ -3,10 +3,7 @@
 //! outcomes are `Complete` or `Failed { step, reason }`), and a receipt that is not written to the
 //! executor's own log (a fact with no wire shape, a fenced seat, a failed local write) fails the
 //! step by name: its span, and the pipeline's error naming the step and the refusal. Nothing after
-//! it runs. A receipt written to the local log whose Build-topic broadcast fails is committed: the
-//! step completes and the broadcast failure is named (node-rpc-envelope.md "Build carrier":
-//! "Progress waits on no gossip; Build-topic facts remain durability and recovery evidence through
-//! the existing publication path"); the neighbour-up catch-up and `FetchBuildFacts` repair it. A Build
+//! it runs. A Build
 //! the run cannot read at its start fails the run by name before any step (CLAUDE.md: "never written"
 //! and "could not be read" are different errors, and neither is an empty answer).
 
@@ -99,9 +96,6 @@ impl rdm_admin::build_state::LocalBuildLog for Refuses {
     }
     async fn attempt_context(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, rdm_admin::storage_error::StorageError> {
         self.inner.attempt_context(build_id, lane, attempt).await
-    }
-    fn read_while_fabric_primary(&self, fabric_primary: std::sync::Arc<dyn Fn() -> bool + Send + Sync>) {
-        self.inner.read_while_fabric_primary(fabric_primary)
     }
 }
 
@@ -335,34 +329,18 @@ impl Capture {
     }
 }
 
-/// A node-admin's real Build state on the fabric's Build topic, over `local`: its endpoint, its
-/// gossip (to shut down) and its router.
-async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rdm_admin::build_state::LocalBuildLog>) -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router, rdm_admin::fabric_builds::FabricBuildStateAdapter) {
+/// A node-admin's real Build state over `local`, and its endpoint.
+async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rdm_admin::build_state::LocalBuildLog>) -> (iroh::Endpoint, rdm_admin::fabric_builds::FabricBuildStateAdapter) {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::generate())
-        .alpns(vec![iroh_gossip::ALPN.to_vec()])
         .relay_mode(iroh::RelayMode::Disabled)
         .bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
         .unwrap()
         .bind()
         .await
         .unwrap();
-    let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
-    let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::join(
-        &gossip,
-        &rdm_transport::topology::LocationView::new(&endpoint, name).unwrap(),
-        &rdm_core::FabricId::mint(),
-        vec![],
-        local,
-        std::sync::Arc::new(rdm_admin::accepted::AcceptedStore::new(std::sync::Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()), name)),
-        name.into(),
-        rdm_admin::fabric_builds::SeatSource::unrecorded(),
-        None,
-    )
-    .await
-    .unwrap();
-    (endpoint, gossip, router, builds)
+    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(local, &rdm_transport::topology::LocationView::new(&endpoint, name).unwrap(), name.into(), rdm_admin::fabric_builds::SeatSource::unrecorded());
+    (endpoint, builds)
 }
 
 /// A standalone node.connections.delete of a ready `mesh1.rpc.1` as attempt 1 of `build_id`, through `builds`.
@@ -410,38 +388,6 @@ async fn accepted_and_claimed(builds: &dyn BuildStateAdapter, build_id: &BuildId
     builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
 }
 
-/// CONTRACT (node-rpc-envelope.md "Build carrier": "Progress waits on no gossip; Build-topic facts
-/// remain durability and recovery evidence through the existing publication path"; R-ON8: Build-
-/// topic gossip is for recovery only): a standalone node.connections.delete run through the fabric's real Build state
-/// whose gossip is shut down (every broadcast fails) completes: each step's receipt is written to the
-/// admin's own log, the run goes on to `Complete`, and each failed broadcast is named under
-/// `rdm.node_admin.build.reject.via-broadcast-refused` with the Build, attempt, step and the send
-/// error. Must NOT happen: the step failed (a `via-receipt-refused` span, the run stopped at
-/// `DeleteConnections`) because the broadcast after its durable local write failed.
-#[tokio::test]
-async fn a_step_whose_receipt_is_written_locally_completes_when_its_broadcast_fails() {
-    let (capture, _guard) = Capture::new("i143-3051-broadcast-refused");
-    let local = std::sync::Arc::new(MemoryBuildStateAdapter::new());
-    let (_endpoint, gossip, _router, builds) = fabric_builds("mesh1.admin.1", local.clone()).await;
-    let build_id = BuildId::mint();
-    accepted_and_claimed(&builds, &build_id).await;
-    gossip.shutdown().await.unwrap();
-
-    if let Err(e) = connections_delete_through(&builds, &build_id).await {
-        panic!("every receipt was written to the local log and only its broadcast failed, yet the node.connections.delete failed: {e:?}");
-    }
-    let steps: Vec<String> = local.read_build(&build_id).await.unwrap().steps.iter().map(|s| s.step.clone()).collect();
-    assert!(steps.iter().any(|s| s == "DeleteConnections") && steps.last().map(String::as_str) == Some("Complete"), "every step's receipt is in the local log: {steps:?}");
-    assert!(capture.spans("rdm.node_admin.deployment.reject.via-receipt-refused").is_empty(), "no step was refused for a failed broadcast");
-    let refused = capture.spans("rdm.node_admin.build.reject.via-broadcast-refused");
-    let refusal = refused.iter().find(|(_, a)| a.get("step").map(String::as_str) == Some("DeleteConnections")).unwrap_or_else(|| panic!("the DeleteConnections receipt's failed broadcast is named: {refused:?}"));
-    assert_eq!(refusal.1.get("build_id"), Some(&build_id.log().to_string()), "{refusal:?}");
-    assert_eq!(refusal.1.get("attempt").map(String::as_str), Some("1"), "{refusal:?}");
-    assert_eq!(refusal.1.get("fact").map(String::as_str), Some("step"), "{refusal:?}");
-    assert!(refusal.1.get("detail").is_some_and(|d| !d.is_empty()), "the send error is carried: {refusal:?}");
-    eprintln!("span rdm.node_admin.build.reject.via-broadcast-refused trace_id={} {:?}", refusal.0, refusal.1);
-}
-
 /// CONTRACT (node-recovery.md "Failure and receipts"): a standalone node.connections.delete run through the fabric's
 /// real Build state whose local log refuses the `DeleteConnections` receipt (a failed journal write) fails
 /// at `DeleteConnections`, the error naming the step and the failed write, under
@@ -451,7 +397,7 @@ async fn a_step_whose_receipt_is_written_locally_completes_when_its_broadcast_fa
 async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
     let (capture, _guard) = Capture::new("i143-3051-local-write-refused");
     let local = std::sync::Arc::new(Refuses { inner: MemoryBuildStateAdapter::new(), step: "DeleteConnections", local: true, unreadable: None });
-    let (_endpoint, _gossip, _router, builds) = fabric_builds("mesh1.admin.1", local.clone()).await;
+    let (_endpoint, builds) = fabric_builds("mesh1.admin.1", local.clone()).await;
     let build_id = BuildId::mint();
     accepted_and_claimed(&builds, &build_id).await;
 
@@ -467,28 +413,4 @@ async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
     assert_eq!(spans[0].1.get("step").map(String::as_str), Some("DeleteConnections"), "{spans:?}");
     assert!(capture.spans("rdm.node_admin.build.reject.via-broadcast-refused").is_empty(), "nothing was broadcast for an unwritten receipt");
     eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {:?}", spans[0].0, spans[0].1);
-}
-
-/// CONTRACT (node-rpc-envelope.md "Build carrier": "Progress waits on no gossip; Build-topic facts
-/// remain durability and recovery evidence through the existing publication path"): a fabric-primary
-/// whose seat record moved hands its committed facts on while its gossip is shut down: each send
-/// that fails is named under `rdm.node_admin.build.reject.via-broadcast-refused` (fact `hand-over`,
-/// sent by the handing admin, the send error), and the hand-over reports the facts it held. Must NOT
-/// happen: the hand-over answered as failed because a broadcast failed.
-#[tokio::test]
-async fn a_primary_hand_over_whose_broadcast_fails_names_each_refused_send() {
-    let (capture, _guard) = Capture::new("i143-3051-yield-broadcast-refused");
-    let local = std::sync::Arc::new(MemoryBuildStateAdapter::new());
-    let (_endpoint, gossip, _router, builds) = fabric_builds("mesh1.admin.1", local).await;
-    let build_id = BuildId::mint();
-    accepted_and_claimed(&builds, &build_id).await;
-    gossip.shutdown().await.unwrap();
-
-    let handed = builds.hand_over_facts("the seat is now mesh2 test", Some("mesh2.admin.1".into())).await;
-    assert!(handed >= 2, "the accepted Build and its claim were held and handed on: {handed}");
-    let refused = capture.spans("rdm.node_admin.build.reject.via-broadcast-refused");
-    let hand = refused.iter().find(|(_, a)| a.get("fact").map(String::as_str) == Some("hand-over")).unwrap_or_else(|| panic!("the hand-over's failed send is named: {refused:?}"));
-    assert_eq!(hand.1.get("sent_by").map(String::as_str), Some("mesh1.admin.1"), "{hand:?}");
-    assert!(hand.1.get("detail").is_some_and(|d| d.contains("hand")), "the send error is carried: {hand:?}");
-    eprintln!("span rdm.node_admin.build.reject.via-broadcast-refused trace_id={} {:?}", hand.0, hand.1);
 }

@@ -566,7 +566,7 @@ pub(crate) fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operati
 
 /// The typed output of a `ReleaseStorage` receipt ([`crate::wire::RELEASE_STORAGE_STEP`]). No step
 /// of this pipeline runs it: a delete retains the data dir and endpoint key (node-delete.md
-/// "Storage"). It stays the receipt's shape so the Build topic's positional layout
+/// "Storage"). It stays the receipt's shape so a Build message's positional layout
 /// ([`crate::wire`]) and a receipt an earlier build wrote still decode.
 ///
 /// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
@@ -742,7 +742,7 @@ pub struct TerminalReceipt {
     /// An unreached birth's delete (node-recovery.md step 3): what the provider read of the runtime at
     /// the step's own instant, `running` (then terminated), `exited`, `os-stopped` or `unavailable`.
     /// The re-created node takes the inherited data dir only on `exited` (`R-FM2`). `None` for every
-    /// other delete. Positional on the Build topic's wire, after `exit_code`.
+    /// other delete. Positional in a Build message, after `exit_code`.
     #[serde(default)]
     pub verdict: Option<String>,
     /// The data dir the birth ran over, as the delete resolved its record: a replacement's create of
@@ -1678,7 +1678,7 @@ impl DeploymentPipeline<'_> {
                 let of = claim_for;
                 // A plain create's row carries the tag labels and the config its create spec names in the
                 // accepted Build as builds.storage records it (Q166; proposal executable-bindings-at-create.md
-                // rule 1; the Build topic carries no entry's tags, config or executable), so its first join
+                // rule 1; a Build message carries no entry's tags, config or executable), so its first join
                 // hands it that config; a recovery's and a successor's carry their seed's.
                 // Whatever the claim, its storage and placement are the create spec's (build-deployment.md §3:
                 // a successor's storage follows its create spec's), written onto the row (build.md §1).
