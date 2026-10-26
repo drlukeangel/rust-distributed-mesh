@@ -405,8 +405,11 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
             matches!(&held, Ok(StatusReply::Connections { connections }) if connections.connections.iter().any(|c| c.id == opened_id)).then_some(held)
         })
         .await;
-        let view_before = bounded("node.get of mesh1.rpc.1 before the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.rpc.1 in the view");
-        let (digest_before, _) = b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).expect("mesh1.rpc.2 holds mesh1.rpc.1's digest");
+        // The renewal is compared against a settled member: its admin holds it ready-for-traffic (a member's
+        // first ready declaration can reach the admin before the admin's own start ends, and is owed again),
+        // and mesh1.rpc.2 holds its digest, which it takes eventually, as mesh1.rpc.1 took its own above.
+        let view_before = until("node.get of mesh1.rpc.1 holds it ready-for-traffic before the renewal", BOUND, async || node_get(&root, &a.digest.node.node_id).await.filter(|v| v.status == NodeStatus::ReadyForTraffic)).await;
+        let (digest_before, _) = until("mesh1.rpc.2's view holds mesh1.rpc.1's digest", BOUND, async || b.topology_view.digest_view.get(a.digest.node.node_id.as_str())).await;
         let connection_spans = |spans: &crate::common::Spans| spans.0.lock().unwrap().values().filter(|(n, _, _)| n.starts_with("rdm.node.connections.")).count();
         let before = connection_spans(&spans);
 
