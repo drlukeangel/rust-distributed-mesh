@@ -17,8 +17,8 @@
 //!   holds verified in source order when the copy ends (on a refusal, the lines verified before the
 //!   first mismatch);
 //! - `copied`: how many lines this copy appended to the new provider;
-//! - `outcome`: `copied`, `refused` (the new provider's lines are not a prefix of the old one's), or
-//!   `indeterminate` (a provider did not answer).
+//! - `outcome`: `copied`, `refused` (the new provider's lines are not a prefix of the old one's),
+//!   `failed` (a provider answered with a named error) or `indeterminate` (a provider did not answer).
 //!
 //! - `a_copy_preserves_current_values_across_writer_changes`
 //! - `a_copy_refuses_a_destination_hole_without_replaying_stale_state`

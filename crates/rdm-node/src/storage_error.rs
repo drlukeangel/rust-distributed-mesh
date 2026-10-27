@@ -28,6 +28,19 @@ pub enum StorageError {
     },
 }
 
+impl StorageError {
+    /// Whether the backend answered: `Unrecognised` (what it holds is not a record this build
+    /// recognises) and `Refused` (it refused by name) are answers, and asked again it answers the same.
+    /// `Io` is not: the store could not be read or written, a lost answer among them (a write that
+    /// landed and whose answer was lost), and a caller that needs the answer asks again.
+    pub fn answered(&self) -> bool {
+        match self {
+            Self::Io { .. } => false,
+            Self::Unrecognised { .. } | Self::Refused { .. } => true,
+        }
+    }
+}
+
 impl std::fmt::Display for StorageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

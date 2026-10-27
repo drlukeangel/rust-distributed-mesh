@@ -81,7 +81,7 @@ impl rdm_admin::storage_backend::StorageBackend for RefusesItsLines {
     async fn delete_fabric(&self, data_dir: &std::path::Path, fabric_id: &rdm_admin::model::FabricId) -> Result<(), String> {
         self.0.delete_fabric(data_dir, fabric_id).await
     }
-    async fn lines(&self, provider: &str, fabric_id: &rdm_admin::model::FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, String> {
+    async fn lines(&self, provider: &str, fabric_id: &rdm_admin::model::FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, rdm_node::storage_error::StorageError> {
         Ok(Arc::new(ListRefused { inner: self.0.lines(provider, fabric_id).await?, provider: provider.into() }))
     }
 }

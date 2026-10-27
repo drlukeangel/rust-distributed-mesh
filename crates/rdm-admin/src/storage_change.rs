@@ -140,9 +140,10 @@ impl Decision {
 pub async fn read_commit(providers: &crate::storage_backend::TopologyStorageProviders, fabric_id: &crate::model::FabricId, to: &str, build_id: &BuildId, change_id: &ChangeId) -> Decision {
     #[cfg(feature = "file-backend")]
     {
+        // A read that errs, answered or not, is no read that the record is absent: the block holds.
         let lines = match providers.lines(to, fabric_id).await {
             Ok(l) => l,
-            Err(e) => return Decision::NoAnswer(e),
+            Err(e) => return Decision::NoAnswer(e.to_string()),
         };
         let name = StorageCommit { build_id: build_id.clone(), change_id: change_id.clone() }.name();
         match lines.claim(rdm_node::storage_copy::ClaimKind::Commit, &name).await {
@@ -164,7 +165,7 @@ async fn insert_commit(providers: &crate::storage_backend::TopologyStorageProvid
     #[cfg(feature = "file-backend")]
     {
         use rdm_node::storage_copy::{Claim, ClaimKind, ClaimTaken};
-        let lines = providers.lines(to, fabric_id).await?;
+        let lines = providers.lines(to, fabric_id).await.map_err(|e| e.to_string())?;
         let commit = StorageCommit { build_id: build_id.clone(), change_id: change_id.clone() };
         let claim = Claim { kind: ClaimKind::Commit, name: commit.name(), content: serde_json::to_vec(&commit).expect("a commit record serializes") };
         match lines.insert_claim(&claim).await.map_err(|e| e.to_string())? {
@@ -182,30 +183,45 @@ async fn insert_commit(providers: &crate::storage_backend::TopologyStorageProvid
 /// How a copy ended.
 enum Copy {
     Copied,
-    Refused(String),
+    /// Answered by name: the new provider refused as not a copy of the old one, or a provider answered
+    /// with a named error ([`rdm_node::storage_error::StorageError::answered`]). The change fails
+    /// before its switch.
+    Failed(String),
+    /// A provider did not answer: the copy is resumed.
     NoAnswer(String),
 }
 
-/// The copy (step 3), at its one call site: [`rdm_node::storage_copy::copy`].
+/// The copy (step 3), at its one call site: [`rdm_node::storage_copy::copy`]. An error opening either
+/// provider's lines is told apart as the copy's own are: answered, the copy fails naming the provider;
+/// unanswered, it is resumed.
 async fn copy_stores(providers: &crate::storage_backend::TopologyStorageProviders, fabric_id: &crate::model::FabricId, build_id: &BuildId, change: &StorageChange) -> Copy {
     #[cfg(feature = "file-backend")]
     {
         use rdm_node::storage_copy::{copy, CopyError, CopyRun};
+        let unopened = |provider: &str, e: rdm_node::storage_error::StorageError| {
+            let why = format!("the topology storage provider `{provider}` does not open its lines: {e}");
+            if e.answered() {
+                Copy::Failed(why)
+            } else {
+                Copy::NoAnswer(why)
+            }
+        };
         let (source, destination) = match (providers.lines(&change.from, fabric_id).await, providers.lines(&change.to, fabric_id).await) {
             (Ok(s), Ok(d)) => (s, d),
-            (Err(e), _) | (_, Err(e)) => return Copy::NoAnswer(e),
+            (Err(e), _) => return unopened(&change.from, e),
+            (_, Err(e)) => return unopened(&change.to, e),
         };
         let run = CopyRun { build_id: build_id.clone(), change_id: change.change_id.clone(), source: change.from.clone(), destination: change.to.clone() };
         match copy(&run, &*source, &*destination).await {
             Ok(_) => Copy::Copied,
-            Err(CopyError::Refused(why)) => Copy::Refused(why),
+            Err(CopyError::Refused(why) | CopyError::Failed(why)) => Copy::Failed(why),
             Err(CopyError::Storage(e)) => Copy::NoAnswer(e.to_string()),
         }
     }
     #[cfg(not(feature = "file-backend"))]
     {
         let _ = (providers, fabric_id, build_id);
-        Copy::Refused(format!("this build copies no provider's lines: `{}` to `{}`", change.from, change.to))
+        Copy::Failed(format!("this build copies no provider's lines: `{}` to `{}`", change.from, change.to))
     }
 }
 
@@ -411,8 +427,10 @@ impl StorageChanges {
 
     /// Steps 2 and 3, `storage.switch:<change_id>`, run by the fabric-primary once every mesh-primary
     /// replied `blocked`: the copy, the `commit` record inserted, this admin onto the new provider and
-    /// the Fabric row's line. A copy refused fails the change before its switch once no `commit` is
-    /// read, its receipt naming why. A change resumed after its switch learns it from the record alone.
+    /// the Fabric row's line. A copy refused by name, or answered by a provider with a named error,
+    /// fails the change before its switch once no `commit` is read, its receipt naming why; a copy no
+    /// provider answered is resumed on a backoff, no timer ending it. A change resumed after its switch
+    /// learns it from the record alone.
     /// A fabric.delete accepted meanwhile ends the operation.
     #[allow(clippy::too_many_arguments)]
     pub async fn switch(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, fabric_row: impl std::future::Future<Output = Result<(), String>>) -> Result<(), crate::executor::RunEnd> {
@@ -446,7 +464,7 @@ impl StorageChanges {
             loop {
                 match copy_stores(&self.providers, &self.fabric_id, build_id, change).await {
                     Copy::Copied => break,
-                    Copy::Refused(why) => return self.fail_before_switch(builds, build_id, attempt, change, why).await,
+                    Copy::Failed(why) => return self.fail_before_switch(builds, build_id, attempt, change, why).await,
                     Copy::NoAnswer(_) => {
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(Duration::from_secs(5));

@@ -175,14 +175,18 @@ pub enum CopyError {
     /// The new provider's lines or claims are not the old one's, named; nothing was appended and
     /// nothing switches.
     Refused(String),
-    /// A provider did not answer: neither copied nor refused; the copy is resumed.
+    /// A provider did not answer ([`StorageError::answered`] false): neither copied nor refused; the
+    /// copy is resumed.
     Storage(StorageError),
+    /// A provider answered with a named error (it refused by name, or holds what this build does not
+    /// recognise), named with the provider: the copy fails, and nothing switches.
+    Failed(String),
 }
 
 impl std::fmt::Display for CopyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Refused(why) => f.write_str(why),
+            Self::Refused(why) | Self::Failed(why) => f.write_str(why),
             Self::Storage(e) => write!(f, "{e}"),
         }
     }
@@ -240,16 +244,23 @@ pub async fn copy(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn P
     match &result {
         Ok(()) => span.record("outcome", "copied"),
         Err(CopyError::Refused(why)) => span.record("outcome", "refused").record("cause", why.as_str()),
+        Err(CopyError::Failed(why)) => span.record("outcome", "failed").record("cause", why.as_str()),
         Err(CopyError::Storage(e)) => span.record("outcome", "indeterminate").record("cause", e.to_string()),
     };
     result.map(|()| Copied { source_position: position, copied })
 }
 
+/// `e`, an error `provider` gave the copy: answered, the copy fails naming it; else no answer.
+fn of(provider: &str) -> impl Fn(StorageError) -> CopyError + '_ {
+    move |e| if e.answered() { CopyError::Failed(format!("the topology storage provider `{provider}` answered the copy with an error: {e}; nothing switches")) } else { CopyError::Storage(e) }
+}
+
 async fn copy_in(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn ProviderLines, position: &mut u64, copied: &mut u64) -> Result<(), CopyError> {
+    let (from_source, from_destination) = (of(&run.source), of(&run.destination));
     let mut stores = Vec::with_capacity(Store::ALL.len());
     for store in Store::ALL {
-        let from = source.lines(store).await.map_err(CopyError::Storage)?;
-        let to = destination.lines(store).await.map_err(CopyError::Storage)?;
+        let from = source.lines(store).await.map_err(&from_source)?;
+        let to = destination.lines(store).await.map_err(&from_destination)?;
         if let Some((at, why)) = mismatch(run, store, &from, &to) {
             *position += at as u64;
             return Err(refused(run, why));
@@ -257,11 +268,11 @@ async fn copy_in(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn Pr
         *position += to.len() as u64;
         stores.push((store, from, to.len()));
     }
-    let held = source.claims().await.map_err(CopyError::Storage)?;
-    let mut present = destination.claims().await.map_err(CopyError::Storage)?;
+    let held = source.claims().await.map_err(&from_source)?;
+    let mut present = destination.claims().await.map_err(&from_destination)?;
     for (store, from, verified) in &stores {
         for line in &from[*verified..] {
-            destination.append_line(*store, line).await.map_err(CopyError::Storage)?;
+            destination.append_line(*store, line).await.map_err(&from_destination)?;
             *position += 1;
             *copied += 1;
         }
@@ -271,11 +282,11 @@ async fn copy_in(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn Pr
     // claimant, is the new provider's as the fabric left it (a provider a later Build names again):
     // it is let go, and the old provider's taken in its place.
     for claim in present.iter().filter(|p| !held.iter().any(|c| c.kind == p.kind && c.name == p.name && c.content == p.content)) {
-        destination.remove_claim(claim).await.map_err(CopyError::Storage)?;
+        destination.remove_claim(claim).await.map_err(&from_destination)?;
     }
     present.retain(|p| held.iter().any(|c| c.kind == p.kind && c.name == p.name && c.content == p.content));
     for claim in held.iter().filter(|c| !present.iter().any(|p| p.kind == c.kind && p.name == c.name)) {
-        match destination.insert_claim(claim).await.map_err(CopyError::Storage)? {
+        match destination.insert_claim(claim).await.map_err(&from_destination)? {
             ClaimTaken::Won => {}
             ClaimTaken::Held(content) if content == claim.content => {}
             ClaimTaken::Held(_) => return Err(CopyError::Refused(format!("the new topology storage provider `{}`'s {} {:?} was taken by another claimant during the copy: every line of the old provider `{}` is appended, the claim is not, and nothing switches", run.destination, claim.kind, claim.name, run.source))),

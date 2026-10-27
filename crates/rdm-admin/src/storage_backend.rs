@@ -98,11 +98,12 @@ pub trait StorageBackend: Send + Sync {
     }
     /// This backend's five stores as their lines and its claims for the fabric `fabric_id`, registered
     /// as `provider`: what a storage change's copy reads from the old provider and appends to the new
-    /// one (storage.md §2 Copy, [`rdm_node::storage_copy`]). A backend that answers none refuses by name.
+    /// one (storage.md §2 Copy, [`rdm_node::storage_copy`]). A backend that answers none refuses by name
+    /// ([`StorageError::Refused`]).
     #[cfg(feature = "file-backend")]
-    async fn lines(&self, provider: &str, fabric_id: &FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, String> {
+    async fn lines(&self, provider: &str, fabric_id: &FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, StorageError> {
         let _ = fabric_id;
-        Err(format!("the topology storage provider `{provider}` answers no lines and claims to copy (storage.md §2 Copy)"))
+        Err(StorageError::Refused { file: format!("the topology storage provider `{provider}`"), reason: "it answers no lines and claims to copy (storage.md §2 Copy)".into() })
     }
 }
 
@@ -156,9 +157,8 @@ impl StorageBackend for FileBackend {
         .await
     }
 
-    async fn lines(&self, provider: &str, fabric_id: &FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, String> {
-        let lines = rdm_node::storage_copy::FileProviderLines::open(provider, &self.store_dir, fabric_id).await.map_err(|e| format!("the topology storage provider `{provider}` does not open its lines: {e}"))?;
-        Ok(Arc::new(lines))
+    async fn lines(&self, provider: &str, fabric_id: &FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, StorageError> {
+        Ok(Arc::new(rdm_node::storage_copy::FileProviderLines::open(provider, &self.store_dir, fabric_id).await?))
     }
 
     async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String> {
@@ -249,11 +249,12 @@ impl TopologyStorageProviders {
 
     /// The lines and claims of the provider registered as `name` for the fabric `fabric_id`: a storage
     /// change's copy reads the old provider's and appends to the new one's (storage.md §2 Copy,
-    /// [`rdm_node::storage_copy::copy`]). Refused by name as [`Self::named`] refuses, or when the
-    /// provider answers none.
+    /// [`rdm_node::storage_copy::copy`]). Refused by name ([`StorageError::Refused`]) as [`Self::named`]
+    /// refuses, or when the provider answers none; an error opening them is the backend's, its kind kept.
     #[cfg(feature = "file-backend")]
-    pub async fn lines(&self, name: &str, fabric_id: &FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, String> {
-        self.named(name)?.lines(name, fabric_id).await
+    pub async fn lines(&self, name: &str, fabric_id: &FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, StorageError> {
+        let backend = self.named(name).map_err(|reason| StorageError::Refused { file: format!("the topology storage provider `{name}`"), reason })?;
+        backend.lines(name, fabric_id).await
     }
 }
 
@@ -817,9 +818,9 @@ mod tests {
         let lines = providers.lines("file", &fabric).await.unwrap_or_else(|e| panic!("the file provider answers its lines: {e}"));
         assert!(lines.lines(rdm_node::storage_copy::Store::Fabric).await.unwrap().is_empty(), "a new root holds no line");
         let memory = providers.lines("memory", &fabric).await.err().expect("a provider that answers no lines is refused");
-        assert!(memory.contains("`memory`"), "{memory}");
+        assert!(matches!(memory, StorageError::Refused { .. }) && memory.to_string().contains("`memory`"), "{memory}");
         let other = providers.lines("other", &fabric).await.err().expect("an unregistered name is refused");
-        assert!(other.contains("`other`"), "{other}");
+        assert!(matches!(other, StorageError::Refused { .. }) && other.to_string().contains("`other`"), "{other}");
     }
 
     use crate::model::NodeId;
