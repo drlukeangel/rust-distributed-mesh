@@ -217,8 +217,7 @@ fn rows_on(root: &std::path::Path) -> Vec<String> {
             if p.is_dir() {
                 walk(&p, root, out);
             } else if rel.ends_with(".jsonl") && dir == root {
-                // A store file read while its nodes append: a line caught mid-write is read again.
-                let latest = (0..50).find_map(|_| rdm_admin::store_log::latest_in(&p).ok().or_else(|| { std::thread::sleep(std::time::Duration::from_millis(20)); None })).unwrap_or_else(|| panic!("{} reads whole", p.display()));
+                let latest = rdm_admin::store_log::latest_in(&p).unwrap_or_else(|e| panic!("{} reads whole: {e}", p.display()));
                 out.extend(latest.into_keys().map(|(kind, key)| format!("{rel}#{kind}/{key}")));
             } else if rel != rdm_admin::store_root::LAYOUT && !rel.ends_with(".reclaim") {
                 out.push(rel);
