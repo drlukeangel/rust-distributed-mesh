@@ -1386,18 +1386,16 @@ impl OwedDeclarations {
         }
     }
 
-    /// The declaration at `at` was replied `reply`: an answer by name takes it off and the next is sent.
-    /// True when it was answered by name.
-    fn replied(&self, at: u64, reply: &rdm_core::status::StatusReply) -> bool {
-        let by_name = !matches!(reply, rdm_core::status::StatusReply::RejectedNotPrimary { .. });
-        if by_name {
-            self.answered(at);
-        }
-        by_name
+    /// The declaration at `at` was replied `reply`: every reply is an answer by name, a refusal
+    /// included (`RejectedNotPrimary` too, node-rpc.md §43), so it is owed no more and the next is sent.
+    /// A mesh-primary the topology names next is owed this birth's state again (`declare_loop`).
+    fn replied(&self, at: u64, _reply: &rdm_core::status::StatusReply) -> bool {
+        self.answered(at);
+        true
     }
 
-    /// The first declaration's call ended without an answer by name (its receiver proven gone, or
-    /// not the mesh-primary, or none held): every declaration queued behind it is owed to the same
+    /// The first declaration's call ended without an answer by name (its receiver proven gone, or no
+    /// mesh-primary held): every declaration queued behind it is owed to the same
     /// receiver, so each one's call has ended as well. All stay owed, in order.
     fn unanswered(&self) {
         for o in self.queue.lock().unwrap().owed.iter_mut() {
@@ -1485,9 +1483,9 @@ fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topol
 /// merely hears. The call goes direct first; once an attempt sends nothing, its resends take the route
 /// [`declaration_route`] answers, a live peer of the mesh on Forward. It ends on the mesh-primary's
 /// answer or on its proven exit, or when the mesh-primary changes ([`declare_until_mesh_primary_moves`]
-/// drops it); no deadline or carrier failure ends it. An answer by name, a refusal included, ends the
-/// declaration's debt and the next one is sent; a receiver that answers it is not the mesh-primary, or
-/// a call that ended without an answer, leaves it owed. With no mesh-primary held nothing is sent.
+/// drops it); no deadline or carrier failure ends it. An answer by name, a refusal included
+/// (`RejectedNotPrimary` too), ends the declaration's debt and the next one is sent; a call that ended
+/// without an answer leaves it owed. With no mesh-primary held nothing is sent.
 /// Nothing here gates gossip: the digest already says the state. True when it was answered by name.
 async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &OwedDeclarations, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, at: u64, declaration: &Declaration) -> bool {
     use rdm_core::outcome::RpcOutcome;
