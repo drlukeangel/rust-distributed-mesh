@@ -23,7 +23,7 @@ step. A node's other properties have their own commands ([node properties](../no
 
 ## Numbered end-to-end sequence
 
-1. The caller sends `node.name.update` to the node's mesh-primary; an admin that is not the fabric-primary carries it to the fabric-primary (Forward `0x1A` when not directly reachable) and carries the answer back. The fabric-primary sends the command to the node's mesh-primary (Forward `0x1A` when not directly reachable) and, on its answer that the row moved, writes the new name to the node in its `FabricAtlas`.
+1. The caller sends `node.name.update` to the node's mesh-primary; an admin that is not the fabric-primary carries it to the fabric-primary (Forward `0x1A` when not directly reachable) and carries the answer back. The fabric-primary sends the command to the node's mesh-primary (Forward `0x1A` when not directly reachable) and, on its answer that the row moved, writes the new name to the node in its atlas.
 2. The mesh-primary validates from the record it holds: exact birth, its own writer role, the
    precondition from the node's status and its `node.connections.deleted` and `node.mesh.left` receipts, the name grammar.
 3. The row writer reads the new name's row and claims it; a held name refuses
