@@ -45,7 +45,7 @@ fn now_ms() -> u64 {
 }
 
 fn app_alpn() -> Alpn {
-    Alpn { name: APP.to_vec(), forwardable: false, carriers: vec![NodeKind::RpcNode] }
+    Alpn { name: APP.to_vec(), proxy: false, carriers: vec![NodeKind::RpcNode] }
 }
 
 fn temp_dir(what: &str) -> std::path::PathBuf {

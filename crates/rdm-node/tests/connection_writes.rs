@@ -95,7 +95,7 @@ impl Node {
         let resolver = Arc::new(StaticResolver::new());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = Arc::new(ConnectionsWriter::new(birth.to_end(), storage, held));
-        let alpn = Alpn { name: ALPN.to_vec(), forwardable: false, carriers: vec![] };
+        let alpn = Alpn { name: ALPN.to_vec(), proxy: false, carriers: vec![] };
         let (registry, handlers) = ConnectionsRegistry::new(ep.clone(), resolver.clone(), writer.clone(), &[alpn], b"cert-v1".to_vec()).unwrap();
         let mut rb = Router::builder(ep);
         for (alpn_bytes, handler) in handlers {

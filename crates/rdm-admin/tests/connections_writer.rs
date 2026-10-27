@@ -12,7 +12,7 @@ use rdm_admin::storage::{ConnectionsStorage, FileConnectionsStorage};
 use rdm_transport::{AcceptTrigger, ConnectionObserver, ResolvedNode};
 use std::sync::{Arc, Mutex};
 
-const POLICY: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
+const POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
 fn end(name: &str) -> ConnectionEnd {
     ConnectionEnd { name: name.parse().unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }

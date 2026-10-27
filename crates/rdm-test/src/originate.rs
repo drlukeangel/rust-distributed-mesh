@@ -21,9 +21,9 @@ use rdm_core::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// The carrier policy the testkit applies to its proof-store calls: forwardable through an rpc
+/// The carrier policy the testkit applies to its proof-store calls: proxied through an rpc
 /// node (the product's own policies are the product's).
-pub const POLICY: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
+pub const POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
 /// The originate door protocol on op `0x73`.
 pub struct Originate;
@@ -635,7 +635,7 @@ mod tests {
         held.apply(row(&carrier, &dest, ConnectionKind::Direct, None, 10)).unwrap();
         let p = row(&own, &dest, ConnectionKind::Proxy, Some(&carrier), 20);
         held.apply(p.clone()).unwrap();
-        let gateway = CarrierPolicy::Forwardable { carrier_kind: NodeKind::Gateway };
+        let gateway = CarrierPolicy::Proxy { carrier_kind: NodeKind::Gateway };
         let r = resolve(&held, &own.name, &dest.name, gateway);
         assert_eq!(r.route, EffectiveRoute::ViaPeer { carrier: carrier.name.clone(), proxy: p });
         assert_eq!(r.retire, None);

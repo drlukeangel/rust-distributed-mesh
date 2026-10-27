@@ -319,7 +319,7 @@ latest Proxy(S,D)
 ```
 
 The destination and carrier incarnations are checked against the current topology view; the carrier's own Direct
-edge to the destination is learned from the carrier when it is asked to forward (§8).
+edge to the destination is learned from the carrier when it is asked to carry (§8).
 
 ### 5.1 Precedence
 
@@ -363,10 +363,10 @@ The generic Node RPC certainty rule remains: a request may choose another route 
 The connections subsystem is generic. A protocol decides whether proxying is allowed and which node types may
 carry it.
 
-A protocol's policy is the application's (§14); Rafka's broker-data policy, forwardable with gateway
+A protocol's policy is the application's (§14); Rafka's broker-data policy, proxied with gateway
 carriers only, is stated on Rafka's pages.
 
-A non-forwardable protocol never consumes Proxy as a legal route even if one exists.
+A protocol that does not proxy never consumes Proxy as a legal route even if one exists.
 
 Carrier candidates are the live nodes of the source's mesh, from the topology it holds, of a node type the
 protocol lets carry, the source and the destination left out. The source asks them in path order,
@@ -403,7 +403,7 @@ Sequence:
    `attempt_ordinal=1`.
 2. It asks the candidates of §6 in their order; the first whose own Direct to the destination is Active
    answers.
-3. It forwards the invocation once through that carrier.
+3. It proxies the invocation once through that carrier.
 4. Only a conclusive end-to-end success/refusal proving the carrier path was actually usable may establish
    the proxy route.
 5. `gw1` writes `Proxy Connected`, recording the exact carrier and the destination/carrier incarnation ids.
@@ -436,7 +436,7 @@ gw2 -> brk2             == Direct Active
 ```
 
 The two incarnations reach the source through the topology view. The carrier's Direct edge to the destination is
-the carrier's own fact and travels nowhere: when the carrier is asked to forward and its own latest Direct to
+the carrier's own fact and travels nowhere: when the carrier is asked to carry and its own latest Direct to
 the destination is not Active, it refuses the carried call by name (`carrier-edge-lost`, the Forward reply
 `CarrierEdgeLost`), and that refusal is how the source learns the edge is gone.
 
@@ -677,7 +677,7 @@ gw2  -> brk2
 
 First operation from gw1 proves and writes `Proxy Connected via gw2`. A second operation, including one for a
 different topic that selects the same brk2, must use the Proxy immediately. Forbidden: another full direct
-dial ladder before forwarding.
+dial ladder before proxying.
 
 ### B. A restarted source holds no Proxy
 

@@ -191,7 +191,7 @@ fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, rdm_core::P
 #[tokio::test]
 async fn a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_to_be_disconnected() {
     use rdm_core::connections::{resolve, CarrierPolicy, INVALID_CARRIER_EDGE_LOST};
-    let policy = CarrierPolicy::Forwardable { carrier_kind: rdm_core::NodeKind::RpcNode };
+    let policy = CarrierPolicy::Proxy { carrier_kind: rdm_core::NodeKind::RpcNode };
     for (edge, retired) in [(Some("Direct Failed".to_string()), true), (None, false)] {
         let r = rig_with(Some(Arc::new(EdgeFact(edge))), true).await;
         let (held, own, proxy) = proxied_held(&r);

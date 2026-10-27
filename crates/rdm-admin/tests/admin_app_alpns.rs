@@ -25,7 +25,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 }
 
 fn app_alpn(name: &[u8]) -> Alpn {
-    Alpn { name: name.to_vec(), forwardable: false, carriers: vec![NodeKind::RpcNode] }
+    Alpn { name: name.to_vec(), proxy: false, carriers: vec![NodeKind::RpcNode] }
 }
 
 fn wiring_with(alpn: &[u8]) -> Wiring {

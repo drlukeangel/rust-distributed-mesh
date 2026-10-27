@@ -17,7 +17,7 @@ use rdm_core::outcome::RpcOutcome;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-const POLICY: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
+const POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
 async fn connected(rig: &Rig, held: &ConnectionsHeld, own: &PathName, target: &Node, payload: &[u8]) -> ConnectedCall<ProbeReply> {
     rig.origin

@@ -211,7 +211,7 @@ fn a_node_admits_on_the_root_set_its_launch_carries() {
     use rdm_transport::NodeResolver as _;
     let cap = crate::common::capture("a_node_admits_on_the_root_set_its_launch_carries");
     cap.run(crate::common::Threads::Workers(4), async move {
-        let alpn = rdm_transport::connections::Alpn { name: b"member-cert-roots/1".to_vec(), forwardable: false, carriers: vec![rdm_core::NodeKind::RpcNode] };
+        let alpn = rdm_transport::connections::Alpn { name: b"member-cert-roots/1".to_vec(), proxy: false, carriers: vec![rdm_core::NodeKind::RpcNode] };
         let fabric = FabricId::mint();
         let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(AUTHORITY_REFERENCE_MS), root_choice()).await;
         let (acceptor, a_dir) = alpn_birth(&admin, &fabric, "mesh1.rpc.1", vec![test_root_public()], &alpn).await;

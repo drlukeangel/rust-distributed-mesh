@@ -73,8 +73,8 @@
 //! | §3.1 reachability is per protocol | `t:connections::a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_disconnects_bs_proxy`; `n:connection_reconnect::alpn_interference_restores_a_while_b_keeps_its_proxy_from_the_shared_store` | none | - |
 //! | §5.1 precedence; only a Failed latest waits for its series | `c:connections::the_route_prefers_a_valid_proxy_then_an_active_direct_then_none`; `c:connections::a_dropped_direct_is_dialled_again_and_only_a_failed_one_waits_for_its_series` | none | F |
 //! | §5.2 a route change affects new invocations only | `t:connections::an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_open_goes_direct` | none | - |
-//! | §6 carrier policy and deterministic spread | `t:connections::the_carrier_choice_is_kept_until_a_named_event_and_spread_by_source`; `t:connections::a_non_forwardable_alpn_never_takes_a_proxy_even_when_one_is_held`; `c:connections::a_valid_proxy_through_a_carrier_kind_the_protocol_forbids_is_skipped_not_disconnected` | none | - |
-//! | §7 establishing a Proxy (Failed, carrier, tunnel `admitted`, Proxy Connected) | `t:connections::a_not_sent_direct_on_a_forwardable_alpn_goes_once_through_the_hashed_carrier`; `t:connections::the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and_only_then_writes_proxy_connected`; `t:connections::a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by_name` | none | A |
+//! | §6 carrier policy and deterministic spread | `t:connections::the_carrier_choice_is_kept_until_a_named_event_and_spread_by_source`; `t:connections::a_protocol_with_proxy_false_never_consumes_a_proxy_even_when_one_is_held`; `t:connections::a_carrier_outside_the_protocols_list_is_never_picked`; `c:connections::a_valid_proxy_through_a_carrier_kind_the_protocol_forbids_is_skipped_not_disconnected` | none | - |
+//! | §7 establishing a Proxy (Failed, carrier, tunnel `admitted`, Proxy Connected) | `t:connections::a_not_sent_direct_on_a_proxy_alpn_goes_once_through_the_hashed_carrier`; `t:connections::the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and_only_then_writes_proxy_connected`; `t:connections::a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by_name` | none | A |
 //! | §8 validity and named invalidation | as I, J | none | I, J |
 //! | §9.4 one scheduler, one pending item | `n:connection_reconnect::one_reconnect_attempt_at_a_time_per_node` | none | - |
 //! | §9.5 one attempt: verify birth, verify not superseded, dial, Failed or Connected | `a:connections_writer::an_accept_from_another_birth_arms_nothing_and_an_attempt_for_a_gone_birth_is_dropped_undialled`; `a:connections_writer::a_failed_dial_after_an_accept_keeps_the_proxy_and_reschedules_from_its_own_failed_row` | none | C, F |
@@ -151,12 +151,12 @@ fn start(sp: &Value) -> u64 {
 }
 
 /// One mesh, `{mesh1: 2 node-admins, 3 rpc nodes}`, every rpc node registering the testkit's app
-/// protocol forwardable through an rpc node carrier (`node::APP_PROTOCOL_FORWARDABLE_KNOB`), its
+/// protocol proxied through an rpc node carrier (`node::APP_PROTOCOL_PROXY_KNOB`), its
 /// streams echoed; the source holds the carrier's and the destination's births.
 async fn born(cell: &str) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let root = estate.bootstrap_data_dir("mesh1").parent().expect("the estate root holds the data dirs").to_path_buf();
-    std::fs::write(root.join(rdm_test::node::APP_PROTOCOL_FORWARDABLE_KNOB), b"").unwrap();
+    std::fs::write(root.join(rdm_test::node::APP_PROTOCOL_PROXY_KNOB), b"").unwrap();
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -214,7 +214,7 @@ async fn carrier_edge(estate: &Estate) {
 
 /// CONTRACT (connections.md §13 A: "First operation from gw1 proves and writes `Proxy Connected via
 /// gw2`. A second operation, including one for a different topic that selects the same brk2, must use
-/// the Proxy immediately. Forbidden: another full direct dial ladder before forwarding"; §7 steps 1-6;
+/// the Proxy immediately. Forbidden: another full direct dial ladder before proxying"; §7 steps 1-6;
 /// §12: "Cold discovery continues to expose `effective_route_cold_discovery_ms`"): the source's Direct
 /// dials toward the destination are blocked (`NotSent`, as an unreachable dial). Its first open on the
 /// app protocol writes one `Direct Failed` (round 1, ordinal 1), takes the carrier whose Direct edge to
@@ -516,7 +516,7 @@ async fn foreign_dialer(name: &str, target: &Value, cert: Vec<u8>) -> (rdm_trans
         incarnation: rdm_core::IncarnationId::parse(&s(&target["incarnation_id"])).unwrap(),
     });
     let sink = std::sync::Arc::new(rdm_transport::connections::MemoryConnectionsSink::new(me));
-    let (registry, handlers) = rdm_transport::connections::ConnectionsRegistry::new(ep.clone(), resolver, sink, &[rdm_test::node::app_protocol_forwardable()], cert).expect("the dialer's registry");
+    let (registry, handlers) = rdm_transport::connections::ConnectionsRegistry::new(ep.clone(), resolver, sink, &[rdm_test::node::app_protocol_proxy()], cert).expect("the dialer's registry");
     let mut rb = iroh::protocol::Router::builder(ep);
     for (alpn, handler) in handlers {
         rb = rb.accept(alpn, handler);

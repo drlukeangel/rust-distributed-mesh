@@ -148,7 +148,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
 }
 
 fn app_alpn() -> Alpn {
-    Alpn { name: b"member-cert-day0/1".to_vec(), forwardable: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
+    Alpn { name: b"member-cert-day0/1".to_vec(), proxy: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
 }
 
 // @feature: node-lifecycle

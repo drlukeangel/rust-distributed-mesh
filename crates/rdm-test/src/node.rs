@@ -123,31 +123,31 @@ pub const APP_PROTOCOL: &[u8] = b"rdm-test/echo/1";
 pub const APP_PROTOCOL_KNOB: &str = "app-protocol.knob";
 
 /// The file, under the root that holds an estate's data dirs, that has its rpc nodes register
-/// [`APP_PROTOCOL`] forwardable through an rpc node carrier (connections.md §6, §7): a Direct open
+/// [`APP_PROTOCOL`] proxied through an rpc node carrier (connections.md §6, §7): a Direct open
 /// that ends `NotSent` proves a Proxy through a carrier.
-pub const APP_PROTOCOL_FORWARDABLE_KNOB: &str = "app-protocol-forwardable.knob";
+pub const APP_PROTOCOL_PROXY_KNOB: &str = "app-protocol-proxy.knob";
 
 /// [`APP_PROTOCOL`] as the `Alpn` a node or a node-admin registers.
 pub fn app_protocol() -> rdm_transport::connections::Alpn {
-    rdm_transport::connections::Alpn { name: APP_PROTOCOL.to_vec(), forwardable: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
+    rdm_transport::connections::Alpn { name: APP_PROTOCOL.to_vec(), proxy: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
 }
 
-/// [`app_protocol`], forwardable through an rpc node carrier.
-pub fn app_protocol_forwardable() -> rdm_transport::connections::Alpn {
-    rdm_transport::connections::Alpn { forwardable: true, ..app_protocol() }
+/// [`app_protocol`], proxied through an rpc node carrier.
+pub fn app_protocol_proxy() -> rdm_transport::connections::Alpn {
+    rdm_transport::connections::Alpn { proxy: true, ..app_protocol() }
 }
 
-/// Whether `launch`'s root holds [`APP_PROTOCOL_KNOB`] or [`APP_PROTOCOL_FORWARDABLE_KNOB`].
+/// Whether `launch`'s root holds [`APP_PROTOCOL_KNOB`] or [`APP_PROTOCOL_PROXY_KNOB`].
 pub fn app_protocol_knob(launch: &Launch) -> bool {
     app_protocol_for(launch).is_some()
 }
 
-/// The app protocol `launch`'s root asks its rpc nodes to register: forwardable under
-/// [`APP_PROTOCOL_FORWARDABLE_KNOB`], not under [`APP_PROTOCOL_KNOB`], none without either.
+/// The app protocol `launch`'s root asks its rpc nodes to register: proxied under
+/// [`APP_PROTOCOL_PROXY_KNOB`], not under [`APP_PROTOCOL_KNOB`], none without either.
 pub fn app_protocol_for(launch: &Launch) -> Option<rdm_transport::connections::Alpn> {
     let root = launch.data_dir.parent()?;
-    if root.join(APP_PROTOCOL_FORWARDABLE_KNOB).exists() {
-        Some(app_protocol_forwardable())
+    if root.join(APP_PROTOCOL_PROXY_KNOB).exists() {
+        Some(app_protocol_proxy())
     } else if root.join(APP_PROTOCOL_KNOB).exists() {
         Some(app_protocol())
     } else {

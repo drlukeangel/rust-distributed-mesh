@@ -45,7 +45,7 @@ const RENEW_TO: u64 = 720;
 const TICK_SLACK_MS: u64 = 2_000;
 
 fn app_alpn() -> Alpn {
-    Alpn { name: ALPN.to_vec(), forwardable: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
+    Alpn { name: ALPN.to_vec(), proxy: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
 }
 
 fn cell_dir(what: &str) -> PathBuf {

@@ -36,20 +36,20 @@ pub struct Alpn {
     /// The ALPN wire bytes.
     pub name: Vec<u8>,
     /// Whether this protocol may travel over a Proxy when a Direct dial provably sent nothing.
-    pub forwardable: bool,
-    /// The node kinds eligible to carry a Proxy for this protocol when `forwardable` is `true`.
+    pub proxy: bool,
+    /// The node kinds eligible to carry a Proxy for this protocol when `proxy` is `true`.
     pub carriers: Vec<NodeKind>,
 }
 
 impl Alpn {
     /// The [`CarrierPolicy`] this registration states.
     pub fn carrier_policy(&self) -> CarrierPolicy {
-        if self.forwardable {
+        if self.proxy {
             if let Some(&carrier_kind) = self.carriers.first() {
-                return CarrierPolicy::Forwardable { carrier_kind };
+                return CarrierPolicy::Proxy { carrier_kind };
             }
         }
-        CarrierPolicy::NotForwardable
+        CarrierPolicy::NoProxy
     }
 }
 
@@ -1198,7 +1198,7 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
     }
 }
 
-async fn forward_stream_dir(
+async fn proxy_stream_dir(
     mut recv: iroh::endpoint::RecvStream,
     mut send: iroh::endpoint::SendStream,
 ) {
@@ -1290,8 +1290,8 @@ async fn splice_tunnel(
                 let Ok((dst_send, dst_recv)) = dst.open_bi().await else {
                     break;
                 };
-                tokio::spawn(forward_stream_dir(src_recv, dst_send));
-                tokio::spawn(forward_stream_dir(dst_recv, src_send));
+                tokio::spawn(proxy_stream_dir(src_recv, dst_send));
+                tokio::spawn(proxy_stream_dir(dst_recv, src_send));
             }
         }
     };
@@ -1303,8 +1303,8 @@ async fn splice_tunnel(
                 let Ok((src_send, src_recv)) = src.open_bi().await else {
                     break;
                 };
-                tokio::spawn(forward_stream_dir(dst_recv, src_send));
-                tokio::spawn(forward_stream_dir(src_recv, dst_send));
+                tokio::spawn(proxy_stream_dir(dst_recv, src_send));
+                tokio::spawn(proxy_stream_dir(src_recv, dst_send));
             }
         }
     };
@@ -1406,7 +1406,7 @@ impl Dialer {
                 &own.name,
                 &destination.name,
                 &self.alpn.name,
-                self.alpn.forwardable,
+                self.alpn.proxy,
                 &self.alpn.carriers,
             )
         };
@@ -1450,7 +1450,7 @@ impl Dialer {
             .await
         {
             Ok(conn) => Ok(conn),
-            Err(ConnectError::NotSent { reason }) if self.alpn.forwardable => {
+            Err(ConnectError::NotSent { reason }) if self.alpn.proxy => {
                 // The carrier is a live node of this node's mesh from the topology it holds (Q227),
                 // asked in the spread order; its own Direct to the destination decides, and one
                 // without it refuses by name, so the next is asked. Nothing was sent to the
@@ -1460,7 +1460,7 @@ impl Dialer {
                     &own.name,
                     &destination.name,
                     &destination.incarnation,
-                    self.alpn.forwardable,
+                    self.alpn.proxy,
                     &self.alpn.carriers,
                     live.iter().map(|n| n.name.clone()),
                 );

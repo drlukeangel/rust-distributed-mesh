@@ -75,7 +75,7 @@ async fn semantic_selection_is_not_connection_selection() {
     held.apply(edge(end(&r.p), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
     held.apply(edge(me.clone(), end(&r.b), ConnectionKind::Proxy, ConnectionState::Connected, Some(end(&r.p)), 12)).unwrap();
     held.apply(edge(me.clone(), end(&r.c), ConnectionKind::Direct, ConnectionState::Connected, None, 13)).unwrap();
-    let policy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
+    let policy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
     // The domain chose B: B's reachability changed to Proxy and the seam still executes B.
     let target = select(&r, "B");
@@ -102,7 +102,7 @@ async fn connection_changes_do_not_touch_the_selection_and_selection_changes_fab
     let mut held = held_for(&own);
     held.apply(edge(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
     held.apply(edge(me.clone(), end(&r.c), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
-    let policy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
+    let policy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
     // The selector is a value the seam only reads: Direct -> Proxy -> Direct on B changes it never.
     let selected = "B";
     let mut at = 20;

@@ -29,10 +29,10 @@ use rdm_transport::{ResolvedNode, StaticResolver};
 const ALPN_A: &[u8] = b"test-reconnect-a/1";
 const ALPN_B: &[u8] = b"test-reconnect-b/1";
 
-fn forwardable_alpn(name: &[u8]) -> Alpn {
+fn proxy_alpn(name: &[u8]) -> Alpn {
     Alpn {
         name: name.to_vec(),
-        forwardable: true,
+        proxy: true,
         carriers: vec![NodeKind::Gateway],
     }
 }
@@ -165,7 +165,7 @@ async fn establish_carrier_direct(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
     let dir = temp_data_dir("13a");
-    let alpns = [forwardable_alpn(ALPN_A)];
+    let alpns = [proxy_alpn(ALPN_A)];
     let gw1 = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
     let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
     let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
@@ -259,7 +259,7 @@ async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
     let dir = temp_data_dir("13b");
-    let alpns = [forwardable_alpn(ALPN_A)];
+    let alpns = [proxy_alpn(ALPN_A)];
     let gw1_first_birth = Birth {
         name: "mesh1.gateway.1".parse().unwrap(),
         node_id: NodeId::mint(),
@@ -334,7 +334,7 @@ async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_row_back() {
     let dir = temp_data_dir("13c");
-    let alpns = [forwardable_alpn(ALPN_A)];
+    let alpns = [proxy_alpn(ALPN_A)];
     let gw1_birth_1 = Birth {
         name: "mesh1.gateway.1".parse().unwrap(),
         node_id: NodeId::mint(),
@@ -376,7 +376,7 @@ async fn a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_ro
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
     let dir = temp_data_dir("13d");
-    let alpns = [forwardable_alpn(ALPN_A)];
+    let alpns = [proxy_alpn(ALPN_A)];
     let gw1 = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
     let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
     let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
@@ -484,7 +484,7 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_reconnect_attempt_at_a_time_per_node() {
     let dir = temp_data_dir("one-at-a-time");
-    let alpns = [forwardable_alpn(ALPN_A), forwardable_alpn(ALPN_B)];
+    let alpns = [proxy_alpn(ALPN_A), proxy_alpn(ALPN_B)];
     let gw1 = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
     let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
     let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
@@ -629,7 +629,7 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn alpn_interference_restores_a_while_b_keeps_its_proxy() {
     let dir = temp_data_dir("row3-shared-store");
-    let alpns = [forwardable_alpn(ALPN_A), forwardable_alpn(ALPN_B)];
+    let alpns = [proxy_alpn(ALPN_A), proxy_alpn(ALPN_B)];
     let src = DurableNode::bind_fresh(&dir, "mesh1.rpc.1", &alpns).await;
     let carrier = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
     let dst = DurableNode::bind_fresh(&dir, "mesh1.rpc.2", &alpns).await;
@@ -759,7 +759,7 @@ impl Admitter for GateAdmitter {
 #[tokio::test]
 async fn a_refused_dial_starts_a_series_a_refused_attempt_continues_and_an_admitted_one_ends() {
     let dir = temp_data_dir("refused-series");
-    let alpns = [forwardable_alpn(ALPN_A)];
+    let alpns = [proxy_alpn(ALPN_A)];
     let gw = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
     let brk = DurableNode::bind_fresh(&dir, "mesh1.broker.1", &alpns).await;
     gw.know(&brk);

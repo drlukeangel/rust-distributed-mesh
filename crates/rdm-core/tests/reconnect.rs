@@ -7,7 +7,7 @@ use rdm_core::reconnect::{
 };
 use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
 
-const RPC: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
+const RPC: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
 fn end(ordinal: u32, incarnation: &str) -> ConnectionEnd {
     ConnectionEnd { name: PathName::new("mesh1", NodeKind::RpcNode, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(incarnation)).unwrap()) }

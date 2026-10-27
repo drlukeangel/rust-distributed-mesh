@@ -461,9 +461,9 @@ impl ConnectionsHeld {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CarrierPolicy {
     /// The protocol never travels over a Proxy, even when one exists.
-    NotForwardable,
+    NoProxy,
     /// The protocol may travel over a Proxy whose carrier is a node of this kind.
-    Forwardable {
+    Proxy {
         /// The kind a carrier must be.
         carrier_kind: NodeKind,
     },
@@ -487,7 +487,7 @@ pub enum EffectiveRoute {
         /// Whether a current Direct fact is held.
         known: bool,
     },
-    /// Forward through `carrier`: the valid own Proxy `proxy` names it.
+    /// Through `carrier`: the valid own Proxy `proxy` names it.
     ViaPeer {
         /// The carrier's `path.name`.
         carrier: PathName,
@@ -546,24 +546,24 @@ pub fn resolve(held: &ConnectionsHeld, own: &PathName, destination: &PathName, p
 /// [`resolve`] on `alpn`.
 pub fn resolve_for(held: &ConnectionsHeld, own: &PathName, destination: &PathName, alpn: &[u8], policy: CarrierPolicy) -> RouteResolution {
     match policy {
-        CarrierPolicy::NotForwardable => resolve_for_carriers(held, own, destination, alpn, false, &[]),
-        CarrierPolicy::Forwardable { carrier_kind } => {
+        CarrierPolicy::NoProxy => resolve_for_carriers(held, own, destination, alpn, false, &[]),
+        CarrierPolicy::Proxy { carrier_kind } => {
             resolve_for_carriers(held, own, destination, alpn, true, &[carrier_kind])
         }
     }
 }
 
-/// [`resolve_for`] with the protocol's `forwardable` flag and eligible `carriers` kinds.
+/// [`resolve_for`] with the protocol's `proxy` flag and eligible `carriers` kinds.
 pub fn resolve_for_carriers(
     held: &ConnectionsHeld,
     own: &PathName,
     destination: &PathName,
     alpn: &[u8],
-    forwardable: bool,
+    proxy: bool,
     carriers: &[NodeKind],
 ) -> RouteResolution {
     let mut retire = None;
-    if forwardable && !carriers.is_empty() {
+    if proxy && !carriers.is_empty() {
         if let Some(Some(proxy)) = held.own_proxy_for(destination, alpn) {
             // A valid Proxy through a carrier kind this protocol does not allow is skipped, not
             // retired: another protocol may still travel over it.
@@ -606,16 +606,16 @@ pub fn resolve_for_carriers(
 /// `spread(source, destination, destination incarnation) % len` and wrapping. Spread by source,
 /// never "freshest wins", and the same in every process. No connection fact is read: the carrier's
 /// own Direct decides, and a carrier without one refuses by name (`carrier-edge-lost`), the source
-/// then asking the next. Empty when the protocol is not forwardable or no candidate stands.
+/// then asking the next. Empty when the protocol does not proxy or no candidate stands.
 pub fn carrier_order(
     own: &PathName,
     destination: &PathName,
     destination_incarnation: &IncarnationId,
-    forwardable: bool,
+    proxy: bool,
     carriers: &[NodeKind],
     candidates: impl IntoIterator<Item = PathName>,
 ) -> Vec<PathName> {
-    if !forwardable || carriers.is_empty() {
+    if !proxy || carriers.is_empty() {
         return Vec::new();
     }
     let mut eligible: Vec<PathName> = candidates
