@@ -913,6 +913,46 @@ mod tests {
         );
     }
 
+    /// CONTRACT (node-rpc.md §43, Q210): a node-admin's own declarations to its mesh-primary are
+    /// delivered in the order they were owed, one in flight, the next sent on the previous one's answer
+    /// by name, a refusal included. Its node.started is sent first; its ConnectionsDeleting only once the
+    /// node.started was answered (here refused `RejectedNotPrimary`, a typed reply), never while the
+    /// node.started's call is in flight or ended without an answer (its receiver proven gone). Must NOT
+    /// happen: both calls in flight at once, the mesh-primary applying whichever handler ends first.
+    #[tokio::test]
+    async fn a_node_admins_own_declarations_go_to_its_mesh_primary_one_in_flight_in_the_order_owed() {
+        let me: PathName = "mesh1.admin.2".parse().unwrap();
+        let me_id = id_of(&me.to_string());
+        let v = view("mesh1.admin.1", "mesh2.admin.1");
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let none = BTreeSet::new();
+        let ready = Key::OwnState(INC.into(), NodeState::ReadyForTraffic);
+        let deleting = Key::OwnState(INC.into(), NodeState::ConnectionsDeleting);
+        let mesh_primary = v.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").unwrap().clone();
+        let d = Declarer::new();
+        owed_from_view(&d, &me, &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ConnectionsDeleting, false, None, &v, &ids);
+        let due = |d: &Declarer| -> Vec<Key> { d.due(&me_id, &v, &none).into_iter().map(|(p, _)| p.key).collect() };
+        assert_eq!(due(&d), vec![ready.clone()], "its node.started first, alone");
+
+        let call = tokio::spawn(std::future::pending::<()>());
+        d.inflight.lock().unwrap().insert(ready.clone(), Inflight { to: Destination::of(&mesh_primary), task: call });
+        assert!(!due(&d).contains(&deleting), "nothing more while the node.started's call is in flight");
+        if let Some(f) = d.inflight.lock().unwrap().remove(&ready) {
+            f.task.abort();
+        }
+
+        d.record_sent(&ready, &mesh_primary, false);
+        assert!(due(&d).is_empty(), "nothing after a node.started whose call ended without an answer: it stays first");
+
+        d.record_sent(&ready, &mesh_primary, true);
+        assert_eq!(due(&d), vec![deleting.clone()], "the ConnectionsDeleting is sent on the node.started's refusal by name");
+
+        let reowed = Declarer::new();
+        reowed.owe_own(&me, &me_id, &IncarnationId::parse(INC).unwrap(), NodeState::Stopped, None);
+        owed_from_view(&reowed, &me, &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ConnectionsDeleting, false, None, &v, &ids);
+        assert_eq!(due(&reowed), vec![Key::OwnState(INC.into(), NodeState::Stopped)], "the one owed first is sent first, whatever the state's order");
+    }
+
     /// CONTRACT (states.md "Who sets each state": node ReadyForTraffic is set by "the node's
     /// mesh-primary" from "the node's node.started report, after every start gate"; lifecycles/node-name-update.md:
     /// "a stopped predecessor to or from `<name>.old`", the stopped node reads that name at its next
