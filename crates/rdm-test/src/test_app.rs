@@ -13,7 +13,9 @@
 //! It registers a second topology storage provider (storage.md §2), [`TOPOLOGY_STORAGE_TARGET`], in
 //! every executable of the testkit: RDM's file backend at a place of its own beside the fabric's store
 //! dir ([`topology_storage_dir`]), a separate durable namespace standing in for an application's
-//! backend.
+//! backend; and a third, [`TOPOLOGY_STORAGE_REFUSING`], the same backend at a place of its own whose
+//! store lines are refused by name to a copy (an application's backend that answers its list with a
+//! named error), its claims answered.
 
 use rdm_admin::wiring::{FabricHooks, FabricReadyCtx, MeshReadyCtx};
 use std::sync::Arc;
@@ -41,18 +43,92 @@ pub const TOPOLOGY_STORAGE_TARGET: &str = "test-target";
 /// (`RDM_STORE_DIR`) is `store_dir`: a directory beside it, never inside it, so the file provider's
 /// store dir holds only its own roots.
 pub fn topology_storage_dir(store_dir: &std::path::Path) -> std::path::PathBuf {
+    provider_dir(store_dir, TOPOLOGY_STORAGE_TARGET)
+}
+
+/// The name the testkit registers its third topology storage provider under: RDM's file backend at a
+/// place of its own ([`provider_dir`]) that answers a copy's read of its store lines with a named
+/// refusal ([`StorageError::Refused`](rdm_node::storage_error::StorageError::Refused)), and its claims
+/// as the file backend does.
+pub const TOPOLOGY_STORAGE_REFUSING: &str = "test-refusing";
+
+/// Where the testkit provider `provider` keeps its stores for a fabric whose store dir is `store_dir`:
+/// a directory beside it, never inside it.
+pub fn provider_dir(store_dir: &std::path::Path, provider: &str) -> std::path::PathBuf {
     let name = store_dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    store_dir.with_file_name(format!("{name}-{TOPOLOGY_STORAGE_TARGET}"))
+    store_dir.with_file_name(format!("{name}-{provider}"))
+}
+
+/// A backend whose copy lines refuse every store's list by name; everything else is `inner`'s.
+#[cfg(feature = "file-backend")]
+struct RefusesItsLines(Arc<dyn rdm_admin::storage_backend::StorageBackend>);
+
+#[cfg(feature = "file-backend")]
+#[async_trait::async_trait]
+impl rdm_admin::storage_backend::StorageBackend for RefusesItsLines {
+    fn qualify(&self, provider: rdm_admin::model::ProviderKind) -> Result<(), String> {
+        self.0.qualify(provider)
+    }
+    async fn own_row(&self, data_dir: &std::path::Path, writer: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::NodeRecord>, rdm_node::storage_error::StorageError> {
+        self.0.own_row(data_dir, writer).await
+    }
+    async fn put_own_row(&self, data_dir: &std::path::Path, writer: &rdm_admin::model::IncarnationId, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_node::storage_error::StorageError> {
+        self.0.put_own_row(data_dir, writer, record).await
+    }
+    async fn open(&self, scope: &rdm_admin::storage_backend::StorageScope) -> Result<rdm_admin::storage_backend::StorageBoundaries, String> {
+        self.0.open(scope).await
+    }
+    async fn delete_fabric(&self, data_dir: &std::path::Path, fabric_id: &rdm_admin::model::FabricId) -> Result<(), String> {
+        self.0.delete_fabric(data_dir, fabric_id).await
+    }
+    async fn lines(&self, provider: &str, fabric_id: &rdm_admin::model::FabricId) -> Result<Arc<dyn rdm_node::storage_copy::ProviderLines>, String> {
+        Ok(Arc::new(ListRefused { inner: self.0.lines(provider, fabric_id).await?, provider: provider.into() }))
+    }
+}
+
+/// A provider's lines whose every store's list is refused by name.
+#[cfg(feature = "file-backend")]
+struct ListRefused {
+    inner: Arc<dyn rdm_node::storage_copy::ProviderLines>,
+    provider: String,
+}
+
+#[cfg(feature = "file-backend")]
+#[async_trait::async_trait]
+impl rdm_node::storage_copy::ProviderLines for ListRefused {
+    async fn lines(&self, store: rdm_node::storage_copy::Store) -> Result<Vec<rdm_node::store_log::Line>, rdm_node::storage_error::StorageError> {
+        Err(rdm_node::storage_error::StorageError::Refused { file: format!("the {store} store of `{}`", self.provider), reason: "this provider lists no lines".into() })
+    }
+    async fn append_line(&self, store: rdm_node::storage_copy::Store, line: &rdm_node::store_log::Line) -> Result<(), rdm_node::storage_error::StorageError> {
+        self.inner.append_line(store, line).await
+    }
+    async fn claims(&self) -> Result<Vec<rdm_node::storage_copy::Claim>, rdm_node::storage_error::StorageError> {
+        self.inner.claims().await
+    }
+    async fn insert_claim(&self, claim: &rdm_node::storage_copy::Claim) -> Result<rdm_node::storage_copy::ClaimTaken, rdm_node::storage_error::StorageError> {
+        self.inner.insert_claim(claim).await
+    }
+    async fn remove_claim(&self, claim: &rdm_node::storage_copy::Claim) -> Result<bool, rdm_node::storage_error::StorageError> {
+        self.inner.remove_claim(claim).await
+    }
+    async fn claim(&self, kind: rdm_node::storage_copy::ClaimKind, name: &str) -> Result<Option<Vec<u8>>, rdm_node::storage_error::StorageError> {
+        self.inner.claim(kind, name).await
+    }
 }
 
 /// The topology storage providers the testkit's node-admin registers (storage.md §2): RDM's `file`
-/// backend on the fabric's store dir, and [`TOPOLOGY_STORAGE_TARGET`] on its own place beside it
-/// ([`topology_storage_dir`]), made here when absent.
+/// backend on the fabric's store dir, [`TOPOLOGY_STORAGE_TARGET`] on its own place beside it
+/// ([`topology_storage_dir`]) and [`TOPOLOGY_STORAGE_REFUSING`] on its own ([`provider_dir`]), each
+/// made here when absent.
 #[cfg(feature = "file-backend")]
 pub fn topology_storage_providers(cfg: &rdm_admin::admin::AdminConfig) -> rdm_admin::storage_backend::TopologyStorageProviders {
     let target = topology_storage_dir(&cfg.store_dir);
+    let refusing = provider_dir(&cfg.store_dir, TOPOLOGY_STORAGE_REFUSING);
     let _ = std::fs::create_dir_all(&target);
-    rdm_admin::storage_backend::TopologyStorageProviders::file(cfg.store_dir.clone()).register(TOPOLOGY_STORAGE_TARGET, rdm_admin::storage_backend::file_backend(target))
+    let _ = std::fs::create_dir_all(&refusing);
+    rdm_admin::storage_backend::TopologyStorageProviders::file(cfg.store_dir.clone())
+        .register(TOPOLOGY_STORAGE_TARGET, rdm_admin::storage_backend::file_backend(target))
+        .register(TOPOLOGY_STORAGE_REFUSING, Arc::new(RefusesItsLines(rdm_admin::storage_backend::file_backend(refusing))))
 }
 
 /// The testkit application's listener declarations, as its wiring registers them.

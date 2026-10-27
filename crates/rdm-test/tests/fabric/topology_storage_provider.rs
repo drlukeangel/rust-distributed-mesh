@@ -16,7 +16,7 @@ use rdm_client::{BuildFrame, BuildStream, CallEnd, Change, FabricDesired, Fabric
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha};
 use rdm_test::process_faults::{ExactRuntime, Fault};
-use rdm_test::test_app::{topology_storage_dir, TOPOLOGY_STORAGE_TARGET};
+use rdm_test::test_app::{topology_storage_dir, TOPOLOGY_STORAGE_REFUSING, TOPOLOGY_STORAGE_TARGET};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -711,6 +711,64 @@ async fn a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider
     assert_eq!(owed.len(), 1, "the connection event during the change lands once: {owed:#?}");
     let entry = attr(owed[0], "entry");
     assert_eq!((lines_naming(&file_root, &entry).len(), lines_naming(&target_root, &entry).len()), (1, 0), "the connection event {entry} is on {FILE} once and not on {TOPOLOGY_STORAGE_TARGET}");
+    estate.record_trace_url(&s(&read[0]["trace_id"]));
+}
+
+/// The copy's span (`rdm_node::storage_copy::COPY_SPAN`): `outcome` `copied`, `refused`, `failed` or
+/// `indeterminate`, `cause` naming why.
+const COPY: &str = "rdm.node_admin.build.update.via-storage-copy";
+
+/// CONTRACT (storage.md §2 "Changing it" (Q198): step 2, "a new provider holding lines the old one does
+/// not is refused by name, and nothing switches"; "A step that fails before the switch fails the Build
+/// only once the fabric-primary has read that no `commit` exists for `(build_id, change_id)`; the
+/// fabric-primary then sends `mesh.unblock` on the old provider, the new provider closed and the Fabric
+/// row unchanged"; "No timer ends a block"): the change names `test-refusing`, a provider that answers
+/// a copy's list of its store lines with a named refusal. The copy fails by name, once: its span ends
+/// `failed`, its cause naming the provider's refusal, and it is not read again. The fabric-primary reads
+/// that no `commit` record exists (`commit_found = false`) and only then fails the Build, its reason
+/// naming the provider and the refusal; every mesh-primary replies `unblocked` onto `file` under the
+/// change's `change_id`, after that read; the Fabric row names `file` with no previous provider; every
+/// node writes `file` and is the same birth. Must NOT happen: a named refusal read as no answer and the
+/// copy read again without end, every mesh left blocked; or the Build failed before the record is read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_provider_that_refuses_its_list_fails_the_copy_and_unblocks_on_the_old_provider() {
+    let test = "a_provider_that_refuses_its_list_fails_the_copy_and_unblocks_on_the_old_provider";
+    let (mut estate, views) = two_mesh_estate(test, &[]).await;
+    let before = births(&views);
+    let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_REFUSING).await;
+    let change_id = attr(&blocked_at(&estate, &build_id, "mesh1").await, "change_id");
+    let frames = match tokio::time::timeout(STEP, terminal(&estate, stream)).await {
+        Ok(frames) => frames,
+        Err(_) => {
+            estate.stop().await;
+            let copies: Vec<String> = of_build(&estate.spans(), COPY, &build_id, None).into_iter().map(|sp| format!("{} {}", attr(sp, "outcome"), attr(sp, "cause"))).collect();
+            panic!("Build {build_id} never ended within {STEP:?}: every mesh is still blocked; its copies: {copies:#?}");
+        }
+    };
+    estate.artifact("frames.json", &json!(format!("{frames:?}")));
+    match frames.last() {
+        Some(BuildFrame::Failed { reason, .. }) => assert!(reason.contains(TOPOLOGY_STORAGE_REFUSING) && reason.contains("lists no lines"), "the Build's failure names the provider and its refusal: {reason}"),
+        last => panic!("the change fails before its switch: {last:?}"),
+    }
+    fabric_names(&estate.fabric_view().await, FILE, &[]);
+    let after = estate.node_views().await;
+    nodes_write(&after, FILE);
+    assert_eq!(births(&after), before, "every node is the same birth");
+    estate.stop().await;
+    let spans = estate.spans();
+    let copies = of_build(&spans, COPY, &build_id, None);
+    assert_eq!(copies.len(), 1, "the copy answered by name is not read again: {copies:#?}");
+    assert!(attr(copies[0], "outcome") == "failed" && attr(copies[0], "cause").contains(TOPOLOGY_STORAGE_REFUSING), "the copy fails by name, naming the provider's refusal: {}", copies[0]);
+    let read: Vec<&Value> = of_build(&spans, SWITCH, &build_id, None).into_iter().filter(|sp| attr(sp, "change_id") == change_id && yes(sp, "commit_found") == Some(false)).collect();
+    assert!(!read.is_empty(), "the fabric-primary read that no commit record exists for ({build_id}, {change_id}) before it failed the Build");
+    for mesh in ["mesh1", "mesh2"] {
+        let own: Vec<&Value> = of_build(&spans, UNBLOCK, &build_id, Some(mesh)).into_iter().filter(|sp| sp["attributes"]["outcome"] == "unblocked").collect();
+        assert!(!own.is_empty(), "{mesh}'s mesh-primary replied unblocked after the failure");
+        for sp in own {
+            assert_eq!((attr(sp, "change_id"), attr(sp, "provider")), (change_id.clone(), FILE.to_string()), "{mesh}: unblocked onto {FILE} under the change: {sp}");
+            assert!(read.iter().any(|r| start_ns(r) <= start_ns(sp)), "{mesh}: unblocked only once no commit is read: {sp}");
+        }
+    }
     estate.record_trace_url(&s(&read[0]["trace_id"]));
 }
 

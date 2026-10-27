@@ -18,6 +18,14 @@ pub enum StorageError {
         /// Why it is not recognised.
         reason: String,
     },
+    /// The backend answered and refused the read or write by name (it cannot list the store, or it
+    /// refuses the call): asked again, it answers the same.
+    Refused {
+        /// What the read or write touched.
+        file: String,
+        /// The refusal, as the backend names it.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for StorageError {
@@ -25,6 +33,7 @@ impl std::fmt::Display for StorageError {
         match self {
             Self::Io { file, reason } => write!(f, "{file}: {reason}"),
             Self::Unrecognised { file, reason } => write!(f, "{file} is not a record this build recognises: {reason}"),
+            Self::Refused { file, reason } => write!(f, "{file} is refused: {reason}"),
         }
     }
 }
