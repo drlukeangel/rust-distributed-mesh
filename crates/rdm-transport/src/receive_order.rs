@@ -370,6 +370,9 @@ pub(crate) struct ReceiveOrder {
     /// Each mesh's installed publisher, version, complete image and last gossip publication.
     /// Read-answer snapshot ordinals never replace an author's retained publication identity.
     installed: HashMap<String, InstalledSource>,
+    /// The version this node published last of each mesh it publishes, under its exact birth: its
+    /// own publications are its floor for its own source, a read included. Never an installed image.
+    published: HashMap<String, (PublisherId, u64)>,
 }
 
 #[derive(Debug)]
@@ -441,19 +444,33 @@ impl ReceiveOrder {
         self.below_installed("topology-read", mesh, publisher, topology_version, || format!("topology_version={topology_version}"))
     }
 
-    /// `Err` when the source version installed of `mesh` is `publisher`'s, above `topology_version`.
+    /// `Err` when `publisher`'s floor of `mesh` ([`Self::floor`]) is above `topology_version`.
     fn below_installed(&self, frame: &'static str, mesh: &str, publisher: &PublisherId, topology_version: u64, offered: impl FnOnce() -> String) -> Result<(), Earlier> {
-        match self.installed.get(mesh) {
-            Some(h) if &h.publisher == publisher && topology_version < h.version => {
-                Err(Earlier { frame, source: mesh.to_string(), held: format!("publisher={} topology_version={}", h.publisher, h.version), offered: offered() })
+        match self.floor(mesh, publisher) {
+            Some(held) if topology_version < held => {
+                Err(Earlier { frame, source: mesh.to_string(), held: format!("publisher={publisher} topology_version={held}"), offered: offered() })
             }
             _ => Ok(()),
         }
     }
 
-    /// The `topology_version` of the source version installed of `mesh`.
-    pub(crate) fn installed_version(&self, mesh: &str) -> Option<u64> {
-        self.installed.get(mesh).map(|h| h.version)
+    /// The version of `mesh` that orders `publisher`'s publications and reads here: the higher of the
+    /// source version installed, when it is `publisher`'s, and the version this node published itself
+    /// as `publisher`. `None` when neither is held.
+    pub(crate) fn floor(&self, mesh: &str, publisher: &PublisherId) -> Option<u64> {
+        let installed = self.installed.get(mesh).filter(|h| &h.publisher == publisher).map(|h| h.version);
+        let published = self.published.get(mesh).filter(|(p, _)| p == publisher).map(|(_, v)| *v);
+        installed.max(published)
+    }
+
+    /// This node published `mesh` as `publisher` at `topology_version`: from now on its floor for that
+    /// source (gossip.md receive rules: "against the installed floor, including a topology read").
+    /// The caller holds the publisher's version lock, so the floor moves with the version it assigns.
+    pub(crate) fn published(&mut self, mesh: &str, publisher: &PublisherId, topology_version: u64) {
+        match self.published.get_mut(mesh) {
+            Some((p, v)) if p == publisher => *v = (*v).max(topology_version),
+            _ => { self.published.insert(mesh.to_string(), (publisher.clone(), topology_version)); }
+        }
     }
 
     /// `mesh`'s snapshot state moved to `publisher`'s `topology_version`: a snapshot installed or a
@@ -651,6 +668,31 @@ mod tests {
         assert_eq!(order.admit(&mesh_topology("mesh1", &p, 250, 9, 0)), Ok(()), "the publisher's full at the installed version is taken");
         assert_eq!(order.admit(&mesh_topology("mesh1", &other, 260, 1, 0)), Ok(()), "another publisher is not ordered against that revision");
         assert_eq!(order.admit_read("mesh2", &p, 1), Ok(()), "another mesh is another source");
+    }
+
+    /// CONTRACT (gossip.md receive rules, `MeshTopology`: "`P(topology_version)` against the installed
+    /// floor, including a topology read"; #3211 red 2): what this node published of its own mesh is its
+    /// floor for that source, so its own exact birth's read or full below it is refused naming the
+    /// version published, at it is taken, and another publisher of the mesh is not ordered against it.
+    /// The installed floor of the same publisher still orders when it is the higher. Must NOT happen:
+    /// a primary at its published v28 installing a read of its own v25.
+    #[test]
+    fn a_read_of_its_own_source_below_the_version_it_published_is_refused() {
+        let mut order = ReceiveOrder::default();
+        let (me, other) = (publisher("mesh2.admin.2"), publisher("mesh2.admin.1"));
+        order.published("mesh2", &me, 27);
+        order.published("mesh2", &me, 28);
+        order.published("mesh2", &me, 26);
+        let held = format!("publisher={me} topology_version=28");
+        assert_eq!(order.admit_read("mesh2", &me, 25), Err(Earlier { frame: "topology-read", source: "mesh2".into(), held: held.clone(), offered: "topology_version=25".into() }));
+        assert_eq!(order.floor("mesh2", &me), Some(28), "the floor never moves down");
+        assert_eq!(order.admit(&mesh_topology("mesh2", &me, 1_000, 25, 0)).map_err(|e| e.held), Err(held), "its own full below what it published is refused too");
+        assert_eq!(order.admit_read("mesh2", &me, 28), Ok(()), "a read of the version it published is not refused for its order");
+        assert_eq!(order.admit_read("mesh2", &other, 3), Ok(()), "another publisher is not ordered against this node's publications");
+        assert_eq!(order.admit_read("mesh1", &me, 1), Ok(()), "another mesh is another source");
+        order.installed("mesh2", &me, 30, None);
+        assert_eq!(order.floor("mesh2", &me), Some(30), "the installed floor of the same publisher orders when it is the higher");
+        assert!(order.admit_read("mesh2", &me, 29).is_err());
     }
 
     /// CONTRACT (R-RX3: Digest orders by `digest_seq`, per birth; gossip.md §3.1: a new incarnation's

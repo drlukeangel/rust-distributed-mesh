@@ -2256,7 +2256,7 @@ impl View {
                 publisher = %chunk.publisher,
             )
             .in_scope(|| tracing::info!("a topology read of a version below the one this node installed of its source: ignored"));
-            let held_version = order.installed_version(&chunk.mesh).unwrap_or_default();
+            let held_version = order.floor(&chunk.mesh, &chunk.publisher).unwrap_or_default();
             drop(order);
             record_own(own_digests);
             return Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version, offered_version: chunk.topology_version });
@@ -3535,6 +3535,9 @@ impl Backbone {
             let full = self.own_full(topology_view, members);
             let before = v.version();
             let version = v.observe(&full);
+            // What this primary publishes is its floor for its own source (gossip.md receive rules:
+            // "against the installed floor, including a topology read"), moved under the same hold.
+            self.topology_view.view.order.lock().unwrap().published(&self.mesh, &publisher, version);
             let snapshot_id = v.next_snapshot_id();
             *self.own.lock().unwrap() = Some((version, full.clone()));
             let sent = if self.full_due.swap(false, Ordering::Relaxed) {
@@ -3685,7 +3688,9 @@ impl Backbone {
             let mut v = self.version.lock().unwrap();
             topology_view.view.apply_status_event(kind, op, None, "executed");
             let full = self.own_full(topology_view, self.own_members(topology_view));
-            ("mesh-primary", v.observe(&full))
+            let version = v.observe(&full);
+            topology_view.view.order.lock().unwrap().published(&self.mesh, &publisher, version);
+            ("mesh-primary", version)
         } else {
             topology_view.view.apply_status_event(kind, op, None, "executed");
             ("executor", self.version.lock().unwrap().version())
