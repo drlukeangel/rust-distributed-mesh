@@ -149,9 +149,8 @@ impl NodeConfigs {
         }
         let (row_storage, row_placement) = onto_row.map_or((None, None), |(s, p)| (Some(s), Some(p)));
         let base = NodeRow { config: config.clone(), storage_persistence: row_storage, placement: row_placement, ..NodeRow::new(subject.name.clone(), node_id.clone(), subject.status) };
-        let status = subject.status;
+        // A config put moves no status (node-status.md: "never a meta or config put"): the record's stands.
         let refused = match self.written.update(storage, node_id, Some(base), |r| {
-            r.status = status;
             r.config = config.clone();
             if onto_row.is_some() {
                 (r.storage_persistence, r.placement) = (row_storage, row_placement);

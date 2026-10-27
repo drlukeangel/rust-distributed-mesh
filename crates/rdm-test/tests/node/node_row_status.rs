@@ -8,7 +8,7 @@
 
 use rdm_client::{Frame, NodeView};
 use rdm_core::PathName;
-use rdm_test::estate::{Estate, Owner};
+use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
@@ -47,9 +47,13 @@ fn row_status(root: &Path, node_id: &str) -> String {
 }
 
 /// CONTRACT: every node of a ready-for-traffic fabric has `ready-for-traffic` on its durable row, as
-/// stored. A stopped node's row carries its stopped status once `node.stop` completes, and a start puts
-/// `ready-for-traffic` back on the row once `node.start` completes: the mesh-primary writes the status
-/// on the row at each transition, before the transition's reply.
+/// stored. Through `node.connections.delete { All }`, `node.stop`, `node.start` and `node.delete` of one
+/// rpc node, its row says, once each call completes, `connections-deleted`, `stopped`,
+/// `ready-for-traffic` and `deleted`; and its mesh-primary wrote on its row, in states.md's order, each
+/// status "Who sets each state" names on the way (one `rdm.node_admin.node.update.via-row-status` span
+/// each, `written`): pending and ready-for-traffic at its create, then connections-deleting,
+/// connections-deleted, stopping, stopped, starting, pending, ready-for-traffic and deleting. Inside
+/// node.stop the node's connections-deleting leaves the row stopping.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let mut estate = Estate::bootstrap(owner("a_node_row_carries_its_status_through_ready_stop_and_start"), "fabric1", "mesh1").await;
@@ -67,16 +71,26 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let (path, node_id): (PathName, String) = (subject.name.clone(), subject.node_id.to_string());
     let nodes = estate.nodes_obj().await;
 
-    // Stopped: states.md names the status `stopped`; the code's NodeStatus has no `Stopped` and calls a
-    // stopped node `leaving` (rdm-core model.rs `NodeStatus::Leaving`, as node.get answers it).
-    let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
-    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    assert_eq!(row_status(&root, &node_id), "leaving", "{path}'s row carries its stopped status once node.stop completed");
-
-    // Started again: the row says ready-for-traffic.
-    let started = frames(nodes.start(&path).await.expect("the start was accepted")).await;
-    assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
-    assert_eq!(row_status(&root, &node_id), "ready-for-traffic", "{path}'s row is ready-for-traffic once node.start completed");
+    for (call, then) in [("node.connections.delete", "connections-deleted"), ("node.stop", "stopped"), ("node.start", "ready-for-traffic"), ("node.delete", "deleted")] {
+        let stream = match call {
+            "node.connections.delete" => nodes.delete_connections(&path).await,
+            "node.stop" => nodes.stop(&path).await,
+            "node.start" => nodes.start(&path).await,
+            _ => nodes.delete(&path).await,
+        };
+        let frames = frames(stream.unwrap_or_else(|e| panic!("{call} of {path} was refused: {e}"))).await;
+        assert_eq!(frames.last(), Some(&Frame::Complete), "{call}: {frames:?}");
+        assert_eq!(row_status(&root, &node_id), then, "{path}'s row says {then} once {call} completed");
+    }
 
     estate.stop().await;
+    let spans = estate.spans();
+    let mut written: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-row-status").into_iter().filter(|sp| sp["attributes"]["node_id"] == node_id.as_str() && sp["attributes"]["outcome"] == "written").collect();
+    written.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
+    let written: Vec<&str> = written.iter().map(|sp| sp["attributes"]["status"].as_str().unwrap_or_default()).collect();
+    assert_eq!(
+        written,
+        ["Pending", "ReadyForTraffic", "ConnectionsDeleting", "ConnectionsDeleted", "Stopping", "Stopped", "Starting", "Pending", "ReadyForTraffic", "Deleting"],
+        "{path}'s mesh-primary wrote each status at its transition, in states.md's order"
+    );
 }

@@ -2159,7 +2159,7 @@ impl DeploymentPipeline<'_> {
                 name: PathName { old: false, ..name.clone() },
                 event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
             };
-            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), Box::pin(self.deleting_row(&req.node, op.clone()))).await?;
             self.lifecycle.deleting(&op).await;
             self.terminate_step(&mut run, &req.node, &req.handle).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
@@ -2233,7 +2233,7 @@ impl DeploymentPipeline<'_> {
         };
         // The receipt first, then the publish: the Build facts carry the overlay from the
         // moment it is announced, so a successor derives it from the same facts.
-        let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+        let op = self.step(&mut run, RetireStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone()))).await?;
         self.lifecycle.deleting(&op).await;
         let terminal = if req.unreached {
             // An unreached birth (node-recovery.md sequence step 3): nothing is sent to it and no node
@@ -2313,7 +2313,7 @@ impl DeploymentPipeline<'_> {
                 name: name.clone(),
                 event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
             };
-            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone()))).await?;
             self.lifecycle.deleting(&op).await;
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Lenient, StopEnd::Stop { publish_stopped: true }).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
@@ -2357,6 +2357,15 @@ impl DeploymentPipeline<'_> {
     /// mesh's rows writes `record`'s row `Deleted` at its `path.name`, the record and its config
     /// kept; a refusal fails the step by name. `unreached`: the delete of an unreached birth
     /// ([`crate::node_rows::NodeRows::deleted_unreached`]).
+    /// The `NodeDeleting` step's row (states.md "Who sets each state": deleting from node.delete's adopted
+    /// claim): `Deleting` written on the node's record before the step's receipt.
+    async fn deleting_row(&self, record: &Node, op: LifecycleOp) -> Result<LifecycleOp, String> {
+        if let Some(rows) = self.sink.node_rows() {
+            rows.status(record, &op.incarnation, crate::model::NodeStatus::Deleting).await.map_err(|e| format!("{}: the Deleting row of {} is not written: {e}", record.name, record.node_id))?;
+        }
+        Ok(op)
+    }
+
     async fn deleted_row(&self, record: &Node, op: LifecycleOp, unreached: bool) -> Result<LifecycleOp, String> {
         if let Some(rows) = self.sink.node_rows() {
             let written = if unreached { rows.deleted_unreached(record, &op.operation).await } else { rows.deleted(record, &op.operation).await };

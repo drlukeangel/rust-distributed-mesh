@@ -41,6 +41,20 @@ pub enum NodeStatus {
     /// node's record carries it, appended where the record was once removed, and a name claim wins
     /// over it as over a `Deleted` one. Appended last: no variant before it moves.
     Withdrawn,
+    /// Starting: the node's row from the accepted node.start execution (inside node.create, or on a
+    /// stopped node) until its join is accepted (states.md "Who sets each state"). A row status the
+    /// node's mesh-primary writes; appended after `Withdrawn`, as are the four below: no variant
+    /// before them moves.
+    Starting,
+    /// Connections-deleted: the node's row once its node.connections.delete { All } completed
+    /// `Established`.
+    ConnectionsDeleted,
+    /// Stopping: the node's row once its stop's `CommandAccepted` admission frame arrived.
+    Stopping,
+    /// Stopped: the node's row once the matching stopped frame arrived: a live, stopped process.
+    Stopped,
+    /// Deleting: the node's row once node.delete's claim was adopted (published as NodeDeleting).
+    Deleting,
 }
 
 impl NodeStatus {
@@ -272,6 +286,10 @@ mod tests {
         assert_eq!(serde_json::from_str::<crate::MemberStatus>("\"connections-deleting\"").unwrap(), crate::MemberStatus::ConnectionsDeleting);
         assert_eq!(postcard::to_allocvec(&crate::views::NodeStatus::ConnectionsDeleting).unwrap(), [2], "the view enum position stands");
         assert_eq!(postcard::to_allocvec(&crate::MemberStatus::ConnectionsDeleting).unwrap(), [2], "the projection enum position stands");
+        for (status, spelled, at) in [(NodeStatus::Starting, "starting", 9u8), (NodeStatus::ConnectionsDeleted, "connections-deleted", 10), (NodeStatus::Stopping, "stopping", 11), (NodeStatus::Stopped, "stopped", 12), (NodeStatus::Deleting, "deleting", 13)] {
+            assert_eq!(serde_json::to_value(status).unwrap(), spelled, "the row status is spelled as states.md names it");
+            assert_eq!(postcard::to_allocvec(&status).unwrap(), [at], "appended after Withdrawn: no position moves");
+        }
         assert_eq!(serde_json::to_value(NodeKind::RpcNode).unwrap(), "rpc_node");
         assert_eq!(serde_json::to_value(NodeKind::NodeAdmin).unwrap(), "node_admin");
         let n = Node::allocated("mesh1.rpc.2".parse().unwrap());

@@ -469,7 +469,9 @@ impl NodeRows {
                 };
                 span.record("node", me.to_string().as_str());
                 span.record("awaited", "writer-check");
-                self.put_seeded(&me, name, node_id, NodeStatus::Pending, config, allocated, executable, tags, placed, of, &span, "writer-check").await
+                // A create's claim is the record's first write, and the node is starting (states.md "Who
+                // sets each state": starting from the accepted node.start execution inside node.create).
+                self.put_seeded(&me, name, node_id, NodeStatus::Starting, config, allocated, executable, tags, placed, of, &span, "writer-check").await
             },
             span.clone(),
         )
@@ -614,6 +616,16 @@ impl NodeRows {
         }).await?.ok_or_else(|| format!("{me}: no record of {} is held to keep its declaration", d.node.node_id))?;
         tracing::info_span!("rdm.node_admin.node.update.via-types", node = %d.node.name, node_id = %d.node.node_id, incarnation = %d.node.incarnation, types = row.app_types.as_ref().unwrap().types.len()).in_scope(|| tracing::info!("the birth's declaration is recorded"));
         Ok(())
+    }
+
+    /// The status `status` of `record`'s birth `incarnation` on its record, written whole
+    /// ([`crate::storage::NodeRow::set_status`]): a node with no record held anywhere is written nothing.
+    /// One `rdm.node_admin.node.update.via-row-status` span.
+    pub async fn status(&self, record: &Node, incarnation: &IncarnationId, status: NodeStatus) -> Result<(), String> {
+        let me = self.held_name().await;
+        let written = self.written.update(&*self.storage, &record.node_id, None, |r| r.set_status(incarnation, status)).await;
+        crate::status_rpc::row_status_span(&me, &record.name, &record.node_id, incarnation, status, &written);
+        written.map(|_| ())
     }
 
     /// `NodeDeleted` (lifecycles/node-delete.md step 3): the row at the node's `path.name` (its `.old`
@@ -1334,7 +1346,6 @@ pub async fn move_row(storage: &dyn NodesStorage, written: &WrittenRows, me: &Pa
     take_name(storage, to, node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the claim of {to} for {node_id}: {e}")))?.map_err(RenameRefused::NameHeld)?;
     let mut row = held.unwrap_or_else(|| NodeRow { config: record.config.clone(), ..NodeRow::new(from.clone(), node_id.clone(), record.status) });
     row.name = to.clone();
-    row.status = record.status;
     row.allocated = None;
     row.renamed_from = Some(from.clone());
     row.inherited_by = None;

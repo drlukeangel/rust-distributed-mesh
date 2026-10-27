@@ -351,6 +351,9 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     for (status, expected) in [
         (NodeStatus::Pending, "00"), (NodeStatus::ReadyForTraffic, "01"), (NodeStatus::ConnectionsDeleting, "02"), (NodeStatus::Leaving, "03"),
         (NodeStatus::PendingReconnect, "04"), (NodeStatus::Reserved5, "05"), (NodeStatus::Dead, "06"), (NodeStatus::Deleted, "07"),
+        // The row statuses states.md names beside them, appended after Deleted: no position before them moves.
+        (NodeStatus::Starting, "08"), (NodeStatus::ConnectionsDeleted, "09"), (NodeStatus::Stopping, "0a"), (NodeStatus::Stopped, "0b"),
+        (NodeStatus::Deleting, "0c"),
     ] { golden(status, expected); }
     for (status, expected) in [
         (ScopeStatus::Pending, "00"), (ScopeStatus::ReadyForTraffic, "01"), (ScopeStatus::Leaving, "02"), (ScopeStatus::Dead, "03"),

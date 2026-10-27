@@ -218,7 +218,7 @@ fn a_plain_create_carries_its_create_specs_config_and_a_recovery_inherits_the_de
         mp.rows.claim_spec(&"mesh1.rpc.2".parse().unwrap(), &NodeId::mint(), "node.create:mesh1.rpc.2", None, None, &blue, &tier("gold"), None, ClaimFor::Recovery).await.expect("the Deleted row holds no name");
         (row, other.record_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
     });
-    assert_eq!(row, Some(NodeRow { topology_storage_provider: None, name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }), "the new birth holds the row with its create spec's config and tags");
+    assert_eq!(row, Some(NodeRow { topology_storage_provider: None, name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Starting, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }), "the new birth holds the row with its create spec's config and tags");
     let recovered = recovered.expect("the recovered birth's row");
     assert_eq!((recovered.config, recovered.tags), (tier("silver"), ["red".to_string()].into()), "a recovery inherits the Deleted row's config and tags");
     let spans: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
@@ -1607,7 +1607,7 @@ async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId,
 fn a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_seeded() {
     let cap = capture();
     let (row, exited, born, blue) = cap.run(recovered(false));
-    assert_eq!(row, Some(NodeRow { topology_storage_provider: None, name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }), "the new node holds the row, seeded from the exited node's config and tags");
+    assert_eq!(row, Some(NodeRow { topology_storage_provider: None, name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Starting, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }), "the new node holds the row, seeded from the exited node's config and tags");
     assert_eq!(blue, [born.clone()].into(), "the claim indexed the label under the new node's id, the exited node's left with its Deleted row");
     let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(deleted.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(exited.as_str()), Some("row-deleted"))], "{deleted:#?}");
@@ -1623,7 +1623,7 @@ fn a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_
 fn a_recovered_node_claimed_before_the_exited_ones_deleted_row_is_refused_name_held_then_seeded() {
     let cap = capture();
     let (row, exited, born, blue) = cap.run(recovered(true));
-    assert_eq!(row, Some(NodeRow { topology_storage_provider: None, name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }), "the new node holds the row once the name is free, with the exited node's config and tags");
+    assert_eq!(row, Some(NodeRow { topology_storage_provider: None, name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Starting, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }), "the new node holds the row once the name is free, with the exited node's config and tags");
     assert_eq!(blue, [born.clone()].into(), "the label is indexed under the new node's id only");
     let created = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     assert_eq!(created.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(born.as_str()), Some("name-held")), (Some(born.as_str()), Some("row-seeded"))], "{created:#?}");
@@ -1652,7 +1652,7 @@ fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() 
         assert_eq!(storage.name_claim(&exited.name).await.unwrap(), Some(born.clone()), "the replacement keeps the name");
         (storage.record_at(&exited.name).await.unwrap(), exited.node_id, born, storage.tagged("blue").await.unwrap())
     });
-    assert_eq!(row.as_ref().map(|r| (&r.node_id, r.status)), Some((&born, NodeStatus::Pending)), "the replacement's row stands: {row:?}");
+    assert_eq!(row.as_ref().map(|r| (&r.node_id, r.status)), Some((&born, NodeStatus::Starting)), "the replacement's row stands: {row:?}");
     assert_eq!(blue, [born.clone()].into(), "the label stays indexed under the replacement");
     let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(deleted.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(exited.as_str()), Some("row-deleted")), (Some(exited.as_str()), Some("name-held"))], "{deleted:#?}");

@@ -1241,25 +1241,36 @@ impl StatusAuthority {
 impl StatusAuthority {
     /// Keep the declared state `row`, and the operation effect that produced it when one did, on its
     /// birth's node record: the record held, the facts applied, written whole (a birth of another mesh:
-    /// the fabric-primary accepting the join report of a birth of a mesh with no primary, Q97). The
-    /// record's status is the state its newest birth declared (node-identity-and-state.md §4: "its
-    /// **status** — the readiness on its durable row"; states.md "Who sets each state"), written in the
-    /// same put, before the declaration is answered; a `Deleted` or `Withdrawn` record stands, and a
-    /// birth a restart superseded moves no status.
-    async fn put_declared(&self, row: &crate::status_rpc::Declaration, operation: Option<&OperationEffect>) -> Result<(), String> {
+    /// the fabric-primary accepting the join report of a birth of a mesh with no primary, Q97). A state
+    /// that moves the birth (`moves`, not one already applied) is also the record's status
+    /// (node-identity-and-state.md §4: "its **status** — the readiness on its durable row"; states.md
+    /// "Who sets each state"), in the same put, before the declaration is answered
+    /// ([`crate::storage::NodeRow::set_status`]), with one `rdm.node_admin.node.update.via-row-status`
+    /// span.
+    async fn put_declared(&self, row: &crate::status_rpc::Declaration, operation: Option<&OperationEffect>, moves: bool) -> Result<(), String> {
         let base = crate::storage::NodeRow::new(row.name.clone(), row.node_id.clone(), crate::model::NodeStatus::Pending);
-        self.caches.nodes.update(&*self.nodes_storage, &row.node_id, Some(base), |r| {
+        let status = node_status_of(row.state);
+        let written = self.caches.nodes.update(&*self.nodes_storage, &row.node_id, Some(base), |r| {
             let birth = r.birth_mut(&row.incarnation_id, &row.name);
             birth.declared.insert(row.state);
             if let Some(o) = operation {
                 birth.apply_operation(&o.operation, o.state);
             }
-            let declared = birth.declared_state();
-            let newest = r.newest_birth().is_some_and(|b| b.incarnation_id == row.incarnation_id);
-            if let Some(state) = declared.filter(|_| newest && !matches!(r.status, crate::model::NodeStatus::Deleted | crate::model::NodeStatus::Withdrawn)) {
-                r.status = node_status_of(state);
-            }
-        }).await.map(|_| ())
+            moves && r.set_status(&row.incarnation_id, status)
+        }).await;
+        if moves {
+            row_status_span(&self.me, &row.name, &row.node_id, &row.incarnation_id, status, &written);
+        }
+        written.map(|_| ())
+    }
+
+    /// Write `status` on the record of `node_id` for its birth `incarnation`, whole, at the transition
+    /// states.md "Who sets each state" names ([`crate::storage::NodeRow::set_status`]); a node with no
+    /// record held anywhere is written nothing. One `rdm.node_admin.node.update.via-row-status` span.
+    pub(crate) async fn put_status(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &crate::model::PathName, status: crate::model::NodeStatus) -> Result<(), String> {
+        let written = self.caches.nodes.update(&*self.nodes_storage, node_id, None, |r| r.set_status(incarnation, status)).await;
+        row_status_span(&self.me, name, node_id, incarnation, status, &written);
+        written.map(|_| ())
     }
 
     /// The name of the mesh carrying `mesh_id`: a mesh this admin's Build created, else one its view
@@ -1517,6 +1528,15 @@ impl StatusAuthority {
                         if let Some(digest_view) = &self.digest_view { let _ = set_member_status(digest_view, MemberStatusReceipt::StopAdmitted(&op)); }
                         tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation).in_scope(|| tracing::info!("CommandAccepted reports the stop's admission; this mesh-primary sets stopping"));
                     }
+                    // The admission sets the node's status on its row (states.md "Who sets each state":
+                    // stopping from the stop's CommandAccepted; starting from the accepted node.start
+                    // execution), durable before the admission is acknowledged.
+                    let status = if start { Some(crate::model::NodeStatus::Starting) } else if !completed { Some(crate::model::NodeStatus::Stopping) } else { None };
+                    if let Some(status) = status {
+                        if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.name, status)).await {
+                            return A::Indeterminate { code: Code::Unavailable, reason: format!("{} admitted; its {status:?} row was not written: {e}", request_name(start)) };
+                        }
+                    }
                     None
                 }
                 R::StopConnectionsDeleted { receipt } if !start => { closure = Some(receipt.clone()); None }
@@ -1666,6 +1686,13 @@ impl StatusAuthority {
                         // The node reported it: this mesh-primary records and publishes the state the
                         // node entered (states.md "Who sets each state"), never before.
                         reported = true;
+                        if all {
+                            if let Err(e) = Box::pin(self.put_status(node_id, incarnation, &subject.name, crate::model::NodeStatus::ConnectionsDeleting)).await {
+                                let reason = format!("{me_name}: {} reported connections-deleting and its row was not written: {e}", subject.name);
+                                tracing::Span::current().record("detail", reason.as_str());
+                                return CarryEnd::Incomplete { reported, reason, code: rdm_core::outcome::Code::Unavailable };
+                            }
+                        }
                         let recorded = self.digest_view.as_ref().is_some_and(|digest_view| set_member_status(digest_view, MemberStatusReceipt::ConnectionsDeleting { node_id, incarnation }) == Ok(true));
                         let position = frames.position();
                         let span = tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", invocation_id = tracing::field::Empty, seq = tracing::field::Empty, node = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), recorder = %me_name, reported_by = "node", recorded, "otel.kind" = "internal");
@@ -1679,6 +1706,15 @@ impl StatusAuthority {
                         tracing::Span::current().record("closed", closed.len()).record("held", held.len());
                         let kept = ConnectionsDeletedReceipt { all, held: held.clone(), status_at_cut: if all { crate::model::NodeStatus::ConnectionsDeleting } else { subject.status } };
                         self.declared.lock().unwrap().connections_deleted.insert((node_id.clone(), incarnation.clone()), kept);
+                        if all && matches!(receipt, Some(rdm_core::status::ConnectionsReceipt::Established { .. })) {
+                            // states.md "Who sets each state": connections-deleted from the completion
+                            // carrying `Established`, on the row before the completion is acknowledged.
+                            if let Err(e) = Box::pin(self.put_status(node_id, incarnation, &subject.name, crate::model::NodeStatus::ConnectionsDeleted)).await {
+                                let reason = format!("{me_name}: {} completed its node.connections.delete and its row was not written: {e}", subject.name);
+                                tracing::Span::current().record("detail", reason.as_str());
+                                return CarryEnd::Incomplete { reported, reason, code: rdm_core::outcome::Code::Unavailable };
+                            }
+                        }
                         if let Some(r) = &receipt {
                             // Established completes the closure; Deadline leaves the birth connections-deleting
                             // with its incomplete receipt (node-connections-delete.md steps 4-5).
@@ -1779,7 +1815,10 @@ impl StatusAuthority {
             return reply;
         }
         let put = match &effect {
-            Effect::Node(row, ..) => self.put_declared(row, operation.as_ref()).await.map_err(|e| format!("the node declared-state fact: {e}")),
+            Effect::Node(row, state, _) => {
+                let moves = transition(self.declared.lock().unwrap().node(&row.node_id, &row.incarnation_id), *state) == Transition::Apply;
+                self.put_declared(row, operation.as_ref(), moves).await.map_err(|e| format!("the node declared-state fact: {e}"))
+            }
             Effect::Mesh(..) => unreachable!("a Mesh status is committed by commit_mesh_state above"),
             Effect::Fabric(..) => unreachable!("a Fabric event is committed by commit_fabric_event above"),
         };
@@ -1886,15 +1925,29 @@ pub type Rename = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName) -> std::pin::Pin<B
 /// This mesh-primary's view taking a row `node.name.update` moved: `(from, node_id, incarnation, to)`.
 pub type RowMoved = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName, NodeId, rdm_core::IncarnationId, rdm_core::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
-/// The status a node's row carries for the state its birth declared: a stopped birth is `Leaving`, the
-/// status a stopped node is held in (`node_state_of` reads it back as `Stopped`).
+/// The one `rdm.node_admin.node.update.via-row-status` span of a status write on `subject`'s record by
+/// `me`: `written` when the status moved, `unchanged` when the record's status stands (states.md's
+/// order, [`crate::storage::NodeRow::set_status`]), `no-record` when no record is held, `refused` with
+/// the store's error.
+pub(crate) fn row_status_span(me: &impl std::fmt::Display, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, written: &Result<Option<bool>, String>) {
+    let outcome = match written {
+        Ok(Some(true)) => "written",
+        Ok(Some(false)) => "unchanged",
+        Ok(None) => "no-record",
+        Err(_) => "refused",
+    };
+    tracing::info_span!("rdm.node_admin.node.update.via-row-status", node = %me, subject = %subject, node_id = %node_id, incarnation_id = %incarnation.as_str(), status = ?status, outcome, error = %written.as_ref().err().map(String::as_str).unwrap_or(""), "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("the node's status is written on its record"));
+}
+
+/// The status a node's row carries for the state its birth declared.
 pub fn node_status_of(s: NodeState) -> crate::model::NodeStatus {
     use crate::model::NodeStatus as S;
     match s {
         NodeState::Pending => S::Pending,
         NodeState::ReadyForTraffic => S::ReadyForTraffic,
         NodeState::ConnectionsDeleting => S::ConnectionsDeleting,
-        NodeState::Stopped => S::Leaving,
+        NodeState::Stopped => S::Stopped,
     }
 }
 
@@ -1905,7 +1958,9 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
         S::Pending => NodeState::Pending,
         S::ReadyForTraffic => NodeState::ReadyForTraffic,
         S::ConnectionsDeleting => NodeState::ConnectionsDeleting,
-        S::Leaving | S::Reserved5 | S::PendingReconnect | S::Dead | S::Deleted | S::Withdrawn => NodeState::Stopped,
+        S::Starting => NodeState::Pending,
+        S::ConnectionsDeleted | S::Stopping => NodeState::ConnectionsDeleting,
+        S::Leaving | S::Reserved5 | S::PendingReconnect | S::Dead | S::Deleted | S::Withdrawn | S::Stopped | S::Deleting => NodeState::Stopped,
     }
 }
 

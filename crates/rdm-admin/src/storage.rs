@@ -782,6 +782,43 @@ impl NodeRow {
         Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None }
     }
 
+    /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets
+    /// each state" names for the birth `birth`: whether the status moved. A `Deleted` or `Withdrawn`
+    /// record stands; a birth that is not the record's newest moves nothing. A start of a stopped node
+    /// (`Starting`) and a new join (`Pending`, from any status but `Deleting`) begin its next cycle (a
+    /// create's claim writes `Starting` as the record's first status); every other status
+    /// only moves forward along states.md's order (starting, pending, ready-for-traffic,
+    /// connections-deleting, connections-deleted, stopping, stopped, deleting), so inside node.stop the
+    /// node's ConnectionsDeleting leaves it stopping, and a delete's stop leaves it deleting.
+    pub fn set_status(&mut self, birth: &IncarnationId, to: crate::model::NodeStatus) -> bool {
+        use crate::model::NodeStatus as S;
+        fn order(s: S) -> u8 {
+            match s {
+                S::Starting => 0,
+                S::Pending => 1,
+                S::ReadyForTraffic | S::PendingReconnect | S::Dead | S::Reserved5 => 2,
+                S::ConnectionsDeleting => 3,
+                S::ConnectionsDeleted => 4,
+                S::Stopping => 5,
+                S::Stopped | S::Leaving => 6,
+                S::Deleting => 7,
+                S::Deleted | S::Withdrawn => 8,
+            }
+        }
+        let current = self.status;
+        let newest = self.newest_birth().is_none_or(|b| b.incarnation_id == *birth);
+        let moves = match to {
+            _ if matches!(current, S::Deleted | S::Withdrawn) || !newest => false,
+            S::Starting => matches!(current, S::Stopped | S::Leaving),
+            S::Pending => current != S::Deleting,
+            _ => order(to) > order(current),
+        };
+        if moves {
+            self.status = to;
+        }
+        moves && current != to
+    }
+
     /// The facts of the node's newest birth, if the record keeps any.
     pub fn newest_birth(&self) -> Option<&BirthFacts> {
         self.births.last()
@@ -1587,6 +1624,29 @@ mod tests {
         let op = crate::store_log::Op { node_id: "n".into(), incarnation_id: "i".into(), seq: 1 };
         std::fs::OpenOptions::new().append(true).open(root.dir().join(crate::store_root::MESHES_FILE)).and_then(|mut f| std::io::Write::write_all(&mut f, &crate::store_log::encode_line(&op, "mesh-record/9", mesh.mesh_id.as_str(), b"{}"))).unwrap();
         assert!(matches!(m.mesh(&mesh.mesh_id).await, Err(StorageError::Unrecognised { .. })));
+    }
+
+    /// CONTRACT (node-identity-and-state.md §4; states.md "Who sets each state"): a node's status on its
+    /// record follows states.md's order through a stop and a start, a declaration inside node.stop
+    /// leaves it stopping, a delete's stop leaves it deleting, a superseded birth moves nothing, and a
+    /// `Deleted` record stands.
+    // @feature: node-lifecycle
+    #[test]
+    fn a_node_records_status_follows_the_order_states_md_names() {
+        use crate::model::NodeStatus as S;
+        let (birth, old) = (IncarnationId::mint(), IncarnationId::mint());
+        let mut r = NodeRow::new("mesh1.rpc.1".parse().unwrap(), NodeId::mint(), S::Starting);
+        r.birth_mut(&old, &r.name.clone());
+        r.birth_mut(&birth, &r.name.clone());
+        let walk = |r: &mut NodeRow, steps: &[(S, S)]| for (to, then) in steps { r.set_status(&birth, *to); assert_eq!(r.status, *then, "after {to:?}"); };
+        walk(&mut r, &[(S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic), (S::Starting, S::ReadyForTraffic), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
+        walk(&mut r, &[(S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::Stopping), (S::ReadyForTraffic, S::Stopping), (S::Stopped, S::Stopped)]);
+        walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
+        walk(&mut r, &[(S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::ConnectionsDeleting, S::ConnectionsDeleted)]);
+        walk(&mut r, &[(S::Deleting, S::Deleting), (S::Stopping, S::Deleting), (S::Stopped, S::Deleting), (S::Pending, S::Deleting), (S::Starting, S::Deleting)]);
+        assert!(!r.clone().set_status(&old, S::Deleted), "a superseded birth moves no status");
+        r.status = S::Deleted;
+        walk(&mut r, &[(S::Pending, S::Deleted), (S::Starting, S::Deleted)]);
     }
 
     fn row(name: &str) -> NodeRow {

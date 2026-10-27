@@ -38,6 +38,11 @@ pub(crate) fn node_status(s: crate::model::NodeStatus) -> NodeStatus {
         // A withdrawn create's node never ran and no view holds it; its record, read anyway, is a node
         // whose name is released, as a Deleted one's is. The view's vocabulary does not move.
         S::Withdrawn => NodeStatus::Deleted,
+        S::Starting => NodeStatus::Starting,
+        S::ConnectionsDeleted => NodeStatus::ConnectionsDeleted,
+        S::Stopping => NodeStatus::Stopping,
+        S::Stopped => NodeStatus::Stopped,
+        S::Deleting => NodeStatus::Deleting,
     }
 }
 
