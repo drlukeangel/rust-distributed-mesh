@@ -1855,7 +1855,8 @@ mod tests {
     /// resolves the node its create made at the name the rename released). A step whose `Complete` is
     /// receipted in an attempt that carried these steps is not planned again; a `Complete` of the same
     /// operation in an attempt that carried another action is no progress. Refused by name: no
-    /// step, an operation named twice, and a step on a path no birth holds and no earlier step makes.
+    /// step, an operation named twice, and a step on a path no birth holds and no earlier step makes
+    /// (`unknown-node`, build.md §4.4 gate 4, its detail naming the step and the target; Q223).
     #[test]
     fn a_build_plans_its_steps_in_order_and_never_reruns_a_completed_one() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
@@ -1920,12 +1921,18 @@ mod tests {
             steps_action(vec![Step::Stop { node: path.clone() }, Step::Stop { node: path.clone() }], &o),
             Err(BuildReject::StepRepeated { operation: "node.stop:mesh1.rpc.1".into() })
         );
-        assert_eq!(steps_action(vec![Step::Start { node: "mesh1.rpc.9".parse().unwrap() }], &o), Err(BuildReject::StepNodeUnknown { step: 1, node: "mesh1.rpc.9".into() }));
-        assert_eq!(
-            steps_action(vec![Step::Update { node: path.clone(), name: path.renamed() }, Step::Stop { node: path.clone() }], &o),
-            Err(BuildReject::StepNodeUnknown { step: 2, node: "mesh1.rpc.1".into() }),
-            "the node left the path at its rename: nothing is at it for the stop"
-        );
+        // build.md §4.4 gate 4 (Q223): a step on a path no birth holds is refused `unknown-node`, the one
+        // name the gate gives, its detail naming the step and the target.
+        let unknown = [
+            (vec![Step::Start { node: "mesh1.rpc.9".parse().unwrap() }], 1, "mesh1.rpc.9", "no birth at the path"),
+            (vec![Step::Update { node: path.clone(), name: path.renamed() }, Step::Stop { node: path.clone() }], 2, "mesh1.rpc.1", "the node left the path at its rename: nothing is at it for the stop"),
+        ];
+        for (steps, step, node, why) in unknown {
+            let reject = steps_action(steps, &o).expect_err(why);
+            assert_eq!(reject.reason(), "unknown-node", "{why}: {reject}");
+            let detail = reject.to_string();
+            assert!(detail.contains(&format!("step {step} ")) && detail.contains(&format!("`{node}`")), "{why}: the detail names the step and the target: {detail}");
+        }
     }
 
     /// CONTRACT: a standalone node.connections.delete or stop plans its one operation (`node.connections.delete:<path>` /

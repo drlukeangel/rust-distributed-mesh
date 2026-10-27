@@ -1074,6 +1074,48 @@ async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
     estate.record_trace_url(create["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (build.md §4.4 gate 4: "A node stands at the path | the fabric-primary's view by name ... |
+/// `unknown-node`"; Q223: one gate, one refusal, whatever the Build): steps whose first step stops the
+/// live `mesh1.rpc.1` and whose second starts `mesh1.rpc.9`, a path no birth holds and no earlier step
+/// makes, are refused at acceptance `unknown-node`, the detail naming step 2 and `mesh1.rpc.9`, under
+/// the fabric-primary's `rdm.node_admin.build.reject.via-unknown-node` span naming both. Nothing
+/// executes: the accepted Build opens no attempt and records no receipt, and `mesh1.rpc.1` is still
+/// the same birth in the same process, ready-for-traffic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn steps_naming_an_unknown_node_are_refused_unknown_node_naming_the_step_and_execute_nothing() {
+    let (mut estate, birth) = estate("steps_naming_an_unknown_node_are_refused_unknown_node_naming_the_step_and_execute_nothing").await;
+    const NODE: &str = "mesh1.rpc.1";
+    const UNKNOWN: &str = "mesh1.rpc.9";
+    let path: PathName = NODE.parse().unwrap();
+    let nodes = objects(&estate).await;
+    let before = estate.meshes_obj().await.nodes("mesh1", None).await.expect("mesh.nodes.get").into_iter().find(|n| n.name == path).expect("node.get lists the node");
+    let pid = estate.pid_of(NODE).await;
+    let b0 = build_log::build_value(&estate.carrier().await, &birth).await;
+
+    let steps = vec![Step::Stop { node: path.clone() }, Step::Start { node: UNKNOWN.parse().unwrap() }];
+    let (reason, detail) = match nodes.steps(steps).await {
+        Err(CallEnd::Rejected { reason, detail }) => (reason, detail),
+        Err(other) => panic!("steps naming an unknown node end Rejected: {other:?}"),
+        Ok(_) => panic!("steps naming an unknown node were accepted"),
+    };
+    assert_eq!(reason, "unknown-node", "the one name build.md §4.4 gate 4 gives: {detail}");
+    assert!(detail.contains("step 2 ") && detail.contains(&format!("`{UNKNOWN}`")), "the detail names the step and the target: {detail}");
+
+    let b1 = build_log::build_value(&estate.carrier().await, &birth).await;
+    assert_eq!((&b1["attempt"], b1["steps"].as_array().map(Vec::len)), (&b0["attempt"], b0["steps"].as_array().map(Vec::len)), "the refusal opened no attempt and recorded no receipt: {b0:#} / {b1:#}");
+    let after = estate.meshes_obj().await.nodes("mesh1", None).await.expect("mesh.nodes.get").into_iter().find(|n| n.name == path).expect("node.get lists the node");
+    assert!(after.status == NodeStatus::ReadyForTraffic && !after.stopped, "step 1 never ran: {after:?}");
+    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth");
+    assert_eq!(estate.pid_of(NODE).await, pid, "the same process");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let refused: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-unknown-node").into_iter().filter(|sp| s(&sp["attributes"]["detail"]).contains("step 2 ") && s(&sp["attributes"]["detail"]).contains(&format!("`{UNKNOWN}`"))).collect();
+    assert_eq!(refused.len(), 1, "the fabric-primary's refusal span, its detail naming the step and the target: {refused:#?}");
+    assert!(named(&spans, "rdm.node_admin.status.update.via-stop-node").into_iter().all(|sp| sp["attributes"]["operation"] != format!("node.stop:{NODE}").as_str()), "no stop of {NODE} ran");
+    estate.artifact("refused.json", &json!({"reason": reason, "detail": detail, "span": refused[0]}));
+}
+
 /// CONTRACT (node-replace.md step 3: "Its row inherits config and tags from the predecessor row (the
 /// retained `<name>.old` row ...), whose labels leave the active tags index"; Inherited: "The
 /// successor's tag-index entries use its own id. Retained predecessor labels are removed from the
