@@ -1590,6 +1590,7 @@ mod tests {
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
+            resubmits: Arc::default(),
         };
         (recovery, nodes_storage, member)
     }
@@ -1640,6 +1641,130 @@ mod tests {
             assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id"), attr("verdict")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.to_string(), verdict.to_string()), "{verdict}: keyed on the exact birth: {a:?}");
             eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
         }
+    }
+
+    /// CONTRACT (node-recovery.md "Execution": "While the mesh is cut from the fabric-primary, its
+    /// recoveries fail by name and run after the heal"; "Failure and receipts": the mesh-primary submits
+    /// again; node-rpc.md §43, the one backoff rule): a birth whose submit ended without the recovery is
+    /// submitted again after the gossip interval, each later time after twice the delay before, to the
+    /// staleness floor; a recovery that ran, or a birth the tick no longer owes, is due at once. Over ten
+    /// seconds of submits that fail every time, ticked every gossip interval, the birth is inspected and
+    /// submitted six times, not twenty. Must NOT happen: a failing submit made again on every tick, with
+    /// a provider inspection each.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_recovery_submit_that_ends_without_the_recovery_is_made_again_under_the_one_backoff_rule() {
+        use crate::deployment::provider::DeploymentStatus;
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-backoff")).unwrap();
+        let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+        member.node.runtime = Some(fact.clone());
+        let digest_view = DigestView::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+            digest_view.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: DeploymentStatus::Running, inspected: Default::default() });
+        let (recovery, _, node) = recovery_of(&view, digest_view, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()));
+        let birth = (node.node_id.clone(), node.incarnation_id.clone().expect("the member's birth"));
+
+        // The submitter's real tick: this rig builds no Build door, so the submit ends without the
+        // recovery, and the birth is not due again at once. The submit's span carries its backoff.
+        let capture = crate::span_capture::Capture::new("i143-3214-recovery-backoff");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        assert!(recovery.submit_due(&birth, std::time::Instant::now()), "a birth with no failed submit is due at once");
+        recovery.recover(&node).await;
+        assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 1, "the tick inspected the birth once");
+        let held = recovery.resubmits.lock().unwrap().get(&birth).copied().expect("a submit that ended without the recovery is owed again later");
+        assert_eq!(held.failures, 1, "{held:?}");
+        assert!(!recovery.submit_due(&birth, std::time::Instant::now()), "not due again on the next instant: {held:?}");
+        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+        assert_eq!(submits.len(), 1, "one submit span: {submits:?}");
+        let backoff: u64 = submits[0].attributes.get("backoff_ms").and_then(|v| v.parse().ok()).unwrap_or_else(|| panic!("the failed submit's span records its backoff: {:?}", submits[0].attributes));
+        let gossip = rdm_core::cadence::gossip_interval().as_millis() as u64;
+        assert!(backoff >= gossip * 3 / 4 && backoff <= (gossip * 5 / 4).min(rdm_core::cadence::staleness_floor().as_millis() as u64), "the first backoff is the gossip interval ({gossip} ms, ±25 %): {backoff} ms");
+        eprintln!("span {} trace_id={} {:?}", submits[0].name, submits[0].trace_id, submits[0].attributes);
+
+        // The schedule, on the gate's cadences without jitter: 500 ms, doubling, to the 3 s floor.
+        let pacing = rdm_transport::delivery::Pacing { cadence: std::time::Duration::from_millis(500), floor: std::time::Duration::from_secs(3), jitter: false };
+        recovery.forget_resubmits(|_| false);
+        assert!(recovery.submit_due(&birth, std::time::Instant::now()), "a birth the tick no longer owes keeps no backoff");
+        let t0 = std::time::Instant::now();
+        let (mut submits, mut delays) = (0u32, Vec::new());
+        for tick in 0..20u32 {
+            let now = t0 + pacing.cadence * tick;
+            if recovery.submit_due(&birth, now) {
+                submits += 1;
+                delays.push(recovery.resubmit_after(&birth, false, &pacing, now).expect("a failed submit is owed again").as_millis() as u64);
+            }
+        }
+        eprintln!("ten seconds of failing submits, one tick per gossip interval: {submits} submits, delays {delays:?} ms (every tick: 20)");
+        assert_eq!(delays, [500, 1_000, 2_000, 3_000, 3_000, 3_000], "the gossip interval, doubling, capped at the staleness floor");
+        assert_eq!(submits, 6, "six submits in ten seconds, not one per tick");
+        assert_eq!(recovery.resubmit_after(&birth, true, &pacing, t0), None, "a recovery that ran owes nothing more");
+        assert!(recovery.submit_due(&birth, t0), "and its birth, unheard again, is due at once");
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and the verdict", Q209: "After a retryable recovery-submit
+    /// failure, that exact birth becomes eligible again after a backoff doubling from the gossip interval
+    /// to the staleness floor"; the ruling's bounds: an accepted, unfinished recovery is reattached or
+    /// continued, never submitted as competing work; successful recovery, the birth returning, or its
+    /// replacement clears the backoff): the tick's one gate, `take_eligible`. A birth whose submit is in
+    /// flight is never taken again, eligible or not, until its follower ends; a failed submit makes only
+    /// that exact birth wait, never another birth or the next birth at its path.name; whatever the run of
+    /// failures, the birth is eligible again within one staleness floor of its last failure, so a mesh
+    /// whose connectivity returns submits within the floor; a recovery that ran, or a birth the tick
+    /// forgets (returned, replaced), is eligible at once. Must NOT happen: a second submit of a birth
+    /// whose submit is in flight, a backoff past the floor, or a backoff kept by a returned or replaced birth.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn the_ticks_gate_takes_a_birth_once_while_in_flight_and_again_within_the_floor_after_a_failure() {
+        let digest_view = DigestView::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic)] {
+            digest_view.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        let provider = Arc::new(Answers { domain: String::new(), status: crate::deployment::provider::DeploymentStatus::Running, inspected: Default::default() });
+        let (recovery, _, node) = recovery_of(&view, digest_view, provider, Arc::new(crate::storage::MemoryNodesStorage::default()));
+        let birth = (node.node_id.clone(), node.incarnation_id.clone().expect("the node's birth"));
+        let replacement = (NodeId::mint(), IncarnationId::mint());
+        let in_flight: Mutex<HashSet<(NodeId, IncarnationId)>> = Mutex::default();
+        let pacing = rdm_transport::delivery::Pacing { cadence: std::time::Duration::from_millis(500), floor: std::time::Duration::from_secs(3), jitter: true };
+        let t0 = std::time::Instant::now();
+
+        // In flight: taken once, never again while its follower runs, on any tick.
+        assert!(recovery.take_eligible(&birth, t0, &in_flight), "a birth with nothing in flight and no backoff is taken");
+        for tick in 1..40u32 {
+            assert!(!recovery.take_eligible(&birth, t0 + pacing.cadence * tick, &in_flight), "tick {tick}: an accepted, unfinished submit is followed, never submitted again beside it");
+        }
+        // Its follower ends without the recovery: in flight no more, eligible after its backoff only.
+        in_flight.lock().unwrap().remove(&birth);
+        let first = recovery.resubmit_after(&birth, false, &pacing, t0).expect("a failed submit owes a backoff");
+        assert!(!recovery.take_eligible(&birth, t0, &in_flight), "not eligible inside its backoff ({first:?})");
+        assert!(recovery.take_eligible(&replacement, t0, &in_flight), "another birth, the next at its path.name, does not wait on it");
+        assert!(recovery.take_eligible(&birth, t0 + first, &in_flight), "eligible once its backoff has passed");
+        in_flight.lock().unwrap().remove(&birth);
+
+        // However long the failures run, the next submit is within one floor of the last: connectivity
+        // returning is answered within the floor plus the run itself.
+        let mut last = t0;
+        for failure in 2..30u32 {
+            last += std::time::Duration::from_millis(137 * u64::from(failure));
+            let after = recovery.resubmit_after(&birth, false, &pacing, last).expect("a failed submit owes a backoff");
+            assert!(after <= pacing.floor, "failure {failure}: the backoff {after:?} is capped at the staleness floor");
+            assert!(recovery.take_eligible(&birth, last + pacing.floor, &in_flight), "failure {failure}: eligible again within one floor of the failure");
+            in_flight.lock().unwrap().remove(&birth);
+        }
+
+        // The recovery ran: no backoff. A returned or replaced birth the tick forgets: none either.
+        recovery.resubmit_after(&birth, false, &pacing, last);
+        assert_eq!(recovery.resubmit_after(&birth, true, &pacing, last), None, "a recovery that ran owes no backoff");
+        assert!(recovery.take_eligible(&birth, last, &in_flight), "eligible at once after the recovery ran");
+        in_flight.lock().unwrap().remove(&birth);
+        recovery.resubmit_after(&birth, false, &pacing, last);
+        recovery.resubmit_after(&replacement, false, &pacing, last);
+        recovery.forget_resubmits(|b| *b == replacement);
+        assert!(recovery.take_eligible(&birth, last, &in_flight), "a birth returned or replaced, forgotten by the tick, keeps no backoff");
+        assert!(!recovery.take_eligible(&replacement, last, &in_flight), "a birth the tick still owes keeps its backoff");
     }
 
     /// CONTRACT (node-recovery.md "Failure and receipts": "the mesh-primary is the submitter that
@@ -1702,6 +1827,7 @@ mod tests {
             builds,
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
+            resubmits: Arc::default(),
         };
         assert_eq!(recovery.owed_submits(false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the seat");
         assert_eq!(recovery.owed_submits(true, "mesh1").await, vec![], "another mesh's primary is owed none of mesh2's exits");

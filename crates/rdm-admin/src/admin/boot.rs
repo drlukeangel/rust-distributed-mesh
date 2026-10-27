@@ -2452,6 +2452,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         .map(Path::to_path_buf)
                                                         .unwrap_or_else(|| cfg.data_dir.clone()),
                                                     gone_dirs: Arc::default(),
+                                                    resubmits: Arc::default(),
                                                 };
                                                 // A refused caller (Q207) is decided by its path.name and this admin's atlas, and acts
                                                 // through this recovery submitter's terminate report and the heard-again door.
@@ -2704,13 +2705,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // exact runtime of each member of its own mesh, its secondary node-admins included
                                                 // (mesh-recovery.md:8-9), and the verdict opens the recovery at once, keyed on the
                                                 // birth. Re-evaluated every tick while the member stays TRUE OFFLINE, so a recovery
-                                                // that failed is submitted again.
+                                                // that failed is submitted again once its birth is eligible (node-recovery.md, Q209):
+                                                // a birth whose last submit ended without the recovery is neither inspected nor
+                                                // submitted until its backoff, doubling from the gossip interval to the staleness
+                                                // floor, has passed, and a birth whose submit is in flight is followed, never
+                                                // submitted again beside it (`RecoverySubmitter::take_eligible`).
                                                 {
                                                     let offline = records.offline.lock().unwrap().clone();
+                                                    let now = std::time::Instant::now();
                                                     for n in recovery_due(holds_seat, &mesh, &watched, &offline) {
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let birth = (n.node_id.clone(), incarnation);
-                                                        if !in_flight.lock().unwrap().insert(birth.clone()) {
+                                                        if !recovery.take_eligible(&birth, now, &in_flight) {
                                                             continue;
                                                         }
                                                         let (recovery, n) = (recovery.clone(), n.clone());
@@ -2722,19 +2728,23 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // accepted Build stopped at a Failed attempt is submitted again, read from the
                                                     // durable facts each tick, whether or not the view still holds it (a workflow
                                                     // whose delete completed departed it) and whoever submitted it before. One submit
-                                                    // per birth in flight, whichever way it is due.
-                                                    for owed in recovery.owed_submits(holds_seat, &mesh).await {
+                                                    // per birth in flight, whichever way it is due, and on the same backoff.
+                                                    let owed_now = recovery.owed_submits(holds_seat, &mesh).await;
+                                                    let owed_births: HashSet<(NodeId, IncarnationId)> = owed_now.iter().map(|o| (o.node_id.clone(), o.incarnation.clone())).collect();
+                                                    for owed in owed_now {
                                                         let birth = (owed.node_id.clone(), owed.incarnation.clone());
-                                                        if !in_flight.lock().unwrap().insert(birth.clone()) {
+                                                        if !recovery.take_eligible(&birth, now, &in_flight) {
                                                             continue;
                                                         }
                                                         let recovery = recovery.clone();
                                                         crate::offline::spawn_recovery_follower(&stop, in_flight.clone(), birth, async move {
-                                                            if let Err(e) = recovery.submit_owed(&owed).await {
-                                                                tracing::info!(node = %owed.path, error = %e, "the submit of an owed recovery ended without the recovery");
-                                                            }
+                                                            let _ = recovery.submit_owed(&owed).await;
                                                         });
                                                     }
+                                                    // A birth owed nothing now (heard again, gone from the view or replaced at its
+                                                    // path.name, or this admin no longer its mesh-primary) keeps no backoff: unheard
+                                                    // again, it is eligible at once (Q209).
+                                                    recovery.forget_resubmits(|birth| holds_seat && (offline.contains(birth) || owed_births.contains(birth)));
                                                     // A second birth another executor made at a path.name of this mesh across a cut:
                                                     // superseded, its row written deleted and its NodeDeleted published, so its next
                                                     // digest is a deleted birth heard again (node-investigation.md, Q142).

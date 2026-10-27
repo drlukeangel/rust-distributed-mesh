@@ -401,6 +401,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     assert!(!opened.is_empty(), "the held attempt is the recovery of {victim} the fabric-primary opened: {claimed}");
     drop(cut);
     let healed = std::time::Instant::now();
+    let healed_ns = now_ns();
     let held_ms = (now_ns() - cut_at) / 1_000_000;
 
     // Within a floor of the heal (and the sweep's gossip interval), every admin's view converges.
@@ -445,6 +446,42 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     let read_running = |sp: &Value| sp["events"].as_array().is_some_and(|ev| ev.iter().any(|e| s(&e["attributes"]["verdict"]) == "running" && s(&e["attributes"]["subject"]) == fp));
     assert!(ran.iter().any(|sp| attr(sp, "arm") == "backbone" && read_running(sp)), "{victim} ran fabric recovery's backbone arm on {fp} and read it running: {ran:#?}");
     eprintln!("the cut held {held_ms} ms; {victim}'s backbone arm: {:?}", ran.iter().map(|sp| (attr(sp, "arm"), read_running(sp), attr(sp, "outcome"))).collect::<Vec<_>>());
+
+    // Q209 (node-recovery.md "Detection and the verdict": "After a retryable recovery-submit failure, that
+    // exact birth becomes eligible again after a backoff doubling from the gossip interval to the staleness
+    // floor"): the cut admin, mesh2's primary in its own view with no fabric-primary in it, fails each
+    // recovery of the mesh2 births it cannot reach by name (Q118). Per birth, each failed submit records its
+    // backoff, at most the floor, and the next submit of that birth, with its provider inspection, starts
+    // no earlier than the backoff after the failed one ended. Must NOT happen: a failed submit made again,
+    // with an inspection, on every tick (the held commit's flame: 22 inspections in 5 s).
+    let end = |sp: &Value| sp["end_unix_nano"].as_u64().unwrap_or(0);
+    let in_cut = |sp: &&Value| at(sp) >= cut_at && at(sp) <= healed_ns;
+    let mut cut_submits: std::collections::BTreeMap<String, Vec<&Value>> = std::collections::BTreeMap::new();
+    for sp in named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(in_cut).filter(|sp| attr(sp, "submitter") == victim && attr(sp, "node").starts_with("mesh2.")) {
+        cut_submits.entry(attr(sp, "node_id")).or_default().push(sp);
+    }
+    let mut paced = 0usize;
+    for (node_id, submits) in &mut cut_submits {
+        submits.sort_by_key(|sp| at(sp));
+        for pair in submits.windows(2) {
+            let backoff_ms: u64 = attr(pair[0], "backoff_ms").parse().unwrap_or_else(|_| panic!("{victim}'s failed submit of {node_id} records its backoff: {}", pair[0]));
+            assert!(Duration::from_millis(backoff_ms) <= floor, "{victim}'s backoff of {node_id} is at most the staleness floor: {backoff_ms} ms");
+            let gap_ms = at(pair[1]).saturating_sub(end(pair[0])) / 1_000_000;
+            assert!(gap_ms + 2 >= backoff_ms, "{victim} submitted {node_id} again {gap_ms} ms after a failed submit whose backoff was {backoff_ms} ms: {} then {}", pair[0], pair[1]);
+            paced += 1;
+        }
+        let inspections = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(in_cut).filter(|sp| attr(sp, "inspector") == victim && attr(sp, "node_id") == *node_id).count();
+        assert!(inspections <= submits.len() + 1, "{victim} inspected {node_id} only for a submit: {inspections} inspections, {} submits", submits.len());
+        eprintln!("Q209: {victim} under the {held_ms} ms cut: {node_id} submitted {} times (every tick: {}), inspected {inspections} times, backoffs {:?} ms", submits.len(), held_ms / gossip.as_millis().max(1) as u64, submits.iter().map(|sp| attr(sp, "backoff_ms")).collect::<Vec<_>>());
+    }
+    assert!(paced > 0, "{victim} failed a recovery of a mesh2 birth and submitted it again under the cut, so the backoff was read: {cut_submits:?}");
+    // The held recovery of the cut admin is accepted and unfinished: mesh2's primary follows it and never
+    // submits it as competing work (Q209); every open the fabric-primary makes for that birth names one attempt.
+    let attempts: std::collections::BTreeSet<(String, String)> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| at(sp) >= cut_at && attr(sp, "node_id") == victim_id).map(|sp| (bare(attr(sp, "build_id")), attr(sp, "attempt"))).collect();
+    assert_eq!(attempts.len(), 1, "one attempt for {victim}'s accepted, unfinished recovery: {attempts:?}");
+    let mut followed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| at(sp) >= cut_at && attr(sp, "submitter") == mesh2_primary && attr(sp, "node_id") == victim_id).collect();
+    followed.sort_by_key(|sp| at(sp));
+    assert!(followed.windows(2).all(|p| at(p[1]) >= end(p[0])), "{mesh2_primary} never submits {victim} while its submit is in flight: {followed:#?}");
     if let Some(run) = ran.first() {
         estate.record_trace_url(&s(&run["trace_id"]));
     }

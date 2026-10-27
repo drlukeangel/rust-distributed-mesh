@@ -28,8 +28,9 @@ node.create of a node-admin into the live mesh.)
 
 ## Detection and the verdict
 
-The mesh-primary runs one loop for its own members, on every gossip interval, never on a timer of its
-own:
+The mesh-primary runs one loop for its own members on every gossip interval, never on a timer of its
+own. After a retryable recovery-submit failure, that exact birth becomes eligible again after a backoff
+doubling from the gossip interval to the staleness floor.
 
 1. **Silence.** Each node's pruner marks a member `PendingReconnect` once it is unheard past the
    staleness floor. Nothing is sent; the mark comes from the digests not arriving. Peers stop routing
@@ -88,7 +89,7 @@ own:
    address it held, its logs kept beside the data dir first; a process leaves nothing), so no runtime of
    a superseded birth stays on the host; a runtime already removed terminates as done (Q145). A
    terminate the provider refuses ends the attempt `Failed { step: TerminateRuntime, reason }` by name;
-   the next tick's investigation decides again.
+   the next tick after its backoff decides again.
 4. [node.create](node-create.md) at the same path.name, its spec naming the old data dir when the
    verdict was `exited` (or a newly allocated data dir otherwise, and when the old data dir is absent,
    `R-FM2`): it loads the endpoint key from the kept data dir (or mints a new endpoint key in the fresh
@@ -134,8 +135,8 @@ sequenceDiagram
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty); here the
 mesh-primary is the submitter that resubmits by `build_id`. A member unheard during a workflow belongs
-to that workflow: its Build ends Failed, and the mesh-primary's next tick investigates the member again
-and submits the recovery.
+to that workflow: its Build ends Failed, and the mesh-primary's next tick after its backoff investigates
+the member again and submits the recovery.
 
 One failed attempt owes no exit and is never submitted again: an adoption launch's claimed attempt
 abandoned because the lost birth or a live node-admin answered before its first mutation
