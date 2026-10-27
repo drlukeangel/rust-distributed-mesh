@@ -600,9 +600,12 @@ impl FabricAtlas {
 
     /// `n`, a birth a node read answers, as this atlas holds it (node-rpc-envelope.md node.get: the
     /// node reads are answered from the `FabricAtlas`): the name its record holds, and the lifecycle the
-    /// ops left it in (a completed stop: stopped; a completed start of a birth the gossip view still
-    /// holds stopped: ready for traffic). `false` when an op deleted the birth: it is not answered. The
-    /// gossip view's status stands where no op moved the birth (R-FA3: context).
+    /// ops left it in (a completed stop: stopped; a completed start: ready for traffic over every state
+    /// its stop and its start pass through, the gossip view's stopped birth and its `Starting` and
+    /// `Pending` before the mesh-primary's ReadyForTraffic, node-start.md "Completion", so a projection
+    /// published before the start completed never moves it backward, R-FA3). `false` when an op deleted
+    /// the birth: it is not answered. The gossip view's status stands where no op moved the birth, and
+    /// over a completed start where it is a state after ready for traffic (R-FA3: context).
     pub(crate) fn answer(&self, n: &mut crate::model::Node) -> bool {
         let held = self.held.lock().unwrap();
         if let Some(r) = held.records.get(&n.node_id).filter(|r| r.status != NodeStatus::Withdrawn) {
@@ -616,7 +619,7 @@ impl FabricAtlas {
                 n.status = NodeStatus::Leaving;
                 n.routable = false;
             }
-            Some(Lifecycle::Started) if n.stopped => {
+            Some(Lifecycle::Started) if n.stopped || matches!(n.status, NodeStatus::Starting | NodeStatus::Pending) => {
                 n.stopped = false;
                 n.status = NodeStatus::ReadyForTraffic;
             }
