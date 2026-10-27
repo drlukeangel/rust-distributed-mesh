@@ -397,12 +397,32 @@ impl TopologyStorageHandle {
     /// Open the provider this executable registers as `provider` on this admin's scope, and close it
     /// again: what the fabric-primary's acceptance of a storage change asks before anything is accepted
     /// (storage.md §2 "Changing it": "Acceptance refuses by name a provider the fabric-primary's wiring
-    /// does not register or cannot open"). A name not registered, or a provider that does not open, is
-    /// refused by name.
+    /// does not register or cannot open"). Opened for the change is opened for its copy too: the
+    /// provider's lines are opened and every store the copy reads, and its claims, are read. A name not
+    /// registered, a provider that does not open, or lines that do not open or are not answered (a named
+    /// refusal and no answer alike: acceptance is a request, and no block waits on it) are refused by
+    /// name.
     pub async fn opens(&self, provider: &str) -> Result<(), String> {
         let boundaries = self.providers.named(provider)?.open(&self.scope).await?;
         drop(boundaries);
+        self.copy_opens(provider).await
+    }
+
+    /// The lines of `provider` a storage change's copy reads, opened and read once.
+    #[cfg(feature = "file-backend")]
+    async fn copy_opens(&self, provider: &str) -> Result<(), String> {
+        let lines = self.providers.lines(provider, &self.scope.fabric_id).await.map_err(|e| format!("its lines do not open for the copy: {e}"))?;
+        for store in rdm_node::storage_copy::Store::ALL {
+            lines.lines(store).await.map_err(|e| format!("its {store} store's lines are not read for the copy: {e}"))?;
+        }
+        lines.claims().await.map_err(|e| format!("its claims are not read for the copy: {e}"))?;
         Ok(())
+    }
+
+    /// A build without the file backend copies no provider's lines (`storage_change::copy_stores`).
+    #[cfg(not(feature = "file-backend"))]
+    async fn copy_opens(&self, provider: &str) -> Result<(), String> {
+        Err(format!("this build copies no provider's lines, `{provider}`'s included"))
     }
 
     /// Call `written` with the provider the admin writes each time it moves to another, so the rows it

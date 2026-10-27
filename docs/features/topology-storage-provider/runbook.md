@@ -48,6 +48,7 @@ Read which step's span is the last one recorded for the `build_id`.
 | some meshes' `via-block`, not every mesh's | a mesh-primary whose in-flight commands have not completed, or a mesh-primary that does not reply | read that mesh's in-flight commands; a mesh-primary that does not reply is a lost node, and node investigation re-creates it at its `path.name` as an attempt of the change's own Build ([node investigation](../../architecture/lifecycles/node-investigation.md)). Nothing to do but read |
 | every `via-block`, no `via-storage-copy` | the copy cannot open a provider | see [An unavailable provider](#an-unavailable-provider) |
 | `via-storage-copy` ending `indeterminate` (`cause` names the store's error), repeated | a provider that does not answer during the copy | see [An unavailable provider](#an-unavailable-provider) |
+| `via-storage-copy` ending `failed` (`cause` names the provider and its error), once | a provider that answered the copy with a named error: it refused, or holds what this build does not recognise | the change fails before its switch: see [An unavailable provider](#an-unavailable-provider) |
 | `via-storage-switch` ending `no-answer` (`reason`), repeated | the new provider does not answer the insert or the read of the `commit` record | see [An unavailable provider](#an-unavailable-provider); never decide the change from a lost answer |
 | some meshes' `via-unblock` | a node that has not moved yet: see [A node that refuses its move](#a-node-that-refuses-its-move) | read that mesh's `via-storage-move` and `via-storage-move-lost` spans |
 
@@ -62,14 +63,21 @@ Cells: `every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_chang
 
 **At acceptance.** The fabric-primary refuses by name a provider its wiring does not register,
 `topology-storage-provider-not-registered`, nothing accepted (cell: `an_unsupported_provider_changes_nothing`),
-and opens a registered one other than the Fabric row's on its own scope: one that does not open is
-refused by name, `topology-storage-provider-not-opened`, the detail naming why, nothing accepted and
-no mesh-primary blocked (cell: `a_provider_that_does_not_open_changes_nothing`;
-`crates/rdm-admin/src/control_plane.rs`).
+and opens a registered one other than the Fabric row's on its own scope, with the lines the copy
+reads: every store's and its claims. One that does not open, whose lines do not open, or whose lines
+are refused or not answered is refused by name, `topology-storage-provider-not-opened`, the detail
+naming why, nothing accepted and no mesh-primary blocked (cells:
+`a_provider_that_does_not_open_changes_nothing`, `a_provider_whose_lines_do_not_open_changes_nothing`,
+`a_provider_that_refuses_its_list_at_acceptance_changes_nothing`; `crates/rdm-admin/src/control_plane.rs`,
+`TopologyStorageHandle::opens`).
 
 **During the change.** A provider that does not answer never decides anything. The copy and the switch
 read it again, with backoff, until it answers; a mesh-primary's `mesh.unblock` reads the `commit` record
-again until it answers. The mesh-primaries stay blocked meanwhile, and every node keeps serving.
+again until it answers. The mesh-primaries stay blocked meanwhile, and every node keeps serving. A
+provider that answers the copy with a named error (it refuses, or holds what this build does not
+recognise) fails the copy by name, once (`via-storage-copy` `outcome = failed`); the Build fails once
+no `commit` record is read, and every mesh-primary is unblocked on the old provider (cell:
+`a_provider_that_refuses_its_list_fails_the_copy_and_unblocks_on_the_old_provider`).
 
 What the person on call does:
 

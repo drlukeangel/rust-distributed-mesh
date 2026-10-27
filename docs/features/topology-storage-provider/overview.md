@@ -74,9 +74,11 @@ same meshes and the new `topology_storage_provider`. A request naming the provid
 writes is no change. Acceptance:
 
 1. refuses by name a provider the fabric-primary's wiring does not register,
-   `topology-storage-provider-not-registered`, or cannot open, `topology-storage-provider-not-opened`,
-   nothing accepted (cells: `an_unsupported_provider_changes_nothing`,
-   `a_provider_that_does_not_open_changes_nothing`);
+   `topology-storage-provider-not-registered`, or cannot open, `topology-storage-provider-not-opened`:
+   its stores, or the lines its copy reads (every store's and its claims), do not open or are not
+   answered; nothing accepted (cells: `an_unsupported_provider_changes_nothing`,
+   `a_provider_that_does_not_open_changes_nothing`, `a_provider_whose_lines_do_not_open_changes_nothing`,
+   `a_provider_that_refuses_its_list_at_acceptance_changes_nothing`);
 2. refuses any other Build while a change is in progress, `build-in-progress` naming the change's
    Build, a change back included; `fabric.delete` alone is admitted (cell:
    `a_build_other_than_fabric_delete_is_refused_during_a_change`);
