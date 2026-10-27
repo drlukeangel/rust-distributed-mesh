@@ -643,7 +643,7 @@ The deploying node-admin's answer to a join.
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | trait default `false` |
 | `REQUEST_VARIANTS` | `1` |
-| `REPLY_VARIANTS` | `14` |
+| `REPLY_VARIANTS` | `15` |
 | `MAX_REQUEST_FRAME_BYTES` | `4 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `8 * 1024` |
 
@@ -665,7 +665,7 @@ A topology read call.
 
 ### `TopologyReply`
 
-`crates/rdm-core/src/topology.rs` · enum · 14 variants · rdm-core
+`crates/rdm-core/src/topology.rs` · enum · 15 variants · rdm-core
 
 One frame of a topology read.
 
@@ -713,6 +713,8 @@ One frame of a topology read.
 | 13 | **`RafkaTime`** |  |  | `name() = "rafka-time"` | The rafka-time the target holds, and which primary it is: one frame, sent after the |
 | 13.0 | `ms` | `u64` |  |  | The target's rafka-time now, in milliseconds. |
 | 13.1 | `kind` | `Option<PrimaryKind>` → [`PrimaryKind`](#t-rdm_core-topology-PrimaryKind) |  |  | Which primary the target is, from the primaries it holds: the fabric-primary when it is, |
+| 14 | **`OwnRow`** |  |  | `name() = "own-row"` | The reader's own whole row as its mesh-primary's atlas holds it (Q234: every node property: |
+| 14.0 | `node` | `crate::views::NodeView` → [`NodeView`](#t-rdm_core-views-NodeView) |  |  | The reader's row. |
 
 ## 0x1F `build-facts`
 
