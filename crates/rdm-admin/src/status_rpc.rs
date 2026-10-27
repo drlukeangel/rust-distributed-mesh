@@ -799,6 +799,24 @@ impl StatusAuthority {
         self.apply_from(peer, sender, req).await
     }
 
+    /// This admin's own `node.config.update` (node-config-update.md step 1), born as `incarnation`: put
+    /// its whole config `config` and answer once the command completed. A caller's command in process: at
+    /// the fabric-primary it is decided here; at any other admin it is carried up to the fabric-primary
+    /// its records name and the fabric-primary's answer is handed back
+    /// ([`crate::node_config::NodeConfigs::forward_up`]); the fabric-primary sends it down to this
+    /// admin's mesh-primary, which writes its row and tells this admin. The caller never names the
+    /// fabric-primary.
+    pub async fn own_config_update(&self, incarnation: crate::model::IncarnationId, config: std::collections::BTreeMap<String, String>) -> StatusReply {
+        let req = StatusRequest::UpdateNodeConfig { node_id: self.node_id.clone(), incarnation, config };
+        self.commands.admitted().await;
+        let view = self.topology.read().await.clone();
+        let me = self.held_name_in(&view);
+        match self.configs.get() {
+            Some(configs) => configs.serve(&me, &self.node_id, &view, &self.topology, &*self.nodes_storage, self.atlas.get().map(|a| &**a), crate::node_config::SentBy::Caller, &req).await,
+            None => rdm_core::reply::status::not_ready(format!("{me} has no node-RPC client yet; {} is refused", req.op())),
+        }
+    }
+
     /// `node.name.update` (`UpdateName`) at this admin, a caller's or a replace recipe's step
     /// in-process: the one validator and writer of a rename.
     pub async fn update_name(&self, req: &StatusRequest) -> StatusReply {
@@ -998,13 +1016,13 @@ impl StatusAuthority {
             }
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
                 self.commands.admitted().await;
-                return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), self.atlas.get().map(|a| &**a), req).await;
+                return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of(sender.as_ref()), req).await;
             }
             StatusRequest::UpdateNodeConfig { .. } => {
                 self.commands.admitted().await;
                 let view = self.topology.read().await.clone();
                 return match self.configs.get() {
-                    Some(configs) => configs.serve(&me_name, &self.node_id, &view, &self.topology, &*self.nodes_storage, self.atlas.get().map(|a| &**a), req).await,
+                    Some(configs) => configs.serve(&me_name, &self.node_id, &view, &self.topology, &*self.nodes_storage, self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of(sender.as_ref()), req).await,
                     None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet; {} is refused", req.op())),
                 };
             }

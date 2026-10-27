@@ -3,7 +3,13 @@
 //! The caller sends it to the fabric-primary (step 1, Q203): it writes the map to the node in its
 //! `FabricAtlas` and sends the command to the node's mesh-primary (in process when it is that
 //! mesh-primary too; Forward `0x1A` through another node-admin of the mesh when the mesh-primary is not
-//! directly reachable). An admin that is neither refuses it by name (`ReceiverNotPrimary`).
+//! directly reachable). A caller that is not a node-admin (a node putting its own config) sends it to the
+//! node-admin it joined through, and a node-admin's own goes in process to that admin: an admin that is
+//! not the fabric-primary carries it up to the fabric-primary its records name ([`NodeConfigs::forward_up`],
+//! owed until answered, Forward `0x1A` when the fabric-primary is not directly reachable) and hands the
+//! answer back. A node-admin's call at an admin that is neither primary is refused by name
+//! (`ReceiverNotPrimary`): the fabric-primary's command sent down to an admin that no longer holds the
+//! mesh-primary, which the fabric-primary retargets.
 //!
 //! Config is a field of the node record. The mesh-primary of the node's mesh is the only writer of
 //! that mesh's rows (fabric-node-lifecycle §4.3). It writes the node's whole row from what it holds (a
@@ -42,6 +48,53 @@ pub enum Down {
     /// This admin holds the node's mesh-primary in this view: the command is served in process.
     InProcess(Topology),
     /// This view holds the birth no more.
+    Gone(Topology),
+}
+
+/// How a caller's property command an admin carries up ended ([`NodeConfigs::forward_up`]).
+pub enum Up {
+    /// The fabric-primary answered it: the answer the caller is handed.
+    Answered(StatusReply),
+    /// This admin holds the fabric-primary in this view: the command is served in process.
+    InProcess(Topology),
+}
+
+/// Who sent a property command (`node.config.update`, `node.tags.*`) to an admin, as its view names the
+/// call's endpoint: what decides whether an admin that is not the fabric-primary carries it up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SentBy {
+    /// A node of the fabric that is not a node-admin, or a node-admin for its own record in process
+    /// (`Running::config_update`): a caller's command, carried up to the fabric-primary by an admin that
+    /// is not it (node-config-update.md step 1).
+    Caller,
+    /// A node-admin over Node RPC (the fabric-primary's command sent down, or a carrier of it), or an
+    /// endpoint the view names no birth for: served by the node's mesh-primary, refused by name at an
+    /// admin that is neither primary.
+    Other,
+}
+
+impl SentBy {
+    /// The sender the view names for a call's endpoint (`StatusAuthority::sender_of`).
+    pub fn of(sender: Option<&crate::model::Node>) -> Self {
+        match sender {
+            Some(n) if n.kind != rdm_core::NodeKind::NodeAdmin => Self::Caller,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// The primary an owed property command goes to ([`NodeConfigs::owed`]).
+enum Hop<'a> {
+    /// Down to `subject`'s mesh-primary (the fabric-primary's command).
+    Down(&'a crate::model::Node),
+    /// Up to the fabric-primary (a caller's command at an admin that is not it).
+    Up,
+}
+
+/// How an owed property command ended ([`NodeConfigs::owed`]).
+enum Owed {
+    Answered(StatusReply),
+    InProcess(Topology),
     Gone(Topology),
 }
 
@@ -85,11 +138,13 @@ impl NodeConfigs {
         let _ = self.views.set(views);
     }
 
-    /// A caller's `UpdateNodeConfig` at the admin `me` (born as `me_id`), deciding over `view`, the
-    /// view `topology` holds (node-config-update.md steps 1-3): at the fabric-primary, the map written
-    /// to the node in `atlas` and the command sent to the node's mesh-primary ([`Self::update`] in
-    /// process when it is that mesh-primary too); at the node's mesh-primary, the command served
-    /// ([`Self::update`]); at any other admin refused `ReceiverNotPrimary`, naming the fabric-primary.
+    /// A `UpdateNodeConfig` at the admin `me` (born as `me_id`) sent by `sent_by`, deciding over `view`,
+    /// the view `topology` holds (node-config-update.md steps 1-3): a caller's at an admin that is not the
+    /// fabric-primary, carried up to the fabric-primary and its answer handed back ([`Self::forward_up`]);
+    /// at the fabric-primary, the map written to the node in `atlas` and the command sent to the node's
+    /// mesh-primary ([`Self::update`] in process when it is that mesh-primary too); a node-admin's at the
+    /// node's mesh-primary, the command served ([`Self::update`]); at any other admin refused
+    /// `ReceiverNotPrimary`, naming the fabric-primary.
     ///
     /// The command sent down is owed until the mesh-primary answers it (node-rpc.md §43; D12): one
     /// `Budget::Owed` call to the mesh-primary this admin's view names, direct first and then through each
@@ -99,8 +154,16 @@ impl NodeConfigs {
     /// view next changes, or after the resend schedule's next delay, whichever is first. A command the
     /// mesh-primary refused before writing the row puts the atlas's config back.
     #[allow(clippy::too_many_arguments)]
-    pub async fn serve(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, topology: &tokio::sync::RwLock<Topology>, storage: &dyn crate::storage::NodesStorage, atlas: Option<&crate::fabric_atlas::FabricAtlas>, req: &StatusRequest) -> StatusReply {
+    pub async fn serve(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, topology: &tokio::sync::RwLock<Topology>, storage: &dyn crate::storage::NodesStorage, atlas: Option<&crate::fabric_atlas::FabricAtlas>, sent_by: SentBy, req: &StatusRequest) -> StatusReply {
         let StatusRequest::UpdateNodeConfig { node_id, config, .. } = req else { unreachable!("serve is called for UpdateNodeConfig only") };
+        let mut held = None;
+        if sent_by == SentBy::Caller && !view.is_fabric_primary(me_id) {
+            match self.forward_up(me, me_id, view, topology, req).await {
+                Up::Answered(reply) => return reply,
+                Up::InProcess(now) => held = Some(now),
+            }
+        }
+        let view = held.as_ref().unwrap_or(view);
         let fabric_primary = view.is_fabric_primary(me_id);
         let Some(subject) = view.own(node_id).cloned() else {
             return self.update(me, me_id, view, storage, req).await;
@@ -161,7 +224,69 @@ impl NodeConfigs {
     /// that primary itself (served in process) or no longer holds the birth. Each send is one span event
     /// naming the mesh-primary, the route and the outcome.
     pub async fn send_down(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, subject: &crate::model::Node, req: &StatusRequest) -> Down {
-        let node_id = &subject.node_id;
+        match self.owed(me, me_id, first, topology, req, Hop::Down(subject)).await {
+            Owed::Answered(reply) => Down::Answered(reply),
+            Owed::InProcess(view) => Down::InProcess(view),
+            Owed::Gone(view) => Down::Gone(view),
+        }
+    }
+
+    /// A caller's property command `req` at this admin, which `first` does not name the fabric-primary,
+    /// carried up to the fabric-primary (node-config-update.md step 1; commands go down from it, so a
+    /// caller's goes up to it first), owed until it answers (node-rpc.md §43): the fabric-primary's
+    /// answer, handed back to the caller as it is, or the view in which this admin holds the
+    /// fabric-primary itself (served in process). The fabric-primary is the one this admin's view names
+    /// from its records, never a digest; one `Budget::Owed` call, direct first and then through each other
+    /// live node-admin of its mesh on Forward `0x1A`. A fabric-primary that answers `ReceiverNotPrimary`
+    /// (it no longer holds it, or its successor does not yet) or is proven gone does not fail the
+    /// caller: the command is sent again to the fabric-primary the view names when it next changes, or
+    /// after the resend schedule's next delay. One span, `rdm.node_admin.node.update.via-forward`, names
+    /// the fabric-primary, the sends and the answer.
+    pub async fn forward_up(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, req: &StatusRequest) -> Up {
+        let (node_id, subject) = match req {
+            StatusRequest::UpdateNodeConfig { node_id, .. } | StatusRequest::CreateTags { node_id, .. } | StatusRequest::DeleteTags { node_id, .. } => (node_id, first.own(node_id).map(|n| n.name.to_string()).unwrap_or_default()),
+            other => unreachable!("forward_up carries a node's property command only, never {}", other.op()),
+        };
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.update.via-forward",
+            node = %me,
+            op = req.op(),
+            subject = %subject,
+            node_id = %node_id,
+            fabric_primary = tracing::field::Empty,
+            route = tracing::field::Empty,
+            sends = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            detail = tracing::field::Empty,
+            "otel.kind" = "internal",
+        );
+        let up = tracing::Instrument::instrument(self.owed(me, me_id, first, topology, req, Hop::Up), span.clone()).await;
+        let up = match up {
+            Owed::Answered(reply) => {
+                span.record("outcome", reply.name());
+                Up::Answered(reply)
+            }
+            Owed::InProcess(view) | Owed::Gone(view) => {
+                span.record("outcome", "in-process");
+                Up::InProcess(view)
+            }
+        };
+        span.in_scope(|| tracing::info!("a caller's property command carried up to the fabric-primary ended"));
+        up
+    }
+
+    /// `req` owed to the primary `hop` names in this admin's view until it answers: down to the subject's
+    /// mesh-primary, or up to the fabric-primary. One `Budget::Owed` call per send to the primary the view
+    /// names then, direct first and then through each other live node-admin of that primary's mesh on
+    /// Forward `0x1A`; a refusal that it is not the primary, or a call ended with no reply, sends it again
+    /// to the primary the view names when it next changes, or after the resend schedule's next delay
+    /// (retargeting is the owning workflow's, node-rpc.md §43).
+    #[allow(clippy::too_many_arguments)]
+    async fn owed(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, req: &StatusRequest, hop: Hop<'_>) -> Owed {
+        let (field, to_whom) = match hop {
+            Hop::Down(_) => ("mesh_primary", "the mesh-primary"),
+            Hop::Up => ("fabric_primary", "the fabric-primary"),
+        };
         let mut views = self.views.get().cloned();
         // A clone remembers the version its source last saw: only a view installed from now on wakes a resend.
         if let Some(rx) = views.as_mut() {
@@ -171,53 +296,69 @@ impl NodeConfigs {
         let mut sends: u32 = 0;
         let mut waits: u32 = 0;
         loop {
-            if view.own(node_id).is_none() {
-                // The birth left the view while its command was owed: the answer a door gives a birth it does not hold.
-                return Down::Gone(view);
-            }
-            if view.is_mesh_primary(&subject.mesh, me_id) {
-                tracing::Span::current().record("route", "in-process");
-                tracing::Span::current().record("mesh_primary", me.to_string().as_str());
-                return Down::InProcess(view);
-            }
-            let primary = view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map(|p| (p.name.clone(), p.node_id.clone()));
+            let primary = match hop {
+                Hop::Down(subject) => {
+                    if view.own(&subject.node_id).is_none() {
+                        // The birth left the view while its command was owed: the answer a door gives a birth it does not hold.
+                        return Owed::Gone(view);
+                    }
+                    if view.is_mesh_primary(&subject.mesh, me_id) {
+                        tracing::Span::current().record("route", "in-process");
+                        tracing::Span::current().record(field, me.to_string().as_str());
+                        return Owed::InProcess(view);
+                    }
+                    view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map(|p| (p.name.clone(), p.node_id.clone(), p.mesh.clone())).ok_or_else(|| format!("{} has no mesh-primary in {me}'s view", subject.mesh))
+                }
+                Hop::Up => {
+                    if view.is_fabric_primary(me_id) {
+                        tracing::Span::current().record("route", "in-process");
+                        tracing::Span::current().record(field, me.to_string().as_str());
+                        return Owed::InProcess(view);
+                    }
+                    view.fabric_primary().map(|p| (p.name.clone(), p.node_id.clone(), p.mesh.clone())).ok_or_else(|| format!("no single live node-admin holds the fabric-primary in {me}'s view"))
+                }
+            };
             let ended = match primary {
-                None => format!("{} has no mesh-primary in {me}'s view", subject.mesh),
-                Some((name, mp)) => {
-                    tracing::Span::current().record("mesh_primary", name.to_string().as_str());
-                    // Direct first; once an attempt sends nothing, through each other live node-admin of the mesh in turn (Forward `0x1A`).
-                    let carriers: Vec<(rdm_core::NodeId, crate::model::PathName)> = view.births().filter(|n| n.mesh == subject.mesh && n.kind == rdm_core::NodeKind::NodeAdmin && n.node_id != mp && n.node_id != *me_id && n.status.is_live()).map(|n| (n.node_id.clone(), n.name.clone())).collect();
+                Err(none) => none,
+                Ok((name, primary, mesh)) => {
+                    tracing::Span::current().record(field, name.to_string().as_str());
+                    // Direct first; once an attempt sends nothing, through each other live node-admin of the primary's mesh in turn (Forward `0x1A`).
+                    let carriers: Vec<(rdm_core::NodeId, crate::model::PathName)> = view.births().filter(|n| n.mesh == mesh && n.kind == rdm_core::NodeKind::NodeAdmin && n.node_id != primary && n.node_id != *me_id && n.status.is_live()).map(|n| (n.node_id.clone(), n.name.clone())).collect();
                     let policy = rdm_transport::RoutePolicy(Arc::new(move |attempt: u32| match carriers.get(attempt.saturating_sub(1) as usize % carriers.len().max(1)) {
                         Some((carrier, path)) if attempt > 0 => rdm_transport::route::RouteChoice::ViaPeer { carrier: carrier.clone(), path: path.clone() },
                         _ => rdm_transport::route::RouteChoice::Direct,
                     }));
                     let opts = CallOptions { budget: rdm_transport::Budget::Owed, route: Some(policy), ..CallOptions::default() };
                     sends += 1;
-                    let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(mp.clone()), req, &opts).await;
+                    let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(primary.clone()), req, &opts).await;
                     let outcome = match &out {
                         rdm_core::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
                         other => other.name().to_string(),
                     };
                     tracing::Span::current().record("sends", sends);
                     tracing::Span::current().record("route", "owed");
-                    tracing::info!(to = %name, send = sends, outcome = %outcome, "node.config.update sent down to the mesh-primary");
+                    match hop {
+                        Hop::Down(_) => tracing::info!(to = %name, send = sends, outcome = %outcome, "{} sent down to the mesh-primary", req.op()),
+                        Hop::Up => tracing::info!(to = %name, send = sends, outcome = %outcome, "{} carried up to the fabric-primary", req.op()),
+                    }
                     match out {
-                        rdm_core::outcome::RpcOutcome::Reply(r) => match r.into_value() {
-                            StatusReply::RejectedNotPrimary { why } => format!("{name} answered rejected-not-primary ({})", why.as_str()),
-                            answered => return Down::Answered(answered),
+                        rdm_core::outcome::RpcOutcome::Reply(r) => match (r.into_value(), &hop) {
+                            // Down: any refusal that the receiver is not the primary is the primary changing. Up: only
+                            // `ReceiverNotPrimary` is; any other answer (a subject the fabric-primary does not hold) is the caller's.
+                            (StatusReply::RejectedNotPrimary { why }, Hop::Down(_)) => format!("{name} answered rejected-not-primary ({})", why.as_str()),
+                            (StatusReply::RejectedNotPrimary { why: why @ NotPrimary::ReceiverNotPrimary { .. } }, Hop::Up) => format!("{name} answered rejected-not-primary ({})", why.as_str()),
+                            (answered, _) => return Owed::Answered(answered),
                         },
                         // An Owed call ends without a reply only when its receiver is proven gone, or
-                        // before anything was owed: the command is owed to the mesh-primary the view names next.
+                        // before anything was owed: the command is owed to the primary the view names next.
                         other => format!("the call to {name} ended {} with no reply", other.name()),
                     }
                 }
             };
-            // Retargeting is the owning workflow's (node-rpc.md §43): the mesh-primary the view names when it
-            // next changes, or after the resend schedule's next delay.
             waits += 1;
             let delay = self.client.delivery().pacing().after(waits);
             tracing::Span::current().record("detail", ended.as_str());
-            tracing::info!(detail = %ended, wait_ms = delay.as_millis() as u64, "node.config.update stays owed: sent again to the mesh-primary the view names next");
+            tracing::info!(detail = %ended, wait_ms = delay.as_millis() as u64, "{} stays owed: sent again to {to_whom} the view names next", req.op());
             match views.as_mut() {
                 Some(rx) => {
                     let _ = tokio::time::timeout(delay, rx.changed()).await;

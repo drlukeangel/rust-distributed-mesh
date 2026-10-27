@@ -80,7 +80,15 @@ pub struct RunningNode {
     data_connections: rdm_transport::connections::ConnectionsRegistry,
     /// The listeners this birth bound from its launch (`RDM_LISTENERS`, Q151), held open for its life.
     listeners: Arc<Vec<(String, std::net::TcpListener)>>,
+    /// The node-admin this birth joined through, at its first start (its launcher) and at each start
+    /// after a stop (the admin whose call commanded it): where its own `node.config.update` goes
+    /// ([`RunningNode::config_update`]).
+    joined_admin: JoinedAdmin,
 }
+
+/// The node-admin a birth joined through last ([`crate::workflows::node_start::JoinThrough`]), set at
+/// each join: never one a digest names.
+pub type JoinedAdmin = Arc<Mutex<Option<crate::workflows::node_start::JoinThrough>>>;
 
 /// Bind each listener `assigned` names at its assigned address (port 0: the operating system selects
 /// the port), non-blocking, in order. Nothing is probed and released: each bind is the one the
@@ -100,6 +108,30 @@ fn bind_listeners(assigned: &[(String, std::net::SocketAddr)]) -> Result<Vec<(St
 pub type Node = RunningNode;
 
 impl RunningNode {
+    /// Put this node's own config, the whole map (`node.config.update` of its own birth,
+    /// node-config-update.md): what an application calls to put its own config (its listener ports).
+    /// Sent to the node-admin this birth joined through, owed until it answers (`Budget::Owed`); that
+    /// admin carries it up to the fabric-primary when it is not it and hands the answer back, so the node
+    /// never names the fabric-primary and reads no digest for it. It answers once the command completed:
+    /// `ConfigUpdated` once its mesh-primary wrote the row and this node applied the map
+    /// (`ApplyNodeConfig`), or the refusal by name; `Err` when the call ended with no reply (the admin it
+    /// joined through proven gone).
+    pub async fn config_update(&self, config: std::collections::BTreeMap<String, String>) -> std::result::Result<rdm_core::status::StatusReply, rdm_client::CallEnd> {
+        let through = self.joined_admin.lock().unwrap().clone();
+        let Some(through) = through else {
+            return Err(rdm_client::CallEnd::Rejected { reason: "not-joined".into(), detail: format!("{} has joined no node-admin: its node.config.update has nowhere to go", self.topology_view.node_name()) });
+        };
+        let me = &self.digest.node;
+        let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(me.node_id.clone()), node_id: me.node_id.clone(), incarnation: me.incarnation.clone() };
+        let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, ..Default::default() };
+        rdm_client::NodeRpc::new(&self.node_rpc.client).own_config_update(&through.target, &birth, config, &opts).await
+    }
+
+    /// The node-admin this birth joined through last: where [`Self::config_update`] goes.
+    pub fn joined_admin(&self) -> Option<crate::workflows::node_start::JoinThrough> {
+        self.joined_admin.lock().unwrap().clone()
+    }
+
     /// The listeners this birth bound from its launch (`RDM_LISTENERS`), by name, held open for its
     /// life: the application serves on them (`TcpListener::try_clone`).
     pub fn listeners(&self) -> &[(String, std::net::TcpListener)] {
@@ -615,12 +647,13 @@ async fn start_booted(
     };
     // What the start brought up, once it did: handed to the caller, or ended if the hook fails.
     let out: Arc<Mutex<Option<RunningNode>>> = Arc::default();
+    let joined_admin: JoinedAdmin = Arc::default();
     let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.clone(), path: launch.name.clone(), node_id: launch.node_id.clone(), client: client.clone(), rafka_time: rafka_time.clone() };
     let joining = crate::workflows::node_start::Joining::Authority { label: launcher.name.to_string() };
     let join_digest = digest.clone();
     let join_types = app_types.clone();
     let enter: crate::workflows::node_start::EnterSeam<anyhow::Error> = {
-        let (launch, boot, out, name, data_connections, bound_listeners, listener_addrs) = (launch.clone(), boot.clone(), out.clone(), name.clone(), data_connections.clone(), bound_listeners.clone(), listener_addrs.clone());
+        let (launch, boot, out, name, data_connections, bound_listeners, listener_addrs, joined_admin) = (launch.clone(), boot.clone(), out.clone(), name.clone(), data_connections.clone(), bound_listeners.clone(), listener_addrs.clone(), joined_admin.clone());
         Box::new(move |step: tracing::Span, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(TopologyView, crate::workflows::node_start::JoinedSeam<anyhow::Error>), anyhow::Error>> {
             Box::pin(async move {
                 let joined = joined.expect("a first start through its launcher enters its channel with the join answer");
@@ -675,8 +708,10 @@ async fn start_booted(
             }
                 let channel = topology_view.clone();
                 let joined_seam: crate::workflows::node_start::JoinedSeam<anyhow::Error> = Box::new(
-                    move |_: Option<crate::workflows::node_start::JoinThrough>| -> crate::workflows::node_start::BoxFut<Result<(crate::workflows::node_start::HookParts, Option<crate::workflows::node_start::HookStarted<anyhow::Error>>), anyhow::Error>> {
+                    move |through: Option<crate::workflows::node_start::JoinThrough>| -> crate::workflows::node_start::BoxFut<Result<(crate::workflows::node_start::HookParts, Option<crate::workflows::node_start::HookStarted<anyhow::Error>>), anyhow::Error>> {
                         Box::pin(async move {
+                            // The admin this birth joined through (its launcher): where its own node.config.update goes.
+                            *joined_admin.lock().unwrap() = through;
                             // A delta that does not follow what this node holds desynchronizes that source; the node tops
                             // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
                             topology_view.spawn_top_up(crate::topology_read::top_up_fetch(client.clone()));
@@ -746,6 +781,7 @@ async fn start_booted(
                                 pre_node_ready_cell: pre_node_ready_cell.clone(),
                                 pre_node_ready_task: pre_node_ready_task_cell.clone(),
                                 listeners: listener_addrs.clone(),
+                                joined_admin: joined_admin.clone(),
                             }));
                             let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
                             let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats() }));
@@ -832,7 +868,7 @@ async fn start_booted(
                                     leave: None,
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, pre_node_ready_task: pre_node_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections, listeners: bound_listeners.clone() });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, pre_node_ready_task: pre_node_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections, listeners: bound_listeners.clone(), joined_admin: joined_admin.clone() });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },
@@ -906,6 +942,8 @@ struct NodeSession {
     /// The listeners this birth bound from its launch, each with its selected port: every join of
     /// the birth reports them (Q151).
     listeners: Vec<(String, std::net::SocketAddr)>,
+    /// The node-admin this birth joined through last: each start after a stop sets it.
+    joined_admin: JoinedAdmin,
 }
 
 #[async_trait::async_trait]
@@ -1037,10 +1075,14 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
     async fn joined(
         &mut self,
         topology_view: &TopologyView,
-        _: Option<&crate::workflows::node_start::JoinThrough>,
+        through: Option<&crate::workflows::node_start::JoinThrough>,
         _: Option<&crate::wire::JoinAnswer>,
     ) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
         let s = self.session;
+        // The admin whose call commanded this start answered its join: its own node.config.update goes there now.
+        if let Some(through) = through {
+            *s.joined_admin.lock().unwrap() = Some(through.clone());
+        }
         // From here on it is named by the name it installed from its join answer (`enter_channel`).
         let me = s.topology_view.held_name(&s.name);
         // Back on its channel, this node reports NodeJoined: the start finishes on its direct calls and

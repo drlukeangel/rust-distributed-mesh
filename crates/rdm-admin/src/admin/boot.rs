@@ -108,6 +108,21 @@ impl Running {
         self.authority.get().cloned()
     }
 
+    /// Put this admin's own config, the whole map (`node.config.update` of its own birth,
+    /// node-config-update.md): what an application's node-admin calls to put a key on its own row (its
+    /// `admin_api_base`). It answers once the command completed: `ConfigUpdated` once its mesh-primary
+    /// wrote the row and this admin holds the map, or the refusal by name. The caller never names the
+    /// fabric-primary: an admin that is not it carries the command up to the one its records name
+    /// ([`crate::status_rpc::StatusAuthority::own_config_update`]). `NotReady` by name before this
+    /// admin holds a view.
+    pub async fn config_update(&self, config: std::collections::BTreeMap<String, String>) -> rdm_core::status::StatusReply {
+        let birth = self.birth();
+        match self.status_authority() {
+            Some(status) => status.own_config_update(birth.incarnation, config).await,
+            None => rdm_core::reply::status::not_ready(format!("{} holds no view yet; its node.config.update is refused", birth.name)),
+        }
+    }
+
     /// Where this admin's `pre_node_ready` stands; `None` when the app registered no hook.
     pub fn pre_node_ready(&self) -> Option<crate::node_hooks::PreNodeReadyHandle> {
         self.pre_node_ready.lock().unwrap().clone()

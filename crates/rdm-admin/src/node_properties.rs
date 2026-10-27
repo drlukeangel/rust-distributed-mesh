@@ -20,14 +20,25 @@ use tokio::sync::RwLock;
 /// whole command, its outcome the reply's name. At the fabric-primary of a node of another mesh, the
 /// command goes down to the node's mesh-primary, owed until it answers, and the answer's labels are
 /// written to the node's record in `atlas` (Q203, Q204: each op writes the atlas; commands go down,
-/// fabric-primary to mesh-primary; [`crate::node_config::NodeConfigs::send_down`]).
-pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, atlas: Option<&crate::fabric_atlas::FabricAtlas>, req: &StatusRequest) -> StatusReply {
+/// fabric-primary to mesh-primary; [`crate::node_config::NodeConfigs::send_down`]). A caller's
+/// (`sent_by`) at an admin that is not the fabric-primary is carried up to it and its answer handed back
+/// ([`crate::node_config::NodeConfigs::forward_up`]), as `node.config.update` is.
+#[allow(clippy::too_many_arguments)]
+pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, atlas: Option<&crate::fabric_atlas::FabricAtlas>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> StatusReply {
     let (node_id, incarnation, change) = match req {
         StatusRequest::CreateTags { node_id, incarnation, labels } => (node_id, incarnation, Change::Create(labels)),
         StatusRequest::DeleteTags { node_id, incarnation, scope } => (node_id, incarnation, Change::Delete(scope)),
         _ => unreachable!("tags is called for CreateTags and DeleteTags only"),
     };
-    let first = view.read().await.clone();
+    let mut first = view.read().await.clone();
+    if let (Some(door), crate::node_config::SentBy::Caller) = (configs, sent_by) {
+        if !first.is_fabric_primary(me_id) {
+            match door.forward_up(me, me_id, &first, view, req).await {
+                crate::node_config::Up::Answered(reply) => return reply,
+                crate::node_config::Up::InProcess(now) => first = now,
+            }
+        }
+    }
     if let (Some(door), Some(subject)) = (configs, first.own(node_id).cloned()) {
         if first.is_fabric_primary(me_id) && !first.is_mesh_primary(&subject.mesh, me_id) {
             let span = tracing::info_span!(

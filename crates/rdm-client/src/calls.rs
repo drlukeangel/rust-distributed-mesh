@@ -345,6 +345,25 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
+    /// A node's own `node.config.update` (node-config-update.md step 1), sent to `admin`, the node-admin
+    /// it joined through (never one a digest names): put the whole config of `birth`, the node itself. An
+    /// admin that is not the fabric-primary carries it up to the fabric-primary and hands its answer back,
+    /// so the caller never names the fabric-primary. `opts` as the caller's (`Budget::Owed`: owed until
+    /// the admin answers). `ConfigUpdated` is `node.config.updated`: the mesh-primary wrote the row and
+    /// the node applied the config.
+    pub async fn own_config_update(&self, admin: &NodeTarget, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
+        let span = NodeOp::ConfigUpdate.span();
+        let (out, _) = tracing::Instrument::instrument(self.client.call::<Status>(admin, &req, opts), span.clone()).await;
+        let r = ended(out);
+        span.record("outcome", match &r {
+            Ok(reply) => reply.name(),
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = NodeOp::ConfigUpdate.name(), route = "joined-admin", "an object call ended"));
+        r
+    }
+
     /// The mesh-primary's call to the exact birth of its mesh, direct: hold this whole config
     /// (node-config-update.md step 3: it applies the map).
     pub async fn config_apply(&self, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
