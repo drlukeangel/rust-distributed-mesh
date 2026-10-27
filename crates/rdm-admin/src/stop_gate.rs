@@ -87,6 +87,15 @@ fn untag(s: &mut GateState, build: &str, task: &'static str) {
     }
 }
 
+/// A stop's quiesce begins to wait for the turns `at` names: said on its own span when the wait
+/// begins, so a wait that never ends still names the turns it waits for.
+fn waits_for(at: &GateState) {
+    if at.in_progress() > 0 {
+        tracing::info_span!("rdm.node_admin.node.update.via-stop-quiesce-waiting", turns_in_progress = at.in_progress(), waiting_for = %at.named())
+            .in_scope(|| tracing::info!("the stop waits for the turns in progress at it to end"));
+    }
+}
+
 /// One gate, shared by every task of a node-admin.
 #[derive(Clone)]
 pub struct StopGate {
@@ -174,6 +183,7 @@ impl StopGate {
     /// A turn holds no lock at its wait point, and none is held here, so every turn can end.
     pub async fn quiesce(&self) -> GateState {
         let at = self.stop();
+        waits_for(&at);
         let mut rx = self.state.subscribe();
         let _ = rx.wait_for(|s| s.turns.is_empty()).await;
         at
@@ -185,6 +195,7 @@ impl StopGate {
     /// stop's caller's own remaining work. Answers the gate as it stood at the stop, without them.
     pub async fn quiesce_commanded_by(&self, build: &str) -> GateState {
         let at = self.stop().but_build(build);
+        waits_for(&at);
         let mut rx = self.state.subscribe();
         let _ = rx.wait_for(|s| s.but_build(build).turns.is_empty()).await;
         at

@@ -29,12 +29,13 @@ libc = "0.2"
 
 [features]
 rig = []
-default = ["testkit-skew", "testkit-gossip", "rig", "file-backend"]
+default = ["testkit-skew", "testkit-gossip", "testkit-store", "rig", "file-backend"]
 # RDM standalone's file storage backend, in rdm-admin and rdm-node. Off, this crate builds the memory
 # estate's proof (`tests/memory_estate.rs`) alone: no binary and no other cell.
 file-backend = ["rdm-admin/file-backend", "rdm-node/file-backend"]
 testkit-skew = ["rdm-transport/testkit-skew"]
 testkit-gossip = ["rdm-transport/testkit-gossip", "rdm-node/testkit-gossip"]
+testkit-store = ["rdm-node/testkit-store"]
 
 [dev-dependencies]
 ctor = "0.2"

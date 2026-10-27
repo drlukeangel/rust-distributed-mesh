@@ -484,6 +484,9 @@ struct Inner {
     fold: Mutex<Fold>,
     /// One tail read at a time.
     reading: tokio::sync::Mutex<()>,
+    /// The tail read in progress: the span it was called under, and since when. What a read that
+    /// waits for it names ([`Inner::read_waits`]).
+    reading_by: Mutex<Option<(&'static str, std::time::Instant)>>,
     /// One append at a time, holding this store's pending append.
     append: Arc<tokio::sync::Mutex<Option<Pending>>>,
     /// Shown every line the fold reads, once each, in file order: an index the store folds beside
@@ -544,7 +547,7 @@ impl StoreLog {
                 return Err(e);
             }
         };
-        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: tokio::sync::Mutex::new(()), append: Arc::new(tokio::sync::Mutex::new(None)), observer }));
+        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: tokio::sync::Mutex::new(()), reading_by: Mutex::new(None), append: Arc::new(tokio::sync::Mutex::new(None)), observer }));
         match log.advance().await {
             Ok(()) => {
                 let f = log.0.fold.lock().unwrap_or_else(|e| e.into_inner());
@@ -586,10 +589,27 @@ impl StoreLog {
     /// one newline alone and fsynced, then read; a line that does not verify refuses the read by name,
     /// its offset named, and the fold is left as it was.
     pub async fn advance(&self) -> Result<(), StorageError> {
-        let _one = self.0.reading.lock().await;
+        let caller = caller_span();
+        let _one = match self.0.reading.try_lock() {
+            Ok(one) => one,
+            Err(_) => {
+                self.0.read_waits(caller);
+                self.0.reading.lock().await
+            }
+        };
+        let _by = ReadingBy::begin(&self.0, caller);
+        #[cfg(feature = "testkit-store")]
+        let door = read_door::take(&self.0.path, caller);
         let from = self.consumed();
         let inner = self.0.clone();
-        let lines = blocking_io(move || inner.read_whole(from)).await?;
+        let lines = blocking_io(move || {
+            #[cfg(feature = "testkit-store")]
+            if let Some(door) = door {
+                door.hold();
+            }
+            inner.read_whole(from)
+        })
+        .await?;
         if let Some(observe) = &self.0.observer {
             for l in &lines.0 {
                 observe(l);
@@ -692,7 +712,39 @@ impl StoreLog {
     }
 }
 
+/// The name of the span the caller runs under, `""` under none: what a tail read is named by.
+fn caller_span() -> &'static str {
+    tracing::Span::current().metadata().map(|m| m.name()).unwrap_or("")
+}
+
+/// The tail read in progress on a file, named while it runs.
+struct ReadingBy<'a>(&'a Inner);
+
+impl<'a> ReadingBy<'a> {
+    fn begin(inner: &'a Inner, caller: &'static str) -> Self {
+        *inner.reading_by.lock().unwrap_or_else(|e| e.into_inner()) = Some((caller, std::time::Instant::now()));
+        Self(inner)
+    }
+}
+
+impl Drop for ReadingBy<'_> {
+    fn drop(&mut self) {
+        *self.0.reading_by.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
 impl Inner {
+    /// A tail read called under `caller` waits for the one in progress on this file: named on its own
+    /// span when the wait begins, so a wait that never ends still names the read it waits for.
+    fn read_waits(&self, caller: &'static str) {
+        let (held_by, held_ms) = match *self.reading_by.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some((by, since)) => (by, since.elapsed().as_millis() as u64),
+            None => ("", 0),
+        };
+        tracing::info_span!("rdm.node.store.update.via-tail-read-waiting", file = %self.path.display(), caller, held_by, held_ms)
+            .in_scope(|| tracing::info!("this tail read waits for the one in progress on the same file"));
+    }
+
     fn named(&self, offset: u64, why: impl std::fmt::Display) -> StorageError {
         StorageError::Unrecognised { file: self.path.display().to_string(), reason: format!("the line at byte offset {offset} is malformed: {why}; nothing older is answered as current and the file is left as it is") }
     }
@@ -1052,6 +1104,69 @@ impl NameMutex {
             if e.kind() != std::io::ErrorKind::Interrupted {
                 return Err(io(e));
             }
+        }
+    }
+}
+
+/// The testkit's door on a store file's tail read (feature `testkit-store`, for rdm-test; absent from
+/// production builds): armed for a file and the span a read is called under, it holds the first such
+/// read inside the read itself, on its blocking call, until the cell releases it. Every other read of
+/// the file passes.
+#[cfg(feature = "testkit-store")]
+pub mod read_door {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Condvar, Mutex, OnceLock};
+
+    /// One armed door.
+    pub struct Door {
+        file: PathBuf,
+        under: &'static str,
+        released: Mutex<bool>,
+        opened: Condvar,
+        entered: tokio::sync::watch::Sender<bool>,
+    }
+
+    fn armed() -> &'static Mutex<Vec<Arc<Door>>> {
+        static ARMED: OnceLock<Mutex<Vec<Arc<Door>>>> = OnceLock::new();
+        ARMED.get_or_init(Default::default)
+    }
+
+    /// Hold the first tail read of a file whose path ends with `file` that is called under a span
+    /// named `under`, inside the read, until [`Door::release`].
+    pub fn arm(file: &Path, under: &'static str) -> Arc<Door> {
+        let door = Arc::new(Door { file: file.to_path_buf(), under, released: Mutex::new(false), opened: Condvar::new(), entered: tokio::sync::watch::Sender::new(false) });
+        armed().lock().unwrap().push(door.clone());
+        door
+    }
+
+    /// The door armed for a read of `path` called under `caller`, taken: it holds this read only.
+    pub(crate) fn take(path: &Path, caller: &'static str) -> Option<Arc<Door>> {
+        let mut armed = armed().lock().unwrap();
+        let at = armed.iter().position(|d| path.ends_with(&d.file) && d.under == caller)?;
+        Some(armed.remove(at))
+    }
+
+    impl Door {
+        /// On the read's blocking call: say it entered, then wait for the release.
+        pub(crate) fn hold(&self) {
+            tracing::info_span!("rdm.testkit.fault.update.via-hold", cut = "store-tail-read", detail = %format!("{} under {}", self.file.display(), self.under))
+                .in_scope(|| tracing::info!("the testkit holds this tail read inside the read until the cell releases it"));
+            self.entered.send_replace(true);
+            let mut released = self.released.lock().unwrap();
+            while !*released {
+                released = self.opened.wait(released).unwrap();
+            }
+        }
+
+        /// Resolves once the read it holds is inside it.
+        pub async fn entered(&self) {
+            let _ = self.entered.subscribe().wait_for(|e| *e).await;
+        }
+
+        /// Let the held read go on.
+        pub fn release(&self) {
+            *self.released.lock().unwrap() = true;
+            self.opened.notify_all();
         }
     }
 }

@@ -17,6 +17,9 @@ default = ["file-backend"]
 file-backend = []
 # Forward testkit fault seams on rdm-transport to rdm-test; absent from production builds.
 testkit-gossip = ["rdm-transport/testkit-gossip"]
+# The testkit's door on a store file's tail read (`store_log::read_door`), for rdm-test; absent from
+# production builds.
+testkit-store = []
 
 [dependencies]
 futures-util = "0.3"
