@@ -187,6 +187,8 @@ mod reconcile_variants;
 mod shape_reconcile;
 #[path = "node/admin_restart.rs"]
 mod admin_restart;
+#[path = "node/admin_reads_from_atlas.rs"]
+mod admin_reads_from_atlas;
 #[path = "node/node_delete.rs"]
 mod node_delete;
 #[path = "node/node_connections_delete.rs"]

@@ -596,3 +596,56 @@ fn a_join_report_whose_listeners_are_not_exactly_the_assigned_is_refused_by_name
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
+
+/// CONTRACT (Q227: no node reads the store on create, start or rejoin; Q234: what a node is handed
+/// about its own row comes from its mesh-primary's atlas, never the store): the admin that deployed a
+/// birth holds its row in its atlas (its writer feeds every row it claims or writes there), and the
+/// fabric's nodes store ends in an object another writer has not finished (an unended final line).
+/// The birth's join is admitted and handed its row's config from the atlas. Must NOT happen: the join
+/// refused `not-ready` because the store could not be read (`via-join`, outcome `not-ready`).
+#[test]
+fn a_join_is_handed_its_rows_config_from_the_atlas_with_the_store_unreadable() {
+    let cell = "a_join_is_handed_its_rows_config_from_the_atlas_with_the_store_unreadable";
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cap = capture(cell);
+    let dep = Deployed { held: true, ..deployed() };
+    let gold: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into_iter().collect();
+    let result = cap.run(async {
+        // The fabric's nodes store, holding the row, its tail then unended.
+        let store = std::env::temp_dir().join(format!("join-atlas-{}", NodeId::mint()));
+        std::fs::create_dir_all(&store).unwrap();
+        let writer = rdm_admin::store_log::LogWriter::new(&NodeId::mint(), &IncarnationId::mint());
+        let storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::FileNodesStorage::open(&store, &rdm_admin::store_root::StoreRoot::at(&store), "mesh1", &writer).await.unwrap());
+        let row = rdm_admin::storage::NodeRow { topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: gold.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None };
+        let written = Arc::new(rdm_admin::node_rows::WrittenRows::default());
+        let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
+        written.feeds(atlas.clone());
+        written.put(&*storage, &row).await.unwrap();
+        let file = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().is_some_and(|n| n == "nodes.jsonl")).expect("the nodes store's file");
+        use std::io::Write as _;
+        std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(br#"{"v":1,"kind":"record","key":"unended","record":{"name":"mesh1.rpc.9""#).unwrap();
+
+        let joins = Arc::new(Joins::default());
+        let mut door = door_over(joins.clone(), Arc::default(), row);
+        door.nodes = Some((storage.clone(), written.clone()));
+        // Wired as the admin's boot wires it.
+        door.row = Arc::new(move |name| {
+            let storage = storage.clone();
+            Box::pin(async move { rdm_admin::node_rows::record_at(&*storage, &name).await.map_err(|e| e.to_string()) })
+        });
+        let _reported = joins.expect(dep.clone());
+        let good = digest_of(&dep, "127.0.0.1:34571");
+        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into(), listeners: Vec::new() }).await;
+        let JoinReply::Joined { answer } = &joined else { panic!("the join was refused with the store unreadable: {joined:?}") };
+        let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
+        assert_eq!(answer.control.config.as_ref(), Some(&gold), "the birth is handed its row's config from the atlas: {answer:?}");
+        let _ = std::fs::remove_dir_all(&store);
+        json!({ "cell": cell, "joined": format!("{joined:?}") })
+    });
+    let spans = cap.spans();
+    let join = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join").expect("the join is spanned");
+    assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["config_keys"].as_str()), (Some("installed"), Some("1")), "{join}");
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
