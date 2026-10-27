@@ -190,7 +190,7 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
         let (root_dir, rpc_dir) = (base.join("admin1"), base.join("rpc1"));
         std::fs::create_dir_all(&root_dir).unwrap();
         let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
         let launch = launch_by(&root, "mesh1.rpc.1", &rpc_dir);
