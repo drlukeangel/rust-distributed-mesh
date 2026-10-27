@@ -2042,7 +2042,7 @@ mod tests {
     /// `via-exit-inside-workflow` for good), or one lane's verdict closing another lane's hold.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn a_drift_lanes_removal_hold_closes_on_its_own_attempts_verdict_and_on_no_other_lanes() {
+    async fn a_drift_attempts_removal_hold_closes_on_its_own_verdict_and_never_on_another_attempts() {
         use crate::build_state::{AttemptOutcome, AttemptReason, AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, StepOutcome};
         let member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
         let digest_view = DigestView::default();
@@ -2863,7 +2863,7 @@ mod tests {
     /// announces a cohort seat. Must NOT happen: an rpc cohort's seat that no record holds, so a
     /// lower NodeId that later becomes Ready displaces the living holder.
     #[tokio::test]
-    async fn a_mesh_primary_announces_its_meshs_cohort_seats_the_election_fills() {
+    async fn a_mesh_primary_announces_each_node_type_primary_the_election_fills_in_its_mesh() {
         use MemberStatus::*;
         use rdm_core::Seat::{Cohort, FabricPrimary, MeshPrimary};
         let digest_view = DigestView::default();

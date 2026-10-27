@@ -108,7 +108,7 @@ mod tests {
     proptest! {
         /// Encode → decode round-trips byte-for-byte for any (tag, frame) pair.
         #[test]
-        fn round_trip(tag in arb_tag(), frame in arb_frame()) {
+        fn any_tag_and_frame_decode_to_the_same_tag_and_frame_consuming_every_byte(tag in arb_tag(), frame in arb_frame()) {
             let encoded = encode(tag, &frame);
             let (got_tag, got_frame, consumed) =
                 decode::<InternalMeshFrame>(&encoded).expect("round-trip decode");
@@ -121,7 +121,7 @@ mod tests {
         /// Decoder must report `Truncated` on any prefix shorter than the full frame.
         /// Catches off-by-one bugs in the length-check branch.
         #[test]
-        fn truncation_detected(tag in arb_tag(), frame in arb_frame()) {
+        fn a_frame_missing_its_last_byte_is_refused_truncated(tag in arb_tag(), frame in arb_frame()) {
             let encoded = encode(tag, &frame);
             // Only meaningful for frames whose payload is > 0 bytes.
             if encoded.len() <= 2 { return Ok(()); }
@@ -134,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_input_rejected() {
+    fn an_empty_input_is_refused_too_short_for_tag() {
         let err = decode::<InternalMeshFrame>(&[]);
         assert!(matches!(err, Err(FramerError::TooShortForTag)));
     }
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_tag_constant() {
+    fn the_legacy_frame_tag_is_0x10() {
         assert_eq!(TAG_LEGACY_FRAME, 0x10);
     }
 }

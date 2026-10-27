@@ -139,7 +139,7 @@ fn off_boundary_commit_needs_no_row() {
 }
 
 #[test]
-fn duplicate_row_fails() {
+fn a_sha_listed_twice_fails_as_duplicate_naming_both_lines() {
     let r = fixture();
     let (d, rows) = complete(&r);
     let rows = format!("{rows}{}", row(&r.c1, "**RAFKA DOMAIN**"));
@@ -168,7 +168,7 @@ fn ambiguous_row_naming_no_disposition_fails() {
 }
 
 #[test]
-fn unknown_sha_fails() {
+fn a_sha_the_repo_cannot_resolve_fails_as_unresolvable() {
     let r = fixture();
     let (d, rows) = complete(&r);
     let rows = format!("{rows}| `{}` | #9 | x | **MIRROR** |\n", "deadbeef00");

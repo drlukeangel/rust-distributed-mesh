@@ -68,7 +68,7 @@ fn rules_hold_on_the_rdm_tree() {
 }
 
 #[test]
-fn clean_fixture_passes() {
+fn a_fixture_breaking_no_rule_has_no_violation() {
     let f = Fixture::new(
         &[
             ("rdm-core", NONE),

@@ -222,7 +222,7 @@ async fn a_won_claim_returns_the_attempts_context_and_a_hand_off_inherits_it() {
 /// claim at its own door, recorded with itself as the claimant. Must NOT happen: a claim decided by
 /// an admin that is not its claimant, or a refusal that does not name who may claim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_and_a_mesh_primary_claims_its_own_drift_lane() {
+async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_and_a_mesh_primary_claims_its_own_drift_attempt() {
     let id = BuildId::mint();
     let executor = birth("mesh1.admin.2", false);
     let (p, _p_seat, _p_builds) = primary(&id, 2, Arc::new(AttemptContexts::in_memory()), &executor).await;

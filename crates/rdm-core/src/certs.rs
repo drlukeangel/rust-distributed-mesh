@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_decode_roundtrip() {
+    fn a_cert_encoded_then_decoded_still_verifies_and_its_bytes_decode_to_itself() {
         let root_key = root();
         let issuer = sample_issuer(&root_key);
         let signed = issue_cert(&issuer, "mesh1.compute.3", 3600, 1000).expect("issue");
@@ -710,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_cert_accepted() {
+    fn a_cert_issued_under_a_trusted_root_verifies() {
         let root_key = SigningKey::from_bytes(&[13u8; 32]);
         let issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
         let signed = issue_cert(&issuer, "mesh1.gateway.1", 3600, 1000).expect("issue");
@@ -718,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_root_rejected() {
+    fn a_cert_issued_under_another_root_is_refused_ca_bad_signature() {
         let root_key = SigningKey::from_bytes(&[13u8; 32]);
         let other_root = SigningKey::from_bytes(&[19u8; 32]);
         let issuer = issuer_under(&other_root, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
@@ -727,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_cert_rejected() {
+    fn a_cert_past_its_ttl_is_refused_expired() {
         let root_key = SigningKey::from_bytes(&[13u8; 32]);
         let issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
         let signed = issue_cert(&issuer, "mesh1.compute.1", 1, 1000).expect("issue");

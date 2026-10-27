@@ -389,7 +389,7 @@ mod tests {
     /// CONTRACT (Q23): a silent fabric holder is investigated from each admin's own view,
     /// including an admin in another mesh and a standby in the holder's mesh.
     #[test]
-    fn an_admin_investigates_a_silent_fabric_holder_from_its_own_view() {
+    fn an_admin_investigates_a_silent_fabric_primary_from_its_own_view() {
         let (t, holder, standby, outsider) = world();
         for admin in [&standby, &outsider] {
             let p = plan(&t, &admin.name, &me_of(admin), &mut Said::default(), &|_| false, &|_| false);
@@ -400,7 +400,7 @@ mod tests {
     /// CONTRACT (Q23): neither a ready holder nor the admin's own exact birth is an investigation
     /// target. No gossip frame is needed to make either decision.
     #[test]
-    fn an_admin_investigates_neither_a_ready_holder_nor_its_own_birth() {
+    fn an_admin_investigates_neither_a_ready_fabric_primary_nor_its_own_birth() {
         let (mut t, holder, standby, _) = world();
         assert!(plan(&t, &holder.name, &me_of(&holder), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty());
         t.nodes[0].status = NodeStatus::ReadyForTraffic;

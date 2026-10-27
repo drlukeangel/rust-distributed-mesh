@@ -1673,7 +1673,7 @@ mod fully_crashed_mesh {
     /// outstanding, no decision), nothing opens, and once the mesh is heard again (no hold) the exits
     /// of its members are its mesh-primary's, never an opening from here.
     #[tokio::test]
-    async fn exit_proofs_of_a_peer_mesh_open_nothing_before_the_ladders_decision_or_after_the_mesh_is_heard() {
+    async fn exited_nodes_of_a_peer_mesh_open_nothing_before_the_ladders_decision_or_after_the_mesh_is_heard() {
         let e = estate().await;
         let (peer_mesh, _) = crash_the_peer_mesh(&e, &[]).await;
         let before = e.builds.current().await.unwrap().unwrap();

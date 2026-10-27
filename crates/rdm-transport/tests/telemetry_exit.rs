@@ -92,7 +92,7 @@ fn held_to_its_bound(case: &str, err: &str, dir: &std::path::Path, exiting: u128
 
 /// The child half: runs only when the parent set `RDM_EXIT_CHILD` to its case.
 #[test]
-fn exit_child() {
+fn the_child_half_flushes_its_spans_and_exits_at_once() {
     let Ok(case) = std::env::var(CHILD) else { return };
     let dir = std::path::PathBuf::from(std::env::var("RDM_EVIDENCE_DIR").expect("the parent names the evidence directory"));
     if case == "blocked-open" {
@@ -127,7 +127,7 @@ fn run_child(case: &str, env: &[(&str, &str)]) -> (String, String, u128, std::pa
     std::fs::create_dir_all(&dir).unwrap();
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     // The child runs this test alone: its libtest name carries the module path of this file.
-    cmd.args(["--exact", &format!("{}::exit_child", module_path!().split_once("::").expect("a module of the test crate").1), "--nocapture"])
+    cmd.args(["--exact", &format!("{}::the_child_half_flushes_its_spans_and_exits_at_once", module_path!().split_once("::").expect("a module of the test crate").1), "--nocapture"])
         .env(CHILD, case)
         // main.rs leaves a child's environment as its parent gave it.
         .env("RDM_TEST_OWN_PROCESS", "1")

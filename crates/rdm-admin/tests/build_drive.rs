@@ -180,7 +180,7 @@ async fn next_within(reader: &mut rdm_admin::build_drive::DriveReader) -> Option
 /// claimed, no executor is called, and the callers' streams end with the seat loss (the caller
 /// re-submits by the Build id at the new seat).
 #[tokio::test]
-async fn a_fabric_primary_whose_seat_record_moved_claims_and_dispatches_nothing() {
+async fn a_fabric_primary_whose_record_names_another_birth_claims_and_dispatches_nothing() {
     let r = rig().await;
     r.switch.fenced.store(true, Ordering::SeqCst);
     let drive = Drive::detached(r.build.clone());
@@ -230,7 +230,7 @@ async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_as_fabric_p
 /// streams end naming the holder the record names (this birth), never the view's; a record naming
 /// none names no holder.
 #[tokio::test]
-async fn a_fabric_primary_whose_view_shows_another_holder_names_the_seat_records_holder_never_the_views() {
+async fn a_fabric_primary_whose_view_shows_another_fabric_primary_names_the_records_never_the_views() {
     let r = rig().await;
     {
         let mut t = r.env.topology.write().await;
@@ -264,7 +264,7 @@ async fn a_fabric_primary_whose_view_shows_another_holder_names_the_seat_records
 /// holds no row of the new one yet, and the callers' streams end naming the holder the record names,
 /// never the view's. No executor is called.
 #[tokio::test]
-async fn a_fenced_fabric_primary_is_refused_fenced_whatever_its_view_shows_and_names_the_new_seat() {
+async fn a_moved_fabric_primary_is_refused_whatever_its_view_shows_and_names_the_new_fabric_primary() {
     let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
     assert!(r.env.topology.read().await.node(&"mesh2.admin.1".parse().unwrap()).is_none(), "the view holds no row of the new holder");
     r.switch.fence_to(Some("mesh2.admin.1"));
@@ -283,7 +283,7 @@ async fn a_fenced_fabric_primary_is_refused_fenced_whatever_its_view_shows_and_n
 /// fabric-primary: the callers' streams still end naming the successor the update installed, never
 /// an empty seat read from a view that has not moved yet.
 #[tokio::test]
-async fn a_fence_set_by_a_committed_transfer_names_the_successor_while_the_view_still_shows_the_old_seat() {
+async fn the_callers_streams_name_the_successor_a_primary_update_installed_while_the_view_shows_the_old_fabric_primary() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
     t.nodes.push(node("mesh2.admin.1", true, false));
@@ -1055,7 +1055,7 @@ impl OperationRunner for HeldOpen {
 /// waiting for that run's stream to end, the callers' streams end naming the holder the record names,
 /// and no later attempt is claimed.
 #[tokio::test]
-async fn a_seat_row_naming_another_holder_than_the_executor_ends_the_drive_naming_that_holder() {
+async fn a_fabric_primary_record_naming_another_birth_than_the_executor_ends_the_drive_naming_that_birth() {
     let held = Arc::new(HeldOpen { began: tokio::sync::Notify::new() });
     let runner = held.clone();
     let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) }, move |_, _| -> Arc<dyn OperationRunner> { runner }).await;
@@ -1112,7 +1112,7 @@ impl rdm_admin::build_drive::Dispatcher for Fed {
 /// Must NOT happen: a caller's stream ending with the seat loss, which sends the caller to the
 /// executor, before the executor's run said it holds the seat.
 #[tokio::test]
-async fn a_seat_row_naming_the_executor_ends_the_drive_on_the_executors_new_seat_frame_never_before() {
+async fn a_fabric_primary_record_naming_the_executor_ends_the_drive_on_its_fabric_primary_moved_frame_never_before() {
     use rdm_admin::build_drive::InnerItem;
     let r = rig().await;
     let (feed, items) = tokio::sync::mpsc::unbounded_channel();
@@ -2024,7 +2024,7 @@ impl Gate for AfterTheProof {
 /// Must NOT happen: the successor claiming the holder's attempt over it on silence, the acknowledgement
 /// before the departure proof, or the retire dispatched before the acknowledgement.
 #[tokio::test(start_paused = true)]
-async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_acknowledges_the_row_and_dispatches() {
+async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_acknowledges_the_row_and_dispatches() {
     let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
     let (row, let_go, events) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Semaphore::new(0)), Arc::new(Mutex::new(Vec::new())));
     let holder_gate = Arc::new(HolderUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row: row.clone(), let_go, events: events.clone() });

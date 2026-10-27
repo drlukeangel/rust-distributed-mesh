@@ -38,7 +38,7 @@ fn read_fifo(fifo: std::path::PathBuf) -> std::thread::JoinHandle<usize> {
 
 /// The child half: runs only when the parent set `RDM_INIT_CHILD`.
 #[test]
-fn init_child() {
+fn the_child_half_inits_telemetry_over_unopenable_files_and_exits() {
     if std::env::var(CHILD).is_err() {
         return;
     }
@@ -79,7 +79,7 @@ fn telemetry_init_returns_while_its_files_cannot_be_opened() {
     mkfifo(&data.join(rdm_core::TRANSPORT_DIAG_FILE));
     let mut child = Command::new(std::env::current_exe().unwrap())
         // The child runs this test alone: its libtest name carries the module path of this file.
-        .args(["--exact", &format!("{}::init_child", module_path!().split_once("::").expect("a module of the test crate").1), "--nocapture"])
+        .args(["--exact", &format!("{}::the_child_half_inits_telemetry_over_unopenable_files_and_exits", module_path!().split_once("::").expect("a module of the test crate").1), "--nocapture"])
         .env(CHILD, "1")
         // main.rs leaves a child's environment as its parent gave it.
         .env("RDM_TEST_OWN_PROCESS", "1")

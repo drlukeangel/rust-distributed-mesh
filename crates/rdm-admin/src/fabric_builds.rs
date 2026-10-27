@@ -414,7 +414,7 @@ mod tests {
     /// What must NOT happen: a moved record that still lets the old seat decide, or a refusal naming
     /// no admin while a digest of the holder is held.
     #[tokio::test]
-    async fn a_moved_fabric_seat_record_refuses_the_old_seats_decisions_with_no_fence_write() {
+    async fn a_fabric_primary_record_naming_another_birth_refuses_this_admins_decisions_by_name() {
         use futures_util::FutureExt as _;
         use rdm_core::{IncarnationId, NodeId, Seat, Primary};
         let seats = rdm_transport::topology::PrimaryView::default();
@@ -450,7 +450,7 @@ mod tests {
     /// commits wholly before the record moves), and every decision after the move is refused by
     /// name.
     #[tokio::test]
-    async fn a_seat_commit_waits_for_the_decision_in_flight_and_the_moved_record_refuses_every_later_one() {
+    async fn a_fabric_primary_change_waits_for_the_decision_in_flight_and_refuses_every_later_one() {
         use rdm_core::{IncarnationId, NodeId, Seat, Primary};
         let seats = rdm_transport::topology::PrimaryView::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());

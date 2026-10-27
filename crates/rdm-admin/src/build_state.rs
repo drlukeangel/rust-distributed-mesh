@@ -3679,7 +3679,7 @@ mod tests {
     /// `InProgress`), and once the drift attempt converges it is completed again. Must NOT happen:
     /// mesh2's attempt 1 read as a stale fabric attempt (ignored) or as the fabric lane's next attempt.
     #[tokio::test]
-    async fn the_fold_reads_the_fabric_lane_and_each_drift_lane_apart() {
+    async fn the_fold_reads_the_fabric_attempts_and_each_meshs_drift_attempts_apart() {
         let m = MemoryBuildStateAdapter::new();
         m.publish_accepted(&intent("b1")).await.unwrap();
         let id = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
@@ -3715,7 +3715,7 @@ mod tests {
     /// existed (no `mesh`, no `claimant`) decodes as the fabric lane, with no claimant recorded; a
     /// line with them round-trips them.
     #[test]
-    fn a_fact_line_written_before_lanes_decodes_as_the_fabric_lane() {
+    fn a_claim_line_written_with_no_mesh_and_no_claimant_decodes_with_neither() {
         let id = rdm_core::fixture_crockford60("b1");
         let old: BuildFact = serde_json::from_str(&format!(r#"{{"fact":"claim","build_id":"{id}","attempt":2,"executor":"mesh1.admin.1"}}"#)).unwrap();
         assert!(matches!(&old, BuildFact::Claim(c) if c.mesh.is_none() && c.claimant.is_none()), "{old:?}");

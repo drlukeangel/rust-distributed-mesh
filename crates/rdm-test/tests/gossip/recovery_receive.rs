@@ -31,7 +31,7 @@ fn operation(d: &MeshDigest, command: &str) -> LifecycleOp {
 /// Stale replacement state, publications/deltas, delayed facts and reserved positions then change
 /// none of that state. Statuses retain their prior authored context; R10 has its own revision cell.
 #[test]
-fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
+fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_installed() {
     let dir=std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance");std::fs::create_dir_all(&dir).unwrap();
     let capture=rdm_transport::EvidenceCapture::start(&dir,"rdm-recovery-receive").unwrap();
     capture.run(4,async {

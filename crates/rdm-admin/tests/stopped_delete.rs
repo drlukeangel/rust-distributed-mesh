@@ -95,7 +95,7 @@ impl TopologySink for Discard {
 /// (`StopNode`, `AwaitNodeLeft`), or a step that releases storage (`ReleaseStorage`: node-delete.md step 3,
 /// "Retain the data dir, node-identity.json and endpoint key").
 #[tokio::test]
-async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof() {
+async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop() {
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("i143-3072-stopped-delete", exporter.clone());
     let _g = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));

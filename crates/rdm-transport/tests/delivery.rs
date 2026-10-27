@@ -615,7 +615,7 @@ async fn a_named_refusal_ends_the_retry_and_is_delivered_until_acked() {
 /// Cell 6. CONTRACT: an owed request to a silent receiver (it takes the request and never acks) keeps
 /// being resent; the receiver's proven exit (the view's removal) ends it, by name.
 #[tokio::test]
-async fn a_proven_exit_ends_the_owed_request_and_silence_does_not() {
+async fn the_receivers_removal_from_the_view_ends_the_owed_request_and_silence_does_not() {
     let r = raw().await;
     let (client, resolver) = client_of(&[&r.node]).await;
     let cd = client.delivery().clone();
@@ -1325,7 +1325,7 @@ async fn an_owner_dropping_its_owed_call_ends_the_resend() {
 /// Cell 27 (i146 Q44). CONTRACT: an Owed call to a silent receiver ends on the receiver's proven exit
 /// (the view's removal), `ReceiverGone`, code `UNAVAILABLE`: the proof ends it, never silence.
 #[tokio::test]
-async fn an_owed_call_ends_on_its_receivers_proven_exit_unavailable() {
+async fn an_owed_call_ends_on_its_receivers_removal_from_the_view_unavailable() {
     let r = raw().await;
     let (client, resolver) = client_of(&[&r.node]).await;
     let cd = client.delivery().clone();

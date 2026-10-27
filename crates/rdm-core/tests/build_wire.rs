@@ -410,7 +410,7 @@ fn a_request_at_a_reserved_count_position_is_an_unknown_variant() {
 /// decode against the spec: the positional codec has no trailing default, so a caller and the admin
 /// it calls carry the same spec.
 #[test]
-fn a_create_spec_is_the_entry_before_q166_with_its_config_appended() {
+fn a_create_spec_without_config_writes_the_old_entry_bytes_and_a_config_appends_its_map() {
     let before_q166 = [
         ("m.admin.1", "09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74"),
         ("m.rpc.1", "07 6d2e7270632e31 00 00 00"),

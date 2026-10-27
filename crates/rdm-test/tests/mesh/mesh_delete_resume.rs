@@ -338,8 +338,8 @@ async fn a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_adm
 /// births of the accepted roster. A peer that never hears NodeDeleted keeps the stopped birth until
 /// mesh-left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_leave_whose_primary_is_lost_after_a_members_exit_proof_finishes_that_members_delete_under_the_surviving_admin() {
-    let run = primary_lost_mid_leave("a_leave_whose_primary_is_lost_after_a_members_exit_proof_finishes_that_members_delete_under_the_surviving_admin", 2, Rpc1::ExitProven).await;
+async fn a_leave_whose_primary_is_lost_after_a_members_terminate_runtime_receipt_finishes_that_members_delete_under_the_surviving_admin() {
+    let run = primary_lost_mid_leave("a_leave_whose_primary_is_lost_after_a_members_terminate_runtime_receipt_finishes_that_members_delete_under_the_surviving_admin", 2, Rpc1::ExitProven).await;
     let survivor = if run.lost.0 == "mesh2.admin.1" { "mesh2.admin.2" } else { "mesh2.admin.1" };
     let eprint_trace = assert_resumed(&run, survivor, 4);
     let outer = format!("mesh.delete:{}", run.mesh2_id);

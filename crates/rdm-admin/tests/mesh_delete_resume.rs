@@ -1835,7 +1835,7 @@ impl LifecycleEvents for Departures {
 /// `mesh2.rpc.2`'s, which its own node.delete published once under attempt 1 (node-delete.md step 4:
 /// the executor emits node.deleted); a peer that never heard it keeps the birth until mesh-left.
 #[test]
-fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its_missing_steps() {
+fn a_delete_cut_after_its_terminate_runtime_receipt_is_finished_by_the_resumed_attempt_from_its_missing_steps() {
     let cap = capture();
     let data_root = std::env::temp_dir().join(format!("mesh-deleted-cut-delete-{}", NodeId::mint()));
     let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
@@ -2030,7 +2030,7 @@ fn the_owners_wait_ends_when_the_final_primary_is_lost_never_on_a_timer() {
 /// final primary is proven exited afterwards (it reported mesh.deleted while it lived, then went):
 /// the handoff is read first. Must NOT happen: a proven exit discarding a handoff already held.
 #[test]
-fn a_handoff_held_ends_the_owners_wait_with_its_manifest_before_a_later_proven_exit() {
+fn a_handoff_held_ends_the_owners_wait_with_its_manifest_even_when_the_final_primary_exits_after() {
     let cap = capture();
     let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
     let mesh_delete_view = MeshDeleteView::default();

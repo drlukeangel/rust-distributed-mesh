@@ -37,7 +37,7 @@ fn complete_mapping_has_only_pending_violations() {
 }
 
 #[test]
-fn unmapped_clause_fails() {
+fn a_clause_with_no_row_fails_naming_the_clause() {
     let (_, v) = check(&format!("{A}{C}"));
     assert!(v.contains(&Violation::ConnectionsClauseUnmapped { clause: "CONN-B".into() }), "{v:?}");
 }
@@ -50,7 +50,7 @@ fn row_without_owner_fails() {
 }
 
 #[test]
-fn pending_row_owned_by_something_other_than_an_i143_story_fails() {
+fn a_pending_row_whose_owner_is_not_a_story_fails_as_without_owner() {
     let b = B.replace("i143.e4.s3 (#2756)", "the reconnect team");
     let (_, v) = check(&format!("{A}{b}{C}"));
     assert!(v.iter().any(|x| matches!(x, Violation::ConnectionsRowWithoutOwner { clause, .. } if clause == "CONN-B")), "{v:?}");
@@ -64,7 +64,7 @@ fn row_without_proof_fails() {
 }
 
 #[test]
-fn duplicate_clause_fails() {
+fn a_clause_listed_twice_fails_naming_both_lines() {
     let (_, v) = check(&format!("{A}{B}{C}{A}"));
     assert!(v.iter().any(|x| matches!(x, Violation::ConnectionsDuplicate { clause, lines } if clause == "CONN-A" && lines.len() == 2)), "{v:?}");
 }
@@ -91,7 +91,7 @@ fn mirror_row_with_rdm_sha_and_test_passes() {
 }
 
 #[test]
-fn rafka_domain_row_needs_a_named_owner_but_not_an_i143_story() {
+fn a_rafka_domain_row_needs_a_named_owner_but_not_a_story() {
     let c = "| `CONN-C` | connections.md §13 C | rafka i66.e3 (#2722b) | no route barrier exists in RDM | **RAFKA DOMAIN** |\n";
     let (_, v) = check(&format!("{A}{B}{c}"));
     assert_eq!(v.len(), 2, "{v:?}");

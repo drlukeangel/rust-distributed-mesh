@@ -19,7 +19,7 @@ const SPANS: usize = 2000;
 
 /// The child half: runs only when the parent set `RDM_OUTAGE_CHILD`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn outage_child() {
+async fn the_child_half_emits_its_spans_to_the_down_collector_and_exits() {
     if std::env::var(CHILD).is_err() {
         return;
     }
@@ -88,7 +88,7 @@ fn run_child(endpoint: &str) -> (Duration, String, String, std::path::PathBuf) {
     let spawned_at = unix_ms();
     let mut child = Command::new(std::env::current_exe().unwrap())
         // The child runs this test alone: its libtest name carries the module path of this file.
-        .args(["--exact", &format!("{}::outage_child", module_path!().split_once("::").expect("a module of the test crate").1), "--nocapture"])
+        .args(["--exact", &format!("{}::the_child_half_emits_its_spans_to_the_down_collector_and_exits", module_path!().split_once("::").expect("a module of the test crate").1), "--nocapture"])
         .env(CHILD, "1")
         .env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
         .env("RDM_EVIDENCE_DIR", &evidence)

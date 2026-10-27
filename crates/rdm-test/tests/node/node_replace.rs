@@ -732,8 +732,8 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
 /// endpoint key. Must NOT happen: the path left empty after the seat moved, a second node.delete of
 /// the exited birth, a Build minted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_over_mesh_primary() {
-    let (estate, birth_build) = fabric_of("a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_over_mesh_primary", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_that_takes_over_mesh_primary() {
+    let (estate, birth_build) = fabric_of("a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_that_takes_over_mesh_primary", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");

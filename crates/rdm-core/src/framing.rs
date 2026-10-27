@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn request_round_trips() {
+    fn a_request_decodes_to_its_op_target_and_payload_with_the_target_first() {
         let frame = encode_request(&t(), b"hello");
         assert_eq!(decode_request(&frame, |_| Some(64)), Ok((0x01, t(), &b"hello"[..])));
         assert_eq!(peek_target(&frame), Some(t().target), "the target is the first section");

@@ -657,7 +657,7 @@ fn two_meshes_two_mesh2_admins(mesh2_primary: &str) -> Topology {
 /// happen: the lane held for good by the departed claimant (every later recovery and topology
 /// operation on mesh2 refused naming it), a take-over on silence alone, or the member's recovery lost.
 #[tokio::test]
-async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh_primary_on_its_exit_proof() {
+async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_primary_once_its_exit_is_recorded() {
     use rdm_admin::build_state::BuildState;
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-departed-claimant", exporter.clone());
@@ -757,7 +757,7 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
 /// claimant left and opens and claims attempt 2 of mesh2's lane. Must NOT happen: mesh2 held for good
 /// by a row whose attempt ended, or the row released on silence alone.
 #[tokio::test]
-async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_released_by_the_new_mesh_primary_on_its_exit_proof() {
+async fn an_in_flight_row_a_lost_mesh_primary_left_after_its_verdict_is_released_by_the_new_mesh_primary_once_its_exit_is_recorded() {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");

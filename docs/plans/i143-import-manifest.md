@@ -65,7 +65,7 @@ gate logs at the export SHA as their proof (`tools/mesh-audit/src/export.rs`).
 | a same-incarnation locator or provider-domain change is refused | `crates/rdm-transport/src/topology.rs::tests::a_birth_keeps_its_runtime_and_a_restart_brings_a_new_one` |
 | same-domain successor control and cross-domain refusal | `A/tests/container_proof.rs::a_successor_in_the_same_docker_domain_adopts_inspects_and_controls_a_container_it_never_launched`; `A/tests/container_proof.rs::an_admin_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing` |
 | provider terminal state of the adopted exact runtime reaches lifecycle and recovery | `T/runtime/container_kill.rs::a_killed_container_is_proven_terminal_by_inspection_and_the_build_recreates_it` |
-| failed RPC, dial, silence or a provider-domain mismatch is never death proof | `A/tests/drift_convergence.rs::a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced`; `A/src/drift.rs::tests::a_silent_birth_is_held_until_its_exact_runtime_is_proven_exited` |
+| failed RPC, dial, silence or a provider-domain mismatch is never death proof | `A/tests/drift_convergence.rs::a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced`; `A/src/drift.rs::tests::a_silent_birth_counts_short_only_once_its_exact_runtime_is_inspected_exited` |
 
 Multi-host eligibility is not claimed: the remote-pool provider is proven only in
 `A/src/deployment/provider.rs`'s tests (`RemotePool`, same-pool adoption), not across real hosts.

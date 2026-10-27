@@ -102,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn a_silent_birth_is_held_until_its_exact_runtime_is_proven_exited() {
+    fn a_silent_birth_counts_short_only_once_its_exact_runtime_is_inspected_exited() {
         use NodeStatus::{Dead, PendingReconnect, ReadyForTraffic as R};
         let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), node("mesh1.rpc.2", PendingReconnect), node("mesh1.rpc.3", R)]);
         let d = desired(1, 3);
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn a_node_type_short_without_a_proven_exit_is_not_drift() {
+    fn a_node_type_short_with_no_exited_birth_is_not_drift() {
         use NodeStatus::ReadyForTraffic as R;
         // A failed grow leaves the cohort short: that is the Build's outcome,
         // not runtime drift, and must not start Build after Build.
