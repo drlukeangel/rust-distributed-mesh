@@ -2499,7 +2499,7 @@ A node birth's lifecycle state, as declared.
 
 ### `NodeStatus`
 
-`crates/rdm-core/src/views.rs` · enum · 8 variants · rdm-core
+`crates/rdm-core/src/views.rs` · enum · 13 variants · rdm-core
 
 A node's lifecycle state as its node-admin's view holds it.
 
@@ -2515,6 +2515,11 @@ serde: `rename_all = "kebab-case"`
 | 5 | **`Reserved5`** |  |  | Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting |
 | 6 | **`Dead`** |  |  | True offline: the mesh primary's connect found no path on two ladders a staleness floor |
 | 7 | **`Deleted`** |  |  | Deleted: identity and name released; only the node's row carries it. |
+| 8 | **`Starting`** |  |  | Starting: from the accepted node.start execution until its join is accepted (states.md "Who |
+| 9 | **`ConnectionsDeleted`** |  |  | Connections-deleted: its node.connections.delete { All } completed `Established`. |
+| 10 | **`Stopping`** |  |  | Stopping: its stop's admission arrived. |
+| 11 | **`Stopped`** |  |  | Stopped: a live, stopped process. |
+| 12 | **`Deleting`** |  |  | Deleting: node.delete's claim was adopted. |
 
 <a id="t-rdm_core-views-NodeView"></a>
 
