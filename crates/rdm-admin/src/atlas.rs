@@ -680,10 +680,13 @@ impl Atlas {
     /// mesh-primary's receipt"): the name its record holds, and, where the record is of this birth (its
     /// newest, or a record with no birth yet) in a mesh this admin is primary for (only a primary's
     /// atlas holds a mesh's records, Q224), the row's status, `stopped` exactly when that is stopped:
-    /// every status of the mesh whose rows this admin writes ([`Self::writes`]), and in another mesh the
-    /// statuses this atlas's own receipts set (`stopped`, `deleted`, [`Self::take_receipt`]); another
-    /// mesh's record holds any other status only as a fill read it, so that birth answers the view's
-    /// status until that mesh's primary feeds this atlas. Never a lifecycle effect laid over the view: a
+    /// every status of the mesh whose rows this admin writes ([`Self::writes`]); in another mesh, the
+    /// states an operation sets (stopping through deleted, connections-deleting and connections-deleted
+    /// included), which reach this atlas with the operation (its receipt, [`Self::take_receipt`], or the
+    /// fill at its attempt's completion, before the caller hears `Complete`, R-FA2). A birth's create-time
+    /// progress (starting, pending, ready-for-traffic) is its report to its own mesh-primary, which
+    /// another mesh's record holds only as of this atlas's last fill: that birth answers the view's status
+    /// until its mesh-primary feeds this atlas. Never a lifecycle effect laid over the view: a
     /// command the node has not acknowledged moved the row nowhere, so it moves the answer nowhere.
     /// Silence is not a state a command sets: a birth its row holds live (starting through
     /// connections-deleted) that the view holds silent (`PendingReconnect`, `Dead`, observer-inferred,
@@ -701,7 +704,7 @@ impl Atlas {
             let of_birth = r.newest_birth().is_none_or(|b| Some(&b.incarnation_id) == n.incarnation_id.as_ref());
             let live = matches!(r.status, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::ReadyForTraffic | NodeStatus::ConnectionsDeleting | NodeStatus::ConnectionsDeleted);
             let silent = live && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead);
-            let current = held.written.contains(&r.name.mesh) || matches!(r.status, NodeStatus::Stopped | NodeStatus::Deleted);
+            let current = held.written.contains(&r.name.mesh) || !matches!(r.status, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::ReadyForTraffic);
             if of_birth && held.meshes.contains(&r.name.mesh) && current && !silent {
                 n.status = r.status;
                 n.stopped = r.status == NodeStatus::Stopped;

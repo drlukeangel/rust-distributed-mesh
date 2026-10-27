@@ -47,10 +47,11 @@ The matching rules:
 - **Status:** a node's `status` is its row's as written: the state the row last took from the node's
   frame or the mesh-primary's receipt ([states.md](lifecycles/states.md#who-sets-each-state)). A
   command the node has not acknowledged moves it nowhere: a stop sent and not yet acknowledged reads
-  `ready-for-traffic`. The fabric-primary holds its own mesh's rows as its writer writes them, and
-  another mesh's rows as its fill read them, moved by its own receipts (`stopped`, `deleted`); until
-  each mesh-primary feeds the fabric-primary's atlas, another mesh's node answers the
-  topology's status for any other state. Silence (`pending-reconnect`, `dead`) is observer-inferred
+  `ready-for-traffic`. The fabric-primary holds its own mesh's rows as its writer writes them; another
+  mesh's operation states (stopping through deleted) reach its atlas with the operation, its receipt or
+  the fill at its attempt's completion, and until each mesh-primary feeds the fabric-primary's atlas
+  another mesh's node answers the topology's status for its create-time progress (starting, pending,
+  ready-for-traffic). Silence (`pending-reconnect`, `dead`) is observer-inferred
   ([node identity and state](node-identity-and-state.md)), answered while the row holds the node live.
 - **`connections.get`:** answered by the exact birth from its own connections log, not from the atlas:
   the node (id and incarnation) is the read's address, outside the filter; the filter matches that

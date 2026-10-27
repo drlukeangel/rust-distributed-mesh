@@ -361,12 +361,16 @@ async fn an_unacknowledged_stop_reads_ready_for_traffic_and_the_row_answers_each
         other => panic!("{other:?}"),
     };
     assert_eq!(ready, ["mesh1.admin.1", "mesh1.rpc.1", "mesh2.rpc.1"], "[status: ready-for-traffic] matches the birth whose stop is unacknowledged");
-    // Another mesh's row holds a status only as a fill read it: the view's answers until that mesh's
-    // primary feeds this atlas; the stopped this atlas's own receipt sets answers itself.
+    // Another mesh's create-time progress is held only as a fill read it: the view's answers until that
+    // mesh's primary feeds this atlas; an operation's state, which reaches this atlas with the operation
+    // (the stopped its receipt sets), answers itself.
     assert_eq!(status_of(&view, &atlas, &peer.node_id).await, (Read::ReadyForTraffic, false), "mesh2's birth: the view's ready-for-traffic, not the pending its row held at the fill");
     peer_row.status = NodeStatus::Stopped;
     atlas.write_record(&peer_row);
     assert_eq!(status_of(&view, &atlas, &peer.node_id).await, (Read::Stopped, true), "mesh2's birth: the stopped this atlas's receipt set");
+    peer_row.status = NodeStatus::ConnectionsDeleted;
+    atlas.write_record(&peer_row);
+    assert_eq!(status_of(&view, &atlas, &peer.node_id).await, (Read::ConnectionsDeleted, false), "mesh2's birth: the connections-deleted its attempt's fill read");
 
     row.status = NodeStatus::Stopping;
     atlas.write_record(&row);
