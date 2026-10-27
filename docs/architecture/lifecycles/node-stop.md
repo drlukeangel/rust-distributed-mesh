@@ -4,7 +4,8 @@
 
 `node.stop` is a workflow: it calls [node.connections.delete](node-connections-delete.md) with `{ scope: All }`,
 then [node.mesh.leave](node-mesh-leave.md), streaming each one's acknowledgement and completion on the
-stop's own stream, then stops the live process.
+stop's own stream, then stops the live process. The mesh-primary writes each frame as the node's
+status and streams it on to the fabric-primary on the attempt's stream as it arrives.
 The node keeps its identity, endpoint key, bound port, bin, name and data dir.
 Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
 
@@ -19,6 +20,7 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
 | Transport cut | [node.mesh.leave](node-mesh-leave.md), called after the connections are deleted: its gossip neighbours and its Node RPC pool, which are not connections; never its own endpoint, the stop call's stream, or the connection to its mesh-primary its owed declarations ride |
 | Reply | `node.stopped` on the stop call's reply stream |
 | Peer publication | Mesh-primary authors NodeStopped from the matching stopped frame, in its in-flight overlay |
+| Upward | Each frame the node sends on the stop stream, the mesh-primary writes as the node's status and sends on as a live frame of the attempt's stream to the fabric-primary ([build.attempt.run](../node-rpc-envelope.md#build-op-0x20-rdm): receipt replay, the current Blocked, then live frames), which records each receipt on the Build; two one-hop streams, never a forwarded one |
 | Status | stopping from the stop's admission, then connections-deleting, connections-deleted, leaving and left from its primitives' frames, then stopped with a live process: the [stopped node](states.md#stopped-nodes) |
 | Completion | The matching `node.stopped` on the stop stream and the recorded stop receipt; no runtime Exited receipt is required |
 | Kept | node.id, incarnation, endpoint key, port, bin, path/name and storage |
