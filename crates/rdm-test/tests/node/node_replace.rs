@@ -2861,3 +2861,50 @@ async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
     assert!(terminated || receipted, "the fabric-primary ran TerminateRuntime under {operation}: {facts}");
     assert_eq!(last["live_at_path"], json!([s(&after["node_id"])]), "the path keeps one live birth, the re-created one: {facts}");
 }
+
+/// CONTRACT (Q207, #3211 red 3: "a FP/MP looks to see if something at that path.name exists currently;
+/// if it does it should delete the caller"): a mesh2 member is held (SIGSTOP) until mesh2's primary
+/// re-creates it as a new birth at its path, then continued: a caller its mesh-primary does not hold
+/// (its Digest, or a declaration, refused). Mesh2's primary decides it from its atlas by its path.name:
+/// another birth is there, so the caller is deleted; not the fabric-primary, it verifies at the root
+/// with `fabrics.atlas.get` first, which agrees; it reports the caller to the fabric-primary for
+/// `node.terminate`. One `via-refused-caller` span per decision names the door, the
+/// decision, the root's answer and the outcome. What must NOT happen: the caller refused and nothing
+/// decided, the caller re-admitted over the re-created birth, its process left running, or the path
+/// left with any live birth but the re-created one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_re_created_birth_that_comes_back_is_deleted_by_its_path_name_verified_at_the_root() {
+    let (mut estate, _build) = two_mesh_estate("a_re_created_birth_that_comes_back_is_deleted_by_its_path_name_verified_at_the_root").await;
+    const NODE: &str = "mesh2.rpc.1";
+    let before = estate.node_value(NODE).await;
+    let old_id = s(&before["node_id"]);
+    let rt = exact_runtime(&estate, NODE).await;
+    let pid = rt.pid;
+    assert_eq!(rt.apply(Fault::Stop).expect("the exact runtime is held").state_after, Some('T'));
+    let after = until_new_birth(&estate, NODE, &before, SETTLE).await;
+    let cont = std::process::Command::new("kill").args(["-CONT", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false);
+    let floor = rdm_transport::topology::staleness_floor();
+    let decided = |spans: &[Value]| spans.iter().filter(|sp| sp["name"] == "rdm.node_admin.node.update.via-refused-caller" && sp["attributes"]["node_id"] == old_id.as_str()).map(|sp| sp["attributes"].clone()).collect::<Vec<Value>>();
+    let until = std::time::Instant::now() + floor * 2 + Duration::from_secs(30);
+    while std::time::Instant::now() < until && (alive(pid as u64) || decided(&estate.spans()).is_empty()) {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let live_at_path: Vec<String> = estate.node_values().await.iter().filter(|n| n["name"] == NODE && live(n)).map(|n| s(&n["node_id"])).collect();
+    estate.stop().await;
+    let spans = estate.spans();
+    let decisions = decided(&spans);
+    let facts = json!({"node": NODE, "old_node_id": old_id, "new_node_id": after["node_id"], "continued": cont, "decisions": decisions, "old_process_alive": alive(pid as u64), "live_at_path": live_at_path});
+    estate.artifact("refused-caller.json", &facts);
+    eprintln!("refused caller facts: {}", serde_json::to_string_pretty(&facts).unwrap());
+    assert!(cont, "the held birth was continued: {facts}");
+    assert!(!decisions.is_empty(), "mesh2's primary decided the caller by its path.name: {facts}");
+    for d in &decisions {
+        assert_eq!(d["node"], "mesh2.admin.1", "mesh2's primary decides its own mesh's caller: {facts}");
+        assert_eq!(d["subject"], NODE, "decided at the caller's path.name: {facts}");
+        assert_eq!(d["decision"], "delete-path-held", "another birth is at the path: the caller is deleted: {facts}");
+        assert_eq!(d["root"], "agrees", "the fabric-primary's atlas agrees: {facts}");
+    }
+    assert!(decisions.iter().any(|d| d["outcome"] == "terminate-reported"), "the caller is reported to the fabric-primary for node.terminate: {facts}");
+    assert!(!alive(pid as u64), "the caller's process is gone: {facts}");
+    assert_eq!(facts["live_at_path"], json!([s(&after["node_id"])]), "the path keeps one live birth, the re-created one: {facts}");
+}
