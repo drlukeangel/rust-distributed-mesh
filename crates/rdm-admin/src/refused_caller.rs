@@ -232,6 +232,7 @@ mod tests {
             builds: builds.clone(),
             data_root: Default::default(),
             gone_dirs: Default::default(),
+            resubmits: Default::default(),
         };
         atlas.refused_callers(Arc::new(RefusedCallers::new(admin.node_id.clone(), recovery, Default::default())));
         let authority = crate::status_rpc::StatusAuthority {
