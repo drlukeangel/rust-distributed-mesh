@@ -16,7 +16,7 @@ use rdm_client::{BuildFrame, BuildStream, CallEnd, Change, FabricDesired, Fabric
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha};
 use rdm_test::process_faults::{ExactRuntime, Fault};
-use rdm_test::test_app::{topology_storage_dir, TOPOLOGY_STORAGE_REFUSING, TOPOLOGY_STORAGE_TARGET};
+use rdm_test::test_app::{refuse_list_knob, topology_storage_dir, TOPOLOGY_STORAGE_MEMORY, TOPOLOGY_STORAGE_REFUSING, TOPOLOGY_STORAGE_TARGET};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -222,33 +222,71 @@ async fn an_unsupported_provider_changes_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_provider_that_does_not_open_changes_nothing() {
     let test = "a_provider_that_does_not_open_changes_nothing";
-    let (mut estate, views) = two_mesh_estate(test, &[]).await;
+    let (estate, views) = two_mesh_estate(test, &[]).await;
     let before = births(&views);
     let current = estate.current().await.based_on;
     let (_, target_root) = roots(&estate);
     std::fs::create_dir_all(target_root.parent().expect("the root is under its provider's place")).expect("test-target's place");
     let _ = std::fs::remove_dir_all(&target_root);
     std::fs::write(&target_root, b"a regular file where the fabric's root would be").expect("a file at test-target's root");
-    let change = naming_provider(&estate, Some(TOPOLOGY_STORAGE_TARGET)).await;
+    not_opened(estate, TOPOLOGY_STORAGE_TARGET, &before, &current, "").await;
+}
+
+/// The request naming `provider` is refused by name, `topology-storage-provider-not-opened`, its detail
+/// naming the provider and `why`; nothing is accepted: the current Build is `current`, the Fabric row
+/// and every node still name `file`, every node is the birth `before` holds, and no mesh-primary blocked.
+async fn not_opened(mut estate: Estate, provider: &str, before: &BTreeMap<String, (String, Option<String>)>, current: &rdm_client::BuildId, why: &str) {
+    let change = naming_provider(&estate, Some(provider)).await;
     let refused = estate.carrier().await.create(change).await;
     let (reason, detail) = match refused {
         Err(CallEnd::Rejected { reason, detail }) => (reason, detail),
-        Err(other) => panic!("the request naming {TOPOLOGY_STORAGE_TARGET} ended otherwise than refused by name: {other}"),
-        Ok(stream) => panic!("the request naming {TOPOLOGY_STORAGE_TARGET}, which does not open, was accepted as Build {}", stream.build_id()),
+        Err(other) => panic!("the request naming {provider} ended otherwise than refused by name: {other}"),
+        Ok(stream) => panic!("the request naming {provider}, which does not open, was accepted as Build {}", stream.build_id()),
     };
     estate.artifact("refusal.json", &json!({ "reason": reason, "detail": detail }));
     assert_eq!(reason, "topology-storage-provider-not-opened", "refused by name: {detail}");
-    assert!(detail.contains(TOPOLOGY_STORAGE_TARGET), "the refusal names the provider: {detail}");
-    assert_eq!(estate.current().await.based_on, current, "the current Build is the one before the request");
+    assert!(detail.contains(provider) && detail.contains(why), "the refusal names the provider and why: {detail}");
+    assert_eq!(&estate.current().await.based_on, current, "the current Build is the one before the request");
     fabric_names(&estate.fabric_view().await, FILE, &[]);
     let after = estate.node_views().await;
-    assert_eq!(births(&after), before, "every node is the same birth");
+    assert_eq!(&births(&after), before, "every node is the same birth");
     nodes_write(&after, FILE);
     estate.stop().await;
     let spans = estate.spans();
     let reject = named(&spans, "rdm.node_admin.build.reject.via-topology-storage-provider-not-opened");
-    assert!(reject.iter().any(|sp| s(&sp["attributes"]["detail"]).contains(TOPOLOGY_STORAGE_TARGET)), "the fabric-primary's refusal span names the provider: {reject:#?}");
+    assert!(reject.iter().any(|sp| s(&sp["attributes"]["detail"]).contains(provider)), "the fabric-primary's refusal span names the provider: {reject:#?}");
     assert!(named(&spans, "rdm.node_admin.mesh.update.via-block").is_empty(), "no mesh-primary blocked: no step of a change ran");
+}
+
+/// CONTRACT (storage.md §2 "Changing it": "Acceptance refuses by name a provider the fabric-primary's
+/// wiring does not register or cannot open"; step 2, the copy reads every store of the new provider):
+/// `test-memory`, RDM's memory backend, is registered by every executable of the testkit, and its
+/// boundaries open while it answers no lines to copy; a request naming it is refused by name,
+/// `topology-storage-provider-not-opened`, naming the provider and that it answers no lines. Nothing is
+/// accepted: the current Build stands, the Fabric row and every node still name `file`, every node is
+/// the same birth, and no mesh-primary blocked. Must NOT happen: the Build accepted, its copy failing
+/// on lines that do not open and its commit read on them read again without end, every mesh blocked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_provider_whose_lines_do_not_open_changes_nothing() {
+    let (estate, views) = two_mesh_estate("a_provider_whose_lines_do_not_open_changes_nothing", &[]).await;
+    let current = estate.current().await.based_on;
+    not_opened(estate, TOPOLOGY_STORAGE_MEMORY, &births(&views), &current, "answers no lines").await;
+}
+
+/// CONTRACT (storage.md §2 "Changing it": "Acceptance refuses by name a provider the fabric-primary's
+/// wiring does not register or cannot open"; step 2, the copy reads every store of the new provider):
+/// `test-refusing` with its knob standing answers every list of its store lines with a named refusal;
+/// a request naming it is refused by name, `topology-storage-provider-not-opened`, naming the provider
+/// and the refusal. Nothing is accepted and no mesh-primary blocked. Must NOT happen: the Build accepted
+/// and its copy meeting the refusal with every mesh blocked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_provider_that_refuses_its_list_at_acceptance_changes_nothing() {
+    let (estate, views) = two_mesh_estate("a_provider_that_refuses_its_list_at_acceptance_changes_nothing", &[]).await;
+    let current = estate.current().await.based_on;
+    let knob = refuse_list_knob(estate.fabric_store_root().parent().expect("the root is under the store dir"));
+    std::fs::create_dir_all(knob.parent().unwrap()).unwrap();
+    std::fs::write(&knob, b"").unwrap();
+    not_opened(estate, TOPOLOGY_STORAGE_REFUSING, &births(&views), &current, "lists no lines").await;
 }
 
 /// CONTRACT (storage.md §2 "The property": Day 0, "the bootstrap admin, on the Fabric row ... its
@@ -722,8 +760,9 @@ const COPY: &str = "rdm.node_admin.build.update.via-storage-copy";
 /// not is refused by name, and nothing switches"; "A step that fails before the switch fails the Build
 /// only once the fabric-primary has read that no `commit` exists for `(build_id, change_id)`; the
 /// fabric-primary then sends `mesh.unblock` on the old provider, the new provider closed and the Fabric
-/// row unchanged"; "No timer ends a block"): the change names `test-refusing`, a provider that answers
-/// a copy's list of its store lines with a named refusal. The copy fails by name, once: its span ends
+/// row unchanged"; "No timer ends a block"): the change names `test-refusing`, held before its copy
+/// (the storage-switch cut), and its knob is written: from there it answers a copy's list of its store
+/// lines with a named refusal, its claims answered. The copy fails by name, once: its span ends
 /// `failed`, its cause naming the provider's refusal, and it is not read again. The fabric-primary reads
 /// that no `commit` record exists (`commit_found = false`) and only then fails the Build, its reason
 /// naming the provider and the refusal; every mesh-primary replies `unblocked` onto `file` under the
@@ -735,8 +774,14 @@ async fn a_provider_that_refuses_its_list_fails_the_copy_and_unblocks_on_the_old
     let test = "a_provider_that_refuses_its_list_fails_the_copy_and_unblocks_on_the_old_provider";
     let (mut estate, views) = two_mesh_estate(test, &[]).await;
     let before = births(&views);
+    let hold = hold_switch(&estate).await;
     let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_REFUSING).await;
     let change_id = attr(&blocked_at(&estate, &build_id, "mesh1").await, "change_id");
+    // Accepted, its lines answered: from now on the provider refuses its list by name.
+    let knob = refuse_list_knob(estate.fabric_store_root().parent().expect("the root is under the store dir"));
+    std::fs::create_dir_all(knob.parent().unwrap()).unwrap();
+    std::fs::write(&knob, b"").unwrap();
+    hold.release("switch").await;
     let frames = match tokio::time::timeout(STEP, terminal(&estate, stream)).await {
         Ok(frames) => frames,
         Err(_) => {
