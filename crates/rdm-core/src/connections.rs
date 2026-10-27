@@ -213,7 +213,9 @@ impl NodeConnection {
 struct Cell {
     stamp: u64,
     active: Option<NodeConnection>,
-    failed: bool,
+    /// The destination end a latest Direct Failed entry names: a series stands on it only while the
+    /// topology view still holds that process (§9.1).
+    failed: Option<ConnectionEnd>,
 }
 
 /// The held connections projection: active Direct facts fleet-wide, plus this node's own active
@@ -275,7 +277,7 @@ impl ConnectionsHeld {
                 self.own_proxies.remove(&(entry.destination.name.clone(), entry.alpn.clone()));
             }
         }
-        let failed = entry.kind == ConnectionKind::Direct && entry.state == ConnectionState::Failed;
+        let failed = (entry.kind == ConnectionKind::Direct && entry.state == ConnectionState::Failed).then(|| entry.destination.clone());
         let active = entry.is_active_direct().then_some(entry);
         self.cells.insert(key, Cell { stamp, active, failed });
         Ok(())
@@ -401,12 +403,15 @@ impl ConnectionsHeld {
         self.cells.contains_key(&key)
     }
 
-    /// Whether the latest Direct fact `source -> destination` on `alpn` is Failed: the one state a
-    /// reconnect series stands on (connections.md section 9.1). `false` when none is held, and when
-    /// the latest is Connected, a drop (Disconnected) or an acceptor's Refused.
+    /// Whether the latest Direct fact `source -> destination` on `alpn` is Failed for the destination
+    /// process the topology view holds now: the one state a reconnect series stands on (connections.md
+    /// section 9.1: "Failed for the current destination incarnation"). `false` when none is held, when
+    /// the latest is Connected, a drop (Disconnected) or an acceptor's Refused, and when the Failed
+    /// fact names a destination process that is gone (§13 I: stale evidence is never used for a new
+    /// process birth).
     pub fn latest_direct_failed_for(&self, source: &PathName, destination: &PathName, alpn: &[u8]) -> bool {
         let key = ConnectionIndex { source: source.clone(), destination: destination.clone(), alpn: alpn.to_vec(), kind: ConnectionKind::Direct };
-        self.cells.get(&key).is_some_and(|c| c.failed)
+        self.cells.get(&key).and_then(|c| c.failed.as_ref()).is_some_and(|end| self.end_superseded(end) != Some(true))
     }
 
     /// Every active Direct fact on the default ALPN whose destination is `destination`, sorted by

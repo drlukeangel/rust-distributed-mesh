@@ -5,8 +5,9 @@
 //! below the process provider (unit, in-process transport, in-process node); its "process" column
 //! names the process-provider cell (an estate of real node processes, `MESH_SPAWN_TYPE=process`).
 //! A row whose process column is "none" is proved in this section, by the cell named in the last
-//! column, or carries the reason it is not writable here. Cells that wait out a node recovery are in
-//! `connections/restart.rs`, the release-only stem `connections_restart`; the rest are this stem's.
+//! column, or carries the reason it is not writable here. The one cell that waits out a persisted
+//! reconnect backoff (over a minute) is in `connections/restart.rs`, the release-only stem
+//! `connections_restart`; the rest are this stem's.
 //!
 //! Crate keys: `t:` rdm-transport/tests, `n:` rdm-node/tests, `a:` rdm-admin/tests, `c:` rdm-core/tests,
 //! `p:` rdm-test/tests (a path under it). `[gate]` marks a process cell no gate job runs today:
@@ -25,7 +26,7 @@
 //! | F reconnect success returns to Direct in order | `a:connections_writer::a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_cuts_back`; `t:connections::a_direct_connected_disconnects_the_proxy`; `t:connections_integration::a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_back_only_after_it_is_durable`; `c:reconnect::cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_and_a_failed_write_is_owed_again` | `p:rpc/proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` [gate] (its dial is woken by an accept, not by the series' due time) | `a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct` |
 //! | G an inbound accept is a recovery trigger | `a:connections_writer::an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_disconnects_the_proxy`; `a:connections_writer::repeated_accepts_coalesce_into_one_attempt_that_waits_for_the_series_backoff`; `t:connection_observer::an_accepted_connection_is_handed_to_the_accept_trigger_once` | `p:rpc/proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` [gate] | - |
 //! | H Proxy retirement write failure is safe and retried | `a:connections_writer::a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands`; `n:connection_writes::a_refused_connection_write_is_retried_with_backoff_until_it_lands` | `p:rpc/proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` [gate] | - |
-//! | I destination/carrier incarnation | `c:connections::a_stale_destination_incarnation_is_superseded`; `c:connections::a_stale_carrier_incarnation_is_superseded`; `c:connections::a_direct_fact_naming_a_superseded_destination_is_not_current`; `t:connections_integration::a_fact_naming_a_superseded_birth_still_dials_the_current_one`; `t:connections::an_open_against_another_incarnation_is_wrong_incarnation_and_never_served`; `a:connections_writer::a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth` | none | `connections/restart.rs::a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries`, `connections/restart.rs::a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries` (release) |
+//! | I destination/carrier incarnation | `c:connections::a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call_dials` (added with its fix); `c:connections::a_stale_destination_incarnation_is_superseded`; `c:connections::a_stale_carrier_incarnation_is_superseded`; `c:connections::a_direct_fact_naming_a_superseded_destination_is_not_current`; `t:connections_integration::a_fact_naming_a_superseded_birth_still_dials_the_current_one`; `t:connections::an_open_against_another_incarnation_is_wrong_incarnation_and_never_served`; `a:connections_writer::a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth` | none | `a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries`; `a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries` |
 //! | J carrier edge loss invalidates Proxy | `t:forward::a_carrier_whose_own_edge_to_the_target_is_not_active_refuses_carrier_edge_lost`; `t:forward::a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_to_be_disconnected`; `a:connections_writer::a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connected` | none | `a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects_the_proxy` |
 //! | K sent request is never rerouted | `t:connections_integration::an_indeterminate_alone_never_invalidates_a_proxy`; `t:routing::certainty_stays_downstream_an_indeterminate_is_never_replayed_through_another_route`; `t:certainty::reply_loss_after_a_complete_send_is_indeterminate` | none | not writable here: no process door forces a post-commit answer timeout on a carried call (Decisions) |
 //! | L #2640 independence | `t:routing::semantic_selection_is_not_connection_selection`; `t:routing::connection_changes_do_not_touch_the_selection_and_selection_changes_fabricate_no_connection_state` | none | n/a in RDM: no `orgs.topics`, route barrier or watermark exists here; the transport cells prove the selection is untouched |
@@ -52,7 +53,7 @@
 //! | 16 a Direct Connected creates the retirement obligation | as F, G | `p:rpc/proxy_hydration_cutback` [gate] | F |
 //! | 17 failed retirement writes are retried | as H | `p:rpc/proxy_hydration_cutback` [gate] | - |
 //! | 18 incarnations make stale evidence refusable | as I | none | I |
-//! | 19 a failed attempt is not node-death proof | `c:reconnect::route_resolution_never_creates_or_moves_a_reconnect` | none | C (the destination stays ready-for-traffic in node.get) |
+//! | 19 a failed attempt is not node-death proof | `c:reconnect::route_resolution_never_creates_or_moves_a_reconnect` | none | A (the destination stays ready-for-traffic in node.get) |
 //! | 20 traffic does not probe Direct while a Proxy is active | as A | none | A |
 //! | 21 a sent invocation is never rerouted | as K | none | as K |
 //! | 22 independent of `orgs.topics` | as L | none | as L |
@@ -761,4 +762,116 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     let run = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| s(&sp["attributes"]["executor"]) == na2_name).unwrap_or_else(|| panic!("NA2 executed the delete"));
     assert!(cmd["end_unix_nano"].as_u64().unwrap_or(0) <= start(run), "the fabric-primary installed NA2's answer before it dispatched the delete");
     estate.record_trace_url(&s(&cmd["trace_id"]));
+}
+
+/// The carrier's own Direct to the destination's birth `dest_incarnation` on the app protocol, landed.
+async fn carrier_edge_of(estate: &Estate, dest_incarnation: &str) {
+    let edge = stream(estate, CARRIER, DEST, "carrier-edge");
+    assert_eq!((edge["kind"].as_str(), s(&edge["peer_incarnation"]).as_str()), (Some("direct"), dest_incarnation), "the carrier reaches the destination's birth directly: {edge}");
+    wait_for("the carrier's Direct Connected toward the destination's birth landed", Duration::from_secs(15), || async {
+        rows(&estate.connection_history(CARRIER), DEST, "Direct").last().is_some_and(|r| r["state"] == "Connected" && s(&r["destination"]["incarnation"]) == dest_incarnation).then_some(())
+    })
+    .await;
+}
+
+/// Kill `node`'s runtime and wait for its mesh-primary's recovery: a new node, ready, at its path.name.
+async fn recovered(estate: &Estate, node: &str) -> Value {
+    let before = estate.node_value(node).await;
+    estate.kill_node(node).await;
+    estate
+        .until_node(node, &format!("{node} is recovered as a new node at its path.name"), crate::node_recovery_due(), |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            (n["status"] == "ready-for-traffic" && n["node_id"] != before["node_id"]).then_some(n)
+        })
+        .await
+}
+
+/// CONTRACT (connections.md §13 I: "A destination incarnation change invalidates the old Direct/Proxy
+/// evidence for that process birth ... Stale evidence is never used for a new process birth"; §8:
+/// "If any dependency is superseded, the source writes Proxy Disconnected with a named structural
+/// reason ... `destination-incarnation-superseded`. The source may then select another currently
+/// eligible carrier and establish a new Proxy"; §9.1 a series is for the current destination
+/// incarnation): the source holds a Proxy to the destination's birth through the carrier. The
+/// destination's runtime is killed and recovered as a new birth at its path.name, and the carrier
+/// opens its own Direct to that birth. The source's next open writes `Proxy Disconnected
+/// (destination-incarnation-superseded)` naming the old birth, starts a new series toward the new birth
+/// (Direct Failed ordinal 1 naming it) and proves a new Proxy naming the new birth; the stream is
+/// answered by the new birth. Must NOT happen: an open carried on the old Proxy, or a new fact naming
+/// the old birth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries() {
+    let cell = "a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries";
+    let mut estate = born(cell).await;
+    let old = estate.node_value(DEST).await;
+    let old_inc = s(&old["incarnation_id"]);
+    carrier_edge_of(&estate, &old_inc).await;
+    block_direct(&estate, SOURCE, DEST, true);
+    let first = stream(&estate, SOURCE, DEST, "old-birth");
+    assert_eq!((first["kind"].as_str(), s(&first["peer_incarnation"])), (Some(format!("proxy via {CARRIER}").as_str()), old_inc.clone()), "{first}");
+    wait_for("the Proxy is held", Duration::from_secs(15), || async { (snapshot(&estate, SOURCE)["own_active_proxies"].as_array().map(Vec::len) == Some(1)).then_some(()) }).await;
+
+    let new = recovered(&estate, DEST).await;
+    let new_inc = s(&new["incarnation_id"]);
+    assert_ne!(new_inc, old_inc, "a new birth");
+    for witness in [SOURCE, CARRIER] {
+        estate.witness_holds_birth(witness, DEST).await;
+    }
+    carrier_edge_of(&estate, &new_inc).await;
+    // What the source writes from here on: the old birth's series (its attempts under the block until
+    // the kill) is history before this point.
+    let before = estate.connection_history(SOURCE).len();
+
+    let second = stream(&estate, SOURCE, DEST, "new-birth");
+    assert_eq!((second["kind"].as_str(), s(&second["peer_incarnation"]), s(&second["answered"])), (Some(format!("proxy via {CARRIER}").as_str()), new_inc.clone(), format!("echo {DEST}: new-birth")), "the new birth answers over a new Proxy: {second}");
+    let written = wait_for("the old Proxy's Disconnected and the new Proxy landed", Duration::from_secs(15), || async {
+        let h = estate.connection_history(SOURCE);
+        let after: Vec<Value> = h[before.min(h.len())..].to_vec();
+        let dropped = after.iter().any(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected");
+        let proved = after.iter().any(|r| r["kind"] == "Proxy" && r["state"] == "Connected");
+        (dropped && proved).then_some(after)
+    })
+    .await;
+    let dropped = written.iter().find(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected").unwrap();
+    assert_eq!((s(&dropped["reason"]), s(&dropped["destination"]["incarnation"])), ("destination-incarnation-superseded".to_string(), old_inc.clone()), "{dropped}");
+    let proved = written.iter().find(|r| r["kind"] == "Proxy" && r["state"] == "Connected").unwrap();
+    assert_eq!(s(&proved["destination"]["incarnation"]), new_inc, "{proved}");
+    let failed = written.iter().find(|r| r["kind"] == "Direct" && r["state"] == "Failed").expect("a new series toward the new birth");
+    assert_eq!((s(&failed["destination"]["incarnation"]), failed["recovery"]["attempt_ordinal"].as_u64()), (new_inc.clone(), Some(1)), "{failed}");
+    assert!(written.iter().filter(|r| r["state"] != "Disconnected").all(|r| s(&r["destination"]["incarnation"]) == new_inc), "no new fact names the old birth: {written:?}");
+    estate.stop().await;
+}
+
+/// CONTRACT (connections.md §13 I: "A carrier incarnation change invalidates a Proxy that names the old
+/// carrier process"; §8 `carrier-incarnation-superseded`; §5.1: a latest Failed Direct is
+/// `NoActiveRoute`, its series owning the retry): the source holds a Proxy through the carrier's birth.
+/// The carrier's runtime is killed and recovered as a new birth. The source's next open writes `Proxy
+/// Disconnected(carrier-incarnation-superseded)` naming the old carrier birth and is carried by
+/// nothing: its Direct toward the destination stands Failed, so it exposes no active route by name.
+/// Must NOT happen: an open carried on the Proxy naming the old carrier birth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries() {
+    let cell = "a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries";
+    let mut estate = born(cell).await;
+    let dest = estate.node_value(DEST).await;
+    let old_carrier = s(&estate.node_value(CARRIER).await["incarnation_id"]);
+    carrier_edge_of(&estate, &s(&dest["incarnation_id"])).await;
+    block_direct(&estate, SOURCE, DEST, true);
+    let first = stream(&estate, SOURCE, DEST, "old-carrier");
+    assert_eq!(first["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "{first}");
+    wait_for("the Proxy is held", Duration::from_secs(15), || async { (snapshot(&estate, SOURCE)["own_active_proxies"].as_array().map(Vec::len) == Some(1)).then_some(()) }).await;
+
+    let new = recovered(&estate, CARRIER).await;
+    assert_ne!(s(&new["incarnation_id"]), old_carrier, "a new carrier birth");
+    estate.witness_holds_birth(SOURCE, CARRIER).await;
+
+    let second = stream(&estate, SOURCE, DEST, "after-carrier-replaced");
+    assert_eq!(second["streamed"].as_bool(), Some(false), "nothing carries on the old carrier's Proxy: {second}");
+    assert!(s(&second["reason"]).contains("NoActiveRoute"), "no active route, by name: {second}");
+    let dropped = wait_for("the Proxy's Disconnected landed", Duration::from_secs(15), || async {
+        rows(&estate.connection_history(SOURCE), DEST, "Proxy").last().filter(|r| r["state"] == "Disconnected").map(|r| (*r).clone())
+    })
+    .await;
+    assert_eq!((s(&dropped["reason"]), s(&dropped["carrier"]["incarnation"])), ("carrier-incarnation-superseded".to_string(), old_carrier.clone()), "{dropped}");
+    assert_eq!(snapshot(&estate, SOURCE)["own_active_proxies"].as_array().map(Vec::len), Some(0));
+    estate.stop().await;
 }

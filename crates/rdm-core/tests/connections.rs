@@ -213,6 +213,26 @@ fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     assert_eq!(select_carrier(&held, &own.name, &dest.name, RPC), Ok(None));
 }
 
+/// CONTRACT (connections.md §9.1: "A reconnect series exists when the latest Direct record for this
+/// source and destination is Failed for the current destination incarnation"; §5.1: "A latest Failed
+/// Direct is the one state a reconnect series stands on"; §13 I: "Stale evidence is never used for a new
+/// process birth"): a latest Direct Failed naming a destination process the topology view no longer
+/// holds (another birth of the node, or a node that left its path) stands no series, so a new call
+/// dials the current birth. Must NOT happen: `NoActiveRoute` from a Failed fact about a gone birth.
+#[test]
+fn a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call_dials() {
+    let (mut held, own, carrier, dest) = estate();
+    let m = members(&mut held, &[&carrier, &dest]);
+    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 20)).unwrap();
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::NoActiveRoute, "the series of the current birth owns the retry");
+    m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "the Failed fact names d1, the topology view holds d2");
+    m.set(dest.node_id.clone(), dest.name.clone(), dest.incarnation.clone().unwrap());
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::NoActiveRoute);
+    m.depart(dest.node_id.clone(), dest.name.clone());
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "the node the Failed fact names left its path");
+}
+
 /// CONTRACT: a destination that departed (retired) is no current birth: the Direct fact toward it
 /// is not the current edge and a Proxy to it is fenced by name.
 #[test]
