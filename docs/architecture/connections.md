@@ -437,7 +437,8 @@ gw2 -> brk2             == Direct Active
 
 The two incarnations reach the source through the topology view. The carrier's Direct edge to the destination is
 the carrier's own fact and travels nowhere: when the carrier is asked to carry and its own latest Direct to
-the destination is not Active, it refuses the carried call by name (`carrier-edge-lost`, the Forward reply
+the destination is not Active, it refuses by name (`carrier-edge-lost`: on a Proxy connection the tunnel's
+refusal on its control stream, on a Node RPC call carried over the Proxy the Forward reply
 `CarrierEdgeLost`), and that refusal is how the source learns the edge is gone.
 
 If any dependency is superseded, the source writes Proxy Disconnected with a named structural reason, for
