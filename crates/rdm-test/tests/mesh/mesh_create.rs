@@ -72,12 +72,14 @@ fn executed_by(spans: &[Value], span_name: &str, node: &str, build_id: &str) -> 
 }
 
 /// The executor of the last attempt of `build` (the Build view's JSON) that ran a step. The Build put the
-/// fabric back to pending, so it is Complete only once its ready-for-traffic state is set (Q154): its last attempt, claimed
-/// once the fabric is ready-for-traffic, is the one after that run and runs no step.
+/// fabric back to pending, so it is Complete only once the fabric is ready-for-traffic again from its own
+/// change (Q154; states.md "Resize and executable replacement"); no page makes that Complete an attempt of
+/// its own. The fabric-primary sets ready-for-traffic once every mesh the accepted Build names is ready and
+/// its attempt is claimed (states.md "The fabric's ready-for-traffic"): a removal's meshes are ready at the
+/// claim, so its run may be planned on a fabric already ready-for-traffic from this Build and end Complete
+/// itself, while a run planned on a pending fabric hands back and the next attempt completes the Build.
 fn last_run_executor(build: &Value) -> String {
-    let last = build["attempt"].as_u64().expect("the Build's attempt");
     let stepped = build["steps"].as_array().into_iter().flatten().filter_map(|r| r["attempt"].as_u64()).max().expect("the Build ran steps");
-    assert_eq!(stepped + 1, last, "the attempt after the Build's last run is the Complete after the fabric's change and runs no step: {build:#}");
     s(&build["attempt_executors"][stepped.to_string()])
 }
 
