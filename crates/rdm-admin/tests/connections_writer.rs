@@ -801,3 +801,157 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
     assert_eq!(spent[0]["attributes"]["reason"], "direct-connected");
     println!("cell=due_time_reconnect trace_id={trace_id}");
 }
+
+/// Run `body` on a two-worker runtime whose every thread exports its spans to an in-memory
+/// exporter, as the due-time cell does; every finished span, as JSON (name and attributes as text).
+fn spans_of<F: std::future::Future<Output = ()>>(cell: &str, body: impl FnOnce() -> F) -> Vec<serde_json::Value> {
+    use tracing_subscriber::layer::SubscriberExt;
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let (capture, layer) = rdm_transport::span_capture("connections-writer", exporter.clone());
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+    let d = dispatch.clone();
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().unwrap();
+    let _g = tracing::dispatcher::set_default(&dispatch);
+    rt.block_on(tracing::Instrument::instrument(body(), tracing::info_span!("rdm.test.connections_writer", cell = %cell)));
+    capture.flush(std::time::Duration::from_secs(10)).unwrap();
+    let spans: Vec<serde_json::Value> = exporter
+        .get_finished_spans()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| {
+            let attrs: serde_json::Map<String, serde_json::Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), serde_json::Value::String(kv.value.to_string()))).collect();
+            serde_json::json!({"name": s.name, "trace_id": s.span_context.trace_id().to_string(), "attributes": attrs})
+        })
+        .collect();
+    crate::assert_own_story(spans.iter().filter_map(|s| s["name"].as_str()));
+    spans
+}
+
+/// The text of attribute `k` on span `sp`; `None` when the span does not carry it.
+fn attr(sp: &serde_json::Value, k: &str) -> Option<String> {
+    sp["attributes"].get(k).and_then(|v| v.as_str()).map(str::to_string)
+}
+
+/// CONTRACT (connections.md §12: "Every durable connection transition retains its existing
+/// connection update evidence and names at least: source destination kind state reason. Proxy
+/// transitions additionally identify the carrier. Reconnect attempts identify the recovery round
+/// and attempt ordinal"): this node's writer lands each kind of transition it owns, each on its
+/// span: an observed Proxy Connected (`via-observed`), a reconnect attempt of a failing series
+/// (`via-recovery-dial`, the series' round and the attempt's ordinal, one above the latest Failed
+/// row's), the attempt's Direct Connected (`via-observed`), the Proxy's `Disconnected
+/// (direct-restored)` (`via-retirement`), a first Direct Failed toward another destination
+/// (`via-observed`, its round and ordinal 1) and a connections delete's drop
+/// (`via-connections-delete`). Every transition span names source, destination, kind, state and
+/// reason; every Proxy transition its carrier; every Direct Failed and every reconnect attempt its
+/// round and ordinal. Must NOT happen: a landed transition whose span leaves out any of them.
+#[test]
+fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_carrier_and_series_position() {
+    let (me, carrier, dest, other) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"), end("mesh1.rpc.4"));
+    let names = (me.name.to_string(), carrier.name.to_string(), dest.name.to_string(), other.name.to_string());
+    let dir = data_dir("transition-spans");
+    let spans = spans_of("transition_spans", || async {
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+        let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
+        writer.hydrate().await.unwrap();
+        // Seeded: the carrier's edge, and a failing series at (1, 2) whose next attempt is due now.
+        let failed_at = now_ms() - rdm_core::reconnect::reconnect_backoff(2) - rdm_core::reconnect::deterministic_jitter(&me.name, &dest.name, 2) - 1;
+        let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
+        failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 2 });
+        failed.reason = Some("seeded".into());
+        writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, failed_at)).await.unwrap();
+        writer.record(failed).await.unwrap();
+        // Observed: the Proxy through the carrier.
+        writer.record_data_plane(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), now_ms()));
+        writer.observations_landed().await;
+        assert_eq!(held.lock().unwrap().own_active_proxies().len(), 1, "the Proxy is held");
+        // The reconnect attempt connects; its Direct Connected owes the Proxy's retirement.
+        let dial = CellDial::new(&writer, resolved(&dest), vec![Ok(())]);
+        dial.go.add_permits(1);
+        let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(25), Some(dial.dial()));
+        until("the attempt connects and the Proxy's retirement lands", || held.lock().unwrap().own_active_proxies().is_empty()).await;
+        writer.observations_landed().await;
+        // A first failure toward another destination, then the connection to the destination dropped.
+        writer.direct_failed(&resolved(&other), "refused by the cell");
+        writer.observations_landed().await;
+        let open = writer.held_routes().await.into_iter().filter(|r| r.destination.name == dest.name).collect::<Vec<_>>();
+        assert_eq!(open.len(), 1, "the Direct to the destination is held: {open:?}");
+        writer.write_drops(&open, "node.connections.delete");
+        writer.observations_landed().await;
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    let named = |n: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == n).collect() };
+    let transitions: Vec<&serde_json::Value> = ["rdm.node_admin.connection.update.via-observed", "rdm.node_admin.connection.update.via-retirement", "rdm.node_admin.connection.update.via-connections-delete"].into_iter().flat_map(named).collect();
+    let kinds: Vec<(String, String, Option<String>)> = transitions.iter().map(|sp| (sp["name"].as_str().unwrap().rsplit('.').next().unwrap().to_string(), format!("{}->{}", attr(sp, "source").unwrap_or_default(), attr(sp, "destination").unwrap_or_default()), attr(sp, "state"))).collect();
+    assert_eq!(transitions.len(), 5, "five transitions landed (Proxy Connected, Direct Connected, Proxy Disconnected, Direct Failed, the drop): {kinds:?}");
+    for sp in &transitions {
+        for k in ["source", "destination", "kind", "state", "reason"] {
+            assert!(attr(sp, k).is_some(), "a transition span names its {k}: {sp}");
+        }
+        assert_eq!(attr(sp, "source").as_deref(), Some(names.0.as_str()), "{sp}");
+        assert!(!attr(sp, "kind").unwrap().is_empty() && !attr(sp, "state").unwrap().is_empty(), "{sp}");
+        if attr(sp, "kind").as_deref() == Some("proxy") {
+            assert_eq!(attr(sp, "carrier").as_deref(), Some(names.1.as_str()), "a Proxy transition names its carrier: {sp}");
+        }
+        if attr(sp, "state").as_deref() != Some("connected") {
+            assert!(!attr(sp, "reason").unwrap().is_empty(), "a Failed or Disconnected transition names its reason: {sp}");
+        }
+    }
+    let retirement = named("rdm.node_admin.connection.update.via-retirement");
+    assert_eq!(retirement.iter().map(|sp| (attr(sp, "kind"), attr(sp, "state"), attr(sp, "reason"), attr(sp, "outcome"))).collect::<Vec<_>>(), vec![(Some("proxy".into()), Some("disconnected".into()), Some("direct-restored".into()), Some("landed".into()))], "{retirement:?}");
+    let drop = named("rdm.node_admin.connection.update.via-connections-delete");
+    assert_eq!(drop.iter().map(|sp| (attr(sp, "destination"), attr(sp, "kind"), attr(sp, "state"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("direct".into()), Some("disconnected".into()))], "{drop:?}");
+    let failed: Vec<&&serde_json::Value> = transitions.iter().filter(|sp| attr(sp, "state").as_deref() == Some("failed")).collect();
+    assert_eq!(failed.iter().map(|sp| (attr(sp, "destination"), attr(sp, "recovery_round"), attr(sp, "attempt_ordinal"))).collect::<Vec<_>>(), vec![(Some(names.3.clone()), Some("1".into()), Some("1".into()))], "a Direct Failed names its round and ordinal: {failed:?}");
+    let dials = named("rdm.node_admin.connection.create.via-recovery-dial");
+    assert_eq!(dials.iter().map(|sp| (attr(sp, "destination"), attr(sp, "recovery_round"), attr(sp, "attempt_ordinal"), attr(sp, "fact"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("1".into()), Some("3".into()), Some("connected".into()))], "the reconnect attempt names its round and its ordinal, one above the latest Failed row's: {dials:?}");
+}
+
+/// CONTRACT (connections.md §12: "The reconnect attempt span is owned by node-base and records
+/// whether it: connected / failed / was superseded before dial / was already satisfied by Direct
+/// Connected"; §9.5 steps 1-2): two pending attempts that never dial. One's destination birth
+/// leaves the topology view before it is due: its attempt ends on `via-recovery-attempt` with
+/// reason `destination-superseded`. The other's destination connects Direct by ordinary traffic
+/// (`direct_connected`, not the reconciler's dial) before it is due: its attempt ends on
+/// `via-recovery-attempt` with reason `direct-connected`. Must NOT happen: a dial span for either,
+/// or a pending attempt that ends with no span saying why.
+#[test]
+fn a_pending_reconnect_attempt_never_dialled_ends_on_a_span_naming_its_superseded_birth_or_the_direct_connected_that_satisfied_it() {
+    let dirs = std::cell::RefCell::new(Vec::new());
+    let dests = std::cell::RefCell::new(Vec::new());
+    let spans = spans_of("pending_attempt_ends", || async {
+        // The superseded birth.
+        let (dir, _me, dest, _storage, held, writer, _) = proxied("pending-superseded", now_ms()).await;
+        let topology_view = Arc::new(rdm_core::connections::StaticIncarnations::default());
+        topology_view.set(dest.node_id.clone(), dest.name.clone(), dest.incarnation.clone().unwrap());
+        held.lock().unwrap().set_topology_view(topology_view.clone());
+        let dial = CellDial::new(&writer, resolved(&dest), vec![Ok(())]);
+        let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(25), Some(dial.dial()));
+        assert_eq!(writer.recovery_pending().len(), 1, "one attempt pending, seconds from due");
+        topology_view.depart(dest.node_id.clone(), dest.name.clone());
+        until("the attempt for the superseded birth ends", || writer.recovery_pending().is_empty()).await;
+        assert!(dial.calls().is_empty(), "no dial toward a superseded birth");
+        dirs.borrow_mut().push(dir);
+        dests.borrow_mut().push(dest.name.to_string());
+
+        // The birth whose Direct connects by ordinary traffic.
+        let (dir, _me, dest, _storage, _held, writer, _) = proxied("pending-satisfied", now_ms()).await;
+        let dial = CellDial::new(&writer, resolved(&dest), vec![Ok(())]);
+        let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(25), Some(dial.dial()));
+        assert_eq!(writer.recovery_pending().len(), 1, "one attempt pending, seconds from due");
+        writer.direct_connected(&resolved(&dest));
+        until("the attempt the Direct Connected satisfied ends", || writer.recovery_pending().is_empty()).await;
+        writer.observations_landed().await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(dial.calls().is_empty(), "no dial once the Direct is connected");
+        dirs.borrow_mut().push(dir);
+        dests.borrow_mut().push(dest.name.to_string());
+    });
+    for dir in dirs.into_inner() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    assert!(spans.iter().all(|s| s["name"] != "rdm.node_admin.connection.create.via-recovery-dial"), "nothing was dialled");
+    let ended: Vec<(Option<String>, Option<String>)> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.connection.remove.via-recovery-attempt").map(|sp| (attr(sp, "destination"), attr(sp, "reason"))).collect();
+    let d = dests.into_inner();
+    assert_eq!(ended, vec![(Some(d[0].clone()), Some("destination-superseded".into())), (Some(d[1].clone()), Some("direct-connected".into()))], "each pending attempt ends on one span naming why");
+}
