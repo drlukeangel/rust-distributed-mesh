@@ -201,7 +201,7 @@ serde: `rename_all = "kebab-case"`
 | 3 | **`Leaving`** | `leaving` |  |  | Leaving: it has announced its departure. |
 | 4 | **`PendingReconnect`** | `pending-reconnect` |  |  | Unheard past the staleness floor (`RDM_STALENESS_MS`, 30 s): this node's own pruner marks |
 | 5 | **`Reserved5`** | `reserved5` |  |  | Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting |
-| 6 | **`Dead`** | `dead` |  |  | True offline: half a floor after the mark the mesh primary's one QUIC connect found no path, |
+| 6 | **`Dead`** | `dead` |  |  | True offline: half a floor after the mark the mesh primary's one tickle ladder reached nobody, |
 | 7 | **`Deleted`** | `deleted` |  |  | Deleted: the node's identity and name are released. Only the node's row carries it, written |
 | 8 | **`Withdrawn`** | `withdrawn` |  |  | Withdrawn: the create that claimed the name was withdrawn before its node ran (R-SR2). Only the |
 

@@ -160,16 +160,16 @@ A carrier's answer to a Forward call.
 | `NAME` | `"status"` |
 | `FORWARDABLE` | `true` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `32` |
-| `REPLY_VARIANTS` | `55` |
-| `MAX_REQUEST_FRAME_BYTES` | `if MAX_CONFIG_REQUEST_BYTES>MAX_DECLARATION_REQUEST_BYTES { MAX_CONFIG_REQUEST_BYTES } else { MAX_DECLARATION_REQUEST_BYTES }` |
+| `REQUEST_VARIANTS` | `33` |
+| `REPLY_VARIANTS` | `56` |
+| `MAX_REQUEST_FRAME_BYTES` | `MAX_STATUS_REQUEST_BYTES` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
 <a id="t-rdm_core-status-StatusRequest"></a>
 
 ### `StatusRequest`
 
-`crates/rdm-core/src/status.rs` · enum · 32 variants · rdm-core
+`crates/rdm-core/src/status.rs` · enum · 33 variants · rdm-core
 
 A Status call.
 
@@ -269,7 +269,7 @@ A Status call.
 | 16.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 16.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 16.4 | `operation` | `String` |  |  | The operation: `node.start:<path>`. |
-| 17 | **`UpdateNodeConfig`** |  |  | `op() = "update-node-config"` | Upward: a caller asks the exact birth's mesh-primary, the writer of that mesh's rows, to put the |
+| 17 | **`UpdateNodeConfig`** |  |  | `op() = "update-node-config"` | Upward: a caller asks the fabric-primary to put the exact birth's whole config |
 | 17.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose config is put. |
 | 17.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 17.2 | `config` | `BTreeMap<String, String>` |  |  | The whole config: a put replaces, it never merges. |
@@ -326,12 +326,13 @@ A Status call.
 | 31.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that node-admin. |
 | 31.2 | `key` | `IssuingKeyHex` → [`IssuingKeyHex`](#t-rdm_core-status-IssuingKeyHex) |  |  | The issuing key's secret, as hex. |
 | 31.3 | `cert` | `String` |  |  | The root-signed issuing cert, as hex (`rdm_core::certs::encode_issuing_cert`). |
+| 32 | **`GetAtlas`** |  |  | `op() = "fabrics.atlas.get"` | `fabrics.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): a caller asks the |
 
 <a id="t-rdm_core-status-StatusReply"></a>
 
 ### `StatusReply`
 
-`crates/rdm-core/src/status.rs` · enum · 55 variants · rdm-core
+`crates/rdm-core/src/status.rs` · enum · 56 variants · rdm-core
 
 The typed result of a Status call.
 
@@ -385,8 +386,11 @@ The typed result of a Status call.
 | 21 | **`ConfigUpdated`** |  |  | `name() = "config-updated"` | The reply of an `UpdateNodeConfig`: the birth's mesh-primary wrote the node's row and the exact |
 | 21.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose config was put. |
 | 21.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 22 | **`RejectedConfig`** |  |  | `name() = "rejected-config"` | The config put was refused: the cap it crossed. |
-| 22.0 | `over` | `ConfigOverCap` → [`ConfigOverCap`](#t-rdm_core-digest-ConfigOverCap) |  |  | The keys and bytes of the refused config and the bounds. |
+| 22 | **`Reserved22`** |  |  | `name() = "reserved-22"` | Reserved position (Q203): never sent. |
+| 22.0 | `keys` | `u32` |  |  | Never read. |
+| 22.1 | `bytes` | `u32` |  |  | Never read. |
+| 22.2 | `max_keys` | `u32` |  |  | Never read. |
+| 22.3 | `max_bytes` | `u32` |  |  | Never read. |
 | 23 | **`ConfigRowRefused`** |  |  | `name() = "config-row-refused"` | The config put was not made: the nodes store refused the node's row, so nothing was told to |
 | 23.0 | `node` | `String` |  |  | The node's `path.name`, the row the store refused. |
 | 23.1 | `reason` | `String` |  |  | The store's refusal. |
@@ -487,6 +491,8 @@ The typed result of a Status call.
 | 53.2 | `issuer_expires_at` | `u64` |  |  | When the installed issuing cert expires, rafka-time ms. |
 | 54 | **`RejectedCert`** |  |  | `name() = "rejected-cert"` | A cert or issuing material refused by name (node-cert-renew.md, node-issuer-update.md): it does |
 | 54.0 | `reason` | `String` |  |  | Why, by name; within `MAX_REFUSAL_REASON_BYTES`. |
+| 55 | **`Atlas`** |  |  | `name() = "atlas"` | The answer to a `GetAtlas`: the fabric-primary's `FabricAtlas`. Appended last: no variant |
+| 55.0 | `atlas` | `crate::views::AtlasView` → [`AtlasView`](#t-rdm_core-views-AtlasView) |  |  | The atlas. |
 
 ## 0x1C `build-claim`
 
@@ -1006,8 +1012,8 @@ The answer to a node.primary.update call.
 | `NAME` | `"node-command"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `3` |
-| `REPLY_VARIANTS` | `17` |
+| `REQUEST_VARIANTS` | `4` |
+| `REPLY_VARIANTS` | `19` |
 | `MAX_REQUEST_FRAME_BYTES` | `4 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
@@ -1015,7 +1021,7 @@ The answer to a node.primary.update call.
 
 ### `NodeCommandRequest`
 
-`crates/rdm-core/src/node_command.rs` · enum · 3 variants · rdm-core
+`crates/rdm-core/src/node_command.rs` · enum · 4 variants · rdm-core
 
 A command to the exact birth it names.
 
@@ -1037,12 +1043,18 @@ A command to the exact birth it names.
 | 2.2 | `build_id` | `String` |  |  | The Build that owns this operation. |
 | 2.3 | `attempt` | `u32` |  |  | Its executing attempt. |
 | 2.4 | `operation` | `String` |  |  | The operation's declared identity. |
+| 3 | **`StorageStep`** |  |  | `op() = "storage-step"` | A storage change's move of the exact birth to the provider its change decided (storage.md §2 |
+| 3.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The commanded node. |
+| 3.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | Its exact incarnation. |
+| 3.2 | `build_id` | `String` |  |  | The storage change's Build. |
+| 3.3 | `change_id` | `crate::ChangeId` → [`ChangeId`](#t-rdm_core-ids-ChangeId) |  |  | The change. |
+| 3.4 | `provider` | `String` |  |  | The provider the birth writes from here on. |
 
 <a id="t-rdm_core-node_command-NodeCommandReply"></a>
 
 ### `NodeCommandReply`
 
-`crates/rdm-core/src/node_command.rs` · enum · 17 variants · rdm-core
+`crates/rdm-core/src/node_command.rs` · enum · 19 variants · rdm-core
 
 One reply frame of a node command's stream. Positional order is part of the wire schema.
 
@@ -1086,6 +1098,10 @@ One reply frame of a node command's stream. Positional order is part of the wire
 | 15.2 | `code` | `crate::outcome::Code` → [`Code`](#t-rdm_core-outcome-Code) |  |  | The step's typed outcome code. |
 | 16 | **`RejectedInvalidNodeTransition`** |  |  | `name() = "rejected-invalid-node-transition"` | The lifecycle command is invalid for this living birth's held state. |
 | 16.0 | `current` | `crate::status::NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  |  | The state it holds, named by the refusal. |
+| 17 | **`StorageStepped`** |  |  | `name() = "storage-stepped"` | The birth writes `provider`: it moved onto it, or wrote it already. The command's terminal. |
+| 17.0 | `provider` | `String` |  |  | The provider the birth writes. |
+| 18 | **`RejectedStaleChange`** |  |  | `name() = "rejected-stale-change"` | The command names a storage change older than the one the birth acted on: refused by name, |
+| 18.0 | `held` | `crate::ChangeId` → [`ChangeId`](#t-rdm_core-ids-ChangeId) |  |  | The change the birth acted on last. |
 
 ## 0x40 `broker-data`
 
@@ -1626,6 +1642,36 @@ Who answered.
 | 1 | `node` | `String` |  | The answering node's `path.name`. |
 | 2 | `incarnation_id` | `String` |  | The answering node's incarnation id. |
 
+<a id="t-rdm_core-views-AtlasNodeView"></a>
+
+### `AtlasNodeView`
+
+`crates/rdm-core/src/views.rs` · struct · 7 fields · rdm-core
+
+One node of the `AtlasView`.
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node's `path.name`. |
+| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The minted id of the birth the node row names current. |
+| 2 | `incarnation_id` | `Option<IncarnationId>` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of that birth, once the row records one. |
+| 3 | `status` | `NodeStatus` → [`NodeStatus`](#t-rdm_core-views-NodeStatus) |  | The birth's lifecycle state as the ops left it. |
+| 4 | `stopped` | `bool` |  | A stopped birth with a live process (a completed node.stop), waiting for a start or a delete. |
+| 5 | `accepted` | `Option<String>` |  | The operation key (`node.stop:mesh2.rpc.1`) of the command accepted on the node whose attempt |
+| 6 | `observed` | `Option<NodeStatus>` → [`NodeStatus`](#t-rdm_core-views-NodeStatus) |  | Context only: the status the answering admin's gossip view holds for the same birth, when it |
+
+<a id="t-rdm_core-views-AtlasView"></a>
+
+### `AtlasView`
+
+`crates/rdm-core/src/views.rs` · struct · 1 fields · rdm-core
+
+The fabric-primary's `FabricAtlas` (`fabrics.atlas.get`; docs/plans/proposal/fabric-atlas.md):
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `nodes` | `Vec<AtlasNodeView>` → [`AtlasNodeView`](#t-rdm_core-views-AtlasNodeView) |  | The rows, one per node, in `path.name` order. |
+
 <a id="t-rdm_core-binding-Binding"></a>
 
 ### `Binding`
@@ -1696,6 +1742,7 @@ What a caller submits. The fabric-primary compiles it once against the accepted 
 | 15 | **`Reconcile`** |  |  | The complete topology (proposal executable-bindings-at-create.md rule 1): every node of the |
 | 15.0 | `based_on` | `crate::BuildId` → [`BuildId`](#t-rdm_core-ids-BuildId) |  | The build_id of the current Build the caller read. |
 | 15.1 | `nodes` | `Vec<crate::meta::NodeSpec>` → [`NodeSpec`](#t-rdm_core-meta-NodeSpec) |  | Every node of the fabric, each by its create spec. |
+| 15.2 | `topology_storage_provider` | `Option<String>` | `default` | The fabric's `topology_storage_provider` (storage.md §2): the registered name of the backend |
 
 <a id="t-rdm_core-ids-BuildId"></a>
 
@@ -1751,6 +1798,14 @@ The observability context one invocation carries.
 | 2 | `tracestate` | `Option<String>` |  | The W3C `tracestate`. |
 | 3 | `baggage` | `Option<String>` |  | The W3C `baggage`. |
 
+<a id="t-rdm_core-ids-ChangeId"></a>
+
+### `ChangeId`
+
+`crates/rdm-core/src/ids.rs` · declared by `product_id!` · rdm-core
+
+A storage change's durable identity (storage.md §2 "Changing it"): minted at the acceptance of
+
 <a id="t-rdm_core-outcome-Code"></a>
 
 ### `Code`
@@ -1780,21 +1835,6 @@ serde: `try_from = "u8", into = "u8"`
 | 14 | **`Unavailable`** = `14` |  |  | `name() = "UNAVAILABLE"` | Standard code 14: `UNAVAILABLE`. |
 | 15 | **`DataLoss`** = `15` |  |  | `name() = "DATA_LOSS"` | Standard code 15: `DATA_LOSS`. |
 | 16 | **`Unauthenticated`** = `16` |  |  | `name() = "UNAUTHENTICATED"` | Standard code 16: `UNAUTHENTICATED`. |
-
-<a id="t-rdm_core-digest-ConfigOverCap"></a>
-
-### `ConfigOverCap`
-
-`crates/rdm-core/src/digest.rs` · struct · 4 fields · rdm-core
-
-A config past its cap, naming the measure and the bound that was crossed.
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `keys` | `u32` |  | Keys in the refused config. |
-| 1 | `bytes` | `u32` |  | Bytes (keys plus values) in the refused config. |
-| 2 | `max_keys` | `u32` |  | The key bound. |
-| 3 | `max_bytes` | `u32` |  | The byte bound. |
 
 <a id="t-rdm_core-connections-ConnectionEnd"></a>
 
@@ -2056,7 +2096,7 @@ The logical Fabric's identity, kept for the Fabric's lifetime.
 
 ### `FabricView`
 
-`crates/rdm-core/src/views.rs` · struct · 9 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 11 fields · rdm-core
 
 The fabric as the answering node-admin's view holds it (`fabric.get`).
 
@@ -2071,6 +2111,8 @@ The fabric as the answering node-admin's view holds it (`fabric.get`).
 | 6 | `meshes` | `Vec<MeshView>` → [`MeshView`](#t-rdm_core-views-MeshView) |  | The fabric's meshes. |
 | 7 | `build_id` | `Option<String>` |  | `Fabric.build_id` (node-identity-and-state.md §2.8, a field of the fabric moved only by the |
 | 8 | `next_expiry` | `Option<u64>` | `default` | The next member cert expiry across the fabric's cert rows, rafka-time ms (fabric-certs.md |
+| 9 | `topology_storage_provider` | `Option<String>` | `default` | The fabric's `topology_storage_provider` (storage.md §2), as its Fabric row names it: the |
+| 10 | `previous_topology_storage_providers` | `Vec<String>` | `default` | Each provider the fabric left, in order, as its Fabric row names them (storage.md §2). |
 
 <a id="t-rdm_test-fault_door-FaultState"></a>
 
@@ -2105,7 +2147,7 @@ One birth's view of its own mesh channel, sampled when it publishes its digest.
 
 ### `Hit`
 
-`crates/rdm-test/src/fault_door.rs` · enum · 12 variants · rdm-test
+`crates/rdm-test/src/fault_door.rs` · enum · 14 variants · rdm-test
 
 The call a cut held first, as the decorator offered it.
 
@@ -2151,6 +2193,11 @@ The call a cut held first, as the decorator offered it.
 | 10.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
 | 11 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
 | 11.0 | `node` | `String` |  | The admin whose pass it is. |
+| 12 | **`StorageStep`** |  |  | A storage change's move the mesh-primary held on its way to its node. |
+| 12.0 | `node` | `String` |  | The commanded node. |
+| 12.1 | `change_id` | `String` |  | The change. |
+| 13 | **`StorageSwitch`** |  |  | A storage change's switch the fabric-primary held. |
+| 13.0 | `change_id` | `String` |  | The change. |
 
 <a id="t-rdm_core-ids-IncarnationId"></a>
 
@@ -2410,7 +2457,7 @@ serde: `deny_unknown_fields`
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `path` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node's `path.name`. |
-| 1 | `storage` | `StorageMeta` → [`StorageMeta`](#t-rdm_core-meta-StorageMeta) |  | What survives a restart or a retirement. |
+| 1 | `storage_persistence` | `StorageMeta` → [`StorageMeta`](#t-rdm_core-meta-StorageMeta) |  | The node's `storage_persistence` (storage.md §1): what becomes of its own data dir across its |
 | 2 | `placement` | `PlacementMeta` → [`PlacementMeta`](#t-rdm_core-meta-PlacementMeta) |  | Placement constraints. |
 | 3 | `executable` | `Option<crate::binding::Binding>` → [`Binding`](#t-rdm_core-binding-Binding) | `default` | The executable the node runs (path, sha256 and, under the container provider, the image): |
 | 4 | `tags` | `BTreeSet<String>` | `default` | The tag labels the node carries from its name claim; a node recovered or replaced at the path |
@@ -2473,7 +2520,7 @@ serde: `rename_all = "kebab-case"`
 
 ### `NodeView`
 
-`crates/rdm-core/src/views.rs` · struct · 28 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 30 fields · rdm-core
 
 One node as the answering node-admin's view holds it (`node.get`).
 
@@ -2507,6 +2554,8 @@ One node as the answering node-admin's view holds it (`node.get`).
 | 25 | `held_hash` | `[u8; 32]` | `default` | Canonical held-set hash carried by this birth's digest. |
 | 26 | `cert` | `Option<NodeCertView>` → [`NodeCertView`](#t-rdm_core-views-NodeCertView) | `default` | The birth's member cert as its newest cert row holds it (fabric-certs.md §Tracking): `None` |
 | 27 | `executable` | `Option<crate::binding::Binding>` → [`Binding`](#t-rdm_core-binding-Binding) | `default` | The executable this birth runs, as its node row records it (proposal |
+| 28 | `storage_persistence` | `Option<crate::meta::StorageMeta>` → [`StorageMeta`](#t-rdm_core-meta-StorageMeta) | `default` | The node's `storage_persistence` (storage.md §1), as its row records it from its create spec: |
+| 29 | `topology_storage_provider` | `Option<String>` | `default` | The `topology_storage_provider` the node writes (storage.md §2), as its row records it: the |
 
 <a id="t-rdm_core-status-NotPrimary"></a>
 
@@ -2579,9 +2628,9 @@ A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.ol
 | 3 | `label` | `String` |  | Free-text base name within `<mesh>.<kind>` when non-numeric (e.g. `"north"`); empty when `ordinal >= 1`. |
 | 4 | `old` | `bool` |  | The path is the `.old` name of a replaced predecessor. |
 
-<a id="t-rdm_core-meta-PersistentRetireDisposition"></a>
+<a id="t-rdm_core-meta-PersistentDisposition"></a>
 
-### `PersistentRetireDisposition`
+### `PersistentDisposition`
 
 `crates/rdm-core/src/meta.rs` · enum · 2 variants · rdm-core
 
@@ -2910,7 +2959,7 @@ What survives a topology-preserving runtime loss or restart, and the declared di
 |---|---|---|---|---|
 | 0 | **`Ephemeral`** |  |  | Fresh storage for a new node. |
 | 1 | **`Persistent`** |  |  | Storage survives stop and start, and a new node created over an inherited data dir |
-| 1.0 | `on_retire` | `PersistentRetireDisposition` → [`PersistentRetireDisposition`](#t-rdm_core-meta-PersistentRetireDisposition) |  | The declared disposition of the storage once the node is gone. |
+| 1.0 | `disposition` | `PersistentDisposition` → [`PersistentDisposition`](#t-rdm_core-meta-PersistentDisposition) |  | The declared disposition of the storage once the node is gone. |
 
 <a id="t-rdm_core-topology-StoredNode"></a>
 
@@ -2974,7 +3023,7 @@ Which mesh channel a `node.mesh.join` joined or a `node.mesh.leave` left
 
 ### `WireDigest`
 
-`crates/rdm-core/src/wire.rs` · struct · 15 fields · rdm-core
+`crates/rdm-core/src/wire.rs` · struct · 14 fields · rdm-core
 
 A `MeshDigest` as it travels in a gossip frame: position 2 is the self-published liveness
 
@@ -2989,12 +3038,11 @@ A `MeshDigest` as it travels in a gossip frame: position 2 is the self-published
 | 6 | `data_dir` | `Option<String>` |  |  |
 | 7 | `mesh_id` | `Option<MeshId>` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  |
 | 8 | `in_flight` | `Option<u64>` |  |  |
-| 9 | `config` | `BTreeMap<String, String>` |  |  |
-| 10 | `load` | `Option<NodeLoad>` → [`NodeLoad`](#t-rdm_core-digest-NodeLoad) |  |  |
-| 11 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rdm_core-digest-GossipStats) |  |  |
-| 12 | `held_hash` | `[u8; 32]` |  |  |
-| 13 | `is_primary` | `Option<u64>` |  |  |
-| 14 | `is_fabric_primary` | `Option<u64>` |  |  |
+| 9 | `load` | `Option<NodeLoad>` → [`NodeLoad`](#t-rdm_core-digest-NodeLoad) |  |  |
+| 10 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rdm_core-digest-GossipStats) |  |  |
+| 11 | `held_hash` | `[u8; 32]` |  |  |
+| 12 | `is_primary` | `Option<u64>` |  |  |
+| 13 | `is_fabric_primary` | `Option<u64>` |  |  |
 
 <a id="t-rdm_core-wire-WireLocator"></a>
 
