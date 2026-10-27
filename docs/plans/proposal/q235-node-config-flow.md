@@ -156,6 +156,21 @@ node-admin it joined through…").
 >   source snapshots and its own row with [node.topology.get](lifecycles/node-topology-get.md), and later
 >   deltas, fulls and top-ups (§3.3) keep them current;
 
+**node-rpc-envelope.md, Topology op 0x1E, the reply (Q234; a durable format moved: a reply variant added).**
+After `Primaries { kind: PrimaryKind, primary: Primary, gone: bool },` in `TopologyReply`, new:
+
+> ```rust
+>     OwnRow { node: StoredNode, revision: u64 },
+> ```
+
+and after "End.meshes counts each answered mesh once.", new:
+
+> A read by a node of its OWN mesh-primary answers one `OwnRow` before `End`: the reader's whole row
+> as the mesh-primary's atlas holds it (every node property: config, tags, executable, storage,
+> placement, listeners, status, primaries) with the row's revision; the reader installs it on its own
+> entry over an older revision (Q234). A read served by any other node answers no `OwnRow`.
+> `OwnRow` is the next reply position; REPLY_VARIANTS steps by one.
+
 query.md (new, its draft with the architects) states the reads: the mesh-primary's Atlas for its own
 mesh, the fabric-primary's for the rest, and the node's own whole row on its own entry.
 
@@ -203,8 +218,7 @@ read from it may lag by that. Q236's read-before-compose is not a lock: two PUTs
 row's revision.
 
 Words: pages say "atlas" in prose (Q224), "hydration sync" (Q234), and "PUT, never PATCH" (the Node
-properties section's casing). The Topology op 0x1E reply's text, which Q234 also owes, is missing
-from §4 and goes in before the landing.
+properties section's casing). The Topology op 0x1E reply's text, which Q234 also owes, is in §4.
 
 Cells, RED first, before the landing: a reply and an apply delivered out of order leave the newer
 revision installed; the mesh-primary gone after the row write and before the push, the successor
