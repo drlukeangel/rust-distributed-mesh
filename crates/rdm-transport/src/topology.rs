@@ -3006,6 +3006,15 @@ impl TopologyView {
         [&self.view.mesh_rx, &self.view.backbone_rx].into_iter().find_map(|rx| rx.lock().unwrap().member_at(endpoint))
     }
 
+    /// The complete snapshot of `mesh` this node holds installed, from whichever channel installed it
+    /// (its Mesh channel, the backbone or a topology read): its publisher, its `topology_version` and
+    /// its members. `None` when it holds no complete snapshot of `mesh`.
+    pub fn installed_snapshot(&self, mesh: &str) -> Option<(PublisherId, u64, Vec<MeshDigest>)> {
+        let order = self.view.order.lock().unwrap();
+        let (publisher, version, full, _) = order.installed_snapshot(mesh)?;
+        Some((publisher.clone(), version, full.digests()))
+    }
+
     /// The version this node holds of `mesh` from its Mesh channel and the publisher it is of.
     pub fn held_source_version(&self, mesh: &str) -> Option<(PublisherId, u64)> {
         self.view.mesh_rx.lock().unwrap().held_version(mesh)

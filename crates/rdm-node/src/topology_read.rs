@@ -357,7 +357,25 @@ impl std::fmt::Display for TopologyFailure {
 /// for the one `mesh` asked for.
 pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_mesh: &str, topology_view: &TopologyView, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
     let node_name = topology_view.node_name();
-    let read = read_with(client, target, &node_name, mesh, since, |c| topology_view.take_read_chunk(c, answerer_mesh)).await?;
+    // A mesh whose served snapshot is older than the complete one this node already installed of the
+    // same source (its publication arrived before the read's answer) is refused `OlderThanHeld`: the
+    // held snapshot stands, and it is the one this read leaves installed (node-start.md step 4).
+    let mut older_than_held: Vec<String> = Vec::new();
+    let mut read = read_with(client, target, &node_name, mesh, since, |c| {
+        let mesh = c.mesh.clone();
+        let taken = topology_view.take_read_chunk(c, answerer_mesh);
+        if matches!(taken, Taken::Refused(rdm_transport::snapshot::Refusal::OlderThanHeld { .. })) && !older_than_held.contains(&mesh) {
+            older_than_held.push(mesh);
+        }
+        taken
+    })
+    .await?;
+    older_than_held.retain(|m| read.installed.iter().all(|i| &i.mesh != m));
+    for mesh in older_than_held {
+        if let Some((publisher, topology_version, members)) = topology_view.installed_snapshot(&mesh) {
+            read.installed.push(ReadMesh { mesh, publisher, topology_version, members });
+        }
+    }
     // The seat records the target holds are this node's too, wherever they supersede its own: it
     // computes no seat before it has them.
     topology_view.learn_primaries(&read.seats, "entry");
