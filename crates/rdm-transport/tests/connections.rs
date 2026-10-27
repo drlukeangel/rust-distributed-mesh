@@ -1460,6 +1460,105 @@ async fn a_not_sent_direct_on_a_forwardable_alpn_goes_once_through_the_hashed_ca
     dest.shutdown().await;
 }
 
+/// A source, two gateway carriers and a destination the source cannot dial: the source's topology
+/// holds both carriers and its held connections hold no other node's Direct (Q227: no node reads
+/// another's connection facts); each carrier's own held connections hold its own Direct to the
+/// destination when `edge`, given the index of the carrier the hash names first, says so. Returns
+/// the peers and that index.
+async fn carriers_from_topology(edge: impl Fn(usize) -> [bool; 2]) -> (TestPeer, [TestPeer; 2], TestPeer, usize) {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let gw = [TestPeer::bind("mesh1.gateway.1", &alpns).await, TestPeer::bind("mesh1.gateway.2", &alpns).await];
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let first = (rdm_core::connections::spread(&source.birth.name.to_string(), &dest.birth.name.to_string(), dest.birth.incarnation.as_str()) % 2) as usize;
+    for (g, holds) in gw.iter().zip(edge(first)) {
+        source.know(g);
+        g.know(&dest);
+        g.know(&source);
+        dest.know(g);
+        if holds {
+            seed_carrier_direct_edge(&[&g.sink], &g.birth, &dest.birth, ALPN_A).await;
+        }
+    }
+    dest.know(&source);
+    (source, gw, dest, first)
+}
+
+/// CONTRACT (Q227; connections.md §6, §7 step 2): after a direct dial that provably sent nothing, the
+/// source takes its carrier from the topology it holds, a live node of its mesh of a kind its protocol
+/// lets carry, spread by `hash(source, destination, destination incarnation)` over the path order,
+/// with no other node's Direct fact in its held connections; the carrier's own Direct decides. Must
+/// NOT happen: the source ending NotSent because it holds no fleet-wide Direct graph.
+#[tokio::test]
+async fn a_not_sent_direct_takes_its_carrier_from_the_topology_the_source_holds() {
+    let (source, gw, dest, first) = carriers_from_topology(|_| [true, true]).await;
+    assert!(source.sink.held().lock().unwrap().active_directs().is_empty(), "the source holds no other node's Direct");
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+    let accept_task = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+    let conn_s = dialer_s.open(&dest.birth).await.expect("a NotSent Direct goes through the hashed carrier of the topology");
+    let conn_d = accept_task.await.unwrap();
+    assert_eq!(conn_s.kind(), ConnectionKind::Proxy { via: gw[first].birth.clone() });
+    assert_eq!(conn_d.id(), conn_s.id());
+    let proxy_row = source.sink.history().into_iter().find(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Connected).expect("Proxy Connected is recorded");
+    assert_eq!(proxy_row.carrier, Some(gw[first].birth.to_end()));
+    source.shutdown().await;
+    let [g1, g2] = gw;
+    g1.shutdown().await;
+    g2.shutdown().await;
+    dest.shutdown().await;
+}
+
+/// CONTRACT (Q227; connections.md §8): a carrier without its own Direct to the destination refuses
+/// by name (`carrier-edge-lost`), and the source takes the next carrier in the path order, which
+/// carries it. Must NOT happen: the source ending on the first refusal while another carrier stands.
+#[tokio::test]
+async fn a_carrier_without_its_own_direct_refuses_by_name_and_the_source_takes_the_next() {
+    let (source, gw, dest, first) = carriers_from_topology(|first| {
+        let mut edge = [true, true];
+        edge[first] = false;
+        edge
+    })
+    .await;
+    let admitters: Vec<Arc<PolicyAdmitter>> = gw.iter().map(|g| {
+        let a = Arc::new(PolicyAdmitter { allow: AtomicBool::new(true), calls: AtomicUsize::new(0) });
+        g.registry.set_admitter(a.clone());
+        a
+    }).collect();
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+    let accept_task = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+    let next = 1 - first;
+    let conn_s = dialer_s.open(&dest.birth).await.expect("the next carrier carries it");
+    accept_task.await.unwrap();
+    assert_eq!(conn_s.kind(), ConnectionKind::Proxy { via: gw[next].birth.clone() }, "the next carrier in the path order carries it");
+    assert_eq!(admitters[first].calls.load(Ordering::SeqCst), 1, "the hashed carrier was asked first and refused");
+    assert_eq!(admitters[next].calls.load(Ordering::SeqCst), 1, "the next carrier was asked once");
+    source.shutdown().await;
+    let [g1, g2] = gw;
+    g1.shutdown().await;
+    g2.shutdown().await;
+    dest.shutdown().await;
+}
+
+/// CONTRACT (Q227): when every carrier of the topology refuses (none holds its own Direct to the
+/// destination), the open ends with no route, by name. Must NOT happen: a Proxy recorded through a
+/// carrier that refused.
+#[tokio::test]
+async fn every_carrier_refusing_ends_the_open_with_no_active_route() {
+    let (source, gw, dest, _) = carriers_from_topology(|_| [false, false]).await;
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, _acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+    let ended = dialer_s.open(&dest.birth).await;
+    assert!(matches!(ended, Err(ConnectError::NoActiveRoute)), "every carrier refused: {:?}", ended.map(|c| c.kind()));
+    assert!(!source.sink.history().iter().any(|r| r.kind == CoreConnectionKind::Proxy), "no Proxy is recorded: {:?}", source.sink.history());
+    source.shutdown().await;
+    let [g1, g2] = gw;
+    g1.shutdown().await;
+    g2.shutdown().await;
+    dest.shutdown().await;
+}
+
 #[test]
 fn the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and_only_then_writes_proxy_connected() {
     use tracing_subscriber::layer::SubscriberExt;
