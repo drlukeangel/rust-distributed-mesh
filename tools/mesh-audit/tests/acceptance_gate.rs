@@ -150,6 +150,23 @@ fn a_passing_cell_leaves_its_receipt_with_every_artifact_hashed() {
     assert!(log.contains("cell=fixture_cell"), "the cell saw its name: {log}");
 }
 
+/// CONTRACT (#3203, Luke 2026-10-27: "we can only learn more things"): a job run in a learning soak run
+/// (`I143_SOAKS_LEARN=1`, which `scripts/i143-export-run.sh --soaks` passes to the runner) leaves its
+/// receipt marked `learning: true`, which `export-manifest` refuses to certify; any other run's receipt
+/// says `learning: false`.
+#[test]
+fn a_learning_runs_receipt_is_marked_learning() {
+    let cell = "echo '{\"observed\":true}' > \"$I143_ACCEPTANCE_DIR/result.json\"; echo '[]' > \"$I143_ACCEPTANCE_DIR/spans.json\"; echo 'running 1 test'; echo 'test fixture_cell ... ok'; echo; echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s'";
+    let f = fixture("learning", cell);
+    let (ok, text, receipt) = run_env(&f, &[("I143_SOAKS_LEARN", Path::new("1"))]);
+    assert!(ok, "{text}");
+    assert_eq!(receipt["learning"], true, "a learning run's receipt says so: {receipt}");
+    let f = fixture("certifying", cell);
+    let (ok, text, receipt) = run(&f);
+    assert!(ok, "{text}");
+    assert_eq!(receipt["learning"], false, "any other run's receipt says it is no learning run: {receipt}");
+}
+
 /// The registry ratchet: a job is `i143-<issue>-<layer>`, every command names exactly its own
 /// test with `-- --exact`, its dir is `target/i143-acceptance/<issue>/<layer>/<cell>`, and an
 /// estate command lands its estate under that dir on the job's provider.

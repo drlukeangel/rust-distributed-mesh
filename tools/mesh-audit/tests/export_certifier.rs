@@ -246,6 +246,15 @@ impl Estate {
         std::fs::write(path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
     }
 
+    /// The runner's `ok` receipt for `job`, written by a learning soak run (`learning: true`).
+    fn receipt_learning(&self, job: &str, source_sha: &str) {
+        self.receipt(job, source_sha, "ok", 0);
+        let path = self.root.join(Self::receipt_path(job));
+        let mut receipt: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        receipt["learning"] = json!(true);
+        std::fs::write(path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+    }
+
     fn all_ok(&self, source_sha: &str) {
         for job in ["i143-1-unit", "i143-2-process", "i143-rshape-a"] {
             self.receipt(job, source_sha, "ok", 0);
@@ -615,4 +624,24 @@ fn export_manifest_refuses_a_section_14_cell_no_green_gate_job_ran_clean() {
     assert_eq!(m.refusals[4], Refusal::CellNotDiscovered { cell: named[5].into(), looked_for: vec!["no package of the gate's build is at crates/other".into()] });
 
     record("export_manifest_refuses_a_section_14_cell_no_green_gate_job_ran_clean", json!({ "cells": m.cells, "refusals": m.refusals }));
+}
+
+/// CONTRACT (#3203, Luke 2026-10-27: "we can only learn more things"): a receipt a learning soak run
+/// wrote (`learning: true`, `I143_SOAKS_LEARN=1`) certifies nothing: it is refused by name, however `ok`
+/// it is; the same receipt without the mark (a receipt written before the field, or `learning: false`)
+/// certifies.
+#[test]
+fn export_manifest_refuses_to_certify_a_learning_receipt() {
+    let r = rafka();
+    let parity = clean(&r);
+    let estate = Estate::new();
+    estate.all_ok(CANDIDATE);
+    estate.receipt_learning("i143-2-process", CANDIDATE);
+    let m = estate.certify(CANDIDATE, &parity);
+    assert!(!m.eligible, "a learning receipt certifies nothing: {m:#?}");
+    let named: Vec<String> = m.refusals.iter().map(|x| x.to_string()).collect();
+    assert_eq!(named, vec!["i143-2-process: the receipt was written by a learning run (learning: true); it certifies nothing".to_string()], "refused by name, and nothing else");
+    estate.receipt("i143-2-process", CANDIDATE, "ok", 0);
+    let ok = estate.certify(CANDIDATE, &parity);
+    assert!(ok.eligible, "{ok:#?}");
 }

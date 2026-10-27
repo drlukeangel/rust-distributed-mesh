@@ -88,3 +88,39 @@ fn export_run_plans_every_registered_job_once_with_the_consumer_build_first_and_
     assert!(held.values().all(|why| why.contains("soak")), "a hold says why: {held:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// CONTRACT (#3203, Luke 2026-10-27: "we can only learn more things"): `--soaks` at a HEAD without green
+/// fast and release gate logs is refused by name, and with `I143_SOAKS_LEARN=1` it plans the soak jobs
+/// anyway, as a learning run whose every receipt is marked `learning: true` and certifies nothing.
+#[test]
+fn export_run_plans_the_soaks_as_a_learning_run_without_the_green_gate_bar() {
+    let dir = std::env::temp_dir().join(format!("i143-export-run-learn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let reg = registry(&dir);
+    // A deploy directory holding no gate log: no HEAD is green there.
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join("rust-distributed-mesh-deploy")).unwrap();
+    let plan = |learn: bool| {
+        let mut c = Command::new("bash");
+        c.arg(root().join("scripts/i143-export-run.sh")).args(["--soaks", "--plan"]).env("I143_ACCEPTANCE_JOBS", &reg).env("HOME", &home).current_dir(root());
+        if learn {
+            c.env("I143_SOAKS_LEARN", "1");
+        } else {
+            c.env_remove("I143_SOAKS_LEARN");
+        }
+        let out = c.output().expect("the export run starts");
+        (out.status.code(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let (code, text) = plan(false);
+    assert_eq!(code, Some(2), "the soaks' bar holds without green gate logs: {text}");
+    assert!(text.contains("REFUSED --soaks") && text.contains("no green fast gate log"), "{text}");
+    let (code, text) = plan(true);
+    assert_eq!(code, Some(0), "a learning run plans without the bar: {text}");
+    assert!(text.contains("learning run") && text.contains("learning: true"), "the run says it certifies nothing: {text}");
+    let planned: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("batch ")).flat_map(|l| l.split_once(": ").map(|(_, j)| j.split_whitespace()).into_iter().flatten()).collect();
+    for soak in ["i143-4-soak-process", "i143-rshape-soak-z-container"] {
+        assert!(planned.contains(&soak), "{soak} is planned: {text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
