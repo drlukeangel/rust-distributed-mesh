@@ -476,7 +476,11 @@ impl ControlPlane {
                     return Err(Refusal::Reject(reject));
                 }
             }
-            let observed = self.topology.read().await.clone();
+            let mut observed = self.topology.read().await.clone();
+            // Each birth as the ops left it (R-FA1: the fabric-primary accepts or denies from the atlas, the
+            // gossip view context only): a node-admin a start just made ready is a successor here, whatever
+            // the gossip view has heard of it; a birth an op deleted is not in it.
+            self.atlas.apply(&mut observed);
             // node.delete's target (node-delete.md "Operation contract"): a live birth or a stopped one.
             // An unheard birth is its mesh-primary's to recover on node investigation's verdict
             // (node-recovery.md step 3): it is refused `node-not-live` by name.

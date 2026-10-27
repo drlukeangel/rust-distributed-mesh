@@ -350,3 +350,43 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     let written: Vec<&Value> = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().filter(|sp| attr(sp, "node_id") == id(&targets[0], "node_id")).collect();
     assert_eq!(written.iter().map(|sp| (attr(sp, "node"), attr(sp, "outcome"))).collect::<Vec<_>>(), vec![(mp.clone(), "name-updated".to_string())], "mesh2's primary wrote the row once: {written:#?}");
 }
+
+/// CONTRACT (fabric-atlas.md R-FA1: the fabric-primary accepts or denies from the atlas, the gossip view
+/// context only; R-FA2; node-primary-update.md "No-successor cases"): with the fabric-primary's gossip
+/// view holding mesh2's non-primary node-admin stopped, that node-admin is started by the
+/// fabric-primary; the moment its start streams `Complete`,
+/// with no wait, a complete-topology Reconcile removing mesh2's primary, whose only other node-admin is
+/// the one just started, is accepted and completes. Must NOT happen: the Reconcile refused `last-admin`
+/// (`rdm.node_admin.build.reject.via-last-admin`) because the gossip view still holds the started
+/// node-admin stopped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reconcile_removing_a_primary_right_after_its_only_other_admins_start_is_accepted() {
+    let test = "a_reconcile_removing_a_primary_right_after_its_only_other_admins_start_is_accepted";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    let targets = two_meshes(&mut estate).await;
+    let (other, primary) = (path_of(&targets[2]), path_of(&targets[3]));
+    let other_id: rdm_core::NodeId = serde_json::from_value(targets[2]["node_id"].clone()).expect("a node id");
+    let fp = estate.fabric_view().await.fabric_primary.expect("fabric.get names the fabric-primary");
+    let fp_view = estate.node_views().await.into_iter().find(|n| n.name == fp).expect("the fabric-primary is listed");
+    Estate::workflow(&format!("node.stop of {other}"), estate.nodes_obj().await.stop(&other).await).await;
+    // The fabric-primary's gossip view holds the stop: the birth dropped and its stop overlay held.
+    estate.peers().await.fact(&fp_view, "mesh2", "the fabric-primary's view holds the stopped node-admin stopped", |v| v.birth(&other_id).is_none() && v.overlay(&other_id, "node.stop:").is_some()).await;
+    Estate::workflow(&format!("node.start of {other}"), estate.nodes_obj().await.start(&other).await).await;
+    // No wait: the Reconcile goes out on the start's Complete.
+    let current = estate.current().await;
+    let mut held = current.held(&estate.executables).unwrap_or_else(|e| panic!("{e}"));
+    held.get_mut("mesh2").expect("the topology holds mesh2").remove(&primary);
+    let change = rdm_client::Change::Reconcile { topology_storage_provider: None, based_on: current.based_on.clone(), nodes: held.into_values().flat_map(|m| m.into_values()).collect() };
+    let submitted = estate.carrier().await.create(change).await;
+    let refused = match submitted {
+        Ok(stream) => {
+            estate.follow(stream).await;
+            None
+        }
+        Err(e) => Some(e.to_string()),
+    };
+    estate.stop().await;
+    let spans = estate.spans();
+    let last_admin: Vec<Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().cloned().collect();
+    assert!(refused.is_none() && last_admin.is_empty(), "R-FA1: the Reconcile removing {primary} right after {other}'s start completed was refused: {refused:?}; last-admin spans: {last_admin:#?}");
+}
