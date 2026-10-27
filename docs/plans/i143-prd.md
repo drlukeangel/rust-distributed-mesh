@@ -2829,7 +2829,7 @@ Landed from `047db41f7` to `9938fb9f5`, each through the fast gate:
 ### Remaining
 
 - **Held by Luke:**
-  - the Q167 proposal (one read per entity, plural, with filters);
+  - (corrected 2026-10-27: Q167 was ruled by Luke on 2026-10-25, INDEX row Q167; not held. Built as #3234, lane 6: one plural read per entity, the filter a property match, R-RD1 to R-RD3 of docs/plans/proposal/q167-one-read-per-entity.md, onto node-rpc-envelope.md's read rows and consumer-guide.md);
   - the unlanded `fabric-get-is-the-fabric` branch, superseded by Q165.
 - **Unattributed under release load, read on the tail, never re-rolled:**
   - fabric_takeover `a_backbone_executor…`;
