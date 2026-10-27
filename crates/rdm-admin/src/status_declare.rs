@@ -31,7 +31,9 @@
 //! call held by the declarer, resent by the layer until the authority answers. The declarer never
 //! sends a key again because a delivery failed: a call in flight to the destination the view names
 //! is left to run, and is dropped and owed to the new destination when the view names another birth
-//! or the key is withdrawn.
+//! or the key is withdrawn. This admin's own declarations to its mesh-primary are delivered in the
+//! order they were owed: one in flight, the next sent on the previous one's answer by name, a refusal
+//! included (node-rpc.md §43, Q210; [`Declarer::due`]).
 //!
 //! Nothing here gates gossip or readiness: the admin's own `ReadyForTraffic` is published by
 //! the topology view as before; the declaration is certainty on top of it.
@@ -147,6 +149,9 @@ pub struct Pending {
     /// The `traceparent` the declaration continues (a checklist's completion keeps the checklist's trace). A
     /// string, never a span: a stored span handle would hold its parents open and unexported.
     pub trace: Option<String>,
+    /// Its position in the order owed: this admin's own declarations to its mesh-primary go in this
+    /// order, one in flight (node-rpc.md §43, Q210).
+    pub at: u64,
 }
 
 /// The declarer's state: what is owed, and what was answered by name, and by which authority. A
@@ -156,8 +161,11 @@ pub struct Pending {
 pub(crate) struct Declarer {
     pending: Mutex<BTreeMap<Key, Pending>>,
     done: Mutex<BTreeMap<Key, (String, NodeId, Option<IncarnationId>)>>,
-    /// Every declaration ever owed, by key: what is re-owed when the authority moves.
-    requests: Mutex<BTreeMap<Key, (Authority, StatusRequest, Option<String>)>>,
+    /// Every declaration ever owed, by key, with its position in the order owed: what is re-owed when the
+    /// authority moves.
+    requests: Mutex<BTreeMap<Key, (Authority, StatusRequest, Option<String>, u64)>>,
+    /// The position the next declaration owed takes.
+    next_at: std::sync::atomic::AtomicU64,
     /// The operation that produced each own state of this birth's current cycle (node-status.md
     /// "Status report", i146 Q37): a start's ReadyForTraffic names the start, a stop's Stopped the
     /// stop; a state this admin measured itself names none.
@@ -198,11 +206,16 @@ impl Declarer {
 
     /// [`Declarer::owe`], sent under `trace`: the declaration continues that `traceparent`.
     pub(crate) fn owe_in(&self, key: Key, to: Authority, request: StatusRequest, trace: Option<String>) {
-        self.requests.lock().unwrap().entry(key.clone()).or_insert((to.clone(), request.clone(), trace.clone()));
+        let at = self.requests.lock().unwrap().entry(key.clone()).or_insert_with(|| (to.clone(), request.clone(), trace.clone(), self.owed_next())).3;
         if self.done.lock().unwrap().contains_key(&key) {
             return;
         }
-        self.pending.lock().unwrap().entry(key.clone()).or_insert(Pending { key, to, request, attempts: 0, last: None, sent: None, trace });
+        self.pending.lock().unwrap().entry(key.clone()).or_insert(Pending { key, to, request, attempts: 0, last: None, sent: None, trace, at });
+    }
+
+    /// The position in the order owed of the declaration owed now.
+    fn owed_next(&self) -> u64 {
+        self.next_at.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// A start of this admin's birth `incarnation` begins its next cycle: the own-state declarations
@@ -230,7 +243,8 @@ impl Declarer {
     pub(crate) fn own_on_stream(&self, me: &PathName, node_id: &NodeId, incarnation: &IncarnationId, operation: &DeclaredOperation, authority: &rdm_core::MeshDigest) {
         let key = Key::OwnState(incarnation.to_string(), NodeState::ReadyForTraffic);
         let request = StatusRequest::DeclareNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic, operation: Some(operation.clone()) };
-        self.requests.lock().unwrap().insert(key.clone(), (Authority::MeshPrimaryOf(me.mesh.clone()), request, None));
+        let at = self.owed_next();
+        self.requests.lock().unwrap().insert(key.clone(), (Authority::MeshPrimaryOf(me.mesh.clone()), request, None, at));
         self.done.lock().unwrap().insert(key.clone(), ("command-stream".into(), authority.node.node_id.clone(), Some(authority.node.incarnation.clone())));
         self.pending.lock().unwrap().remove(&key);
     }
@@ -288,12 +302,12 @@ impl Declarer {
             .collect();
         for key in moved {
             if let Some((_, by, _)) = done.remove(&key) {
-                let (to, request, trace) = match self.requests.lock().unwrap().get(&key) {
+                let (to, request, trace, at) = match self.requests.lock().unwrap().get(&key) {
                     Some(r) => r.clone(),
                     None => continue,
                 };
                 tracing::info!(node = %me, key = ?key, was = %by, "the authority moved: the declaration is owed again to the current one");
-                pending.insert(key.clone(), Pending { key, to, request, attempts: 0, last: None, sent: None, trace });
+                pending.insert(key.clone(), Pending { key, to, request, attempts: 0, last: None, sent: None, trace, at });
             }
         }
     }
@@ -311,25 +325,41 @@ impl Declarer {
     }
 
     /// The declarations due now, each with the authority the view names for it. Pure over the
-    /// declarer's state and the view: a send is due only on an eligible event ([`eligible`]).
-    /// The reachability a failed delivery waits on is observed here, every sweep, for every key.
+    /// declarer's state, its calls in flight and the view: a send is due only on an eligible event
+    /// ([`eligible`]). The reachability a failed delivery waits on is observed here, every sweep, for
+    /// every key. This admin's own declarations to its mesh-primary go in the order they were owed, one
+    /// in flight, the next sent on the previous one's answer by name, a refusal included (node-rpc.md
+    /// §43, Q210): one sent now, in flight, or whose last call ended without an answer holds every one
+    /// owed after it.
     pub fn due(&self, me_id: &NodeId, view: &Topology, addressed: &BTreeSet<NodeId>) -> Vec<(Pending, crate::model::Node)> {
+        let in_flight: BTreeSet<Key> = self.inflight.lock().unwrap().keys().cloned().collect();
         let mut pending = self.pending.lock().unwrap();
+        let mut order: Vec<(bool, u64, Key)> = pending.values().map(|p| (matches!(p.key, Key::OwnState(..)), p.at, p.key.clone())).collect();
+        order.sort_by_key(|(own, at, _)| (*own, if *own { *at } else { 0 }));
+        let mut own_held = false;
         let mut due = Vec::new();
-        for p in pending.values_mut() {
+        for (own, _, key) in order {
+            if own && own_held {
+                continue;
+            }
+            let Some(p) = pending.get_mut(&key) else { continue };
             let target = match &p.to {
                 Authority::FabricPrimary => view.fabric_primary(),
                 Authority::MeshPrimaryOf(mesh) => view.node_type_primary(mesh, NodeKind::NodeAdmin).or_else(|| self.recovery_executor(me_id, view, mesh)),
             };
             let Some(target) = target else {
                 p.last = Some("no authority in view".into());
+                own_held |= own;
                 continue;
             };
             let now = Destination::of(target);
             let deliverable = &target.node_id == me_id || (target.status.is_live() && target.incarnation_id.is_some());
-            if eligible(p.sent.as_ref(), &now, deliverable, addressed.contains(&target.node_id)) {
+            let sent_now = eligible(p.sent.as_ref(), &now, deliverable, addressed.contains(&target.node_id));
+            if sent_now {
                 due.push((p.clone(), target.clone()));
             }
+            let answered_by_name = p.sent.as_ref().is_some_and(|s| s.typed);
+            own_held |= own && (sent_now || in_flight.contains(&key) || !answered_by_name);
         }
         due
     }
@@ -349,6 +379,10 @@ impl Declarer {
                         let reply = auth.apply(Some(target.clone()), &p.request).await;
                         let (o, f) = self.recorded(&p, &reply, classify(&reply)).await;
                         self.declared(me, &p, &target, "self", addressed_now, o, f, true);
+                        // Answered: the next of its own declarations owed after it is sent on the next sweep.
+                        if matches!(p.key, Key::OwnState(..)) {
+                            wake.poke();
+                        }
                     }
                     None => {
                         // Unreachable: the declarer starts after the authority is filled.
@@ -870,7 +904,7 @@ mod tests {
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let op = |operation: &str, attempt: u32| DeclaredOperation { build_id: "b".into(), attempt, operation: operation.into() };
         let operation_of = |d: &Declarer, state: NodeState| match d.requests.lock().unwrap().get(&Key::OwnState(INC.into(), state)) {
-            Some((_, StatusRequest::DeclareNodeState { operation, .. }, _)) => operation.clone(),
+            Some((_, StatusRequest::DeclareNodeState { operation, .. }, _, _)) => operation.clone(),
             other => panic!("no own {state:?} declaration: {other:?}"),
         };
         let d = Declarer::new();
@@ -880,6 +914,9 @@ mod tests {
         let stop = op("node.stop:mesh1.admin.2", 1);
         d.owe_own(&me, &me_id, &inc, NodeState::Stopped, Some(stop.clone()));
         assert_eq!(operation_of(&d, NodeState::Stopped), Some(stop), "its stop's Stopped names the stop");
+        // Its node.started, owed first, is answered: the Stopped owed after it is sent (node-rpc.md §43, Q210).
+        let (started, to) = d.due(&me_id, &v, &BTreeSet::new()).into_iter().find(|(p, _)| p.key == Key::OwnState(INC.into(), NodeState::ReadyForTraffic)).expect("its node.started is owed first");
+        d.declared(&me, &started, &to, "node-rpc", false, "applied".into(), true, true);
         let due: Vec<(Key, String)> = d.due(&me_id, &v, &BTreeSet::new()).into_iter().map(|(p, to)| (p.key, to.name.to_string())).collect();
         assert!(due.contains(&(Key::OwnState(INC.into(), NodeState::Stopped), "mesh1.admin.1".to_string())), "owed to its mesh's primary: {due:?}");
 
@@ -895,8 +932,8 @@ mod tests {
 
     /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets
     /// its status"; gossip.md §3.1: a Digest "carries no status"): a node-admin that drains (a drain
-    /// command, or the fabric shutdown freezing it) owes its ConnectionsDeleting to its own mesh's primary beside
-    /// its node.started, so the other admins hold it ConnectionsDeleting from that primary's projection. Must NOT
+    /// command, or the fabric shutdown freezing it) owes its ConnectionsDeleting to its own mesh's primary after
+    /// its node.started (node-rpc.md §43, Q210), so the other admins hold it ConnectionsDeleting from that primary's projection. Must NOT
     /// happen: an admin deleting its connections whose ConnectionsDeleting no other admin can learn.
     #[test]
     fn a_connections_deleting_node_admin_reports_it_to_its_own_mesh_primary() {
@@ -905,12 +942,13 @@ mod tests {
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
         owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ConnectionsDeleting, false, None, &v, &ids);
-        let due: Vec<(Key, String)> = d.due(&id_of(&me.to_string()), &v, &BTreeSet::new()).into_iter().map(|(p, to)| (p.key, to.name.to_string())).collect();
-        assert_eq!(
-            due,
-            vec![(Key::OwnState(INC.into(), NodeState::ReadyForTraffic), "mesh1.admin.1".to_string()), (Key::OwnState(INC.into(), NodeState::ConnectionsDeleting), "mesh1.admin.1".to_string())],
-            "its node.started and its ConnectionsDeleting, each to mesh1's primary"
-        );
+        let due = |d: &Declarer| -> Vec<(Pending, Node)> { d.due(&id_of(&me.to_string()), &v, &BTreeSet::new()) };
+        let named = |due: &[(Pending, Node)]| -> Vec<(Key, String)> { due.iter().map(|(p, to)| (p.key.clone(), to.name.to_string())).collect() };
+        let first = due(&d);
+        assert_eq!(named(&first), vec![(Key::OwnState(INC.into(), NodeState::ReadyForTraffic), "mesh1.admin.1".to_string())], "its node.started to mesh1's primary, first");
+        let (started, to) = &first[0];
+        d.declared(&me, started, to, "node-rpc", false, "applied".into(), true, true);
+        assert_eq!(named(&due(&d)), vec![(Key::OwnState(INC.into(), NodeState::ConnectionsDeleting), "mesh1.admin.1".to_string())], "then its ConnectionsDeleting to mesh1's primary");
     }
 
     /// CONTRACT (node-rpc.md §43, Q210): a node-admin's own declarations to its mesh-primary are
@@ -1019,7 +1057,7 @@ mod tests {
         })));
         let mesh_id = crate::model::MeshId::mint();
         let request = StatusRequest::DeclareMeshState { mesh_id: mesh_id.clone(), state: MeshState::ReadyForTraffic };
-        let p = Pending { key: Key::Mesh(mesh_id.to_string(), MeshState::ReadyForTraffic), to: Authority::FabricPrimary, request, attempts: 0, last: None, sent: None, trace: None };
+        let p = Pending { key: Key::Mesh(mesh_id.to_string(), MeshState::ReadyForTraffic), to: Authority::FabricPrimary, request, attempts: 0, last: None, sent: None, trace: None, at: 0 };
         let applied = StatusReply::Applied;
         let (outcome, finished) = d.recorded(&p, &applied, classify(&applied)).await;
         assert!(!finished && outcome.contains("did not land"), "answered, not written: still owed: {outcome}");
