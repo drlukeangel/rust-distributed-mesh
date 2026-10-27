@@ -316,25 +316,27 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &str, node_id: &str) 
 /// fabric-primary, with no wait on any view's retention. Must NOT happen: the fabric-primary's row
 /// written deleted or its name released, a `via-departed-birth` / `via-node-deleted` for its birth, a
 /// re-create Build of it, or a view without it after the heal.
+///
+/// The cut admin is kept to its decision step by the testkit's claimed-attempt cut on the fabric-primary:
+/// mesh2's primary, which reaches it through no peer, reads its runtime `running` and submits its recovery
+/// at once (node-recovery.md step 3, Q111); the drift goes up and the fabric-primary opens the attempt
+/// (Q118), and its claim by mesh2's primary is held before its dispatch, so the cut admin is not re-created
+/// (Q181) while the cut holds. What the cut admin, mesh2's primary in its own view, does to mesh2's rpc
+/// nodes is the own-mesh arm's (Q111): with no fabric-primary in its view its recoveries fail by name
+/// (Q118). The views are read for mesh1 and the fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothing() {
     let test = "a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothing";
     let fp = "mesh1.admin.1";
-    // mesh2 holds two rpc nodes: they carry mesh2's primary's tickle of the cut admin, so that node
-    // recovery's second checklist reaches it after the heal, as in the kept run (with no carrier both checklists
-    // are direct only and the cut admin is re-created before its backbone arm runs). What the cut admin,
-    // mesh2's primary in its own view while the cut holds, does to those rpc nodes is the own-mesh arm's
-    // (Q111) and not this story: the views are read for mesh1 and the fabric-primary.
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
-    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &shape).await;
-    estate.settles_to(&shape, Duration::from_secs(60)).await;
-    estate.until_fabric_ready(Duration::from_secs(60)).await;
+    let mut estate = estate_of(test, &shape).await;
     let nodes = estate.node_values().await;
     let holder = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     assert_eq!(s(&holder["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let (fp_id, fp_inc) = (s(&holder["node_id"]), s(&holder["incarnation_id"]));
-    let victim = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] != true && n["is_fabric_primary"] != true).expect("a mesh2 node-admin that is neither primary")["name"]);
+    let victim_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] != true && n["is_fabric_primary"] != true).cloned().expect("a mesh2 node-admin that is neither primary");
+    let (victim, victim_id) = (s(&victim_row["name"]), s(&victim_row["node_id"]));
+    let mesh2_primary = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary")["name"]);
     let admins: Vec<String> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"])).collect();
     let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
     let mesh1: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh1").map(|n| s(&n["name"])).collect();
@@ -353,6 +355,9 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    // The first attempt claimed after the cut, the cut admin's recovery, is held before its dispatch.
+    let fp_door = Door::at(&estate, fp).await;
+    fp_door.arm("cut-admin-recovery", json!({"kind": "claimed-attempt"})).await;
     let cut = match Partition::start(&udp_ports(&nodes, &[victim.clone()]), &udp_ports(&nodes, &others)) {
         Ok(p) => p,
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
@@ -383,6 +388,17 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
         intact();
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // What kept the cut admin alive: mesh2's primary's recovery of it, opened by the fabric-primary and
+    // claimed by mesh2's primary, held before its dispatch.
+    let claimed = fp_door.wait_held("cut-admin-recovery").await;
+    assert_eq!(s(&claimed["hit"]["executor"]), mesh2_primary, "the held claim is mesh2's primary's: {claimed}");
+    let bare = |id: String| id.replace('-', "").trim_start_matches("bid_").to_string();
+    let spans_now = estate.spans();
+    let opened: Vec<&Value> = named(&spans_now, "rdm.node_admin.build.update.via-recovery")
+        .into_iter()
+        .filter(|sp| at(sp) >= cut_at && attr(sp, "node_id") == victim_id && bare(attr(sp, "build_id")) == bare(s(&claimed["hit"]["build_id"])) && attr(sp, "attempt") == claimed["hit"]["attempt"].to_string())
+        .collect();
+    assert!(!opened.is_empty(), "the held attempt is the recovery of {victim} the fabric-primary opened: {claimed}");
     drop(cut);
     let healed = std::time::Instant::now();
     let held_ms = (now_ns() - cut_at) / 1_000_000;
@@ -401,6 +417,13 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
         })
         .await;
     }
+    // Within the same floor the cut admin's backbone arm hears the fabric-primary and ends; its span, read
+    // below, is written at that end, so the estate is not stopped before it.
+    let within = (floor + gossip).saturating_sub(healed.elapsed());
+    wait_for(&format!("{victim}'s backbone arm on {fp} ends within a floor of the heal"), within, || async {
+        named(&estate.spans(), "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().any(|sp| at(sp) >= cut_at && attr(sp, "node") == victim).then_some(())
+    })
+    .await;
     intact();
     estate.stop().await;
     let spans = estate.spans();
