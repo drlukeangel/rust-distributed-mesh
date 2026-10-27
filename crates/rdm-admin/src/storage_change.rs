@@ -263,7 +263,7 @@ impl StorageChanges {
     }
 
     /// Read the `commit` record until its provider answers: the provider the change decided.
-    async fn decide(&self, change: &StorageChange) -> String {
+    pub(crate) async fn decide(&self, change: &StorageChange) -> String {
         let mut backoff = Duration::from_millis(500);
         loop {
             let decision = read_commit(&self.providers, &self.fabric_id, &change.to, &change.build_id, &change.change_id).await;

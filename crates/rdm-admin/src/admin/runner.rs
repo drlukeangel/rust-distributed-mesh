@@ -291,14 +291,29 @@ impl AdminRunner {
         Ok(seed.and_then(|row| row.executable))
     }
 
+    /// The `topology_storage_provider` a node this admin launches writes (storage.md §2 "every launch":
+    /// "the Fabric row and any Build in progress"): while the Build in progress is a storage change, the
+    /// provider its `commit` record decided (the new one once it switched, the old one before),
+    /// read again until the provider answers as the change's every reader does; otherwise the Fabric row's.
+    /// The provider this admin writes only while the store holds no Fabric record.
+    async fn launch_provider(&self) -> Result<String, String> {
+        let current = self.builds.current().await.map_err(|e| format!("the Build in progress could not be read for the topology storage provider a launch writes: {e}"))?;
+        let change = current.filter(|b| matches!(b.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running)).and_then(|b| b.topology.storage_change);
+        if let Some(change) = change {
+            return Ok(self.storage_changes.decide(&change).await);
+        }
+        let row = self.fabric_storage.fabric().await.map_err(|e| format!("the Fabric row could not be read for the topology storage provider a launch writes: {e}"))?;
+        Ok(row.and_then(|r| r.topology_storage_provider).unwrap_or_else(|| self.storage_changes.handle.provider()))
+    }
+
     /// [`Self::template_for`] launching `executable`, `binding` its binding when one is known.
     async fn template_launching(&self, kind: NodeKind, mesh: &str, executable: PathBuf, binding: Option<rdm_core::binding::Binding>) -> Result<LaunchTemplate, String> {
         let known = mesh_id_of(&self.records, &self.topology, &*self.mesh_storage, mesh).await.map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
         let mut t = self.template.clone();
         t.launcher.name = self.held_name();
-        // Every node this admin launches writes the provider this admin writes at the launch (storage.md
-        // §2 "every launch"): the new one once a storage change moved it.
-        t.env.insert(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER.into(), self.storage_changes.handle.provider());
+        // Every node this admin launches writes the fabric's provider (storage.md §2 "every launch": "the
+        // Fabric row and any Build in progress").
+        t.env.insert(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER.into(), self.launch_provider().await?);
         t.executable = executable;
         t.binding = binding;
         if kind == NodeKind::NodeAdmin {
