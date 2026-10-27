@@ -14,6 +14,8 @@
 //! the job `i143-2938-process` (tools/mesh-audit/i143-acceptance-jobs.json, started by
 //! scripts/rdm-gate-at.sh; its stem is in `SCENARIO_SKIP`, so the sharded main job does not run it twice).
 //!
+//! The record of every row, with each cell's line, stem and tier, is `docs/plans/connections-coverage.md`.
+//!
 //! # connections.md §13, required acceptance tests
 //!
 //! | test | any layer | process | this section |
@@ -66,7 +68,7 @@
 //! |---|---|---|---|
 //! | §1 every write is asynchronous (Q169) | `n:connection_writes::an_open_returns_before_its_row_lands_on_a_store_reached_over_that_connection`; `n:connection_writes::a_start_hold_and_a_settlement_never_wait_behind_a_refused_writes_backoff` | none | - |
 //! | §1.1 control plane is no connection | `p:connections_all::a_standalone_all_closes_the_log_connections_and_leaves_the_node_heard_on_gossip` | none | delete rows below |
-//! | §1.2 `Refused` is the acceptor's fact | `t:connections::a_refusal_is_a_refused_fact_on_the_acceptor_and_a_failed_row_on_the_dialer` | none | the verdict and span: `a_dial_presenting_no_member_cert_is_refused_no_credential_on_the_acceptor`; the row is written only for a dialer the acceptor's topology view names (page-vs-code difference, reported) |
+//! | §1.2 `Refused` is the acceptor's fact | `t:connections::a_refusal_is_a_refused_fact_on_the_acceptor_and_a_failed_row_on_the_dialer` | none | the verdict and span: `a_dial_presenting_no_member_cert_is_refused_no_credential_on_the_acceptor`; the row is written only for a dialer the acceptor's topology view names, as node-connections-admit.md's Row says (Q212) |
 //! | §2 a row carries its ALPN | `t:connections::a_direct_open_writes_connected_with_its_alpn_and_the_acceptor_sees_the_same_row_id` | none | A |
 //! | §3.1 reachability is per protocol | `t:connections::a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_disconnects_bs_proxy`; `n:connection_reconnect::alpn_interference_restores_a_while_b_keeps_its_proxy_from_the_shared_store` | none | - |
 //! | §5.1 precedence; only a Failed latest waits for its series | `c:connections::the_route_prefers_a_valid_proxy_then_an_active_direct_then_none`; `c:connections::a_dropped_direct_is_dialled_again_and_only_a_failed_one_waits_for_its_series` | none | F |
@@ -77,8 +79,8 @@
 //! | §9.4 one scheduler, one pending item | `n:connection_reconnect::one_reconnect_attempt_at_a_time_per_node` | none | - |
 //! | §9.5 one attempt: verify birth, verify not superseded, dial, Failed or Connected | `a:connections_writer::an_accept_from_another_birth_arms_nothing_and_an_attempt_for_a_gone_birth_is_dropped_undialled`; `a:connections_writer::a_failed_dial_after_an_accept_keeps_the_proxy_and_reschedules_from_its_own_failed_row` | none | C, F |
 //! | §10 a stream Proxy outlives its retirement | `t:connections::an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_open_goes_direct` | none | - |
-//! | §12 transition and admission spans | `t:connections::a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned`; `t:connections::an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert`; `t:connections::a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_was_judged_on` | none | every cell asserts its spans by name |
-//! | §12 `effective_route_cold_discovery_ms` | none: no code emits it | none | A (red first, then the attribute) |
+//! | §12 transition and admission spans | `a:connections_writer::every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_carrier_and_series_position`; `a:connections_writer::a_pending_reconnect_attempt_never_dialled_ends_on_a_span_naming_its_superseded_birth_or_the_direct_connected_that_satisfied_it`; `t:connections::a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned`; `t:connections::an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert`; `t:connections::a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_was_judged_on` | none | every cell asserts its spans by name |
+//! | §12 `effective_route_cold_discovery_ms` | none | none | A (the cold tunnel names it; the tunnel over the held Proxy does not) |
 //!
 //! # lifecycles/node-connections-admit.md, fabric-certs.md "On a connection"
 //!
@@ -118,7 +120,7 @@
 //! | step 3.4 every open Direct or Proxy closed | `p:connections_all::a_standalone_all_closes_the_log_connections_and_leaves_the_node_heard_on_gossip`; `p:connections_delete::an_all_whose_drops_cannot_land_answers_at_once_and_closes_every_live_connection` | none | `an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work_by_name` |
 //! | step 3.5 drops under the current name | `p:connections_rename::a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends` | none | `an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work_by_name` |
 //! | step 3.6 `Established` and the closed ids | `p:command_natural_key::the_node_answers_a_connections_delete_on_its_command_stream_in_order_for_both_scopes` | `p:node/node_connections_delete::a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_nothing_is_recorded_before_the_send` | - |
-//! | step 4 connections-deleted set from `Established` | none: no node status `connections-deleted` exists (`rdm-core` views.rs `NodeStatus`) | none | page-vs-code difference, reported |
+//! | step 4 connections-deleted set from `Established` | `a:status_rpc::a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_established_sets_connections_deleted` (and step 5's row) | `p:node/node_row_status::a_node_row_carries_its_status_through_ready_stop_and_start` | - |
 //! | step 5 `Deadline` at `RDM_CONNECTIONS_DELETE_DEADLINE_MS` | `p:command_natural_key::an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receipt` | none | - |
 //! | step 6 nothing inferred: no stop, exit or node.deleted | `p:node/node_connections_delete::a_standalone_connections_delete_completes_on_connections_deleted_and_leaves_the_process_running` | as any layer | - |
 //! | connections-deleting refuses all but 0x1B, 0x21, 0x22 | `a:status_rpc::connections_deleting_mesh_primary_serves_status_checks_exact_birth`; `a:admin_serves_forward::a_connections_deleting_admin_refuses_forward_by_name`; `t:forward::a_nested_forward_and_a_carrier_deleting_connections_are_still_refused_by_name` | none | `an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work_by_name` |
