@@ -391,7 +391,7 @@ impl StorageChanges {
         let paths: Vec<PathName> = topology.read().await.members().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status.is_live()).map(|n| n.name.clone()).collect();
         let ends = futures_util::future::join_all(paths.iter().map(|p| self.move_until(&door, &topology, build_id, &change.change_id, mesh, p, &provider, recreate))).await;
         let recreated = ends.iter().filter(|e| **e == PathEnd::Recreated).count();
-        door.commands.unblock();
+        door.unblock().await;
         span.record("moved", (paths.len() - recreated) as u64).record("recreated", recreated as u64).record("outcome", "unblocked");
         span.in_scope(|| tracing::info!("mesh.unblock: every node of this mesh moved or was re-created; this mesh-primary replies unblocked and issues commands again"));
         receipt(builds, build_id, attempt, unblock_operation(&change.change_id, mesh)).await

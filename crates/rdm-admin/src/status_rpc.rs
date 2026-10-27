@@ -1268,6 +1268,11 @@ impl StatusAuthority {
         written.map(|_| ())
     }
 
+    /// `mesh.unblock`'s reply (storage.md §2 step 4): this admin, a mesh-primary, issues commands again.
+    pub(crate) async fn unblock(&self) {
+        self.commands.unblock();
+    }
+
     /// Write `status` on the record of `node_id` for its birth `incarnation`, whole, at the transition
     /// states.md "Who sets each state" names ([`crate::storage::NodeRow::set_status`]); a node with no
     /// record held anywhere is written nothing. One `rdm.node_admin.node.update.via-row-status` span.
@@ -2540,6 +2545,45 @@ mod tests {
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         }
+    }
+
+    /// CONTRACT (storage.md §2 "Changing it", step 2: the copy holds every line of the old provider; i149
+    /// R8; lead decision D13): once its mesh-primary has replied `blocked`, nothing of its mesh writes the
+    /// old provider, a node's own report included. mesh1.rpc.1's Pending is on its record; its
+    /// mesh-primary replies `blocked`; the node reports ReadyForTraffic. The report is applied (the
+    /// declared state held, the reply `Applied`), and its row write is held: the record still holds only
+    /// Pending. At the unblock the row is written on the provider current then and the record holds
+    /// ReadyForTraffic. Must NOT happen: the row written while blocked, the report refused or left
+    /// unanswered, or the held row dropped at the unblock.
+    #[tokio::test]
+    async fn a_status_a_node_reports_while_blocked_is_applied_and_its_row_written_at_the_unblock() {
+        let mut admin = node("mesh1.admin.1");
+        admin.kind = NodeKind::NodeAdmin;
+        admin.is_primary = true;
+        let mut rpc = node("mesh1.rpc.1");
+        rpc.kind = NodeKind::RpcNode;
+        let birth = rpc.incarnation_id.clone().unwrap();
+        let fabric_id = FabricId::mint();
+        let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
+        let status = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let authority = mesh_primary_with_store(&admin, topology, fabric_id, status.clone());
+        assert_eq!(authority.joined_pending(&rpc.node_id, &rpc.name, &birth, true).await, R::Applied, "the accepted join report records its Pending");
+        let on_record = async || {
+            let rows = crate::storage::NodesStorage::nodes(&*status, "mesh1").await.unwrap();
+            let mut states: Vec<NodeState> = Declaration::of_records(&rows).into_iter().filter(|r| r.node_id == rpc.node_id).map(|r| r.state).collect();
+            states.sort_by_key(|s| format!("{s:?}"));
+            states
+        };
+        assert_eq!(on_record().await, vec![NodeState::Pending], "the Pending is on the record before the block");
+        assert_eq!(authority.commands.block().await, 0, "no command in flight at the block");
+        let ready = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state: NodeState::ReadyForTraffic, operation: None };
+        assert_eq!(authority.apply(Some(rpc.clone()), &ready).await, R::Applied, "the node's report is applied while its mesh-primary is blocked");
+        assert_eq!(authority.declared.lock().unwrap().node(&rpc.node_id, &birth), Some(NodeState::ReadyForTraffic), "the declared state holds the report");
+        assert_eq!(on_record().await, vec![NodeState::Pending], "nothing is written while the mesh-primary is blocked: the record holds what was copied");
+        authority.unblock().await;
+        assert!(on_record().await.contains(&NodeState::ReadyForTraffic), "the held row is written at the unblock: {:?}", on_record().await);
+        assert!(!authority.commands.is_blocked(), "the mesh-primary issues commands again");
     }
 
     /// CONTRACT (Q97, node-mesh-join.md step 10: "The node's mesh-primary (the fabric-primary for a
