@@ -482,8 +482,11 @@ struct Inner {
     file: Arc<std::fs::File>,
     io: Arc<dyn AppendIo>,
     fold: Mutex<Fold>,
-    /// One tail read at a time.
-    reading: tokio::sync::Mutex<()>,
+    /// One tail read at a time, read and folded as one. A std lock taken only by the blocking call
+    /// that reads ([`StoreLog::advance`]), never by an awaiting caller: a caller held where it awaits
+    /// that call (a task its node-admin's stop gate holds, stop_gate.rs) keeps no lock another
+    /// task's read needs, and the read it began still ends.
+    reading: Mutex<()>,
     /// The tail read in progress: the span it was called under, and since when. What a read that
     /// waits for it names ([`Inner::read_waits`]).
     reading_by: Mutex<Option<(&'static str, std::time::Instant)>>,
@@ -547,7 +550,7 @@ impl StoreLog {
                 return Err(e);
             }
         };
-        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: tokio::sync::Mutex::new(()), reading_by: Mutex::new(None), append: Arc::new(tokio::sync::Mutex::new(None)), observer }));
+        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: Mutex::new(()), reading_by: Mutex::new(None), append: Arc::new(tokio::sync::Mutex::new(None)), observer }));
         match log.advance().await {
             Ok(()) => {
                 let f = log.0.fold.lock().unwrap_or_else(|e| e.into_inner());
@@ -588,36 +591,34 @@ impl StoreLog {
     /// lines read whole move the offset. A complete valid object with no final newline is ended with
     /// one newline alone and fsynced, then read; a line that does not verify refuses the read by name,
     /// its offset named, and the fold is left as it was.
+    ///
+    /// The read and its fold are one blocking call, under the store's one-read-at-a-time lock taken
+    /// on that call's thread: the caller holds no lock while it awaits it, so a caller held there (a
+    /// task its node-admin's stop gate holds) keeps nothing another read needs, and the read ends and
+    /// is folded whether the caller is polled again or not.
     pub async fn advance(&self) -> Result<(), StorageError> {
         let caller = caller_span();
-        let _one = match self.0.reading.try_lock() {
-            Ok(one) => one,
-            Err(_) => {
-                self.0.read_waits(caller);
-                self.0.reading.lock().await
-            }
-        };
-        let _by = ReadingBy::begin(&self.0, caller);
+        let parent = tracing::Span::current();
         #[cfg(feature = "testkit-store")]
         let door = read_door::take(&self.0.path, caller);
-        let from = self.consumed();
         let inner = self.0.clone();
-        let lines = blocking_io(move || {
+        blocking_io(move || {
+            let _one = match inner.reading.try_lock() {
+                Ok(one) => one,
+                Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    inner.read_waits(caller, &parent);
+                    inner.reading.lock().unwrap_or_else(|e| e.into_inner())
+                }
+            };
+            let _by = ReadingBy::begin(&inner, caller);
             #[cfg(feature = "testkit-store")]
             if let Some(door) = door {
                 door.hold();
             }
-            inner.read_whole(from)
+            inner.read_tail()
         })
-        .await?;
-        if let Some(observe) = &self.0.observer {
-            for l in &lines.0 {
-                observe(l);
-            }
-        }
-        self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).take(lines.0);
-        self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).consumed = lines.1;
-        Ok(())
+        .await
     }
 
     /// The latest line of (`kind`, `key`) after reading the tail.
@@ -736,13 +737,29 @@ impl Drop for ReadingBy<'_> {
 impl Inner {
     /// A tail read called under `caller` waits for the one in progress on this file: named on its own
     /// span when the wait begins, so a wait that never ends still names the read it waits for.
-    fn read_waits(&self, caller: &'static str) {
+    fn read_waits(&self, caller: &'static str, parent: &tracing::Span) {
         let (held_by, held_ms) = match *self.reading_by.lock().unwrap_or_else(|e| e.into_inner()) {
             Some((by, since)) => (by, since.elapsed().as_millis() as u64),
             None => ("", 0),
         };
-        tracing::info_span!("rdm.node.store.update.via-tail-read-waiting", file = %self.path.display(), caller, held_by, held_ms)
+        tracing::info_span!(parent: parent, "rdm.node.store.update.via-tail-read-waiting", file = %self.path.display(), caller, held_by, held_ms)
             .in_scope(|| tracing::info!("this tail read waits for the one in progress on the same file"));
+    }
+
+    /// One tail read, holding the read lock: the lines from the fold's consumed offset to the end,
+    /// shown to the observer in file order and folded, the offset moved past them.
+    fn read_tail(&self) -> Result<(), StorageError> {
+        let from = self.fold.lock().unwrap_or_else(|e| e.into_inner()).consumed;
+        let (lines, consumed) = self.read_whole(from)?;
+        if let Some(observe) = &self.observer {
+            for l in &lines {
+                observe(l);
+            }
+        }
+        let mut fold = self.fold.lock().unwrap_or_else(|e| e.into_inner());
+        fold.take(lines);
+        fold.consumed = consumed;
+        Ok(())
     }
 
     fn named(&self, offset: u64, why: impl std::fmt::Display) -> StorageError {
