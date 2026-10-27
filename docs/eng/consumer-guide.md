@@ -27,17 +27,41 @@ the linked page before asking: every answer here was already on one.
 | stop, start, restart, delete one node | the lifecycle pages under [lifecycles/](../architecture/fabric-mesh-node-lifecycles.md) (`node-stop.md`, `node-start.md`, `node-restart.md`, `node-delete.md`) |
 | delete the whole fabric | [fabric-delete.md](../architecture/lifecycles/fabric-delete.md): wait for the fabric.delete stream's `Complete` (fabric.deleted), then `node.delete` of the fabric-primary to its `node.deleted`; the process then exits by itself. Kill nothing before that |
 
-## Reading state
+## Reading by property
 
-The read calls follow one rule (Q165): `<entity>.get` returns one, `<parent>.<children>.get` returns the list.
+The read calls follow one rule (Q167): one read per entity; the filter is a list of (property,
+values) pairs, AND across pairs, any-of within, a repeated property AND; a property is any field of
+the row by its page name, config entries as `config.<key>`; a list in a stable order, empty when
+nothing matches.
 
-| Call | Returns |
-|---|---|
-| `fabric.get` | the fabric: id, name, state, provider, fabric-primary |
-| `fabric.meshes.get` | every mesh |
-| `fabric.nodes.get { tags? }` | every node row of the fabric: the fabric topology, with each node's ports (`transport_addr`, `listeners`), status, config, tags and executable |
-| `mesh.get { name }` / `mesh.nodes.get { tags? }` | one mesh / one mesh's node rows |
-| `node.get { id }` | one node, `NOT_FOUND` when absent |
+| Read | Address | Properties a pair may name | Answers, in order | Served by |
+|---|---|---|---|---|
+| `fabrics.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | a node-admin |
+| `meshes.get` | — | `id`, `name`, `status`, `primary_admin` | meshes, by name | a node-admin |
+| `nodes.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `kind`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path.name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | a node-admin |
+| `connections.get` | `node` (id, incarnation), required | `id`, `destination`, `kind`, `state` | the exact birth's own connections from its connections log | the exact birth |
+
+Written as the pair list the wire carries:
+
+```text
+nodes.get  [["config.zone", ["eu-1"]]]                           a config entry, by its key
+nodes.get  [["tags", ["gold"]], ["tags", ["ssd"]]]               all of; one pair is any of
+nodes.get  [["tags", ["gold", "silver"]]]                         any of
+nodes.get  [["mesh", ["mesh1"]], ["kind", ["gateway"]]]           AND across pairs
+nodes.get  [["kind", ["admin"]], ["is_primary", ["true"]]]        every mesh-primary
+nodes.get  [["id", ["<node id>"]]]                                 "one node"
+nodes.get  []                                                      the fabric's topology
+meshes.get [["name", ["mesh1"]]]
+connections.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
+```
+
+A pair naming a property the row has not (`zone` without `config.`), a value the field cannot take
+(`is_primary: yes`) or no value is refused `INVALID_ARGUMENT` naming the pair; a mesh the admin does
+not hold is the empty list.
+
+A read past the 64 KiB reply bound is refused ReadOverBound (RESOURCE_EXHAUSTED); read by mesh, and a mesh past the bound by id in batches.
+
+Pairs combine with AND, so [id: x][mesh: m] answers empty when x is absent or when x is in another mesh; to tell them apart, read [id: x] and look at the row's mesh.
 
 The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/node-rpc-envelope.md#node-properties).
 `node.topology.get` is different: one node's held gossip view, for repair, not for callers.
@@ -68,8 +92,8 @@ and the `tags` row of [Node properties](../architecture/node-rpc-envelope.md#nod
 | tag a node when it is created | put the labels on its path in the Build; a change of a path's tags alone is no resize, and the fabric stays ready-for-traffic |
 | add labels | `node.tags.create { label \| [labels] }`: one label or a list; a blind put per label, so a label the node already carries is reported `ALREADY_EXISTS` for that label and nothing is duplicated |
 | remove labels | `node.tags.delete { All \| [labels] }`: every label or the named ones; a label the node does not carry is reported `NOT_FOUND` for that label |
-| read a node's labels | `node.tags.get`, or the `tags` field of its node row |
-| select nodes by label | `fabric.nodes.get { tags }` or `mesh.nodes.get { tags }` (Q165): the nodes carrying all of the given labels, or any of them; read through the node store's tags index, one point read per label |
+| read a node's labels | the `tags` field of its node row (`nodes.get`) |
+| select nodes by label | `nodes.get [tags: a, b]` for any of the labels, `[tags: a][tags: b]` for all of them, with `[mesh: m]` for one mesh's |
 | keep labels across a re-birth | nothing to do: tags are inherited with the config at the same path.name on recovery and on replacement |
 
 A label is 1–64 characters of `a-z 0-9 - _ . ~`, with no leading `.`, and a node carries at most 32.
