@@ -7761,7 +7761,7 @@ mod tests {
         assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone(), rpc2.clone(), rpc3.clone()]).await);
         let published = bb.own.lock().unwrap().as_ref().map(|(v, _)| *v).expect("published");
         assert!(published >= 3, "three material changes bump the version three times: {published}");
-        let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("topology-read".into()), topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone()], in_flight: vec![], departed: vec![] };
+        let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("topology-read".into()), topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone()], in_flight: vec![], deleted: vec![] };
         let taken = m.take_read_chunk(read(1), "mesh1");
         assert!(
             matches!(taken, Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version, offered_version: 1 }) if held_version == published),
