@@ -3251,3 +3251,36 @@ Q222 (gate 1 refuses `not-fabric-primary`, the envelope page's and the wire's na
 - 2026-10-27, Q227 (Luke; issue #3222, with #3229): X. No node reads anything from the store on create, start or rejoin; every node pulls from its mesh-primary or the fabric-primary. The fabric-primary is the one reader: re-born, it reads the latest Build records to learn what is in flight, and the node records too in the extreme case that it is the only node of a single mesh. Reads of connection facts ahead of a Proxy or an investigation go (`connections_writer.rs` `hydrate()` and `refresh_fleet_directs()`, `storage_backend.rs` `fleet_directs()`); an ordinary node writes its own connection facts and reads none back; the mesh-primary's node investigation reads them when it runs (`offline.rs:397`). Q229 is decided by Q227. Built in lane 4 (#3229) with the connections.md text (§3 carrier discovery, §4.1, §6, requirements 7, 9, 14, 15), exact old and new text to Luke. #3222's open-time refusal remains only where the fabric-primary or an investigation opens a store. The data plane's `forwardable` / `carriers` (`Alpn`, `CarrierPolicy`) carry the management plane's word and a carrier-kind list no ruling approved; untangled next, its own question.
 - 2026-10-27, #3228 connections coverage landed 27150f6d4 (`docs/plans/connections-coverage.md`, one row per requirement of connections.md and the connection lifecycle pages). Q230's unit is #3230, lane 3, sequenced after #3229 (Q227 X), which edits the same carrier pick.
 - 2026-10-27, Q227 owed (the lead, from #3229's inventory): node-admins still read the store at their start, each read needing a pull from the mesh-primary or the fabric-primary that does not exist yet, so each is its own unit after #3229: rdm-admin admin/boot.rs:489 `TopologyStorageHandle::open` (folds fabric, meshes, nodes and builds .jsonl at open); :365-381 lone_birth (own row, live records, fabric); :509-512 held runtimes into the nodes store; :547-575 the inherited start's Fabric record, own mesh row and contradictory-start check; :630-650 the adoption reads (Q156, the fabric-primary's recovery path, kept by Q227); :866, :918 own runtime rows; :1169 the Fabric record; :1262, :1268 current_build after the entry pull; :1343 meshes; :1959 runtimes; status_rpc.rs:214 `Declared::rehydrate`. The re-born fabric-primary's Build and (single-mesh) node reads stay (Q227).
+
+### Open work, 2026-10-27 (the lead): every unit has its issue; this list is the record
+
+Each open i143 unit, its rafka-v2 issue and where it stands. A unit leaves this list only by its landing SHA. Lane state: `scripts/lane-status.sh`.
+
+| issue | unit | state |
+|---|---|---|
+| #3211 | release-gate reds: red 1 (backbone heal) and red 3 | red 2 landed 5ddffdefa; red 1 read (caused by red 2's command, refused at HEAD); the cell's wait fixed in lane 7 (2999ba9aa), 10-run proof then landing; red 3 read from the soaks (#3232) |
+| #3215 | build.md §4.4 gates: Q218, Q219, Q220's cell, Q221, Q228 | built in lane 1 (11bb3b90d); RED only on #3222's race; lands after #3237 |
+| #3222 | the store reader's 40 ms refusal | built on origin/i143-3222-store-reader (33774971b), parked; lands first of the node store reads (Q237); next free lane |
+| #3229 | Q227 X: ordinary nodes read no connections, the carrier from topology | built in lane 4; gate running; seat past its token limit |
+| #3230 | Q230: the data plane speaks proxy (words only, the carrier list stays) | dispatched; after #3229 |
+| #3231 | the carrier's via-tunnel span and splice outlive a Proxy deleted by id | open; next free lane |
+| #3232 | learning-soak findings: a peer mesh unheard after heal; a wedged admin re-born; a held birth no attempt acted on | routed: heal to #3211 (red 1's mechanism), re-born and held to #3215 (Q218/Q219); read again after #3215 lands |
+| #3233 | a Build after a node.stop loops node.create on the stopped path | lane 2: cause found (accepted.rs:1336 counts only a live birth), REDs queued |
+| #3234 | Q167 reads with the property filter; Q232 local query; Q233 read side | lane 6: wire, client, callers and pages built; a fresh seat finishes the no-store reads, the local nodes_get and Q233's read |
+| #3235 | Q210's owed point: a signal stop waits for the declaration queue | open; next free lane |
+| #3236 | Q235/Q236: a node's own config pushed up; a Build's config supersedes | open; the proposal docs/plans/proposal/q235-node-config-flow.md (P1-P5 decided) |
+| #3237 | Q227/Q234: node-admins read no store at start, join and hydration; OwnRow | lane 3: inventory accepted (item 7 moved to #3240), building the race path first |
+| #3239 | Q233 code: the row's status from the node's ack and completion; delete the mesh-primary's | open; next free lane |
+| #3240 | a mesh-primary's Atlas filled from the fabric-primary; put_runtime only by primaries; rehydrate unused | open; after #3237 |
+| #3241 | Q237: a node's point read of another node's row from the store | open; after #3222 |
+| #3242 | Q224: a mesh-primary's own Atlas answers its mesh's reads, passing others up | open; with #3240 |
+| #3243 | Q167 R-RD5: builds.get with the filter | open; its source waits on Luke's answer below |
+
+Open with Luke or the architects (no unit until ruled):
+- Q231: does RDM hand the causing trace context to the application at its notices (an accepted Connection, a deletion op)? dev recommendation B.
+- The source of builds.get and connections.get (R-RD5 store-backed stream, R-RD7 the node's own log) against "reads answer from the Atlas".
+- states.md:13 names the node's state `ready-for-traffic`; Q233 and the query page say `ready`.
+- fabric-recovery.md:60-61 (a reached lost fabric-primary "is commanded back through node.mesh.join") against node-mesh-join.md:22 (only the fabric-primary commands a mesh-primary); the code follows node-mesh-join.
+- The proposals docs/plans/proposal/query-page.md (query.md) and q235-node-config-flow.md: the architects' review and Luke's yes on the page text.
+
+Running outside the units: the learning-soak loop in lane 5 (each iteration kept under kept/soak-<sha>-<n>); the final tail at one SHA once the units above have landed.
