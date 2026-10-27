@@ -2455,3 +2455,79 @@ async fn registering_the_step_for_node_rpc_or_gossip_is_refused_at_bind() {
     }
     ep.close().await;
 }
+
+/// Bind a live dialer admitted to an acceptor, then refuse every later dial (the policy admitter
+/// turned off): returns the acceptor, the admitter, and the live dialer kept so its edge stays up.
+async fn an_acceptor_with_one_live_edge() -> (TestPeer, Arc<PolicyAdmitter>, TestPeer, impl Sized) {
+    let live = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+    let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    live.know(&acceptor);
+    acceptor.know(&live);
+    let admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(true), calls: AtomicUsize::new(0) });
+    acceptor.registry.set_admitter(admitter.clone());
+    let (opener, _) = live.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut accepts) = acceptor.registry.connections(ALPN_A).unwrap().split();
+    let accepted = tokio::spawn(async move { accepts.accept().await.map(|c| c.id().clone()) });
+    let conn = opener.open(&acceptor.birth).await.expect("the live birth is admitted");
+    tokio::time::timeout(Duration::from_secs(10), accepted).await.expect("the admitted connection reaches accept").unwrap().unwrap();
+    admitter.allow.store(false, Ordering::SeqCst);
+    (acceptor, admitter, live, conn)
+}
+
+/// A dial from a key the acceptor's topology view does not name, presenting `name`: refused, and
+/// the acceptor's `Refused` spans' sources and its connection rows after it.
+async fn an_unknown_key_dials(acceptor: &TestPeer, name: &str) -> Vec<NodeConnection> {
+    let stranger = TestPeer::bind(name, &[alpn(ALPN_A)]).await;
+    stranger.know(acceptor);
+    let (opener, _) = stranger.registry.connections(ALPN_A).unwrap().split();
+    assert!(matches!(opener.open(&acceptor.birth).await, Err(ConnectError::Refused { .. })), "a dial from a key no view names is refused");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    stranger.shutdown().await;
+    acceptor.sink.history()
+}
+
+/// The `rdm.node.connections.reject.via-refused` spans' `source` attributes.
+fn refused_sources(spans: &[serde_json::Value]) -> Vec<String> {
+    spans.iter().filter(|s| s["name"] == "rdm.node.connections.reject.via-refused").map(|s| s["attributes"]["source"].as_str().unwrap_or_default().to_string()).collect()
+}
+
+/// CONTRACT (node-connections-admit.md Row and Never, Q212): a dialer whose key no topology view
+/// names is refused with the span only and no row, even when it presents a live birth's name: that
+/// birth's live edge is left exactly as it was (no row written, so nothing in its key changes).
+#[test]
+fn an_unknown_key_presenting_a_live_births_name_writes_no_row_and_leaves_that_births_edge() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-refused-unknown-key-live-name").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        let (acceptor, _admitter, live, _conn) = an_acceptor_with_one_live_edge().await;
+        // The live edge's fact is the source's own Direct Connected (connections.md §13 G): the live
+        // dialer's row; the acceptor writes no row for an admission.
+        let (before, edge_before) = (acceptor.sink.history(), live.sink.history());
+        assert!(edge_before.iter().any(|r| r.destination.name == acceptor.birth.name && r.state == ConnectionState::Connected), "the live birth's edge is held: {edge_before:#?}");
+        let after = an_unknown_key_dials(&acceptor, "mesh1.rpc.1").await;
+        assert_eq!(after, before, "no row is written for a key no view names");
+        assert_eq!(live.sink.history(), edge_before, "the live birth's edge is unchanged");
+        acceptor.shutdown().await;
+        live.shutdown().await;
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let sources = refused_sources(&spans);
+    assert_eq!(sources.len(), 1, "one refusal span: {sources:?}");
+    assert_ne!(sources[0], "mesh1.rpc.1", "the span names the key, never the name the dialer presented");
+}
+
+/// CONTRACT (node-connections-admit.md Row, Q212): a dialer whose key no topology view names,
+/// presenting a birth nobody holds, is refused with the span only: no row.
+#[test]
+fn an_unknown_key_presenting_an_unknown_birth_writes_no_row_only_the_span() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-refused-unknown-key-unknown-birth").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        let (acceptor, _admitter, live, _conn) = an_acceptor_with_one_live_edge().await;
+        let before = acceptor.sink.history();
+        let after = an_unknown_key_dials(&acceptor, "mesh1.rpc.9").await;
+        assert_eq!(after, before, "no row for a key no view names");
+        acceptor.shutdown().await;
+        live.shutdown().await;
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    assert_eq!(refused_sources(&spans).len(), 1, "the refusal is its span");
+}

@@ -277,6 +277,14 @@ impl ConnectionsHeld {
                 self.own_proxies.remove(&(entry.destination.name.clone(), entry.alpn.clone()));
             }
         }
+        // A `Refused` fact is the acceptor's fact about one dial, never proof about the dialer
+        // (node-connections-admit.md Never): it removes no active edge and clears no failure; only a
+        // Disconnected or Failed entry removes an edge (connections.md), so its key keeps what it held.
+        if entry.state == ConnectionState::Refused {
+            let (active, failed) = self.cells.remove(&key).map_or((None, None), |held| (held.active, held.failed));
+            self.cells.insert(key, Cell { stamp, active, failed });
+            return Ok(());
+        }
         let failed = (entry.kind == ConnectionKind::Direct && entry.state == ConnectionState::Failed).then(|| entry.destination.clone());
         let active = entry.is_active_direct().then_some(entry);
         self.cells.insert(key, Cell { stamp, active, failed });
