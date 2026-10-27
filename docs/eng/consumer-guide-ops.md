@@ -6,9 +6,11 @@ it in the op ledger, serve it, and call it. The contract this follows is the
 ledger row) and [node-rpc.md §9](../architecture/node-rpc.md). This page is the how-to; the pages
 are the rule. Back to the [consumer guide](consumer-guide.md).
 
-Rafka's ops are the worked example: each lives in one module of `rafka-node-base`
-(`cg_shuffle_op.rs`, `job_op.rs`, `chaos_arm_op.rs`, ...) and is added through
-`register_rafka_ops`.
+Rafka has no op of its own on Node RPC yet: Node RPC was built so it can, and its rows in the
+ledger (`0x10`, `0x12`–`0x19`, `0x24`–`0x30`) reserve its codes. The worked examples that exist are
+the testkit's: `rdm-test/src/families.rs` (`BrokerData`, a unary op) and
+`rdm-test/src/originate.rs` (`Originate`), and Rafka's one serve today, `Ping`, in
+`rafka-node-base/src/node_rpc.rs`. The code below is shaped like a Rafka op would be.
 
 ## 1. Pick an op code
 
@@ -118,6 +120,10 @@ async fn serve(peer: rdm_transport::PeerContext, request: ShuffleRequest) -> Res
 - **Hand the builder to RDM** where the node starts: `rdm_node::run_with(role, types, node_hooks, serve_app)`,
   where `serve_app: FnOnce(ServerBuilder) -> ServerBuilder` adds your ops before the catalog is built
   (`run_with_alpns` also registers your data-plane protocols).
+- **A streaming op** serves with `serve_stream::<P, _, _>(owner, |peer, request, sink| ...)`: the
+  handler writes each `Data` frame to the `ReplySink` as it has it and returns the terminal reply;
+  the runtime acks the frames the caller recovers (`sink.accepted()` after your record of them) and
+  the caller reads them in order. A streaming op is never forwardable.
 - **The process refuses to start**, naming the cause, on any of:
   - an op of zero, or a duplicate ledger row;
   - a testkit-range row not owned by the testkit, or the reverse;
