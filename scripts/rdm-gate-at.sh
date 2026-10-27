@@ -379,6 +379,9 @@ per_exe rdm-transport rdm-transport
 echo "i143-2777-process sh:scripts/i143-acceptance-gate.sh i143-2777-process" >> $D/jobs
 echo "i143-2780-process sh:scripts/i143-acceptance-gate.sh i143-2780-process" >> $D/jobs
 echo "i143-2805-process sh:scripts/i143-acceptance-gate.sh i143-2805-process" >> $D/jobs
+# connections.md §13 B, G, H on the process provider (rpc/proxy_hydration_cutback.rs); its stem stays in
+# SCENARIO_SKIP, so the sharded main job does not run it a second time.
+echo "i143-2938-process sh:scripts/i143-acceptance-gate.sh i143-2938-process" >> $D/jobs
 # R14 item 6: the provider mounts one qualified store namespace in every container.
 export RDM_CONTAINER_STORE_QUALIFIED=1
 echo "i143-2777-container sh:scripts/i143-acceptance-gate.sh i143-2777-container" >> $D/jobs
