@@ -58,8 +58,44 @@ fn requests_match_the_frozen_wire_schema() {
     assert_eq!(Topology::decode_request(&[1]), Err(DecodeFailure::UnknownVariant));
 }
 
+/// The smallest own row: `m.rpc.1`, ready, one config key, every optional field absent.
+fn own_row() -> rdm_core::views::NodeView {
+    rdm_core::views::NodeView {
+        name: "m.rpc.1".parse().unwrap(),
+        kind: rdm_core::NodeKind::RpcNode,
+        mesh: "m".into(),
+        node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(),
+        endpoint_id: None,
+        incarnation_id: None,
+        deployment_id: None,
+        provider: None,
+        data_dir: None,
+        status: rdm_core::views::NodeStatus::ReadyForTraffic,
+        is_primary: false,
+        is_fabric_primary: false,
+        admin_api_base: None,
+        transport_addr: None,
+        listeners: vec![],
+        declared: None,
+        stopped: false,
+        load: None,
+        gossip: None,
+        tags: Default::default(),
+        config: [("k".to_string(), "v".to_string())].into(),
+        data_dir_lost: None,
+        data_dir_unreadable: None,
+        types: Default::default(),
+        held: Default::default(),
+        held_hash: [0; 32],
+        cert: None,
+        executable: None,
+        storage_persistence: None,
+        topology_storage_provider: None,
+    }
+}
+
 #[test]
-fn replies_match_the_frozen_fourteen_variant_wire_schema() {
+fn replies_match_the_frozen_fifteen_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use TopologyReply::*;
     let fixtures = [
@@ -81,6 +117,9 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
         (RafkaTime { ms: 1_000, kind: None }, "0d e807 00"),
         (RafkaTime { ms: 300, kind: Some(PrimaryKind::FabricPrimary) }, "0d ac02 01 01"),
         (RafkaTime { ms: 7, kind: Some(PrimaryKind::MeshPrimary) }, "0d 07 01 00"),
+        // Q234: the reader's own whole row, a `NodeView` in its field order.
+        (OwnRow { node: own_row() }, "0e 07 6d2e7270632e31 01 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 00 00 \
+            0000000000000000000000000000000000000000000000000000000000000000 00 00 00 00"),
     ];
     for (r, hex) in fixtures {
         variants.insert(Topology::encode_reply(&r).unwrap()[0]);
@@ -88,8 +127,8 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
         assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(Topology::decode_reply(&bytes(hex)).unwrap(), r);
     }
-    assert_eq!(Topology::REPLY_VARIANTS, 14);
-    assert_eq!(Topology::decode_reply(&[14]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(Topology::REPLY_VARIANTS, 15);
+    assert_eq!(Topology::decode_reply(&[15]), Err(DecodeFailure::UnknownVariant));
     assert_eq!(variants.len(), Topology::REPLY_VARIANTS as usize);
     crate::outcome_codes::check_malformed::<Topology>();
 }
@@ -182,5 +221,5 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
 
 #[test]
 fn every_reply_variant_of_topology_classifies_to_one_code() {
-    replies_match_the_frozen_fourteen_variant_wire_schema();
+    replies_match_the_frozen_fifteen_variant_wire_schema();
 }
