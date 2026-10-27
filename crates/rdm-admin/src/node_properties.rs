@@ -17,13 +17,48 @@ use std::collections::BTreeSet;
 use tokio::sync::RwLock;
 
 /// Serve a caller's `CreateTags` or `DeleteTags` at the admin `me` (born `me_id`): one span holds the
-/// whole command, its outcome the reply's name.
-pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, req: &StatusRequest) -> StatusReply {
+/// whole command, its outcome the reply's name. At the fabric-primary of a node of another mesh, the
+/// command goes down to the node's mesh-primary, owed until it answers, and the answer's labels are
+/// written to the node's record in `atlas` (Q203, Q204: each op writes the atlas; commands go down,
+/// fabric-primary to mesh-primary; [`crate::node_config::NodeConfigs::send_down`]).
+pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, atlas: Option<&crate::fabric_atlas::FabricAtlas>, req: &StatusRequest) -> StatusReply {
     let (node_id, incarnation, change) = match req {
         StatusRequest::CreateTags { node_id, incarnation, labels } => (node_id, incarnation, Change::Create(labels)),
         StatusRequest::DeleteTags { node_id, incarnation, scope } => (node_id, incarnation, Change::Delete(scope)),
         _ => unreachable!("tags is called for CreateTags and DeleteTags only"),
     };
+    let first = view.read().await.clone();
+    if let (Some(door), Some(subject)) = (configs, first.own(node_id).cloned()) {
+        if first.is_fabric_primary(me_id) && !first.is_mesh_primary(&subject.mesh, me_id) {
+            let span = tracing::info_span!(
+                "rdm.node_admin.node.update.via-fabric-primary",
+                node = %me, subject = %subject.name, node_id = %node_id, op = req.op(),
+                mesh_primary = tracing::field::Empty, route = tracing::field::Empty, sends = tracing::field::Empty,
+                outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
+            );
+            let down = tracing::Instrument::instrument(door.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
+            if let crate::node_config::Down::Answered(reply) = down {
+                if let Some(a) = atlas {
+                    match (&reply, &change) {
+                        (StatusReply::TagsCreated { .. }, Change::Create(labels)) => {
+                            a.update_record(node_id, |r| r.tags.extend(labels.iter().cloned()));
+                        }
+                        (StatusReply::TagsDeleted { .. }, Change::Delete(TagScope::All)) => {
+                            a.update_record(node_id, |r| r.tags.clear());
+                        }
+                        (StatusReply::TagsDeleted { .. }, Change::Delete(TagScope::Labels(labels))) => {
+                            a.update_record(node_id, |r| r.tags.retain(|l| !labels.contains(l)));
+                        }
+                        _ => {}
+                    }
+                }
+                span.record("outcome", reply.name());
+                span.in_scope(|| tracing::info!("{} at the fabric-primary decided", req.op()));
+                return reply;
+            }
+            // This admin holds the node's mesh-primary now, or no longer holds the birth: served here.
+        }
+    }
     let span = match &change {
         Change::Create(labels) => tracing::info_span!(
             "rdm.node_admin.node.tags.create.via-writer",

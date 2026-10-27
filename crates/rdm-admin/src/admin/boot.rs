@@ -1419,13 +1419,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let written = records.caches.nodes.clone();
                                 // Every record the writer holds is this admin's FabricAtlas's too (Q203).
                                 written.feeds(control.atlas.clone());
-                                let _ = configs_slot.set(Arc::new(
-                                    crate::node_config::NodeConfigs::new(
-                                        node_rpc.client.clone(),
-                                        configure.clone(),
-                                        written.clone(),
-                                    ),
-                                ));
+                                let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone(), written.clone());
+                                // A command it sends down that a seat in transit refused waits on the view's next change (D12).
+                                configs.watch_views(records.subscribe_view());
+                                let _ = configs_slot.set(Arc::new(configs));
                                 {
                                     let records_for_ids = records.clone();
                                     let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {

@@ -998,13 +998,13 @@ impl StatusAuthority {
             }
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
                 self.commands.admitted().await;
-                return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), req).await;
+                return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), self.atlas.get().map(|a| &**a), req).await;
             }
             StatusRequest::UpdateNodeConfig { .. } => {
                 self.commands.admitted().await;
                 let view = self.topology.read().await.clone();
                 return match self.configs.get() {
-                    Some(configs) => configs.serve(&me_name, &self.node_id, &view, &*self.nodes_storage, self.atlas.get().map(|a| &**a), req).await,
+                    Some(configs) => configs.serve(&me_name, &self.node_id, &view, &self.topology, &*self.nodes_storage, self.atlas.get().map(|a| &**a), req).await,
                     None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet; {} is refused", req.op())),
                 };
             }

@@ -781,7 +781,7 @@ fn a_config_update_is_refused_by_name_at_an_admin_that_is_neither_primary_and_wr
         // At an admin that is neither the fabric-primary nor mesh2's primary: refused by name.
         let neither_rows = MemoryNodesStorage::default();
         let neither = door_at(&admin2.key, &node).await;
-        let refused = neither.serve(&admin2.node.name, &admin2.node.node_id, &view, &neither_rows, None, &req).await;
+        let refused = neither.serve(&admin2.node.name, &admin2.node.node_id, &view, &rig.topology, &neither_rows, None, &req).await;
         let StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } = &refused else { panic!("mesh1.admin.2 is neither primary: {refused:?}") };
         assert!(needed.contains("fabric-primary") && needed.contains("mesh1.admin.1"), "the refusal names the fabric-primary: {needed}");
         assert!(neither_rows.record_at(&m2rpc.node.name).await.unwrap().is_none(), "no row is written");
@@ -789,7 +789,7 @@ fn a_config_update_is_refused_by_name_at_an_admin_that_is_neither_primary_and_wr
         // At mesh2's primary: the row is written, then the birth is told directly.
         let mp_rows = MemoryNodesStorage::default();
         let door = door_at(&m2admin.key, &node).await;
-        let updated = door.serve(&m2admin.node.name, &m2admin.node.node_id, &view, &mp_rows, None, &req).await;
+        let updated = door.serve(&m2admin.node.name, &m2admin.node.node_id, &view, &rig.topology, &mp_rows, None, &req).await;
         assert_eq!(updated, StatusReply::ConfigUpdated { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap() });
         let row = mp_rows.record_at(&m2rpc.node.name).await.unwrap().expect("mesh2's primary wrote the row");
         assert_eq!((row.node_id.clone(), row.config.clone()), (m2rpc.node.node_id.clone(), config.clone()));
@@ -808,6 +808,65 @@ fn a_config_update_is_refused_by_name_at_an_admin_that_is_neither_primary_and_wr
     assert_eq!((mp.get("node").map(String::as_str), mp.get("outcome").map(String::as_str), mp.get("subject").map(String::as_str)), (Some("mesh2.admin.1"), Some("config-updated"), Some("mesh2.rpc.1")), "{mp:?}");
     eprintln!("trace {np_trace}: rdm.node_admin.node.reject.via-not-primary node=mesh1.admin.2 subject=mesh2.rpc.1");
     eprintln!("trace {mp_trace}: rdm.node_admin.node.update.via-config node=mesh2.admin.1 subject=mesh2.rpc.1 outcome=config-updated");
+}
+
+/// CONTRACT (node-config-update.md step 1: the fabric-primary "sends the command to the node's
+/// mesh-primary"; node-rpc.md §43: delivery is owed until acked, a named refusal ends one request's
+/// retry and the owning workflow retargets it; D12): the fabric-primary sends mesh2.rpc.1's
+/// `node.config.update` down to mesh2.admin.1, which its view names mesh2's primary but whose seat
+/// is still in transit: it answers `RejectedNotPrimary`. The caller is not failed: the command stays
+/// owed, and once the seat lands (mesh2.admin.1 holds it, and the fabric-primary's view changes) it
+/// is sent again to the holder and ends `ConfigUpdated`; the fabric-primary's atlas holds the map.
+/// Span: `rdm.node_admin.node.update.via-fabric-primary` with `sends` = the sends made, the last
+/// answered, outcome `config-updated`. Must NOT happen: the caller answered `RejectedNotPrimary` or
+/// `NotReady`, or the atlas left without the map.
+#[test]
+fn a_config_update_sent_down_while_the_meshs_seat_moves_completes_once_the_seat_lands() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let m2admin = &b["m2admin"];
+        let m2rpc = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
+        rig.topology.write().await.nodes.push(m2rpc.node.clone());
+        let landed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seat = landed.clone();
+        let (node_id, incarnation) = (m2rpc.node.node_id.clone(), m2rpc.node.incarnation_id.clone().unwrap());
+        let (n, i) = (node_id.clone(), incarnation.clone());
+        // mesh2.admin.1: elected in the fabric-primary's view, its seat in transit until `landed`.
+        let mp = serve_node_with(m2admin, move |req| match req {
+            StatusRequest::UpdateNodeConfig { .. } if !seat.load(Ordering::SeqCst) => rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() }),
+            StatusRequest::UpdateNodeConfig { .. } => StatusReply::ConfigUpdated { node_id: n.clone(), incarnation: i.clone() },
+            other => panic!("only the config command reaches mesh2's primary: {other:?}"),
+        })
+        .await;
+        let door = door_at(&rig.admin.key, &mp).await;
+        let (tick, views) = tokio::sync::watch::channel(0u64);
+        door.watch_views(views);
+        let atlas = rdm_admin::fabric_atlas::FabricAtlas::default();
+        atlas.write_record(&rdm_admin::storage::NodeRow::new(m2rpc.node.name.clone(), node_id.clone(), NodeStatus::ReadyForTraffic));
+        let told: BTreeMap<String, String> = [("admin_api_base".to_string(), "rdm://mesh2".to_string())].into();
+        let req = StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: told.clone() };
+        let view = rig.topology.read().await.clone();
+        let rows = MemoryNodesStorage::default();
+        let serve = door.serve(&rig.admin.node.name, &rig.admin.node.node_id, &view, &rig.topology, &rows, Some(&atlas), &req);
+        let land = async {
+            tokio::time::timeout(Duration::from_secs(10), mp.heard.notified()).await.expect("the fabric-primary sent the command down");
+            // The seat lands: mesh2.admin.1 holds it, and the fabric-primary's view changes.
+            landed.store(true, Ordering::SeqCst);
+            tick.send_modify(|t| *t += 1);
+        };
+        let (reply, ()) = tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(serve, land) }).await.expect("the owed command completes once the seat lands");
+        assert_eq!(reply, StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() }, "the caller is answered once the seat landed");
+        let sent: Vec<StatusRequest> = mp.seen.lock().unwrap().clone();
+        assert!(sent.len() >= 2 && sent.iter().all(|r| *r == req), "the same command, sent down again to the holder: {sent:?}");
+        assert_eq!(atlas.record(&node_id).expect("the atlas holds mesh2.rpc.1").config, told, "the fabric-primary's atlas holds the map");
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-fabric-primary");
+    let (trace, a) = spans.iter().find(|(_, a)| a.get("subject").map(String::as_str) == Some("mesh2.rpc.1")).unwrap_or_else(|| panic!("a via-fabric-primary span: {spans:?}"));
+    assert_eq!((a.get("outcome").map(String::as_str), a.get("mesh_primary").map(String::as_str), a.get("atlas").map(String::as_str)), (Some("config-updated"), Some("mesh2.admin.1"), Some("written")), "{a:?}");
+    let sends: u32 = a.get("sends").and_then(|v| v.parse().ok()).unwrap_or(0);
+    assert!(sends >= 2, "sent down again after the refusal: {a:?}");
+    eprintln!("trace {trace}: rdm.node_admin.node.update.via-fabric-primary subject=mesh2.rpc.1 sends={sends} outcome=config-updated");
 }
 
 /// CONTRACT (ops-naming "Node data" :79: caller → the node's mesh-primary, Forward `0x1A` when not

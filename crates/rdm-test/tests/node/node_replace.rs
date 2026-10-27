@@ -1093,8 +1093,6 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
     let node_path = node.as_str();
     let old_name = format!("{node_path}.old");
     let before = estate.node_value(node_path).await;
-    let admin = nodes.iter().find(|n| n["name"] == mesh_primary.as_str()).expect("the mesh-primary's view row").clone();
-    let (client, mp_id) = caller_of(&admin).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
@@ -1108,10 +1106,11 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
     let told_json = json!({"tier": "gold"});
     wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
     let labels: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
-    let tagged = rdm_client::NodeRpc::new(&client)
-        .tags_create(&mp_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &rdm_transport::CallOptions::default())
+    // Commands go down: the caller sends it to the fabric-primary, which sends it to the mesh-primary (Q203).
+    let tagged = rdm_client::NodeRpc::new(&fp_client)
+        .tags_create(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &rdm_transport::CallOptions::default())
         .await
-        .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at {mesh_primary}: {e:?}"));
+        .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at the fabric-primary: {e:?}"));
     assert_eq!(tagged.name(), "tags-created", "the mesh-primary wrote the label's row: {tagged:?}");
     wait_for(&format!("{node_path} carries its tag"), Duration::from_secs(30), || async { (estate.node_view(node_path).await.tags == labels).then_some(()) }).await;
 
@@ -2129,8 +2128,6 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     let (node, mesh_primary, fp) = placement(&nodes);
     let node_path = node.as_str();
     let before = estate.node_value(node_path).await;
-    let admin = nodes.iter().find(|n| n["name"] == mesh_primary.as_str()).expect("the mesh-primary's view row").clone();
-    let (client, mp_id) = caller_of(&admin).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
@@ -2144,10 +2141,11 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     let told_json = json!({"tier": "gold"});
     wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
     let labels: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
-    let tagged = rdm_client::NodeRpc::new(&client)
-        .tags_create(&mp_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &rdm_transport::CallOptions::default())
+    // Commands go down: the caller sends it to the fabric-primary, which sends it to the mesh-primary (Q203).
+    let tagged = rdm_client::NodeRpc::new(&fp_client)
+        .tags_create(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &rdm_transport::CallOptions::default())
         .await
-        .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at {mesh_primary}: {e:?}"));
+        .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at the fabric-primary: {e:?}"));
     assert_eq!(tagged.name(), "tags-created", "the mesh-primary wrote the label's row: {tagged:?}");
     wait_for(&format!("{node_path} carries its tag"), Duration::from_secs(30), || async { (estate.node_view(node_path).await.tags == labels).then_some(()) }).await;
 
