@@ -185,7 +185,7 @@ let (outcome, _evidence) = client
 ```
 
 - **`target`** is a `NodeTarget`, usually the exact node (`NodeTarget::ExactNode(node_id)`), from the
-  node's topology or a read ([query](../plans/proposal/query-page.md), the proposal until `query.md` lands
+  node's topology or a read ([query](../architecture/query.md), the proposal until `query.md` lands
   with #3234; then the page).
 - **The outcome** is `RpcOutcome<P::Reply>`:
   - `Reply(variant)`: the handler answered, or the receiver's runtime answered one of its four
