@@ -7,6 +7,8 @@ set -uo pipefail
 . "$(dirname "$0")/lane-lib.sh"
 L="${1:?usage: lane-land.sh <lane> <branch> <issue> <close-comment-file>}"; B="${2:?}"; I="${3:?}"; C="${4:?}"
 [ -f "$C" ] || { echo "REFUSED: comment file $C does not exist"; exit 2; }
+[ "$(lane_busy "$L")" -eq 0 ] || { echo "REFUSED: lane $L is busy"; exit 3; }
+lane_target_at_path "$L" || exit 7
 git -C "$MAIN" fetch -q origin && c=$(mktemp /tmp/rdm-land-run.XXXXXX) && git -C "$MAIN" show origin/main:scripts/rebase-gate-land.sh > "$c" \
   || { echo "REFUSED: origin/main's scripts/rebase-gate-land.sh could not be read"; exit 6; }
 out=$(LAND_PRIVATE_COPY=1 bash "$c" "$L" "$B" 2>&1); rc=$?; rm -f "$c"; echo "$out"

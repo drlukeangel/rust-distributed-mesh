@@ -13,6 +13,7 @@ d=$(lane_dir "$L"); s=$(state_dir "$L")
 git -C "$d" fetch -q origin
 git -C "$d" show-ref -q --verify "refs/heads/$B" && { echo "REFUSED: branch $B exists"; exit 4; }
 git -C "$d" switch -q -c "$B" origin/main
+lane_target_at_path "$L" || exit 7
 mkdir -p "$s/inbox"
 prev=$(cat "$s/branch" 2>/dev/null || true)
 if [ -n "$prev" ] && ls "$s/inbox"/[0-9]*.md >/dev/null 2>&1; then mkdir -p "$s/inbox/done-$prev"; mv "$s/inbox"/[0-9]*.md "$s/inbox/done-$prev/"; fi

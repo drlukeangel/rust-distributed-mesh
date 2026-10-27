@@ -42,8 +42,16 @@ You are the seat for rafka-v2 issue #$ISSUE, "$TITLE", in lane $d on branch $B.
 5. A cause is stated only with its span lines; otherwise it is unattributed.
 6. End every turn with one line: \`STATUS: <done|blocked|working> inbox <NNNN> commits <sha,…>\`, then what you ran and its result.
 AGENT
+# Claude Code adds a new .claude/agents file only at a user-turn boundary, after its watcher sees it
+# (~1-2 min); a launch before its notice fails "Agent type not found". Touch once more, a modify the
+# watcher reliably sees, and name the one real signal.
+[ "$state" = NEW ] && { sleep 5; touch "$f"; }
 echo "$ISSUE" > "$s/issue"; echo "$SEAT" > "$s/seat"
 gh issue comment "$ISSUE" --repo drlukeangel/rafka-v2 -b "Dispatched to RDM lane $LANE ($d), branch \`$B\`, seat \`$SEAT\` ($MODEL)." >/dev/null
 echo "DISPATCHED lane $LANE issue #$ISSUE branch $B"
 echo "PLAN $s/plan.md"
-echo "SEAT TYPE $SEAT ($state)"
+if [ "$state" = NEW ]; then
+  echo "SEAT TYPE $SEAT: NEW, written to $f. DO NOT LAUNCH YET: launch only after Claude Code's notice \"New agent types are now available ... $SEAT\" (Agent subagent_type: $SEAT, description: \"lane $LANE $NAME\"). No notice after 2 min: touch $f and wait again."
+else
+  echo "SEAT TYPE $SEAT: registered; launch NOW (Agent subagent_type: $SEAT, description: \"lane $LANE $NAME\")"
+fi

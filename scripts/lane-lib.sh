@@ -4,7 +4,8 @@
 LANES_ROOT="${RDM_LANES_ROOT:-$HOME/rdm-lanes}"
 STATE_ROOT="${RDM_LANE_STATE_ROOT:-$HOME/lane-queue/rdm}"
 MAIN="${RDM_MAIN:-$HOME/rust-distributed-mesh}"
-AGENTS_DIR="${RDM_AGENTS_DIR:-$HOME/.claude/agents}"
+# Seat agent types live in the MAIN checkout's .claude/agents, where the lead's Claude Code session reads them.
+AGENTS_DIR="${RDM_AGENTS_DIR:-$MAIN/.claude/agents}"
 lane_dir() { echo "$LANES_ROOT/$1"; }
 state_dir() { echo "$STATE_ROOT/$1"; }
 # A lane is busy while any process runs with its cwd inside the lane (a build, a cell, a gate, a node).
@@ -18,3 +19,17 @@ lane_busy() {
     case "$(readlink "$c" 2>/dev/null)" in "$d"|"$d"/*) n=$((n+1));; esac
   done; echo $n; }
 lane_dirty() { git -C "$(lane_dir "$1")" status --porcelain --untracked-files=no | wc -l; }
+# A lane whose folder moved keeps test binaries built with the old CARGO_MANIFEST_DIR compiled in
+# (env!), and cargo does not rebuild them: every test reading its own source tree then fails NotFound
+# (2026-10-27, lane 1 after e6s7 -> 1). target/.lane-path records where the target was built; on a
+# mismatch the workspace's own crates are cleaned (vendor crates keep their cache) and rebuilt once.
+lane_target_at_path() {
+  local d t members; d=$(lane_dir "$1"); t="$d/target"
+  [ -d "$t" ] || { echo "$d" > /dev/null; return 0; }
+  [ "$(cat "$t/.lane-path" 2>/dev/null)" = "$d" ] && return 0
+  members=$(cd "$d" && cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c 'import json,sys; print(" ".join("-p "+p["name"] for p in json.load(sys.stdin)["packages"]))')
+  [ -n "$members" ] || { echo "REFUSED: cargo metadata failed in $d"; return 1; }
+  echo "lane $1: target was built at $(cat "$t/.lane-path" 2>/dev/null || echo 'an unrecorded path'); cleaning the workspace crates"
+  (cd "$d" && cargo clean $members >/dev/null 2>&1) || { echo "REFUSED: cargo clean failed in $d"; return 1; }
+  echo "$d" > "$t/.lane-path"
+}
