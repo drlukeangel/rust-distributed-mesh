@@ -120,7 +120,7 @@ fn a_stopped_births_signal_runs_no_second_stop() {
         // The mesh's primary: a Day-0 node-admin that does not reconcile (it would retire the node this
         // cell launches in its own process).
         let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
         let launch = launch_by(&root, "mesh1.rpc.1", &rpc_dir);
