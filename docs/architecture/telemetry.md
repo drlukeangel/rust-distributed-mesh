@@ -64,6 +64,13 @@ These start a root of their own today:
   sweeps is a root per pass, joined by `build_id`, `node_id` or `publisher`.
 - **Gossip receipts of a frame published from a timer.** They are children of that timer pass's
   root, not of an operation.
+- **The dial of a connection.** The pooled Node RPC dial (`rdm.node_rpc.connection.create.via-dial`)
+  and a data-plane connection's dial (`rdm.node.connections.create.via-dial`) are each a root,
+  linked (follows_from, the OpenTelemetry link for causally related work that is not nested) to the
+  span that started it: the call that started the pooled dial, and the opener's span around `open`.
+  The transport's connect gives the connection's driver task the span current at that moment for
+  as long as the connection lives, so a dial is never a child of the call or the open, and never the
+  current span while it runs; the pooled dial also outlives the wait of the call that started it.
 
 ## 5. Following one operation
 
