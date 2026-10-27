@@ -1340,16 +1340,16 @@ async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &str) -> St
     let before = estate.node_value(node).await;
     let pid = estate.pid_of(node).await;
     let old_dir = std::path::PathBuf::from(estate.data_dir(node).await);
-    let fabric_primary = s(&estate.node_values().await.into_iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
-    let mesh = estate.meshes_obj().await.nodes(&path.mesh, None).await.expect("mesh.nodes.get");
-    let primary = mesh.iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).cloned().expect("the node's mesh-primary");
+    // The fabric-primary as fabric.get names it, and the node's mesh-primary as mesh.get names it.
+    let fabric_primary = estate.fabrics_obj().await.get().await.expect("fabric.get").fabric_primary.expect("a fabric-primary").to_string();
+    let primary = estate.meshes_obj().await.get(&path.mesh).await.expect("mesh.get").primary_admin.expect("the node's mesh-primary");
     let got = frames(nodes.recipe(predecessor_steps(&path)).await.expect("the predecessor's half of the replace was accepted")).await;
     assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
     let mesh = estate.meshes_obj().await.nodes(&path.mesh, None).await.expect("mesh.nodes.get");
     let stopped = mesh.iter().find(|n| n.name == path.renamed() && n.stopped).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node} stopped at {} once its recipe completed: {mesh:#?}", path.renamed()));
     assert_eq!(stopped.node_id.to_string(), s(&before["node_id"]), "the stopped birth at {} is {node}'s", path.renamed());
     assert!(alive(pid), "the stopped {node} ({pid}) is alive before its delete");
-    StoppedBirth { node: node.to_string(), before, pid, old_dir, renamed_by: primary.name.to_string(), fabric_primary }
+    StoppedBirth { node: node.to_string(), before, pid, old_dir, renamed_by: primary.to_string(), fabric_primary }
 }
 
 /// `build.create` of a RemoveNode change at `<path>.old` of `stopped`, and everything node.delete owes (node-delete.md).

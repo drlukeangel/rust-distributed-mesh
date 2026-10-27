@@ -394,7 +394,7 @@ impl FabricAtlas {
                 match op {
                     "node.config.update" => r.config = spec.config,
                     "node.tags.create" => r.tags.extend(spec.tags),
-                    _ => r.tags.retain(|t| spec.tags.contains(t)),
+                    _ => r.tags = r.tags.intersection(&spec.tags).cloned().collect(),
                 }
                 Taken::Property
             }
