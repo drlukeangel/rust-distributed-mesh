@@ -96,8 +96,20 @@ impl AttemptContexts {
 
     /// [`Self::for_claim`] of `(build_id, lane, attempt)`: inherited within the lane only.
     pub async fn for_claim_lane(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> Result<CallContext, StorageError> {
+        self.for_claim_opened(build_id, lane, attempt, None).await
+    }
+
+    /// The context `(build_id, lane, attempt)` is claimed with: the one its claim already took, else
+    /// `opened`, the context its open was written with (one record with the open, so there is no
+    /// moment after the open without it), else the previous attempt's in the lane; stored under
+    /// `attempt` so a repeat claim answers the same.
+    pub async fn for_claim_opened(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, opened: Option<CallContext>) -> Result<CallContext, StorageError> {
         if let Some(own) = self.get_lane(build_id, lane, attempt).await? {
             return Ok(own);
+        }
+        if let Some(opened) = opened {
+            self.put_lane(build_id, lane, attempt, &opened).await?;
+            return Ok(opened);
         }
         let inherited = match attempt.checked_sub(1).filter(|p| *p > 0) {
             Some(previous) => self.get_lane(build_id, lane, previous).await?,
@@ -172,7 +184,13 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
             Err(e) => Err(e),
         };
         match decided {
-            Ok(ClaimOutcome::Won) => match contexts.for_claim_lane(&claim.build_id, lane, claim.attempt).await {
+            Ok(ClaimOutcome::Won) => match async {
+                // The context the attempt's open was written with, in the open's own record.
+                let opened = crate::build_state::opened_context(builds, &claim.build_id, lane, claim.attempt).await.map_err(|e| e.to_string())?;
+                contexts.for_claim_opened(&claim.build_id, lane, claim.attempt, opened).await.map_err(|e| e.to_string())
+            }
+            .await
+            {
                 Ok(context) => BuildClaimReply::Won { context },
                 Err(e) => rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is claimed, its context record is unreadable: {e}", claim.attempt, claim.build_id)),
             },

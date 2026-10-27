@@ -632,7 +632,7 @@ async fn a_recovery_the_fabric_primary_executes_in_another_mesh_releases_that_me
     let attempt = r.builds.read_build(&r.build).await.unwrap().attempt + 1;
     let action = AttemptAction::Recover { path: recovered.name.clone(), node_id: recovered.node_id.clone(), from_incarnation: recovered.incarnation_id.clone().unwrap(), backbone: false };
     r.builds
-        .open_attempt(&AttemptOpened { build_id: r.build.clone(), attempt, reason: AttemptReason::Recovery, action: Some(action), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, mesh: None })
+        .open_attempt(&AttemptOpened { build_id: r.build.clone(), attempt, reason: AttemptReason::Recovery, action: Some(action), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, mesh: None, context: None })
         .await
         .unwrap();
     let claim = BuildAttemptClaim { build_id: r.build.clone(), attempt, executor: "mesh1.admin.1".into(), claimant: Some("mesh1.admin.1".into()), mesh: None };
@@ -1196,7 +1196,7 @@ async fn a_completed_drive_is_kept_for_its_own_attempt_and_replaced_once_the_bui
     let stale = drives.ensure(&r.env, &r.build, done);
     assert!(Arc::ptr_eq(&stale, &first), "a read that showed attempt {done} running is handed the drive that completed it");
     r.builds
-        .open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: done + 1, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 })
+        .open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: done + 1, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0, context: None })
         .await
         .unwrap();
     let reopened = drives.ensure(&r.env, &r.build, done + 1);
@@ -2394,7 +2394,7 @@ fn a_build_whose_later_attempt_failed_claims_no_next_attempt_without_a_resubmit(
         let r = rig().await;
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal, "attempt 1 completes the Build");
         // A later attempt of it (a restart) is opened, claimed and fails at its executor.
-        r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }).await.unwrap();
+        r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5, context: None }).await.unwrap();
         r.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: r.build.clone(), attempt: 2, executor: "mesh1.admin.2".into() }).await.unwrap();
         let failed = AttemptOutcome::Failed { reason: "the restart's stop was not admitted".into(), code: rdm_core::outcome::Code::FailedPrecondition };
         r.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: r.build.clone(), attempt: 2, outcome: failed }).await.unwrap();
@@ -2545,7 +2545,7 @@ async fn a_stop_attempt_of_a_build_that_completed_ends_at_its_stop_while_the_fab
     let path: PathName = "mesh1.rpc.1".parse().unwrap();
     let from_incarnation = r.env.topology.read().await.node(&path).and_then(|n| n.incarnation_id.clone()).expect("mesh1.rpc.1 has a birth");
     let action = AttemptAction::Stop { path: path.clone(), from_incarnation };
-    r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Stop, action: Some(action), opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }).await.unwrap();
+    r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Stop, action: Some(action), opened_by: "mesh1.admin.1".into(), opened_at_ms: 5, context: None }).await.unwrap();
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(2);
     let end = tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await;

@@ -120,6 +120,11 @@ pub struct AttemptOpened {
     /// and mesh from 1). A line written before lanes existed carries none: the fabric lane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<String>,
+    /// The opening request's call context, written with the open in this one record (build.md §4.4:
+    /// a refused open writes nothing): the context the attempt's claim takes, so no claim of it ever
+    /// reads a context written after its open. This admin's alone: a Build message never carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<rdm_core::context::CallContext>,
 }
 
 /// A claim of one attempt by an executor.
@@ -1881,6 +1886,12 @@ fn is_new(facts: &[BuildFact], f: &BuildFact) -> bool {
     }
 }
 
+/// The call context the open of `attempt` of `build_id` in the lane `mesh` (`None` the fabric lane)
+/// was written with ([`AttemptOpened::context`]); `None` for an attempt opened with none or not open.
+pub(crate) async fn opened_context(builds: &dyn BuildStateAdapter, build_id: &BuildId, mesh: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, BuildStateError> {
+    Ok(opened(&builds.facts().await?, build_id, mesh, attempt).and_then(|o| o.context.clone()))
+}
+
 /// The open of `attempt` of `build_id` in the lane `mesh` (`None` the fabric lane).
 fn opened<'a>(facts: &'a [BuildFact], build_id: &BuildId, mesh: Option<&str>, attempt: u32) -> Option<&'a AttemptOpened> {
     facts.iter().find_map(|f| match f {
@@ -2704,7 +2715,7 @@ mod tests {
     }
 
     fn opened(id: &str, attempt: u32, reason: AttemptReason) -> AttemptOpened {
-        AttemptOpened { mesh: None, build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(), attempt, reason, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }
+        AttemptOpened { mesh: None, build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(), attempt, reason, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5, context: None }
     }
 
     fn claim(id: &str, attempt: u32, who: &str) -> BuildAttemptClaim {
@@ -3295,6 +3306,7 @@ mod tests {
                 action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: birth.0.clone(), from_incarnation: birth.1.clone(), backbone: false }),
                 opened_by: "mesh1.admin.2".into(),
                 opened_at_ms: 2,
+                context: None,
             })
         };
         let claimed = |attempt: u32| BuildFact::Claim(BuildAttemptClaim { mesh: lane(), ..claim("b1", attempt, "mesh1.admin.2") });
@@ -3364,6 +3376,7 @@ mod tests {
             action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: false }),
             opened_by: "mesh1.admin.1".into(),
             opened_at_ms: 1,
+            context: None,
         };
         let deleted = format!("node.delete:{path}");
         let dir = tmp();
@@ -3436,6 +3449,7 @@ mod tests {
             action: Some(crate::accepted::AttemptAction::Recover { path: b.0.clone(), node_id: b.1.clone(), from_incarnation: b.2.clone(), backbone: false }),
             opened_by: "mesh1.admin.1".into(),
             opened_at_ms: 1,
+            context: None,
         };
         let failed = |n: u32, why: &str| attempt("b1", n, AttemptOutcome::Failed { reason: why.into() , code: rdm_core::outcome::Code::FailedPrecondition });
         let owed = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId), attempt: u32, reason: &str| OwedExit { path: b.0.clone(), node_id: b.1.clone(), incarnation: b.2.clone(), attempt, reason: reason.into() };
@@ -3641,6 +3655,7 @@ mod tests {
             action: Some(crate::accepted::AttemptAction::Recover { path: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint(), backbone: false }),
             opened_by: format!("{mesh}.admin.1"),
             opened_at_ms: 6,
+            context: None,
         }
     }
 

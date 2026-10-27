@@ -577,6 +577,7 @@ pub async fn reconcile_drift(
         action,
         opened_by: me.to_string(),
         opened_at_ms: time.now_ms(),
+        context: None,
     };
     // The attempt's context is this span, on this fabric-primary, before the attempt is open to be claimed.
     if let Err(e) = contexts.put(&current.build_id, attempt, &span.in_scope(crate::build_claim::current_context)).await {

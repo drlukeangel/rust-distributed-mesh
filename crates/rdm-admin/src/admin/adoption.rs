@@ -271,7 +271,7 @@ pub async fn claim(me: &PathName, me_id: &NodeId, a: &Adoptable, builds: &dyn Bu
         // releases the row taken for it.
         let recorded = async {
             contexts.put_lane(&row.build_id, Some(&mesh), attempt, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
-            let opened = AttemptOpened { build_id: row.build_id.clone(), attempt, reason: AttemptReason::Adoption, action: Some(action), opened_by: me.to_string(), opened_at_ms: now_ms, mesh: Some(mesh.clone()) };
+            let opened = AttemptOpened { build_id: row.build_id.clone(), attempt, reason: AttemptReason::Adoption, action: Some(action), opened_by: me.to_string(), opened_at_ms: now_ms, mesh: Some(mesh.clone()), context: None };
             builds.open_attempt(&opened).await.map_err(|e| format!("attempt {attempt} of {} in mesh {mesh}'s lane could not be opened: {e}", row.build_id))?;
             let claim = BuildAttemptClaim { build_id: row.build_id.clone(), attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: Some(mesh.clone()) };
             match builds.claim_attempt(&claim).await.map_err(|e| format!("the claim of attempt {attempt} could not be recorded: {e}"))? {

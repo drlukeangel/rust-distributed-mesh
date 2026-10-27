@@ -142,7 +142,7 @@ fn reason(r: &Result<rdm_admin::control_plane::Opened, Refusal>) -> String {
 async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_before_the_state_gate() {
     let r = rig(view(NodeStatus::PendingReconnect)).await;
     let current = r.builds.current().await.unwrap().expect("the seeded Build is current");
-    let drift = AttemptOpened { mesh: Some("mesh1".into()), build_id: current.build_id.clone(), attempt: 1, reason: AttemptReason::ProvenDrift, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1 };
+    let drift = AttemptOpened { mesh: Some("mesh1".into()), build_id: current.build_id.clone(), attempt: 1, reason: AttemptReason::ProvenDrift, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, context: None };
     r.builds.open_attempt(&drift).await.expect("mesh1's drift lane opens its attempt 1");
     let out = r.cp.submit("gates-delete-held", TopologyChange::RemoveNode { node: "mesh1.rpc.1".parse().unwrap() }).await;
     match &out {

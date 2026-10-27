@@ -849,7 +849,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into(), claimant_node: None };
     assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
     builds
-        .open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 1, reason: AttemptReason::Recovery, action: Some(action.clone()), opened_by: "mesh2.admin.1".into(), opened_at_ms: 1, mesh: Some("mesh2".into()) })
+        .open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 1, reason: AttemptReason::Recovery, action: Some(action.clone()), opened_by: "mesh2.admin.1".into(), opened_at_ms: 1, mesh: Some("mesh2".into()), context: None })
         .await
         .unwrap();
     let lane = builds.read_build(&b0).await.unwrap().lanes.get("mesh2").cloned().expect("mesh2's lane");
@@ -992,7 +992,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 2, claimant: "mesh2.admin.1".into(), claimant_node: None };
     assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
     builds
-        .open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Recovery, action: Some(action.clone()), opened_by: "mesh2.admin.1".into(), opened_at_ms: 2, mesh: Some("mesh2".into()) })
+        .open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Recovery, action: Some(action.clone()), opened_by: "mesh2.admin.1".into(), opened_at_ms: 2, mesh: Some("mesh2".into()), context: None })
         .await
         .unwrap();
     let lane = builds.read_build(&b0).await.unwrap().lanes.get("mesh2").cloned().expect("mesh2's lane");

@@ -636,14 +636,15 @@ impl ControlPlane {
             action: Some(action),
             opened_by: me.to_string(),
             opened_at_ms: self.time.now_ms(),
+            // The request's context, in the open's own record: a refused open writes nothing, and
+            // a claim of the attempt the moment it lands takes this context (build.md §4.4).
+            context: Some(crate::build_claim::current_context()),
         };
         span.record("build_id", current.build_id.as_str());
         span.record("attempt", opened.attempt);
-        // The attempt is opened, and only then its context put: a refusal (`attempt-taken`, the number
+        // The attempt is opened with its context in one record: a refusal (`attempt-taken`, the number
         // another writer's open holds) writes nothing (build.md §4.4), so the context of the attempt
-        // that holds the number stays its own. The context is put before the drive is woken; a drive
-        // pass already running that claims the attempt between the open and the put claims it with
-        // `for_claim_lane`'s inherited context.
+        // that holds the number stays its own.
         if let Err(e) = self.builds.open_attempt(&opened).await {
             return Err(match e {
                 BuildStateError::AttemptTaken { .. } => {
@@ -655,11 +656,6 @@ impl ControlPlane {
                 }
                 e => Refusal::State(e),
             });
-        }
-        // The attempt is open whatever the put answers: an unwritten context is said on the span and the
-        // claim takes the inherited one.
-        if let Err(e) = self.contexts.put_lane(&opened.build_id, lane, opened.attempt, &crate::build_claim::current_context()).await {
-            tracing::info!(build_id = %current.build_id.log(), attempt = opened.attempt, error = %e, "the opened attempt's context could not be put: its claim takes the inherited context");
         }
         tracing::info!(build_id = %current.build_id.log(), attempt = opened.attempt, lane = lane.unwrap_or("fabric"), "attempt opened");
         if let Some(action) = &opened.action {

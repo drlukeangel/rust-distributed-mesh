@@ -113,7 +113,7 @@ async fn settled(builds: &MemoryBuildStateAdapter, id: &BuildId, holder: &str, s
 }
 
 async fn open(builds: &MemoryBuildStateAdapter, id: &BuildId, attempt: u32) {
-    builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 }).await.unwrap();
+    builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0, context: None }).await.unwrap();
 }
 
 /// A fabric-primary P whose log holds the Build at `settled` converged attempts, listing the
@@ -239,7 +239,7 @@ async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_an
     m.node.is_primary = true;
     let m_builds = Arc::new(MemoryBuildStateAdapter::new());
     settled(&m_builds, &id, "mesh1.admin.1", 2).await;
-    m_builds.open_attempt(&AttemptOpened { mesh: Some("mesh2".into()), build_id: id.clone(), attempt: 1, reason: AttemptReason::Recovery, action: None, opened_by: "mesh2.admin.1".into(), opened_at_ms: 0 }).await.unwrap();
+    m_builds.open_attempt(&AttemptOpened { mesh: Some("mesh2".into()), build_id: id.clone(), attempt: 1, reason: AttemptReason::Recovery, action: None, opened_by: "mesh2.admin.1".into(), opened_at_ms: 0, context: None }).await.unwrap();
     let m_seat = elect(&m, view(vec![p.node.clone(), m.node.clone()]), m_builds.clone(), Arc::new(AttemptContexts::in_memory())).await;
     let fabric_lane = m_seat.door.claim("mesh2.admin.1", &id, 3).await;
     assert_eq!(fabric_lane, BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh2.admin.1".into()) }, "a mesh-primary decides no fabric-lane claim");

@@ -910,7 +910,7 @@ fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothi
         rig.builds.claim_attempt(&claim(1)).await.unwrap();
         rig.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
         // A stop reopens the completed Build; its attempt is claimed and running.
-        rig.builds.open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, mesh: None }).await.unwrap();
+        rig.builds.open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, mesh: None, context: None }).await.unwrap();
         rig.builds.claim_attempt(&claim(2)).await.unwrap();
         // The tick's current-Build read, taken now; the attempt's verdict lands before its Build read.
         let before = rig.builds.current_build().await.unwrap();

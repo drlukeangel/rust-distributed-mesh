@@ -193,7 +193,7 @@ fn facts() -> Vec<BuildFact> {
     for change in changes() {
         out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), submitted_change: change, submitted_at_ms: 55 }));
     }
-    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Stop, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56 });
+    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Stop, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56, context: None });
     out.push(action(None));
     out.push(action(Some(AttemptAction::Stop { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
     // Steps (build.md §1; lifecycles/node-replace.md): the steps and the births they pinned.
@@ -220,6 +220,7 @@ fn facts() -> Vec<BuildFact> {
             }),
             opened_by: "mesh1.admin.1".into(),
             opened_at_ms: 56,
+            context: None,
         }));
     }
     // A member's recovery (node-recovery.md): the attempt the mesh-primary's submit opens.
@@ -231,6 +232,7 @@ fn facts() -> Vec<BuildFact> {
         action: Some(AttemptAction::Recover { path: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint(), backbone: false }),
         opened_by: "mesh1.admin.1".into(),
         opened_at_ms: 56,
+        context: None,
     }));
 
     out.push(BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, executor: "mesh1.admin.1".into() }));

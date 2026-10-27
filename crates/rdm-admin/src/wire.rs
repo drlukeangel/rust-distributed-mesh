@@ -708,6 +708,7 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
             opened_by: o.opened_by,
             opened_at_ms: o.opened_at_ms,
             mesh: o.mesh,
+            context: None,
         }),
         WireFact::Claim(c) => BuildFact::Claim(BuildAttemptClaim { build_id: c.build_id, attempt: c.attempt, executor: c.executor, claimant: c.claimant, mesh: c.mesh }),
         WireFact::Step(s) => {

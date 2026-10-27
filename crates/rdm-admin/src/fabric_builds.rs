@@ -396,6 +396,7 @@ mod tests {
             }),
             opened_by: "mesh1.admin.1".into(),
             opened_at_ms: 7,
+            context: None,
         };
         let bytes = match encode(vec![BuildFact::Opened(opened.clone())]) {
             Ok(b) => b,
