@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lane-dispatch.sh --lane <n> --issue <N> --name <seat-name> --title <title> --design <file> [--model opus|sonnet]
 # Hands one prepped lane its unit: writes the plan ($HOME/lane-queue/rdm/<n>/plan.md), writes the seat's
-# agent type i143-<issue> ($HOME/.claude/agents/i143-<issue>.md) and comments the issue with the lane,
+# agent type i143-<issue> (the main checkout's .claude/agents/i143-<issue>.md) and comments the issue with the lane,
 # branch and seat. Launch the seat ONLY after this returns, with subagent_type = the SEAT TYPE line; a
 # NEW type launches after Claude Code's "New agent types are now available" notice names it.
 set -euo pipefail
@@ -18,7 +18,7 @@ B=$(cat "$s/branch" 2>/dev/null) || { echo "REFUSED: lane $LANE is not prepped (
 [ "$(git -C "$d" branch --show-current)" = "$B" ] || { echo "REFUSED: lane $LANE has $(git -C "$d" branch --show-current) checked out, not $B"; exit 3; }
 [ -f "$s/seat" ] && { echo "REFUSED: lane $LANE already has seat $(cat "$s/seat"); prep it again for a new unit"; exit 4; }
 cd "$MAIN" && gh issue view "$ISSUE" --repo drlukeangel/rafka-v2 --json state --jq .state | grep -q OPEN || { echo "REFUSED: issue #$ISSUE is not open"; exit 5; }
-SEAT="i143-$ISSUE"
+SEAT="i143-$ISSUE"; SLUG="i143-$ISSUE-$NAME"
 {
   printf '# %s\n\nIssue: https://github.com/drlukeangel/rafka-v2/issues/%s\nLane: %s (branch %s, from %s)\nSeat: %s (%s)\n\n' \
     "$TITLE" "$ISSUE" "$d" "$B" "$(git -C "$d" rev-parse --short HEAD)" "$SEAT" "$NAME"
@@ -26,12 +26,8 @@ SEAT="i143-$ISSUE"
 } > "$s/plan.md.tmp" && mv -f "$s/plan.md.tmp" "$s/plan.md"
 f="$AGENTS_DIR/$SEAT.md"; state=registered; [ -f "$f" ] || state=NEW
 mkdir -p "$AGENTS_DIR"
-cat > "$f" <<AGENT
----
-name: $SEAT
-description: RDM seat for issue #$ISSUE ($NAME) in lane $LANE, branch $B. Works only that unit; never gates or lands.
-model: $MODEL
----
+# The seat's standing rules: one file in the lane's state, the type's body points at it.
+cat > "$s/seat-rules.md" <<RULES
 You are the seat for rafka-v2 issue #$ISSUE, "$TITLE", in lane $d on branch $B.
 
 1. Read /home/admin/rust-distributed-mesh/CLAUDE.md and /home/admin/rafka-v2/CLAUDE.md and follow them exactly.
@@ -41,7 +37,12 @@ You are the seat for rafka-v2 issue #$ISSUE, "$TITLE", in lane $d on branch $B.
 4. Run cells only through \`flock -o /tmp/rdm-gate-turn.lock $d/scripts/cells.sh <crate> lib|main -- <filter>\`.
 5. A cause is stated only with its span lines; otherwise it is unattributed.
 6. End every turn with one line: \`STATUS: <done|blocked|working> inbox <NNNN> commits <sha,…>\`, then what you ran and its result.
-AGENT
+RULES
+# The type (rafka-v2's format): file name, name and subagent_type are i143-<issue>; the slug
+# i143-<issue>-<name> rides only in its description and in the launch's description.
+printf -- '---\nname: %s\ndescription: %s\ntools: Bash, Read, Write, Edit, Glob, Grep, SendMessage\n---\n\n%s\n' \
+  "$SEAT" "i143 #$ISSUE — $SLUG" \
+  "Before anything else, read $s/seat-rules.md (the standing seat rules) and follow it for the whole unit. Your launch prompt names your lane and your unit." > "$f"
 # Claude Code adds a new .claude/agents file only at a user-turn boundary, after its watcher sees it
 # (~1-2 min); a launch before its notice fails "Agent type not found". Touch once more, a modify the
 # watcher reliably sees, and name the one real signal.
@@ -51,7 +52,7 @@ gh issue comment "$ISSUE" --repo drlukeangel/rafka-v2 -b "Dispatched to RDM lane
 echo "DISPATCHED lane $LANE issue #$ISSUE branch $B"
 echo "PLAN $s/plan.md"
 if [ "$state" = NEW ]; then
-  echo "SEAT TYPE $SEAT: NEW, written to $f. DO NOT LAUNCH YET: launch only after Claude Code's notice \"New agent types are now available ... $SEAT\" (Agent subagent_type: $SEAT, description: \"lane $LANE $NAME\"). No notice after 2 min: touch $f and wait again."
+  echo "SEAT TYPE $SEAT: NEW, written to $f. DO NOT LAUNCH YET: launch only after Claude Code's notice \"New agent types are now available ... $SEAT\" (Agent subagent_type: $SEAT, description: \"lane $LANE $SLUG\"). No notice after 2 min: touch $f and wait again."
 else
-  echo "SEAT TYPE $SEAT: registered; launch NOW (Agent subagent_type: $SEAT, description: \"lane $LANE $NAME\")"
+  echo "SEAT TYPE $SEAT: registered; launch NOW (Agent subagent_type: $SEAT, description: \"lane $LANE $SLUG\")"
 fi
