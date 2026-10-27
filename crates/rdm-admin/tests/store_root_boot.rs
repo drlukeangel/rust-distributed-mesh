@@ -477,6 +477,10 @@ impl Prepared {
         let mut err = String::new();
         std::io::Read::read_to_string(running.child.stderr.as_mut().unwrap(), &mut err).unwrap();
         assert!(status.success(), "the end of {}: {status:?} {err}", running.pid);
+        // Shown with any later failure of the cell: an exit flush that ended at its bound names its loss here.
+        let lines: Vec<&str> = err.lines().collect();
+        let named: Vec<&str> = lines.iter().copied().filter(|l| l.contains("telemetry")).collect();
+        eprintln!("the admin's telemetry lines at its end ({}): {named:#?}; its last stderr lines: {:#?}", running.pid, &lines[lines.len().saturating_sub(20)..]);
         spans_of(&self.dir, running.pid)
     }
 }
