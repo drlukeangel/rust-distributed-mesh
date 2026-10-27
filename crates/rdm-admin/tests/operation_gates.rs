@@ -264,6 +264,8 @@ async fn a_claim_the_moment_the_open_lands_takes_the_opening_requests_context() 
     let builds = Arc::new(ClaimedInTheOpen { inner: MemoryBuildStateAdapter::new(), contexts: contexts.clone(), claims: Default::default(), claimed: Default::default() });
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let mut cp = ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time()).with_contexts(contexts.clone());
+    // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
+    let _ = cp.node_rows.set(crate::records_of(&t).await);
     cp.topology = Arc::new(tokio::sync::RwLock::new(t));
     let current = builds.current().await.unwrap().expect("the seeded Build is current");
     // The previous attempt's context: another request's trace.
