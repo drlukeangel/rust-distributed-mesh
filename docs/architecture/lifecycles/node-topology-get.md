@@ -6,7 +6,9 @@
 
 An already-held member requests [node.topology.get](../node-rpc-envelope.md#topology-op-0x1e-rdm)
 from its OWN mesh-primary. It supplies its held source version under that schema, installs
-only complete snapshots, then resumes applicable deltas. JoinNode is only a join and is
+only complete snapshots, then resumes applicable deltas. The answer also carries the node's own
+whole row from its mesh-primary's Atlas, never the store; the node holds it on its own entry (Q234).
+JoinNode is only a join and is
 never a topology re-read. Gossip gap detection schedules the read; it does not create a
 Build or change the target's meta.
 

@@ -1139,6 +1139,7 @@ pub enum TopologyReply {
     Stored { mesh: String, mesh_id: Option<MeshId>, nodes: Vec<StoredNode> },
     Primaries { kind: PrimaryKind, primary: Primary, gone: bool },
     RafkaTime { ms: u64, kind: Option<PrimaryKind> },
+    OwnRow { node: NodeView },
 }
 
 // A primary as the topology answers it (the election's result the mesh-primary
@@ -1161,16 +1162,25 @@ A matching held source version answers Unchanged. Accepted reads stream Started,
 Snapshot, Unchanged or Stored frames, then End. Snapshot uses gossip MeshTopology's shape and
 chunking; a mesh is installed atomically only after every chunk of the same snapshot_id,
 publisher and topology_version is present. End.meshes counts each answered mesh once.
-A mesh with no published snapshot is absent unless an eligible stored map supplies it.
-NotReady means the RPC door is unopened, or reading the stored map failed, with the cause
-named. A mesh neither held nor stored answers UnknownMesh.
+A mesh with no published snapshot is absent unless the answerer's Atlas supplies it (Stored).
+NotReady means the RPC door is unopened, with the cause named. No answer reads the store
+(Q227). A mesh neither held nor in the Atlas answers UnknownMesh.
 
-Stored is reply position 11; REPLY_VARIANTS is 14. Stored is data-class
+Stored is reply position 11; REPLY_VARIANTS is 15. Stored is data-class, built from the
+answerer's Atlas records and the births its view holds, never from the store,
 and carries up to 24 nodes per frame; End.meshes counts a stored mesh once across frames.
 It serves only a mesh the maker holds no snapshot of, never the maker's own mesh. A held
 snapshot wins. The reader never installs Stored as topology: it uses the map only to reach
 a live node of its own mesh. A read from a node of another mesh installs topology only for
 other meshes and holds none of the reader's own mesh as heard.
+
+OwnRow is reply position 14. A read by a node of its OWN mesh-primary answers one OwnRow,
+after RafkaTime and before End: the reader's whole row as the mesh-primary's Atlas holds it
+(every node property: config, tags, executable, storage, placement, listeners, status,
+primaries), never read from the store; it is not a mesh and End.meshes does not count it. The
+reader holds it on its own entry in its topology (Q234). A read served by any other node answers
+no OwnRow. An OwnRow over the frame bound is not sent: the read span records `own_row` as
+`too-large` and the read still ends.
 Serving: `crates/rdm-node/src/topology_read.rs::StoredMap` and
 `crates/rdm-node/src/topology_read.rs::TopologyDoor`.
 
