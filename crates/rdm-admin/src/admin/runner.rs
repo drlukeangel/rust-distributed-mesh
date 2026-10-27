@@ -1259,6 +1259,24 @@ impl AdminRunner {
         Box::pin(self.run_op_body(build_id, lane, attempt, op))
     }
 
+    /// Node recovery's node.delete of the exited birth `from` at `node` (`RetireNode { exited }`), and the
+    /// delete of a storage change's re-create (i149 R19).
+    async fn delete_exited(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(), crate::executor::RunEnd> {
+        use tracing::Instrument;
+        let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
+        self.delete_unreached(builds, build_id, attempt, node, from).instrument(span).await.map(|_| ())
+    }
+
+    /// Node recovery's node.create over the exited birth `from` at `node`, launching the executable its
+    /// row records (`CreateNode { over, executable: None }`), and the create of a storage change's
+    /// re-create (i149 R19).
+    async fn create_over_exited(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(), crate::executor::RunEnd> {
+        use tracing::Instrument;
+        // node-recovery.md names the create's span `node.create.via-build`.
+        let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
+        self.create_over(builds, build_id, attempt, node, from, None).instrument(span).await
+    }
+
     async fn run_op_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
         let me = self.held_name();
@@ -1287,11 +1305,7 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), sha256 = %executable.sha256);
                 self.create_replacement(&*builds, build_id, attempt, node, from, executable).instrument(span).await
             }
-            BuildOperation::CreateNode { node, over: Some(from), executable: None } => {
-                // node-recovery.md names the create's span `node.create.via-build`.
-                let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
-                self.create_over(&*builds, build_id, attempt, node, from, None).instrument(span).await
-            }
+            BuildOperation::CreateNode { node, over: Some(from), executable: None } => self.create_over_exited(&*builds, build_id, attempt, node, from).await,
             BuildOperation::CreateNode { node, over: None, executable } => self.create_node(build_id, attempt, node, executable.as_ref(), crate::node_rows::ClaimFor::Create).await,
             BuildOperation::StartNode { node, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt);
@@ -1305,10 +1319,7 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt);
                 self.standalone(build_id, attempt, node, from_incarnation, true).instrument(span).await
             }
-            BuildOperation::RetireNode { node, exited: Some(from) } => {
-                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
-                self.delete_unreached(&*builds, build_id, attempt, node, from).instrument(span).await.map(|_| ())
-            }
+            BuildOperation::RetireNode { node, exited: Some(from) } => self.delete_exited(&*builds, build_id, attempt, node, from).await,
             BuildOperation::TerminateNode { node, node_id, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.delete.via-terminate-returned", build_id = %build_id.log(), node = %node, attempt, node_id = %node_id, incarnation_id = %from_incarnation.as_str());
                 self.terminate_returned(&*builds, build_id, attempt, node, node_id, from_incarnation).instrument(span).await
@@ -1329,7 +1340,20 @@ impl AdminRunner {
                 self.apply_in_place(build_id, attempt, node, op).instrument(span).await
             }
             BuildOperation::BlockStorage { mesh, change } => self.storage_changes.block_mesh(&*builds, build_id, attempt, mesh, change, self.observer.authority.get().cloned()).await,
-            BuildOperation::UnblockStorage { mesh, change } => self.storage_changes.unblock_mesh(&*builds, build_id, attempt, mesh, change, self.observer.authority.get().cloned(), self.topology.clone()).await,
+            BuildOperation::UnblockStorage { mesh, change } => {
+                // A node that will not move is re-created at its path.name on the decided provider, steps of
+                // this attempt of the change's own Build (node.delete then node.create, as node recovery's;
+                // i149 R19): the attempt holds the mesh's in-flight row, so no other attempt could. The
+                // workflows run here, not through run_op again: one run_op frame on the stack (4c5007a60).
+                let attempt_builds: &dyn BuildStateAdapter = &*builds;
+                let recreate = move |node: PathName, from: crate::build::ExitedBirth| async move {
+                    self.delete_exited(attempt_builds, build_id, attempt, &node, &from).await?;
+                    let created = self.create_over_exited(attempt_builds, build_id, attempt, &node, &from).await;
+                    self.refresh_view().await;
+                    created
+                };
+                self.storage_changes.unblock_mesh(&*builds, build_id, attempt, mesh, change, self.observer.authority.get().cloned(), self.topology.clone(), &recreate).await
+            }
             BuildOperation::FinishStorage { change } => self.storage_changes.finish(&*builds, build_id, attempt, change).await,
             BuildOperation::SwitchStorage { change } => {
                 // The Fabric row's line once the change is switched: the new provider current, the old

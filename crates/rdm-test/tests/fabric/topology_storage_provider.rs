@@ -360,6 +360,8 @@ const SWITCH: &str = "rdm.node_admin.build.update.via-storage-switch";
 const UNBLOCK: &str = "rdm.node_admin.mesh.update.via-unblock";
 /// A node's move onto the provider its change decided, commanded by its mesh-primary.
 const MOVE: &str = "rdm.node.build.update.via-storage-move";
+/// A mesh-primary's re-create, in its `mesh.unblock`, of a node that will not move: outcome `recreated`.
+const MOVE_LOST: &str = "rdm.node_admin.node.update.via-storage-move-lost";
 /// A node's connection event, its span open while its write lands (`connections_writer`).
 const OBSERVED: &str = "rdm.node_admin.connection.update.via-observed";
 /// The role node each cell restarts, freezes or reads.
@@ -754,9 +756,10 @@ async fn a_connection_event_during_a_change_lands_once_after_the_unblock() {
 /// provider, then replies `unblocked`"; "After the switch the Build completes once every mesh-primary has
 /// replied `unblocked`; nothing else waits"; a lost node "is investigated, and on any verdict but
 /// `reached` node recovery re-creates it at its `path.name`"; Q182: a node not replying to commands is
-/// silent): the role node is frozen (alive and silent) after its mesh-primary replied `blocked`, so it
-/// never answers its move. Its mesh-primary replies `unblocked` without it and the Build completes; node
-/// investigation re-creates it at mesh2.rpc.1 under a new node id, launched on `test-target`: it writes
+/// silent; i149 R19): the role node is frozen (alive and silent) after its mesh-primary replied `blocked`,
+/// so it leaves its move unanswered past the staleness floor. Its mesh-primary re-creates it at
+/// mesh2.rpc.1 under a new node id, launched on `test-target`, steps of its unblock attempt, then replies
+/// `unblocked` and the Build completes: the new birth writes
 /// `test-target`, is ready-for-traffic, its records are on `test-target` and none on `file`; the old
 /// birth never moves; the Fabric row names `test-target` with `file` previous. Must NOT happen: the
 /// Build waiting on the frozen birth forever, the old birth moving, or the new birth launched on `file`.
@@ -793,8 +796,9 @@ async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
 /// Q182): investigated and re-created at its path.name on the provider of its step; after the switch the
 /// Build completes once every node has unblocked or been re-created"): the role node refuses its move by
 /// name (the testkit's knob has its birth refuse to open `test-target`) and keeps answering and
-/// gossiping. Its mesh-primary hands it to node recovery, which re-creates it at mesh2.rpc.1 under a new
-/// node id launched on `test-target`, and replies `unblocked` only once it is re-created: when the Build
+/// gossiping. Its mesh-primary re-creates it at mesh2.rpc.1 under a new node id launched on
+/// `test-target`, node.delete then node.create, steps of its unblock attempt of the change's own Build
+/// (lead decision D1), and replies `unblocked` only once it is re-created: when the Build
 /// completes the path holds the new birth, ready-for-traffic, writing `test-target`, its records on
 /// `test-target` and none on `file`; the old birth never moves; `file` holds nothing the copy did not
 /// carry to `test-target`. Must NOT happen: `unblocked` with the refusing birth standing, the old birth
@@ -829,6 +833,9 @@ async fn a_node_that_refuses_its_move_is_recreated_on_the_new_provider() {
     assert!(!old_moves.is_empty() && old_moves.iter().all(|sp| sp["attributes"]["outcome"] == "refused"), "the old birth refuses its move by name and never moves: {old_moves:#?}");
     let unblocked = of_build(&spans, UNBLOCK, &build_id, Some("mesh2")).into_iter().find(|sp| sp["attributes"]["outcome"] == "unblocked").expect("mesh2's mesh-primary replied unblocked");
     assert_eq!(attr(unblocked, "provider"), TOPOLOGY_STORAGE_TARGET, "mesh2's mesh-primary moves its nodes onto {TOPOLOGY_STORAGE_TARGET}: {unblocked}");
+    assert_eq!(attr(unblocked, "recreated"), "1", "the mesh-primary that replied unblocked re-created the refusing birth in that unblock: {unblocked}");
+    let lost: Vec<&Value> = of_build(&spans, MOVE_LOST, &build_id, Some("mesh2")).into_iter().filter(|sp| attr(sp, "node_id") == old_id).collect();
+    assert!(lost.iter().any(|sp| sp["attributes"]["outcome"] == "recreated" && sp["trace_id"] == unblocked["trace_id"]), "the refusing birth is re-created, a step of the unblock that replied: {lost:#?}");
     let new_moved = named(&spans, MOVE).into_iter().find(|sp| attr(sp, "node_id") == new_id && attr(sp, "build_id") == build_id && sp["attributes"]["outcome"] == "moved").unwrap_or_else(|| panic!("the re-created birth {new_id} answered its move under Build {build_id}"));
     assert!(new_moved["end_unix_nano"].as_u64().unwrap_or(u64::MAX) <= unblocked["end_unix_nano"].as_u64().unwrap_or(0), "the re-created birth moved before its mesh-primary replied unblocked: {new_moved} {unblocked}");
     estate.record_trace_url(&s(&blocked["trace_id"]));

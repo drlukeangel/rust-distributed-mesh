@@ -12,7 +12,12 @@
 //!    primitive (the claim primitive, [`ClaimKind::Commit`]), then the Fabric row's line.
 //! 4. **Unblock**, `mesh.unblock:<mesh>`, run by each mesh-primary: it moves its nodes to the provider
 //!    the `commit` record decided (each node's storage handle replaced, node command op 0x22
-//!    `StorageStep`), replies `unblocked` and issues commands again.
+//!    `StorageStep`), replies `unblocked` and issues commands again. A node that will not move (it refuses
+//!    its move by name, a `rejected-stale-change` included, or leaves it unanswered past the staleness
+//!    floor: Q182) is re-created at its `path.name` on the provider the change decided, node.delete then
+//!    node.create as node recovery's, steps of this attempt of the change's own Build (i149 R19): the
+//!    attempt holds the mesh's in-flight row, so no other attempt could. The mesh replies `unblocked`
+//!    once every node moved or was re-created.
 //!
 //! The Build's verdict, `storage.change:<change_id>`, is the fabric-primary's: a change that failed
 //! before its switch fails the Build only once no `commit` is read, its mesh-primaries sent
@@ -57,10 +62,6 @@ pub fn unblock_operation(_change_id: &ChangeId, mesh: &str) -> String {
     format!("mesh.unblock:{mesh}")
 }
 
-/// How long a mesh-primary's `mesh.unblock` waits on a node that does not answer its move: one that
-/// does not is a lost node, re-created by node recovery on the provider the mesh-primary writes.
-const WAIT: Duration = Duration::from_secs(5);
-
 /// How a storage step carried to one birth ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Carried {
@@ -70,7 +71,9 @@ pub enum Carried {
     Stale(ChangeId),
     /// The birth refused the step by name.
     Refused(String),
-    /// Not done: not carried, its answer lost, or the birth not the one commanded. Sent again.
+    /// Carried, and the call ended without the birth's answer.
+    Unanswered(String),
+    /// Not done here: not carried, or the birth not the one commanded. Sent again.
     NotDone(String),
 }
 
@@ -245,9 +248,12 @@ pub struct StorageChanges {
 }
 
 /// How a mesh-primary's move of one node ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathEnd {
-    Done,
-    Left(String),
+    /// The birth at the path moved, or the view holds none there.
+    Moved,
+    /// The birth would not move: the path was re-created, and the new birth moved.
+    Recreated,
 }
 
 impl StorageChanges {
@@ -295,24 +301,72 @@ impl StorageChanges {
         receipt(builds, build_id, attempt, block_operation(&change.change_id, mesh)).await
     }
 
-    /// Carry the move onto `provider` to the birth at `path` until it is done (answered by the birth the
-    /// view holds there, a re-created one included, or no birth held there) or `WAIT` passes.
-    async fn move_until(&self, door: &crate::status_rpc::StatusAuthority, topology: &Arc<RwLock<Topology>>, build_id: &BuildId, change_id: &ChangeId, path: &PathName, provider: &str) -> PathEnd {
-        let until = tokio::time::Instant::now() + WAIT;
+    /// Carry the move onto `provider` to the birth at `path` until the birth the view holds there moves
+    /// (storage.md §2 step 4). A birth that refuses its move by name (a `rejected-stale-change` of this
+    /// change included), or leaves it unanswered past the staleness floor (Q182), will not move: it is
+    /// re-created at `path` by `recreate` on the provider this mesh-primary writes (i149 R19), and the move
+    /// is carried to the new birth. No timer ends it.
+    #[allow(clippy::too_many_arguments)]
+    async fn move_until<F, Fut>(&self, door: &crate::status_rpc::StatusAuthority, topology: &Arc<RwLock<Topology>>, build_id: &BuildId, change_id: &ChangeId, mesh: &str, path: &PathName, provider: &str, recreate: &F) -> PathEnd
+    where
+        F: Fn(PathName, crate::build::ExitedBirth) -> Fut,
+        Fut: std::future::Future<Output = Result<(), crate::executor::RunEnd>>,
+    {
+        let floor = rdm_transport::topology::staleness_floor();
         let mut backoff = Duration::from_millis(250);
+        // The births re-created at the path: the view may still hold one a moment after its re-create.
+        let mut recreated: Vec<NodeId> = Vec::new();
+        // The birth whose move went unanswered, since the send of its first unanswered move.
+        let mut unanswered: Option<(NodeId, tokio::time::Instant)> = None;
+        // A re-create that did not complete, and why: owed until the path holds another birth.
+        let mut owed: Option<(crate::build::ExitedBirth, String)> = None;
         loop {
             let birth = topology.read().await.node(path).cloned();
-            let Some(birth) = birth else { return PathEnd::Done };
-            let why = match birth.incarnation_id.clone() {
-                None => format!("{path} has no birth in this admin's view yet"),
-                Some(incarnation) => match door.carry_storage_step(&birth.node_id, &incarnation, build_id.as_str(), change_id, provider).await {
-                    Carried::Stepped(_) => return PathEnd::Done,
-                    Carried::Stale(held) => format!("rejected-stale-change: {path} acted on storage change {held}"),
-                    Carried::Refused(why) | Carried::NotDone(why) => why,
+            let lost = match (owed.take(), birth) {
+                (Some((from, why)), b) if b.as_ref().is_none_or(|b| b.node_id == from.node_id) => Some((from, format!("its re-create did not complete: {why}"))),
+                // No birth held there: nothing to move, or the re-created birth not in the view yet.
+                (_, None) if recreated.is_empty() => return PathEnd::Moved,
+                (_, None) => None,
+                (_, Some(birth)) if recreated.contains(&birth.node_id) => None,
+                (_, Some(birth)) => match birth.incarnation_id.clone() {
+                    None => None,
+                    Some(incarnation) => {
+                        let sent = tokio::time::Instant::now();
+                        let from = crate::build::ExitedBirth { node_id: birth.node_id.clone(), incarnation: incarnation.clone() };
+                        match door.carry_storage_step(&birth.node_id, &incarnation, build_id.as_str(), change_id, provider).await {
+                            Carried::Stepped(_) => return if recreated.is_empty() { PathEnd::Moved } else { PathEnd::Recreated },
+                            // A refusal of an older change (storage.md §2): a refusal, never a move.
+                            Carried::Stale(held) => Some((from, format!("rejected-stale-change: it acted on storage change {held}"))),
+                            Carried::Refused(why) => Some((from, format!("refused: {why}"))),
+                            Carried::Unanswered(why) => {
+                                let since = match unanswered {
+                                    Some((ref id, since)) if *id == birth.node_id => since,
+                                    _ => sent,
+                                };
+                                unanswered = Some((birth.node_id.clone(), since));
+                                (tokio::time::Instant::now().saturating_duration_since(since) >= floor).then(|| (from, format!("unanswered past the staleness floor: {why}")))
+                            }
+                            Carried::NotDone(_) => None,
+                        }
+                    }
                 },
             };
-            if tokio::time::Instant::now() + backoff >= until {
-                return PathEnd::Left(why);
+            if let Some((from, reason)) = lost {
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-storage-move-lost", build_id = %build_id.log(), change_id = %change_id, mesh = %mesh, node = %path, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), provider = %provider, reason = %reason, outcome = tracing::field::Empty, error = tracing::field::Empty);
+                span.in_scope(|| tracing::info!("the node will not move: it is re-created at its path.name on the provider this mesh-primary writes, steps of this attempt"));
+                use tracing::Instrument as _;
+                match recreate(path.clone(), from.clone()).instrument(span.clone()).await {
+                    Ok(()) => {
+                        span.record("outcome", "recreated");
+                        recreated.push(from.node_id);
+                        continue;
+                    }
+                    Err(e) => {
+                        let error = format!("{e:?}");
+                        span.record("outcome", "not-recreated").record("error", error.as_str());
+                        owed = Some((from, error));
+                    }
+                }
             }
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(2));
@@ -321,21 +375,25 @@ impl StorageChanges {
 
     /// Step 4, `mesh.unblock` of `mesh`, run by its mesh-primary: the provider the `commit` record decided
     /// (the old one when the change failed before its switch), this mesh-primary and each other node of
-    /// the mesh moved onto it, each row recording it; it replies `unblocked` (its receipt) and issues
-    /// commands again. A node that does not answer its move is a lost node: node recovery re-creates it
-    /// on the provider this mesh-primary writes.
+    /// the mesh moved onto it, each row recording it; a node that will not move is re-created on it by
+    /// `recreate`, steps of this attempt (i149 R19); once every node moved or was re-created it replies
+    /// `unblocked` (its receipt) and issues commands again.
     #[allow(clippy::too_many_arguments)]
-    pub async fn unblock_mesh(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>) -> Result<(), crate::executor::RunEnd> {
+    pub async fn unblock_mesh<F, Fut>(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>, recreate: &F) -> Result<(), crate::executor::RunEnd>
+    where
+        F: Fn(PathName, crate::build::ExitedBirth) -> Fut,
+        Fut: std::future::Future<Output = Result<(), crate::executor::RunEnd>>,
+    {
         let door = Self::door(status_door)?;
         let provider = self.decide(change).await;
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-unblock", build_id = %build_id.log(), change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, provider = %provider, moved = tracing::field::Empty, left = tracing::field::Empty, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-unblock", build_id = %build_id.log(), change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, provider = %provider, moved = tracing::field::Empty, recreated = tracing::field::Empty, outcome = tracing::field::Empty);
         self.move_own(&door, build_id, &change.change_id, &provider).await?;
         let paths: Vec<PathName> = topology.read().await.members().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status.is_live()).map(|n| n.name.clone()).collect();
-        let ends = futures_util::future::join_all(paths.iter().map(|p| self.move_until(&door, &topology, build_id, &change.change_id, p, &provider))).await;
-        let left: Vec<String> = ends.iter().filter_map(|e| if let PathEnd::Left(why) = e { Some(why.clone()) } else { None }).collect();
+        let ends = futures_util::future::join_all(paths.iter().map(|p| self.move_until(&door, &topology, build_id, &change.change_id, mesh, p, &provider, recreate))).await;
+        let recreated = ends.iter().filter(|e| **e == PathEnd::Recreated).count();
         door.commands.unblock();
-        span.record("moved", (paths.len() - left.len()) as u64).record("left", left.join("; ").as_str()).record("outcome", "unblocked");
-        span.in_scope(|| tracing::info!("mesh.unblock: this mesh-primary moved its nodes, replies unblocked and issues commands again"));
+        span.record("moved", (paths.len() - recreated) as u64).record("recreated", recreated as u64).record("outcome", "unblocked");
+        span.in_scope(|| tracing::info!("mesh.unblock: every node of this mesh moved or was re-created; this mesh-primary replies unblocked and issues commands again"));
         receipt(builds, build_id, attempt, unblock_operation(&change.change_id, mesh)).await
     }
 

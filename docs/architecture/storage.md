@@ -111,6 +111,8 @@ It is four steps:
    learns the decision only from that record.
 4. **Unblock.** The fabric-primary sends `mesh.unblock` to every mesh-primary. Each mesh-primary moves
    its nodes to the new provider, then replies `unblocked` and issues commands again.
+   A node that refuses its move is re-created at its `path.name` on the new provider, an attempt of
+   the change's own Build, before its mesh-primary replies `unblocked`.
 
 A mesh-primary that does not reply `blocked` or `unblocked` is a lost node, as any node is
 ([node investigation](lifecycles/node-investigation.md)): it is investigated, and on any verdict but

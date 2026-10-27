@@ -935,7 +935,7 @@ impl StatusAuthority {
             };
             match crate::storage_change::command(configs.client(), node_id, &command).await {
                 Ok(reply) => reply,
-                Err(e) => return Carried::NotDone(format!("{me_name} carried the move to {}: {e}", subject.name)),
+                Err(e) => return Carried::Unanswered(format!("{me_name} carried the move to {}: {e}", subject.name)),
             }
         };
         match done {
