@@ -135,8 +135,9 @@ impl MeshRowsWriter {
 /// carrying the primaries the view holds for it. A row the store did not acknowledge is owed: the sweep
 /// runs again on this writer's own clock under the one backoff rule (node-rpc.md §43), never waiting
 /// for a birth, a digest or a primary change (node-identity-and-state.md §2.7). Each sweep takes its
-/// turn of `stop`.
-pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: DigestView, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, stop: crate::stop_gate::StopGate) {
+/// turn of `stop`. `commands` is this admin's command view, where a storage change's block stands.
+pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: DigestView, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, stop: crate::stop_gate::StopGate, commands: Arc<crate::node_commands::CommandView>) {
+    let _ = &commands;
     let mut births = digest_view.birth_changes();
     let mut primaries = digest_view.seats.subscribe();
     let pacing = rdm_transport::delivery::Pacing::from_cadences();

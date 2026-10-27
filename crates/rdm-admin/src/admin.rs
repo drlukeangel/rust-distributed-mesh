@@ -699,7 +699,7 @@ mod tests {
         digest_view.seats.take(rdm_core::Seat::Cohort(NodeKind::RpcNode), &holder(&rpc, 2));
         let writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), refusing.clone(), Arc::new(crate::storage::MemoryMeshStorage::default()), Default::default());
         let (_writes_tx, writes) = tokio::sync::watch::channel(writing(&["mesh1"]));
-        let task = tokio::spawn(rows_writer::keep_mesh_rows(writer, digest_view.clone(), fabric1(), writes, crate::stop_gate::StopGate::new()));
+        let task = tokio::spawn(rows_writer::keep_mesh_rows(writer, digest_view.clone(), fabric1(), writes, crate::stop_gate::StopGate::new(), Arc::default()));
         let at = |n: std::sync::atomic::Ordering| (refusing.refused.load(n), refusing.acknowledged.load(n));
         tokio::time::timeout(Duration::from_secs(10), async {
             while at(std::sync::atomic::Ordering::SeqCst).0 < 2 {
@@ -741,6 +741,55 @@ mod tests {
     #[tokio::test]
     async fn a_row_the_store_refused_is_written_on_the_writers_own_clock_once_the_store_recovers() {
         rows_written_over(Arc::new(crate::storage::MemoryNodesStorage::default())).await;
+    }
+
+    /// CONTRACT (storage.md §2 "Changing it", step 2: the copy holds every line of the old provider; i149
+    /// R8: "Block new writes and claims, finish issued operations before copying"; lead decision D13):
+    /// once its mesh-primary has replied `blocked`, nothing of its mesh writes the old provider. The
+    /// mesh-primary's rows writer has written its members' rows; it replies `blocked`; then the rpc
+    /// node's type primary changes (`is_primary` 2 to 4), the row change a storage change's copy would
+    /// miss. While blocked the writer writes nothing; the row stays owed. At the unblock it writes the
+    /// row whole with `is_primary` at 4 on the provider current then. Must NOT happen: a write while
+    /// blocked, or the change dropped at the unblock. Memory backend.
+    #[tokio::test]
+    async fn a_row_change_after_blocked_is_held_and_written_at_the_unblock() {
+        let nodes = Arc::new(RefusingNodes { inner: Arc::new(crate::storage::MemoryNodesStorage::default()), refusing: false.into(), refused: Default::default(), acknowledged: Default::default() });
+        let digest_view = DigestView::default();
+        let (admin, rpc) = (digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic));
+        assert!(digest_view.record(admin.clone()) && digest_view.record(rpc.clone()));
+        for d in [&admin, &rpc] {
+            claimed(&*nodes.inner, d).await;
+        }
+        let holder = |d: &MeshDigest, revision| rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision };
+        digest_view.seats.take(rdm_core::Seat::MeshPrimary, &holder(&admin, 3));
+        digest_view.seats.take(rdm_core::Seat::Cohort(NodeKind::RpcNode), &holder(&rpc, 2));
+        let commands: Arc<crate::node_commands::CommandView> = Arc::default();
+        let writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), nodes.clone(), Arc::new(crate::storage::MemoryMeshStorage::default()), Default::default());
+        let (_writes_tx, writes) = tokio::sync::watch::channel(writing(&["mesh1"]));
+        let task = tokio::spawn(rows_writer::keep_mesh_rows(writer, digest_view.clone(), fabric1(), writes, crate::stop_gate::StopGate::new(), commands.clone()));
+        let is_primary = async |d: &MeshDigest| newest_of(&*nodes.inner, d).await.and_then(|b| b.is_primary);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while is_primary(&rpc).await != Some(2) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the rows writer writes the members' rows before the block");
+        assert_eq!(commands.block().await, 0, "no command in flight at the block");
+        let before = nodes.acknowledged.load(std::sync::atomic::Ordering::SeqCst);
+        digest_view.seats.take(rdm_core::Seat::Cohort(NodeKind::RpcNode), &holder(&rpc, 4));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(nodes.acknowledged.load(std::sync::atomic::Ordering::SeqCst), before, "nothing is written while the mesh-primary is blocked");
+        assert_eq!(is_primary(&rpc).await, Some(2), "the row still holds what was copied");
+        commands.unblock();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while is_primary(&rpc).await != Some(4) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the held row change is written at the unblock");
+        task.abort();
     }
 
     /// The same contract over the file backend on the shared store root.

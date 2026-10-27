@@ -1775,7 +1775,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let (digest_view, fabric_id) = (topology_view.digest_view.clone(), cfg.fabric_id.clone());
                                 let writer = MeshRowsWriter::new(&name.to_string(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone(), records.caches.clone());
                                 let stop = stop_gate.clone();
-                                tokio::spawn(super::rows_writer::keep_mesh_rows(writer, digest_view, fabric_id, writes, stop))
+                                tokio::spawn(super::rows_writer::keep_mesh_rows(writer, digest_view, fabric_id, writes, stop, commands.clone()))
                             };
                             if let Some(a) = adoption {
                                 let digest = digest.clone();
