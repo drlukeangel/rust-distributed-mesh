@@ -1,5 +1,5 @@
 //! The crate's one integration-test executable: every test file in this directory or its family
-//! subdirectories (`build/`, `chaos/`, `elections/`, `fabric/`, `gossip/`, `mesh/`, `node/`,
+//! subdirectories (`build/`, `chaos/`, `connections/`, `elections/`, `fabric/`, `gossip/`, `mesh/`, `node/`,
 //! `rpc/`, `runtime/`) is a flat module here, so the crate links once. A stem runs alone as
 //! `<exe> <stem>::` (with `--skip <other>::` when `<stem>` is a suffix of `<other>`).
 
@@ -189,6 +189,8 @@ mod admin_restart;
 mod node_delete;
 #[path = "node/node_connections_delete.rs"]
 mod node_connections_delete;
+#[path = "connections/acceptance.rs"]
+mod connections_acceptance;
 #[path = "node/node_replace.rs"]
 mod node_replace;
 #[path = "node/node_restart.rs"]
