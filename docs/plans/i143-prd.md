@@ -3213,4 +3213,14 @@ Q212 (a refused dialer no view names: span only, no row) ruled A by the lead, de
 Q213 (the proxy-retirement obligation: only the source's own Direct Connected creates it; an accept from the
 destination is a recovery trigger) ruled A by the lead from D15 with an arch-1 review (INDEX); connections.md
 requirement 16 restated to §13 G in the ruling's landing; no code, no cell.
+Q215 (the demo UI's `rdm.ui.*` span goes, the log line stays; §9 rule 1) and Q216 (the seven page-named spans
+no code emits: five page lines take the code's or a conforming name, landed; `rdm.node.roots.update.via-installed`
+and the two renamed cert spans wait on i145 e5; the absent-birth replace of node-admin-lifecycle.md:155 is a code
+unit owed with its span) ruled A by the lead with an arch-1 review (INDEX). Owed code, one unit each: the demo span
+removal with spans.md regenerated (Q215); the absent-birth replace (Q216). The "160 branches on origin" claim is
+false: origin holds `main` alone (`git ls-remote --heads origin`), rafka-v2's two; nothing to delete. The §43 queue
+findings (RejectedNotPrimary advances the declaration queue; node-admin's own declarations queue too) are Q210's
+unit, already ruled. The chaos reds `process_fault_backend` and `wedge_detector` are read from spans first, the
+standing rule. Q214 is unrecorded: lane 4's branch `i143-q214-deleted-not-departed` carries the number with no INDEX
+row; its owner records it.
 - 2026-10-27, e12.s10, Q208 (Luke; asked by Rafka 141, #3201; issue #3212): the bootstrap's first step mints the node-admin's id. Built in lane 4 (`i143-3212-bootstrap-mints-id`), landed 77aa77ea9 (CLAUDE.md row 43094af7d): `AdminConfig::node_id`, minted in `from_env` with no launcher, a launch's `RDM_NODE_ID` otherwise; `start` runs as it (boot.rs mints no node id); `entry::run_on` reads the configuration before the telemetry, whose resource carries `service.instance.id` (`rdm_transport::init_evidence_telemetry_for_instance`), and the deployment and boot spans carry `node_id` from their start. Pages: node-identity-and-state.md "Day zero", fabric-create.md Identity order, fabric-primary.md §1.1 and §9, telemetry-patterns.md §3 (Luke's yes on the exact text owed before landing). Owed: the CLAUDE.md `RDM_NODE_ID` row (an agent does not edit CLAUDE.md), and Rafka's node-admin calling the first step before its OTLP provider. Cells: `admin::tests::the_bootstraps_first_step_holds_the_node_id_a_launched_admin_its_launchs`; `store_root_boot` Day-0 and inherited-root cells read the deployment span's `node_id`.

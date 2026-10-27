@@ -136,7 +136,7 @@ sequenceDiagram
 |---|---|---|---|
 | Recovered fabric-primary | GetTopology to durable-map node | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); own mesh first, no maker calls | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |
 | Recovered own-mesh primary | Ping / node recovery | same own-mesh sweep and node investigation as a node-admin joining a live mesh | `rdm.node_rpc.request.update.via-call`, `rdm.node_admin.deployment.update.via-step` |
-| Recovered fabric-primary | accepted Build / claim | same Build, each mesh's own MeshId, claims as fabric-primary | `rdm.node_admin.build.update.via-claim-request`, `rdm.node_admin.build.update.via-claim-decision` |
+| Recovered fabric-primary | accepted Build / claim | same Build, each mesh's own MeshId, claims as fabric-primary | `rdm.node_rpc.request.update.via-call` on the claimant, `rdm.node_admin.build.update.via-claim-decision` on the fabric-primary |
 
 ## Command, completion and gossip messages
 

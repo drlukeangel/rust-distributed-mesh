@@ -182,7 +182,7 @@ stream certainty follow the [caller execution contract](../node-rpc-envelope.md#
 
 | Step | Actor | Span / evidence | Correlation |
 |---|---|---|---|
-| Acceptance | fabric-primary | `rdm.node_admin.build.update.via-accepted`; the MeshId in the accepted topology | Build id |
+| Acceptance | fabric-primary | `rdm.node_admin.build.create.via-accepted`; the MeshId in the accepted topology | Build id |
 | Create | fabric-primary | [node.create](node-create.md)'s spans as maker and executor | Build, attempt, `node.create:mesh2.admin.1` |
 | Join | node-admin, fabric-primary | [node.mesh.join](node-mesh-join.md#observability-contract) | same operation |
 | Mesh Pending | fabric-primary | the Ping, then `ApplyMeshState(Pending)`'s call span | mesh id, mesh name |
