@@ -734,10 +734,11 @@ async fn start_booted(
                                 let declare: crate::node_self::Declare = {
                                     let (node, topology_view, client, owed, held) = (digest.node.clone(), topology_view.clone(), client.clone(), owed_state.clone(), connections.held());
                                     Arc::new(move |state, operation| {
-                                        owed.lock().unwrap().owe((state, operation));
+                                        let declaration: Declaration = (state, operation);
+                                        owed.lock().unwrap().owe(declaration.clone());
                                         let (node, topology_view, client, owed, held) = (node.clone(), topology_view.clone(), client.clone(), owed.clone(), held.clone());
                                         Box::pin(async move {
-                                            let _ = declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held).await;
+                                            let _ = declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held, Some(&declaration)).await;
                                         })
                                     })
                                 };
@@ -817,7 +818,7 @@ async fn start_booted(
                                         // The seat moving is the one retargeting (i146 Q39): a call still in flight
                                         // to the old holder is cancelled, and the next pass declares to the holder
                                         // the seat names now.
-                                        if owed.lock().unwrap().owed.is_some() && declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held).await == Declared::FabricPrimaryMoved {
+                                        if owed.lock().unwrap().owed.is_some() && declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held, None).await == Declared::FabricPrimaryMoved {
                                             continue;
                                         }
                                         if owed.lock().unwrap().owed.is_none() {
@@ -1271,16 +1272,19 @@ impl Becoming {
         )
         .in_scope(|| tracing::info!("ready for traffic"));
         let d = set_own_status(&self.status, &self.digest, MemberStatus::ReadyForTraffic);
-        if self.progress.is_none() {
-            self.owed.lock().unwrap().owe((rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone()));
+        let ready: Declaration = (rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone());
+        let owed_ready = if self.progress.is_none() {
+            self.owed.lock().unwrap().owe(ready.clone());
+            Some(ready)
         } else {
             // The open start stream reports readiness; keep the declaration for a future seat move.
-            self.owed.lock().unwrap().last = Some((rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone()));
-        }
+            self.owed.lock().unwrap().last = Some(ready);
+            None
+        };
         let _ = self.topology_view.publish(&d).await;
         let (node, topology_view, client, owed, held) = (self.digest.node.clone(), self.topology_view.clone(), self.client.clone(), self.owed.clone(), self.held.clone());
         tokio::spawn(async move {
-            declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held).await;
+            declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held, owed_ready.as_ref()).await;
         });
     }
 }
@@ -1333,7 +1337,9 @@ enum Declared {
 /// [`declare_once`] until this birth's mesh's primary seat moves (i146 Q39): the seat moving is the one
 /// retargeting, so a call still in flight to the old holder is cancelled, and the declaration stays
 /// owed to the holder the seat names next. A seat record of another mesh changes nothing here.
-async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>) -> Declared {
+/// `spawned_for` is the declaration this task was spawned to send ([`declare_once`]); `None` sends
+/// whatever is owed.
+async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, spawned_for: Option<&Declaration>) -> Declared {
     let birth = |h: Option<rdm_core::Primary>| h.map(|h| (h.node_id, h.incarnation));
     let mut seats = topology_view.primaries().subscribe();
     seats.borrow_and_update();
@@ -1349,7 +1355,7 @@ async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &Topolog
         }
     };
     tokio::select! {
-        _ = declare_once(me, topology_view, client, owed, held) => Declared::Attempted,
+        _ = declare_once(me, topology_view, client, owed, held, spawned_for) => Declared::Attempted,
         () = moved => {
             tracing::info_span!("rdm.node_rpc.status.remove.via-primary-changed", node = %topology_view.held_name(&me.name), from = %from.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default())
                 .in_scope(|| tracing::info!("the mesh's primary seat moved while the declaration was in flight: its call to the old holder is cancelled"));
@@ -1398,12 +1404,19 @@ fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topol
 /// it); no deadline or carrier failure ends it. A definitive answer clears the debt; a holder that is not
 /// the authority, or a call that ended without an answer, leaves it owed until the seat moves. With no
 /// holder held nothing is sent. Nothing here gates gossip: the digest already says the state.
-async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>) -> Option<String> {
+/// Whatever this birth owes is one Owed call: a task spawned for one declaration (`spawned_for`) that
+/// finds a later one owed sends nothing, the later one's own task sending it.
+async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, spawned_for: Option<&Declaration>) -> Option<String> {
     use rdm_core::outcome::RpcOutcome;
     use rdm_core::status::{Status, StatusReply, StatusRequest};
     let Some((state, operation)) = owed.lock().unwrap().owed.clone() else { return None };
-    let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state, operation: operation.clone() };
     let node = topology_view.held_name(&me.name);
+    if let Some((mine, mine_op)) = spawned_for.filter(|d| **d != (state, operation.clone())) {
+        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?mine, operation = %mine_op.as_ref().map(|o| o.operation.as_str()).unwrap_or(""), owed = ?state, to = "", route = "none", outcome = "superseded", definitive = false)
+            .in_scope(|| tracing::info!("a later declaration is owed before this one was sent: its own call sends it, and this one sends nothing"));
+        return Some("superseded".into());
+    }
+    let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state, operation: operation.clone() };
     let op_name = operation.as_ref().map(|o| o.operation.clone()).unwrap_or_default();
     let Some(holder) = topology_view.primaries().mesh(&me.name.mesh) else {
         tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = "", route = "none", outcome = "no-holder: this birth holds no primary seat for its mesh", definitive = false)

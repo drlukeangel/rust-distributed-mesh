@@ -153,12 +153,14 @@ fn a_stopped_births_signal_runs_no_second_stop() {
     })
 }
 
-/// A span of the cell's JSONL artifact, by name.
+/// The spans this run of the cell wrote to its JSONL artifact: its own process's file
+/// (`testkit.<pid>-<pid namespace inode>.spans.jsonl`), never an earlier run's beside it in the dir.
 fn exported(dir: &std::path::Path) -> Vec<serde_json::Value> {
+    let own = format!("testkit.{}-", std::process::id());
     std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("the cell's artifact dir {} is unreadable: {e}", dir.display()))
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl") && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&own)))
         .flat_map(|p| std::fs::read_to_string(p).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).collect::<Vec<_>>())
         .collect()
 }
