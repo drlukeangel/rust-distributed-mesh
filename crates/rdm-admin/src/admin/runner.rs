@@ -1003,23 +1003,24 @@ impl AdminRunner {
     }
 
     /// node.delete of a stopped birth (`node.delete:<path>`, node-delete.md): the stopped birth `from`
-    /// at `node`, fenced by incarnation, ended with the provider's exact Exited proof and deleted
-    /// (`DeploymentPipeline::delete_stopped`); what follows its proven exit follows.
+    /// at `node`, targeted by incarnation, ended with the provider's exact Exited proof and deleted
+    /// (`DeploymentPipeline::delete_stopped`); what follows its proven exit follows. Its runtime is the
+    /// one this admin launched, or the one its topology view holds a digest of; a birth absent from
+    /// the view (an executor that never heard it, such as a mesh-primary born after its stop) is
+    /// rebuilt from the Build action and the data-root runtime record ([`Self::rebuild_absent_birth`];
+    /// node-admin-lifecycle.md §6.1).
     pub(crate) async fn delete_stopped(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId) -> Result<(), crate::executor::RunEnd> {
         let seen = self.topology.read().await.node(node).cloned();
-        let (record, handle) = match seen {
-            Some(n) if n.incarnation_id.as_ref() == Some(from) => self.handle_for(&n).await?,
-            Some(n) => return Err(format!("node.delete:{node} is fenced to birth {}, the view holds {} at that path", from.as_str(), n.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("none")).into()),
-            None => {
-                let launched = self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| rec.incarnation_id.as_ref() == Some(from));
-                match launched {
-                    Some(h) => h,
-                    None => {
-                        let birth = self.stopped_birth_by_incarnation(node, from).await?;
-                        self.handle_for(&birth).await?
-                    }
-                }
-            }
+        if let Some(n) = seen.as_ref().filter(|n| n.incarnation_id.as_ref() != Some(from)) {
+            return Err(format!("node.delete:{node} is fenced to birth {}, the view holds {} at that path", from.as_str(), n.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("none")).into());
+        }
+        let launched = self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| rec.incarnation_id.as_ref() == Some(from));
+        let (record, handle) = match launched {
+            Some(h) => h,
+            None => match self.birth_in_view(node, seen, from) {
+                Some(birth) => self.handle_for(&birth).await?,
+                None => self.rebuild_absent_birth(build_id, node, from).await?,
+            },
         };
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, unreached: false };
@@ -1029,31 +1030,65 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// The exact stopped birth `from` that a delete of `node` (`<path>.old`) is fenced to, for an admin
-    /// whose view does not name `node` and which did not run the replace (the mesh's primary changed
-    /// since): the birth as its topology view holds it stopped, or else its durable runtime row (every
-    /// admin keeps one per birth it heard, `runtime_rows_task`). The record is named `node`; its
-    /// runtime is then adopted from the same sources by [`Self::handle_for`].
-    pub(crate) async fn stopped_birth_by_incarnation(&self, node: &PathName, from: &IncarnationId) -> Result<Node, String> {
+    /// The stopped birth `from` a delete of `node` targets, as this admin's topology view
+    /// holds a digest of it: `seen` (the birth its projection lists at `node`) when the view holds a
+    /// digest of that exact birth (heard, projected by its mesh-primary, or the last one held before it
+    /// stopped), else the stopped digest of that birth, its record named `node`. `None` when the view
+    /// holds no digest of it: the birth is absent from the view.
+    fn birth_in_view(&self, node: &PathName, seen: Option<Node>, from: &IncarnationId) -> Option<Node> {
+        if let Some(n) = seen {
+            let id = n.node_id.as_str();
+            let digest = self.digest_view.get(id).or_else(|| self.digest_view.projected_at(id, std::time::Instant::now())).map(|(d, _)| d);
+            let held = digest.is_some_and(|d| d.node.incarnation == *from) || self.digest_view.stopped_digests().iter().any(|d| d.node.node_id == n.node_id && d.node.incarnation == *from);
+            return held.then_some(n);
+        }
+        let d = self.digest_view.stopped_digests().into_iter().find(|d| &d.node.incarnation == from)?;
         let mut birth = Node::allocated(node.clone());
         birth.incarnation_id = Some(from.clone());
         birth.stopped = true;
         birth.status = NodeStatus::Leaving;
-        if let Some(d) = self.digest_view.stopped_digests().into_iter().find(|d| &d.node.incarnation == from) {
-            birth.node_id = d.node.node_id.clone();
-            birth.endpoint_id = Some(d.node.endpoint_id.clone());
-            birth.transport_addr = Some(d.node.transport_addr);
-            birth.data_dir = d.data_dir.clone();
-            return Ok(birth);
+        birth.node_id = d.node.node_id.clone();
+        birth.endpoint_id = Some(d.node.endpoint_id.clone());
+        birth.transport_addr = Some(d.node.transport_addr);
+        birth.data_dir = d.data_dir.clone();
+        Some(birth)
+    }
+
+    /// The birth `from` at `node`, absent from this admin's topology view, rebuilt for its delete
+    /// (node-admin-lifecycle.md §6.1): the Build action names the exact birth, the node record at
+    /// `node` names it, and the runtime record in its data dir under the data root names its exact
+    /// runtime ([`rebuild_absent_birth`]). Refused by name when no record names the birth. One
+    /// `rdm.node_admin.node.update.via-rebuilt-birth` span, `outcome` `rebuilt` or `refused`.
+    pub(crate) async fn rebuild_absent_birth(&self, build_id: &crate::build::BuildId, node: &PathName, from: &IncarnationId) -> Result<(Node, DeploymentHandle), String> {
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.update.via-rebuilt-birth",
+            build_id = %build_id.log(),
+            node = %node,
+            incarnation_id = %from.as_str(),
+            executor = %self.held_name(),
+            node_id = tracing::field::Empty,
+            data_dir = tracing::field::Empty,
+            deployment_id = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            detail = tracing::field::Empty,
+        );
+        let store = self.records.contacts.get().cloned();
+        let rebuilt = rebuild_absent_birth(store.as_deref(), &self.template.data_root, &*self.provider, node, from).await;
+        match &rebuilt {
+            Ok((record, _)) => {
+                span.record("node_id", tracing::field::display(&record.node_id));
+                span.record("data_dir", record.data_dir.as_deref().unwrap_or(""));
+                span.record("deployment_id", tracing::field::display(record.deployment_id.as_ref().map(|d| d.to_string()).unwrap_or_default()));
+                span.record("outcome", "rebuilt");
+                span.in_scope(|| tracing::info!("the birth absent from this admin's view is rebuilt from the Build action and its data-root runtime record"));
+            }
+            Err(e) => {
+                span.record("outcome", "refused");
+                span.record("detail", e.as_str());
+                span.in_scope(|| tracing::info!("no record names the birth: its delete is refused"));
+            }
         }
-        let Some(store) = self.records.contacts.get() else {
-            return Err(format!("node.delete:{node}: birth {} is not in this admin's view or the topology view, and this admin has no nodes store to read its runtime row from", from.as_str()));
-        };
-        let rows = store.runtimes().await.map_err(|e| format!("node.delete:{node}: birth {} is not in this admin's view or the topology view, and its runtime rows could not be read: {e}", from.as_str()))?;
-        let row = rows.into_iter().find(|r| &r.incarnation_id == from).ok_or_else(|| format!("node.delete:{node}: birth {} is not in this admin's view or the topology view, and this admin holds no runtime row of it", from.as_str()))?;
-        birth.node_id = row.node_id;
-        birth.data_dir = row.data_dir;
-        Ok(birth)
+        rebuilt
     }
 
     /// The listeners `record`'s birth was assigned at its create (Q151): each declared name of its
@@ -1558,6 +1593,49 @@ impl AdminRunner {
     }
 }
 
+/// The birth `from` at `node` that no topology view holds, rebuilt from the records (node-admin-lifecycle.md
+/// §6.1): `from` is the exact birth the Build action names; the node record at `node` (`store`) names
+/// its node id and the path.name it was created at; its data dir is the one its durable runtime row
+/// names, else `<data_root>/<path.name>-<node id>`, where the provider wrote its runtime record
+/// (`runtime.json`) right after realising the runtime. That record is the exact runtime, adopted
+/// through `provider`, and it must name the deployment the node record's allocation minted for the
+/// birth when the allocation is this birth's (a data dir a later birth inherited holds that birth's
+/// record). Refused by name, naming the birth and where it was looked for, when no record names it.
+pub(crate) async fn rebuild_absent_birth(store: Option<&dyn crate::storage::NodesStorage>, data_root: &std::path::Path, provider: &dyn DeploymentProvider, node: &PathName, from: &IncarnationId) -> Result<(Node, DeploymentHandle), String> {
+    let birth = from.as_str();
+    let Some(store) = store else {
+        return Err(format!("node.delete:{node}: birth {birth} is absent from this admin's view, and this admin has no nodes store to read the record that names it from"));
+    };
+    let row = store.node_at(node).await.map_err(|e| format!("node.delete:{node}: birth {birth} is absent from this admin's view, and the node record at {node} could not be read: {e}"))?;
+    let Some((row, facts)) = row.filter(|r| r.name == *node).and_then(|r| r.birth(from).cloned().map(|f| (r, f))) else {
+        return Err(format!("node.delete:{node}: birth {birth} is absent from this admin's view, and no node record at {node} names it"));
+    };
+    let runtime_row = store.runtime(&row.node_id, from).await.map_err(|e| format!("node.delete:{node}: the durable runtime row of birth {birth} ({}) could not be read: {e}", row.node_id))?;
+    let dir = match runtime_row.and_then(|r| r.data_dir) {
+        Some(d) => std::path::PathBuf::from(d),
+        None => data_root.join(format!("{}-{}", facts.name.base(), row.node_id)),
+    };
+    let fact = match rdm_core::RuntimeFact::read_record(&dir) {
+        Some(Ok(f)) => f,
+        Some(Err(e)) => return Err(format!("node.delete:{node}: the runtime record of birth {birth} ({}) could not be read: {e}", row.node_id)),
+        None => return Err(format!("node.delete:{node}: birth {birth} ({}) is absent from this admin's view, and its data dir {} holds no runtime record ({})", row.node_id, dir.display(), rdm_core::runtime::RUNTIME_FILE)),
+    };
+    if let Some(minted) = row.allocated.as_ref().filter(|a| a.incarnation == *from).map(|a| a.deployment_id.to_string()) {
+        if fact.deployment_id != minted {
+            return Err(format!("node.delete:{node}: the runtime record in {} names deployment {}, and birth {birth} ({}) was minted deployment {minted}: it is not this birth's runtime", dir.display(), fact.deployment_id, row.node_id));
+        }
+    }
+    let handle = crate::deployment::provider::adopt(provider, &fact).map_err(|r| format!("node.delete:{node}: the runtime record of birth {birth} ({}) in {} is not adopted: {r}", row.node_id, dir.display()))?;
+    let mut record = Node::allocated(node.clone());
+    record.node_id = row.node_id.clone();
+    record.incarnation_id = Some(from.clone());
+    record.stopped = true;
+    record.status = NodeStatus::Leaving;
+    record.deployment_id = Some(handle.deployment_id.clone());
+    record.data_dir = Some(dir.display().to_string());
+    Ok((record, handle))
+}
+
 /// `ApplyMeshState(Pending)` at `target` (a mesh's first admin, just joined), from `me` (born as `me_id`).
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
@@ -1768,6 +1846,75 @@ async fn backbone_attempt(builds: &dyn BuildStateAdapter, build_id: &crate::buil
 mod tests {
     use super::*;
     use rdm_core::binding::Binding;
+
+    /// A data root under the system temp dir, with the stopped birth `node` (its node id, its birth) and
+    /// its node record at `.old` in a nodes store, its record's allocation minting `deployment`.
+    async fn absent_birth(cell: &str, deployment: &crate::model::DeploymentId) -> (std::path::PathBuf, crate::storage::MemoryNodesStorage, PathName, NodeId, IncarnationId) {
+        use crate::storage::NodesStorage;
+        let root = std::env::temp_dir().join(format!("rdm-{cell}-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let created: PathName = "mesh2.rpc.1".parse().unwrap();
+        let (node_id, from) = (NodeId::mint(), IncarnationId::mint());
+        let rows = crate::storage::MemoryNodesStorage::default();
+        let mut row = crate::storage::NodeRow::new(created.renamed(), node_id.clone(), NodeStatus::Leaving);
+        row.birth_mut(&from, &created);
+        row.allocated = Some(crate::storage::Allocation { build_id: crate::build::BuildId::mint(), operation: format!("node.create:{created}"), incarnation: from.clone(), deployment_id: deployment.clone() });
+        rows.put_node(&row).await.unwrap();
+        rows.index_path(&created.renamed(), &node_id).await.unwrap();
+        (root, rows, created, node_id, from)
+    }
+
+    /// CONTRACT (node-admin-lifecycle.md §6.1: "A replace of a birth absent from the view runs node.delete
+    /// against its exact runtime, rebuilt from the Build action and the data-root runtime record"): the
+    /// stopped `mesh2.rpc.1.old`, which no view holds, is rebuilt from its exact birth, the node record at
+    /// `.old` that names it, and the runtime record the provider wrote in its data dir under the data
+    /// root (`<data root>/mesh2.rpc.1-<node id>`, the name it was created at): the record names the node
+    /// id, the birth, the data dir and the deployment, and the handle is that exact runtime's.
+    #[tokio::test]
+    async fn a_birth_absent_from_the_view_is_rebuilt_from_its_record_and_its_data_root_runtime_record() {
+        let deployment = crate::model::DeploymentId::mint();
+        let (root, rows, created, node_id, from) = absent_birth("rebuilt-birth", &deployment).await;
+        let dir = root.join(format!("{created}-{node_id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fact = rdm_core::RuntimeFact::of_this_process(&deployment.to_string()).unwrap();
+        fact.write_record(&dir).unwrap();
+        let provider = crate::deployment::process::ProcessDeploymentProvider::new();
+        let (record, handle) = rebuild_absent_birth(Some(&rows), &root, &provider, &created.renamed(), &from).await.unwrap_or_else(|e| panic!("the birth is rebuilt: {e}"));
+        assert_eq!((record.name.clone(), record.node_id.clone(), record.incarnation_id.clone()), (created.renamed(), node_id, Some(from)), "the exact birth: {record:?}");
+        assert_eq!(record.data_dir.as_deref(), Some(dir.display().to_string().as_str()), "its data dir under the data root");
+        assert_eq!((handle.deployment_id.to_string(), handle.pid), (deployment.to_string(), Some(std::process::id())), "the runtime its record names");
+        assert!(record.stopped, "a stopped birth: its delete runs no stop");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CONTRACT (node-admin-lifecycle.md §6.1: "refuses by name when no record names the birth"): a birth
+    /// no node record at its path names, a data dir with no runtime record, and a runtime record naming
+    /// another deployment than the one minted for the birth are each refused, the refusal naming the
+    /// path, the birth and what was missing; nothing is rebuilt.
+    #[tokio::test]
+    async fn a_birth_absent_from_the_view_that_no_record_names_is_refused_by_name() {
+        let deployment = crate::model::DeploymentId::mint();
+        let (root, rows, created, node_id, from) = absent_birth("rebuilt-birth-refused", &deployment).await;
+        let provider = crate::deployment::process::ProcessDeploymentProvider::new();
+        let old = created.renamed();
+        // No record names another birth at the path.
+        let other = IncarnationId::mint();
+        let e = rebuild_absent_birth(Some(&rows), &root, &provider, &old, &other).await.expect_err("a birth no record names is refused");
+        assert!(e.contains(&format!("node.delete:{old}")) && e.contains(other.as_str()) && e.contains("no node record"), "{e}");
+        // No nodes store at all.
+        let e = rebuild_absent_birth(None, &root, &provider, &old, &from).await.expect_err("no store: refused");
+        assert!(e.contains(from.as_str()) && e.contains("no nodes store"), "{e}");
+        // The record names the birth; its data dir holds no runtime record.
+        let dir = root.join(format!("{created}-{node_id}"));
+        let e = rebuild_absent_birth(Some(&rows), &root, &provider, &old, &from).await.expect_err("no runtime record: refused");
+        assert!(e.contains(&dir.display().to_string()) && e.contains(rdm_core::runtime::RUNTIME_FILE), "{e}");
+        // The data dir holds another deployment's runtime record (a later birth's, over an inherited dir).
+        std::fs::create_dir_all(&dir).unwrap();
+        rdm_core::RuntimeFact::of_this_process(&crate::model::DeploymentId::mint().to_string()).unwrap().write_record(&dir).unwrap();
+        let e = rebuild_absent_birth(Some(&rows), &root, &provider, &old, &from).await.expect_err("another birth's runtime: refused");
+        assert!(e.contains(&deployment.to_string()) && e.contains("not this birth's runtime"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// CONTRACT (e12.s91; node-rpc-envelope.md "the executable binding the Build fixes ... verified at
     /// launch"): a binding a step or a row names is checked against the provider that launches it,
