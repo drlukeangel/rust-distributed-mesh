@@ -1175,8 +1175,8 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
 /// successor's process exited. Both of the predecessor's renames are of a node off its mesh
 /// (`connections=deleted mesh=left`, applied), and no rename of a stopped node is decided.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replace_rolled_back_by_its_steps_ends_with_the_predecessor_ready_under_its_name() {
-    let (mut estate, _birth) = estate("a_replace_rolled_back_by_its_steps_ends_with_the_predecessor_ready_under_its_name").await;
+async fn a_replace_rollback_ends_with_the_predecessor_ready_under_its_name() {
+    let (mut estate, _birth) = estate("a_replace_rollback_ends_with_the_predecessor_ready_under_its_name").await;
     const NODE: &str = "mesh1.rpc.1";
     let path: PathName = NODE.parse().unwrap();
     let old = format!("{NODE}.old");
