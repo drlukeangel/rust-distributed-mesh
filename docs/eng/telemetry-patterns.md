@@ -59,6 +59,7 @@ The resource every span and log record carries (`telemetry.rs::build_resource_wi
 | `service.name` | `OTEL_SERVICE_NAME`, else the name the binary passes to `init_*` (`rdm-rpc-node`, `rdm-rpc-probe`, the executable's own name for an `rdm-node` node). It names the host process, never the caller: `caller_system` names the caller (telemetry.md §1) |
 | `process.pid` | the process's pid |
 | `rafka.node` | `RDM_NODE_NAME` (the node's `path.name`), when the launcher set it |
+| `service.instance.id` | a node-admin's node id: its launch's `RDM_NODE_ID`, else the one the bootstrap's first step minted (`init_evidence_telemetry_for_instance`, Q208) |
 | `rafka.data_dir` | `RDM_DATA_DIR`, when set |
 | `rafka.evidence_dir` | `RDM_EVIDENCE_DIR`, when set |
 

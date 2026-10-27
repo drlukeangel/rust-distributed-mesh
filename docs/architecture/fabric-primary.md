@@ -59,6 +59,8 @@ mint/hold Fabric F
         -> mint/hold Nodes with Node.mesh_id = M
 ```
 
+The one node id minted before its Mesh's is the bootstrap admin's own: the bootstrap's first step mints it, after the Fabric's id and before anything else of its boot, so its telemetry carries it from its first span (Q208).
+
 Identity creation order and durable publication order are not the same thing. The Fabric, Mesh, and Node identities may be minted/held before the Fabric durable write plane is available. Their durable rows are published only when lifecycle permits it (§3).
 
 This ordering removes circular identity discovery: a Mesh never has to discover its Fabric after mint, and a Node never has to discover its logical Fabric directly. Its Fabric follows from `Node.mesh_id -> Mesh.fabric`.
@@ -277,7 +279,7 @@ evidence, not readiness.
 
 Fabric identity and Fabric status have different succession rules.
 
-The first Day-0 admin mints the Fabric identity **before** minting its Meshes. Each Mesh is minted with that `FabricId`; each Node is then minted with its `MeshId` (§1.1).
+The first Day-0 admin mints the Fabric identity **before** minting its Meshes. Each Mesh is minted with that `FabricId`; each Node is then minted with its `MeshId`, the bootstrap admin's own node id excepted (§1.1).
 
 Ordinary node-admins hydrate/hold the immutable Fabric identity and the current Build before they are Ready. Fabric identity may be disseminated before the durable Fabric row exists; otherwise creation would deadlock on a row that cannot be written until the Fabric reaches its durable publication phase.
 

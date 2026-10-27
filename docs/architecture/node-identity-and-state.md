@@ -160,6 +160,11 @@ before it reads anything from a store. Its mesh-primary writes its row to the st
 a node that cannot reach a broker still has its identity, its name and its id, because all three
 came down with it.
 
+No node.create launches the bootstrap admin: the bootstrap's first step mints its node id, before
+anything else of its boot, its telemetry included, so its telemetry's resource carries it, and its
+Day-0 claim keeps it on its own row. A node-admin started with no launcher over an inherited data dir, and an
+adoption launch, are new nodes: the first step mints a new id, never the inherited row's (Q208).
+
 ### 2.5 ONE system org, one projection, one writer per mesh
 
 The fabric has one nodes store on its shared store root (R14), held by every mesh, so a mesh whose

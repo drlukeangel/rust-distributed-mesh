@@ -307,7 +307,7 @@ pub async fn start_with(cfg: AdminConfig, wiring: crate::wiring::Wiring) -> Resu
 pub async fn start_on(mut cfg: AdminConfig, wiring: crate::wiring::Wiring, providers: crate::storage_backend::TopologyStorageProviders) -> Result<Running, String> {
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step is a child that lives exactly as long as the step, and `via-ready` closes it.
-    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = tracing::field::Empty, node_id = tracing::field::Empty, incarnation_id = tracing::field::Empty, kind = "node-admin");
+    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = tracing::field::Empty, node_id = %cfg.node_id, incarnation_id = tracing::field::Empty, kind = "node-admin");
     if let Err(e) = own_row_provider(&mut cfg, &providers).await {
         boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
         return Err(e);
@@ -365,7 +365,7 @@ async fn lone_birth_storage_deleted(cfg: &AdminConfig, providers: &crate::storag
     if cfg.fabric_id_named && cfg.fabric_id != own.fabric_id {
         return Ok(false);
     }
-    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: own.name.mesh.clone(), writer: reader, node_id: NodeId::mint() };
+    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: own.name.mesh.clone(), writer: reader, node_id: cfg.node_id.clone() };
     let unreadable = |e: &dyn std::fmt::Display| format!("refusing to start: {}: the store of Fabric {} could not be read: {e}", cfg.data_dir.display(), own.fabric_id);
     let handle = crate::storage_backend::TopologyStorageHandle::open(providers, &cfg.topology_storage_provider, scope).await?;
     let others = crate::storage::live_records(&*handle.meshes(), &*handle.nodes(), &own.name.mesh).await.map_err(|e| unreadable(&e))?.into_iter().filter(|r| r.node_id != own.node_id).count();
@@ -475,9 +475,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         (None, Some(own)) => own.name.mesh.clone(),
         _ => cfg.mesh.clone(),
     };
-    // The node id this birth runs as: a launched node's given one, else minted now, before any store
-    // opens, so every store line this process appends names it (R-SR3).
-    let minted_node_id = cfg.launch.as_ref().map(|l| l.node_id.clone()).unwrap_or_else(NodeId::mint);
+    // The node id this birth runs as, the one its configuration holds (Q208: a launched node's given one,
+    // else minted by the bootstrap's first step, `AdminConfig::from_env`), held before any store opens,
+    // so every store line this process appends names it (R-SR3).
+    let minted_node_id = cfg.node_id.clone();
     let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone(), node_id: minted_node_id.clone() };
     // Every store this admin reads and writes is reached through its one handle, never a store held
     // from here, so a provider change moves every owner at once ("Each node moves to the new
@@ -706,7 +707,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // This node's own connections rows: `connections/<its path.name>/` of the store root (R14).
     let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> = topology_storage.connections(name.clone()).await.map_err(storage_err)?;
     boot.record("node", tracing::field::display(&name));
-    boot.record("node_id", tracing::field::display(&node_id));
     boot.record("incarnation_id", tracing::field::display(&incarnation.as_str()));
     // A host-process admin binds on the gateway; an admin that itself runs in a container of the
     // fabric binds on its own address there (its control address), the gateway not being local.

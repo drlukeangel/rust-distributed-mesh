@@ -13,7 +13,7 @@ page that owns each step is linked at the step.
 |---|---|
 | Caller / executor | A person starts the first node-admin with no mesh and no durable topology ([start modes](../node-admin-lifecycle.md#3-start-modes)); that node-admin is the executor and the fabric-primary |
 | Entry | No fabric exists; Day 0 is the first node-admin and its own mesh, nothing else. Every further mesh, and every other node, is created by a Build accepted after the fabric's first ready-for-traffic (Q170) |
-| Identity order | The fabric id is minted first, each mesh with that fabric id, each node with its mesh id ([identity creation order](../fabric-primary.md#11-identity-creation-order)) |
+| Identity order | The fabric id is minted first, each mesh with that fabric id, each node with its mesh id ([identity creation order](../fabric-primary.md#11-identity-creation-order)); the bootstrap admin's own node id is minted before its mesh's, by the bootstrap's first step, before anything else of its boot (Q208) |
 | Primaries | The first node-admin is the only eligible candidate and is both mesh-primary and fabric-primary ([elections](../fabric-node-lifecycle-elections.md#5-day-0-preemption-restart-and-replacement)) |
 | Rows | The fabric-primary creates the fabric row and its own mesh's row at Day 0, written to the store root at once ([fabric entity](../node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it)) |
 | Status | pending, then ready-for-traffic ([States](states.md#setting-a-state)) |

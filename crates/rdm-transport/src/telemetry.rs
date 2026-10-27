@@ -606,21 +606,33 @@ pub fn report_init_steps_here() {
 /// is set; with neither, only the fmt layer runs. Returns `None` when no
 /// exporter is configured. Each step's time is reported ([`init_steps`]).
 pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
-    init_evidence(service_name, true)
+    init_evidence(service_name, true, Vec::new())
 }
+
+/// [`init_evidence_telemetry`] for a process that holds its node id before its telemetry (Q208: a
+/// node-admin's `AdminConfig::node_id`, minted by the bootstrap's first step when no launcher gave
+/// it): the resource carries `instance_id` as `service.instance.id` (the OpenTelemetry resource
+/// convention), on every span and log record from the first.
+pub fn init_evidence_telemetry_for_instance(service_name: &str, instance_id: &str) -> Option<TelemetryGuard> {
+    init_evidence(service_name, true, vec![opentelemetry::KeyValue::new(SERVICE_INSTANCE_ID, instance_id.to_string())])
+}
+
+/// The OpenTelemetry resource attribute naming one instance of a service: a node's id.
+pub const SERVICE_INSTANCE_ID: &str = "service.instance.id";
 
 /// [`init_evidence_telemetry`] for a process that runs one call and ends (the probe): its init
 /// steps are held, not reported, until it reports them inside the call's own root span
 /// ([`report_init_steps_here`]), so each invocation is one trace.
 pub fn init_evidence_telemetry_for_one_call(service_name: &str) -> Option<TelemetryGuard> {
-    init_evidence(service_name, false)
+    init_evidence(service_name, false, Vec::new())
 }
 
-fn init_evidence(service_name: &str, report_now: bool) -> Option<TelemetryGuard> {
+fn init_evidence(service_name: &str, report_now: bool, extra: Vec<opentelemetry::KeyValue>) -> Option<TelemetryGuard> {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
     install_propagator();
     let service = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| service_name.to_string());
-    let mut builder = SdkTracerProvider::builder().with_resource(build_resource(&service));
+    let resource = build_resource_with(&service, extra);
+    let mut builder = SdkTracerProvider::builder().with_resource(resource.clone());
     let mut any = false;
     let mut steps = InitSteps::default();
     // The export runtime's first start, its own step: every processor below runs on it.
@@ -649,7 +661,7 @@ fn init_evidence(service_name: &str, report_now: bool) -> Option<TelemetryGuard>
             Ok(exporter) => {
                 logs = Some(
                     opentelemetry_sdk::logs::SdkLoggerProvider::builder()
-                        .with_resource(build_resource(&service))
+                        .with_resource(resource.clone())
                         .with_log_processor(opentelemetry_sdk::logs::log_processor_with_async_runtime::BatchLogProcessor::builder(WatchedLogs::new(exporter, &logs_url), export_rt.clone()).build())
                         .build(),
                 );

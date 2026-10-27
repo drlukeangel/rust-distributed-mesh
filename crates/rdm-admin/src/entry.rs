@@ -40,9 +40,9 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
 pub async fn run_on(service: &str, providers: impl FnOnce(&AdminConfig) -> crate::storage_backend::TopologyStorageProviders, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
     // Heard from the first line: a stop that arrives while the admin boots ends the boot by name.
     listen_for_stop();
-    let _telemetry = rdm_transport::init_evidence_telemetry(service);
-    // The bootstrap admin hashes every bound executable here: on the blocking pool, never a worker
-    // of the runtime (Q30).
+    // The bootstrap's first step (Q208): the configuration, which holds this admin's node id (its
+    // launch's, else minted here), read before the telemetry, so every span the process exports carries
+    // it. Read on the blocking pool, never a worker of the runtime (Q30).
     let cfg = match crate::blocking::blocking_io(|| AdminConfig::from_env(|k| std::env::var(k).ok())).await {
         Ok(c) => c,
         Err(e) => {
@@ -50,11 +50,13 @@ pub async fn run_on(service: &str, providers: impl FnOnce(&AdminConfig) -> crate
             std::process::exit(2);
         }
     };
+    let _telemetry = rdm_transport::init_evidence_telemetry_for_instance(service, &cfg.node_id.to_string());
     let wiring = wiring(&cfg);
     let storage = providers(&cfg);
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
         node = tracing::field::Empty,
+        node_id = %cfg.node_id,
         incarnation_id = tracing::field::Empty,
         kind = "node_admin",
         fabric = %cfg.fabric,

@@ -37,6 +37,12 @@ pub struct AdminConfig {
     pub fabric: String,
     /// The fabric's minted id.
     pub fabric_id: FabricId,
+    /// This admin's node id (Q208): a launched admin's `RDM_NODE_ID`; with no launcher, minted here, the
+    /// bootstrap's first step, so an app reads it before it builds its telemetry and every span the
+    /// process exports carries it. The start runs as this id and mints no other: a Day-0 admin's row
+    /// carries it, and a start over an inherited data dir or an adoption launch is a new node with it
+    /// (fabric-recovery.md).
+    pub node_id: NodeId,
     /// The name of the mesh this admin belongs to.
     pub mesh: String,
     /// The mesh's minted id, when it is known.
@@ -118,6 +124,10 @@ impl AdminConfig {
                 None => FabricId::mint(),
             },
         };
+        // The node id this birth runs as (Q208): a launched node's given one; with no launcher (Day 0, a
+        // start over an inherited data dir, an adoption launch) a new one, minted before anything else
+        // of the boot runs, its telemetry included.
+        let node_id = launch.as_ref().map(|l| l.node_id.clone()).unwrap_or_else(NodeId::mint);
         let mesh = launch.as_ref().map(|l| l.name.mesh.clone()).or_else(|| get("RDM_MESH")).unwrap_or_else(|| "mesh1".into());
         if !is_valid_mesh_name(&mesh) {
             return Err(format!("RDM_MESH `{mesh}` is not a valid mesh name"));
@@ -186,6 +196,7 @@ impl AdminConfig {
             cert_policy,
             fabric,
             fabric_id,
+            node_id,
             mesh_primary,
             fabric_primary,
             seeds: match &launch {

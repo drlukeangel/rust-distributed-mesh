@@ -192,7 +192,8 @@ const DAY0_WRITES: [&str; 3] = ["rdm.node_admin.fabric.create.via-fabric-row", "
 /// `moment = claim`, `outcome = row-written`, a step of its boot's own trace, started before the Fabric
 /// row, mesh1's row, the accepted root Build and Ready. Its own birth's arrival in its first view finds the
 /// row its node holds and writes nothing (`row-held-by-node`): one writer, one write. The row stands on the
-/// store root at mesh1.admin.1 under the boot's node.id. What must NOT happen: a Day-0 fabric whose
+/// store root at mesh1.admin.1 under the boot's node.id, the one the bootstrap's first step minted and
+/// the process's deployment span carries from its start (Q208). What must NOT happen: a Day-0 fabric whose
 /// primary holds no row of its own, so that `mesh1.admin.1` has no claimed name.
 #[test]
 fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_before_ready() {
@@ -204,6 +205,11 @@ fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_befor
     let boot = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-boot").unwrap_or_else(|| panic!("no boot span: {spans:?}"));
     let node_id = attr(boot, "node_id");
     assert_eq!(attr(boot, "node"), "mesh1.admin.1", "{boot}");
+    // Q208: the bootstrap's first step minted the node id before the process's telemetry, so its first
+    // boot span, the deployment's, opened before the boot reads anything, already carries it.
+    let deployment = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-deployment").unwrap_or_else(|| panic!("no deployment span: {spans:?}"));
+    assert!(rdm_admin::model::NodeId::parse(&node_id).is_ok(), "the boot runs as a minted node id: {boot}");
+    assert_eq!(attr(deployment, "node_id"), node_id, "the process's first boot span carries the node id its boot runs as: {deployment}");
     let rows: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject") == "mesh1.admin.1").collect();
     let claims: Vec<&serde_json::Value> = rows.iter().copied().filter(|s| attr(s, "moment") == "claim").collect();
     assert_eq!(claims.len(), 1, "the Day-0 admin claims its own path.name once: every node row span of mesh1.admin.1 {rows:?}");
@@ -562,6 +568,9 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     let node_id = attr(recovery, "node_id");
     let incarnation = attr(recovery, "incarnation_id");
     assert!(rdm_admin::model::NodeId::parse(&node_id).is_ok() && node_id != root.node_id.to_string(), "a new node.id: {recovery}");
+    // Q208: the first step minted that new node.id, never the inherited row's, before the telemetry.
+    let deployment = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-deployment").unwrap_or_else(|| panic!("no deployment span: {spans:?}"));
+    assert_eq!(attr(deployment, "node_id"), node_id, "the process's first boot span carries the new node.id: {deployment}");
     assert!(!incarnation.is_empty() && incarnation != root.incarnation.to_string(), "a new incarnation: {recovery}");
     assert_eq!(
         (attr(recovery, "node"), attr(recovery, "inherited_node_id"), attr(recovery, "inherited_incarnation_id"), attr(recovery, "fabric_id"), attr(recovery, "supersedes")),

@@ -3672,6 +3672,49 @@ mod tests {
         assert_eq!(AdminConfig::from_env(|k| launched.get(k).cloned()).unwrap().connections_delete_deadline, Duration::from_millis(1250));
     }
 
+    /// CONTRACT (Q208, Luke 2026-10-27: "have the first step of the bootstrap mint the id"): the
+    /// configuration, the bootstrap's first step, holds this admin's node id before anything else of the
+    /// boot runs, its telemetry included. With no launcher (Day 0, a start over an inherited data dir, an
+    /// adoption launch) it is minted there, a new one at every start: a start over an inherited data dir is
+    /// a new node with a new node.id (fabric-recovery.md, node-admin-lifecycle.md §3). A launched admin's
+    /// is its launch's `RDM_NODE_ID`, unchanged. What must NOT happen: a no-launcher start holding no id
+    /// until its boot mints one, or two starts sharing one.
+    #[test]
+    fn the_bootstraps_first_step_holds_the_node_id_a_launched_admin_its_launchs() {
+        let (day0, again) = (cfg(&[]), cfg(&[]));
+        assert!(NodeId::parse(&day0.node_id.to_string()).is_ok(), "a canonical minted node id: {}", day0.node_id);
+        assert_ne!(day0.node_id, again.node_id, "every start with no launcher mints its own node id");
+        let fabric = FabricId::mint().to_string();
+        let adoption = cfg(&[("RDM_NODE_NAME", "mesh1.admin.1"), ("RDM_FABRIC_ID", fabric.as_str()), ("RDM_MESH", "mesh1")]);
+        assert!(adoption.adopt.is_some() && adoption.launch.is_none(), "an adoption launch: {adoption:?}");
+        assert_ne!(adoption.node_id, day0.node_id, "an adoption launch is a new birth with its own node.id");
+        let given = NodeId::mint();
+        let launch = rdm_core::launch::Launch {
+            topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
+            fabric: "fabric1".into(),
+            fabric_id: FabricId::mint(),
+            name: "mesh1.admin.2".parse().unwrap(),
+            node_id: given.clone(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
+            launcher: None,
+            seeds: vec![],
+            data_dir: "/tmp/rdm-launched/mesh1.admin.2".into(),
+            store_dir: STORE_DIR.into(),
+            mesh_id: None,
+            issuing: None,
+            roots: Vec::new(),
+            connections_delete_deadline: Duration::from_millis(1250),
+            declared: Default::default(),
+        };
+        let launched = launch.to_env();
+        assert_eq!(launched.get(rdm_core::launch::ENV_NODE_ID), Some(&given.to_string()));
+        let launched = AdminConfig::from_env(|k| launched.get(k).cloned()).unwrap();
+        assert_eq!((&launched.node_id, launched.launch.as_ref().map(|l| &l.node_id)), (&given, Some(&given)), "a launched admin runs as its launch's RDM_NODE_ID");
+    }
+
     const MESH_ID: &str = "4f14h1k7m3p9";
     const SEED: &str = "5d6b3f0e1a2c4b7d8e9f00112233445566778899aabbccddeeff001122334455@127.0.0.1:41000";
 
