@@ -172,7 +172,7 @@ do not create another endpoint or RPC runtime. The higher-level `run_with` examp
 when registration needs only the builder. Products supplying storage backends use `run_on`.
 
 Choose the target from topology or a row read according to Rafka's operation, then call through
-that client. RDM does not select a broker, replica or replacement for you. `ExactNode(node_id)`
+that client. RDM does not select a broker, a copy of its data or a replacement for you. `ExactNode(node_id)`
 identifies the node; if the operation requires an exact incarnation, carry and verify that birth
 in its application contract too.
 
@@ -185,7 +185,8 @@ let (outcome, _evidence) = client
 ```
 
 - **`target`** is a `NodeTarget`, usually the exact node (`NodeTarget::ExactNode(node_id)`), from the
-  node's topology or a read ([query proposal](../plans/proposal/query-page.md)).
+  node's topology or a read ([query](../plans/proposal/query-page.md), the proposal until `query.md` lands
+  with #3234; then the page).
 - **The outcome** is `RpcOutcome<P::Reply>`:
   - `Reply(variant)`: the handler answered, or the receiver's runtime answered one of its four
     refusals (`not_ready`, `busy`, `connections_deleting`, `malformed`);
