@@ -185,3 +185,96 @@ async fn an_attempt_taken_refusal_writes_no_attempt_context() {
     let held = r.contexts.attempt_context(&current.build_id, None, n).await.unwrap();
     assert_eq!(held, Some(theirs), "nothing is written by the refused stop: attempt {n}'s context is the racer's");
 }
+
+/// The Build store; every open is followed at once by a drive pass's claim of the attempt it opened,
+/// decided before the opener's call returns: what a drive pass already running does when it claims
+/// the attempt the moment the open lands.
+struct ClaimedInTheOpen {
+    inner: MemoryBuildStateAdapter,
+    contexts: Arc<AttemptContexts>,
+    claims: rdm_admin::storage::MemoryMeshStorage,
+    claimed: std::sync::Mutex<Option<rdm_core::context::CallContext>>,
+}
+
+#[async_trait::async_trait]
+impl BuildStateAdapter for ClaimedInTheOpen {
+    async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
+        self.inner.publish_accepted(accepted).await
+    }
+    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
+        self.inner.open_attempt(opened).await?;
+        let claim = BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: "mesh1.admin.1".into(), claimant: Some("mesh1.admin.1".into()), mesh: None };
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        if let rdm_core::build_claim::BuildClaimReply::Won { context } = rdm_admin::build_claim::decide_claim(&me, &self.inner, &self.claims, &self.contexts, &claim, "mesh1", None).await {
+            *self.claimed.lock().unwrap() = Some(context);
+        }
+        Ok(())
+    }
+    async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+        self.inner.read_build(build_id).await
+    }
+    async fn current_build(&self) -> Result<rdm_admin::build_state::CurrentBuild, BuildStateError> {
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
+    }
+    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
+        self.inner.list_active().await
+    }
+    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
+        self.inner.claim_attempt(claim).await
+    }
+    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+        self.inner.adopt_claim(claim).await
+    }
+    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
+        self.inner.append_step_receipt(receipt).await
+    }
+    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
+        self.inner.append_attempt_receipt(receipt).await
+    }
+    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
+        self.inner.facts().await
+    }
+    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
+        self.inner.forget(build_id).await
+    }
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+        self.inner.recovery_of(path, node_id, incarnation).await
+    }
+    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+        self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
+        self.inner.exits_owed(build_id, mesh).await
+    }
+}
+
+/// CONTRACT (build.md §4.4, gate "The attempt is claimed"; build_claim.rs `for_claim_lane`: "The
+/// context `attempt` is claimed with: its own"): an attempt's call context is written with its open,
+/// in the one record, so a drive pass that claims the attempt the moment the open lands claims it with
+/// the opening request's context, never the previous attempt's.
+/// Must NOT happen: the claim between the open and a later context write taking the previous
+/// attempt's context (its reconcile parented to another request's span).
+#[tokio::test]
+async fn a_claim_the_moment_the_open_lands_takes_the_opening_requests_context() {
+    let t = view(NodeStatus::ReadyForTraffic);
+    let contexts = Arc::new(AttemptContexts::on(Arc::new(MemoryBuildStateAdapter::new()) as Arc<dyn LocalBuildLog>));
+    let builds = Arc::new(ClaimedInTheOpen { inner: MemoryBuildStateAdapter::new(), contexts: contexts.clone(), claims: Default::default(), claimed: Default::default() });
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let mut cp = ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time()).with_contexts(contexts.clone());
+    cp.topology = Arc::new(tokio::sync::RwLock::new(t));
+    let current = builds.current().await.unwrap().expect("the seeded Build is current");
+    // The previous attempt's context: another request's trace.
+    let previous = rdm_core::context::CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None };
+    contexts.put(&current.build_id, current.attempt, &previous).await.unwrap();
+    let opened = cp
+        .open_attempt_in(tracing::info_span!("gates-claimed-in-the-open"), "gates-claimed-in-the-open", AttemptReason::Stop, "mesh1.rpc.1".parse().unwrap(), ActionKind::Stop)
+        .await
+        .expect("the stop is admitted");
+    assert_eq!(opened.attempt, current.attempt + 1);
+    let claimed = builds.claimed.lock().unwrap().clone().expect("the drive pass won the attempt's claim");
+    assert_ne!(claimed.traceparent, previous.traceparent, "the claim took the previous attempt's context: {claimed:?}");
+    assert_eq!(contexts.get(&opened.build_id, opened.attempt).await.unwrap(), Some(claimed), "the attempt's context is the one its claim took");
+}
