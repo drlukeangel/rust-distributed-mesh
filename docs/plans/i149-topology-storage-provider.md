@@ -49,10 +49,10 @@ are source anchors rather than assertions that the missing capability already ex
 | R10 | The switch is one insert-and-fail `commit` record for (build_id, change_id); recovery reads it; a provider that does not answer, or a timeout, never means not switched | BUILD | `crates/rdm-admin/src/build_state.rs:198`, `crates/rdm-admin/src/build_drive.rs:136`; Storage §2, Decision | e4 |
 | R11 | Recover an unfinished change with the same change_id; a node refuses a command of an older change_id by name | BUILD | `crates/rdm-admin/src/build_state.rs:100`, `crates/rdm-admin/src/build_state.rs:124` | e4 |
 | R12 | Restart, new birth, adoption and fabric.delete resolve the current migration before issuing ordinary writes | BUILD | `crates/rdm-admin/src/admin/boot.rs:296`, `crates/rdm-node/src/node.rs:468`; Storage §2 | e4 |
-| R13 | Serving nodes keep their identities and ready-for-traffic state throughout a successful change | BUILD | `crates/rdm-test/src/estate.rs:602`; Storage §2, Changing it | e5 |
-| R14 | Keep previous providers readable and unchanged after cutover; a later Build can return to one | BUILD | `crates/rdm-admin/src/fabric_storage.rs:107`; Storage §2 | e5 |
-| R15 | Exercise the capability in a fast smoke and the full scheduled suite, with process and container coverage | BUILD | `scripts/rdm-gate-at.sh:22`, `scripts/cells.sh:1`, `crates/rdm-test/tests/main.rs:1` | e5 |
-| R16 | Publish usable instructions and recovery procedures with the final implementation evidence | BUILD | `docs/eng/consumer-guide.md:1`, `docs/architecture/storage.md:54` | e6 |
+| R13 | Serving nodes keep their identities and ready-for-traffic state throughout a successful change | HOLDS | 72de000e1: `every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change` (the fast gate's cell of the stem); green again at 27de0479e | e5 |
+| R14 | Keep previous providers readable and unchanged after cutover; a later Build can return to one | HOLDS | 72de000e1: `a_previous_provider_remains_unchanged_after_cutover`, `a_customer_returns_to_a_previous_topology_provider`; green again at 27de0479e | e5 |
+| R15 | Exercise the capability in a fast smoke and the full scheduled suite, with process and container coverage | BUILD | 72de000e1: the fast gate runs `topology_storage_provider_fast`, the release suite the whole stem. Owed: the two container cells are ignored by name (the testkit's `test-target` place is mounted into no role node's container; D14), and RDM has no nightly runner to schedule the release suite | e5 |
+| R16 | Publish usable instructions and recovery procedures with the final implementation evidence | HOLDS | 394edf9f5: `docs/features/topology-storage-provider/{overview,how-to,runbook}.md`, each example beside its cell, linked from `docs/eng/consumer-guide.md`; the stem at 27de0479e: 15 passed, 2 ignored (the container cells), 29 s | e6 |
 | R17 | Ordinary Build execution retains its existing exclusive attempt and receipt model | HOLDS | `docs/architecture/build.md:405`, `crates/rdm-admin/src/mesh_claims.rs:1`; migration-specific extensions are R7–R12 | e4 |
 | R18 | No Build is admitted during a change, a change back included; only fabric.delete, which interrupts it; a step failing before the switch fails the Build once no `commit` is read, and every node unblocks on the old provider | BUILD | `crates/rdm-admin/src/control_plane.rs` Build admission; Storage §2, Changing it | e4 |
 | R19 | A node that will not block or unblock is a lost node (node-investigation.md, Q182): investigated and re-created at its path.name on the provider of its step; after the switch the Build completes once every node has unblocked or been re-created | BUILD | node investigation and node recovery; Storage §2, Changing it | e4 |
@@ -409,6 +409,20 @@ Update Storage §2, Build storage boundaries, lifecycle index, node properties, 
 contract, consumer guide, env table and generated references with their actual changes. e6 records
 which sources changed and why. The source proposal is marked implemented only with a landing SHA
 and evidence; progress remains in this initiative's epic rows and the i143 dependency record.
+
+e6's record (394edf9f5):
+
+| source | changed | why |
+|---|---|---|
+| `docs/architecture/storage.md` §2 | by e4 (e0346c135, 0c9c897fa; Q198), and D1's sentence after step 4 in the D1 stack | the steps, `rejected-stale-change`, a node that refuses its move |
+| `docs/architecture/node-rpc-envelope.md`, NodeCommand op `0x22` | by e4 (e0346c135) | `StorageStep`, `StorageStepped`, `RejectedStaleChange` |
+| `docs/eng/consumer-guide.md` | by e6 (394edf9f5) | three rows linking the feature docs |
+| `docs/features/topology-storage-provider/` | by e6 (394edf9f5) | the overview, how-to and runbook |
+| build.md §5.3, the lifecycle index | unchanged | §5.3 names the five stores; the index names Storage and the change |
+| node-rpc-envelope.md, Node properties; node-admin-lifecycle.md (boot) | unchanged, owed | neither names `topology_storage_provider`, which the node row carries (`NodeView`) and the launch writes (`RDM_TOPOLOGY_STORAGE_PROVIDER`): architecture text, Luke's |
+| the env table (`CLAUDE.md`) | unchanged | `RDM_TOPOLOGY_STORAGE_PROVIDER` is already in it; `RDM_STORE_DIR`, named by storage.md, is not: Luke's to add |
+| `docs/reference/rdm/` | unchanged | generated into rafka-v2 by `scripts/docs-site.sh`; this repository's copy predates the storage spans |
+| `docs/plans/proposal/fabric-storage-provider.md` | unchanged | marked implemented only once R15 holds |
 
 ## § Dispatch ordering — maximum parallelization, four available implementers
 
