@@ -1386,6 +1386,16 @@ impl OwedDeclarations {
         }
     }
 
+    /// The declaration at `at` was replied `reply`: an answer by name takes it off and the next is sent.
+    /// True when it was answered by name.
+    fn replied(&self, at: u64, reply: &rdm_core::status::StatusReply) -> bool {
+        let by_name = !matches!(reply, rdm_core::status::StatusReply::RejectedNotPrimary { .. });
+        if by_name {
+            self.answered(at);
+        }
+        by_name
+    }
+
     /// The first declaration's call ended without an answer by name (its receiver proven gone, or
     /// not the mesh-primary, or none held): every declaration queued behind it is owed to the same
     /// receiver, so each one's call has ended as well. All stay owed, in order.
@@ -1499,17 +1509,17 @@ async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_
     let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, route: Some(policy), ..rdm_transport::CallOptions::default() };
     let (out, _) = client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(holder.node_id.clone()), &req, &opts).await;
     let (outcome, definitive) = match &out {
-        RpcOutcome::Reply(r) => match r.value() {
-            StatusReply::RejectedNotPrimary { .. } => (format!("{:?}", r.value()), false),
-            v => (v.name().to_string(), true),
-        },
+        RpcOutcome::Reply(r) => {
+            let outcome = match r.value() {
+                v @ StatusReply::RejectedNotPrimary { .. } => format!("{v:?}"),
+                v => v.name().to_string(),
+            };
+            (outcome, owed.replied(at, r.value()))
+        }
         other => (format!("{}: {other:?}", other.name()), false),
     };
     tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = %to, route = "owed", outcome = %outcome, definitive)
         .in_scope(|| tracing::info!("declared own state to the holder of the mesh's primary seat"));
-    if definitive {
-        owed.answered(at);
-    }
     definitive
 }
 
@@ -1749,5 +1759,25 @@ mod authority_tests {
         assert!(!mesh_primary_moved(Some(&told), Some(&primary(&a, &inc_a, 1))), "the same birth holds the seat");
         assert!(mesh_primary_moved(Some(&told), Some(&primary(&b, &inc_b, 2))), "another node holds the seat");
         assert!(mesh_primary_moved(Some(&told), Some(&primary(&a, &inc_b, 2))), "a new incarnation of the same node holds the seat");
+    }
+
+    /// CONTRACT (node-rpc.md §43, Q210): a node's declarations to its mesh-primary go one in flight, the
+    /// next sent on the previous one's answer by name, a refusal included. A `RejectedNotPrimary` is
+    /// such an answer: the declaration it answers is owed no more and its waiter's call has ended.
+    /// Must NOT happen: the refused declaration kept first, the one owed after it never sent.
+    #[test]
+    fn a_refusal_by_name_takes_the_declaration_off_and_the_next_one_owed_is_sent() {
+        use rdm_core::status::{NodeState, NotPrimary, StatusReply};
+        let owed = OwedDeclarations::default();
+        let mut deleting = owed.owe((NodeState::ConnectionsDeleting, None));
+        let _stopped = owed.owe((NodeState::Stopped, None));
+        let (at, _) = owed.first().expect("ConnectionsDeleting is owed first");
+        let refused = StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh1 mesh-primary".into() } };
+        assert!(owed.replied(at, &refused), "a refusal by name answers the declaration");
+        assert_eq!(owed.first().map(|(_, (state, _))| state), Some(NodeState::Stopped), "the next one owed is sent on the refusal");
+        assert_eq!(deleting.try_recv(), Ok(()), "the refused declaration's call has ended");
+        let (at, _) = owed.first().expect("Stopped is owed");
+        assert!(owed.replied(at, &StatusReply::Applied), "an applied reply answers it");
+        assert!(owed.is_empty(), "nothing is owed once every declaration was answered");
     }
 }
