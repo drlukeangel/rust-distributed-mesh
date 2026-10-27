@@ -1636,10 +1636,12 @@ mod tests {
         assert!(matches!(m.mesh(&mesh.mesh_id).await, Err(StorageError::Unrecognised { .. })));
     }
 
-    /// CONTRACT (node-identity-and-state.md §4; states.md "Who sets each state"): a node's status on its
-    /// record follows states.md's order through a stop and a start, a declaration inside node.stop
-    /// leaves it stopping, a delete's stop leaves it deleting, a superseded birth moves nothing, and a
-    /// `Deleted` record stands.
+    /// CONTRACT (node-identity-and-state.md §4; states.md "Who sets each state" and the paragraph after
+    /// it, Q233): a node's status on its record follows states.md's order through a stop and a start, a
+    /// declaration inside node.stop leaves it stopping, a superseded birth moves nothing, and a `Deleted`
+    /// record stands. delete is the mesh-primary's workflow: deleting from its claim, over a live or a
+    /// stopped node; the frames of the stop it composes move the row as a stop's do, stopping through
+    /// stopped; then deleted. A ready, a pending or a starting moves a deleting row nowhere.
     // @feature: node-lifecycle
     #[test]
     fn a_node_records_status_follows_the_order_states_md_names() {
@@ -1658,9 +1660,14 @@ mod tests {
         // frames find the row past them, and its stopped moves it.
         walk(&mut r, &[(S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopping, S::Left), (S::ConnectionsDeleting, S::Left), (S::ConnectionsDeleted, S::Left), (S::Leaving, S::Left), (S::Stopped, S::Stopped)]);
         walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
-        walk(&mut r, &[(S::Deleting, S::Deleting), (S::Stopping, S::Deleting), (S::Stopped, S::Deleting), (S::Pending, S::Deleting), (S::Starting, S::Deleting)]);
+        // A delete of the live node: deleting from its claim, then the composed stop's frames.
+        walk(&mut r, &[(S::Deleting, S::Deleting), (S::ReadyForTraffic, S::Deleting), (S::Pending, S::Deleting), (S::Starting, S::Deleting)]);
+        assert!(!r.clone().set_status(&birth, S::Deleting), "deleting again leaves a deleting row unchanged");
+        assert!(!r.clone().set_status(&old, S::Stopping), "a superseded birth moves no status");
+        walk(&mut r, &[(S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopped, S::Stopped)]);
+        // A delete of a stopped node: deleting from its claim over stopped, then deleted from the receipt.
         assert!(!r.clone().set_status(&old, S::Deleted), "a superseded birth moves no status");
-        r.status = S::Deleted;
+        walk(&mut r, &[(S::Deleting, S::Deleting), (S::Deleted, S::Deleted)]);
         walk(&mut r, &[(S::Pending, S::Deleted), (S::Starting, S::Deleted)]);
     }
 

@@ -52,8 +52,11 @@ fn row_status(root: &Path, node_id: &str) -> String {
 /// `ready-for-traffic` and `deleted`; and its mesh-primary wrote on its row, in states.md's order, each
 /// status "Who sets each state" names on the way (one `rdm.node_admin.node.update.via-row-status` span
 /// each, `written`): pending and ready-for-traffic at its create, then connections-deleting,
-/// connections-deleted, stopping, stopped, starting, pending, ready-for-traffic and deleting. Inside
-/// node.stop the node's connections-deleting leaves the row stopping.
+/// connections-deleted, stopping, stopped, starting, pending, ready-for-traffic and deleting, then the
+/// frames of the stop node.delete composes: stopping, connections-deleting, connections-deleted,
+/// leaving, left and stopped (states.md, the paragraph after "Who sets each state", Q233: delete is the
+/// mesh-primary's workflow, deleting from its claim, the composed stop's frames moving the row, deleted
+/// from the receipt). Inside node.stop the node's connections-deleting leaves the row stopping.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let mut estate = Estate::bootstrap(owner("a_node_row_carries_its_status_through_ready_stop_and_start"), "fabric1", "mesh1").await;
@@ -90,7 +93,7 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let written: Vec<&str> = written.iter().map(|sp| sp["attributes"]["status"].as_str().unwrap_or_default()).collect();
     assert_eq!(
         written,
-        ["Pending", "ReadyForTraffic", "ConnectionsDeleting", "ConnectionsDeleted", "Stopping", "Stopped", "Starting", "Pending", "ReadyForTraffic", "Deleting"],
+        ["Pending", "ReadyForTraffic", "ConnectionsDeleting", "ConnectionsDeleted", "Stopping", "Stopped", "Starting", "Pending", "ReadyForTraffic", "Deleting", "Stopping", "ConnectionsDeleting", "ConnectionsDeleted", "Leaving", "Left", "Stopped"],
         "{path}'s mesh-primary wrote each status at its transition, in states.md's order"
     );
 }
