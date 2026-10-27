@@ -56,6 +56,8 @@ async fn control_plane(t: &Topology) -> (Arc<MemoryBuildStateAdapter>, ControlPl
     let contexts = Arc::new(MemoryBuildStateAdapter::new());
     let mut cp = ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time())
         .with_contexts(Arc::new(AttemptContexts::on(contexts as Arc<dyn LocalBuildLog>)));
+    // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
+    let _ = cp.node_rows.set(crate::records_of(t).await);
     cp.topology = Arc::new(tokio::sync::RwLock::new(t.clone()));
     (builds, cp)
 }
@@ -149,4 +151,25 @@ async fn the_check_hands_the_operation_only_the_pinned_birth() {
     let mut gone = t.clone();
     gone.nodes.retain(|n| n.name != path);
     assert_eq!(pinned.held_in(&gone, "node.delete:mesh1.rpc.1", &path), Ok(None));
+}
+
+/// CONTRACT (node-delete.md Never evidence: "Gossip, silence, Ping failure and timeout never say the
+/// runtime exited"; Q219: "At execution Dead alone never skips the stop or the terminate"): a Build
+/// step's node.delete of a birth the executing view marks Dead runs the delete that composes its stop,
+/// pinned to that birth; only a stopped birth's delete composes none.
+/// Must NOT happen: a Dead birth deleted as a stopped one, its stop skipped on silence alone.
+#[test]
+fn a_dead_births_step_delete_composes_its_stop() {
+    let t = view();
+    let path: PathName = "mesh1.rpc.1".parse().unwrap();
+    let pinned = birth(&t, "mesh1.rpc.1");
+    let mut dead = t.node(&path).unwrap().clone();
+    dead.status = NodeStatus::Dead;
+    let op = rdm_admin::build::step_delete(&path, &pinned, Some(&dead));
+    assert!(matches!(&op, BuildOperation::RetireNode { exited: None, birth: Some(b), .. } if *b == pinned), "a Dead birth's delete stops it first: {op:?}");
+    let mut stopped = t.node(&path).unwrap().clone();
+    stopped.stopped = true;
+    assert!(matches!(rdm_admin::build::step_delete(&path, &pinned, Some(&stopped)), BuildOperation::DeleteNode { .. }), "a stopped birth's delete composes no stop");
+    let live = t.node(&path).unwrap().clone();
+    assert!(matches!(rdm_admin::build::step_delete(&path, &pinned, Some(&live)), BuildOperation::RetireNode { exited: None, birth: Some(_), .. }), "a live birth's delete stops it first");
 }

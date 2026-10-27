@@ -386,6 +386,18 @@ impl PinnedBirth {
     }
 }
 
+/// The operation a Build step's node.delete of `node` runs (node-delete.md), given the pinned `birth`
+/// and the node the executing view holds at the path (`held`, that birth or `None`): the delete of a
+/// stopped birth, which composes no stop, or the delete that stops a live one first. A birth this view
+/// no longer holds (a resumed delete whose NodeDeleting it already heard) is deleted pinned to its exact
+/// birth, its runtime read from its row.
+pub fn step_delete(node: &PathName, birth: &PinnedBirth, held: Option<&crate::model::Node>) -> BuildOperation {
+    match held.filter(|n| birth.is(n)) {
+        Some(n) if !n.stopped && n.status != crate::model::NodeStatus::Dead => BuildOperation::RetireNode { node: node.clone(), exited: None, birth: Some(birth.clone()) },
+        _ => BuildOperation::DeleteNode { node: node.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() },
+    }
+}
+
 /// `birth-replaced`: the birth an operation was pinned to at acceptance is not the birth the executing
 /// mesh-primary's view holds (build.md §4.4). Nothing is done to the birth it holds.
 #[derive(Debug, Clone, PartialEq, Eq)]

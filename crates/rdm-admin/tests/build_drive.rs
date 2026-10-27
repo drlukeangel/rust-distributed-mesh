@@ -2872,3 +2872,26 @@ async fn a_fabric_primary_whose_attempt_another_admin_superseded_mid_run_sends_n
     assert_eq!(read.len(), 1, "the read that stopped the drive is named: {read:?}");
     assert_eq!((read[0].1.get("attempt").map(String::as_str), read[0].1.get("current_attempt").map(String::as_str), read[0].1.get("to").map(String::as_str)), (Some("1"), Some("2"), Some("mesh2.admin.1")), "{:?}", read[0].1);
 }
+
+/// CONTRACT (build.md §4.4 gate 6; Q221 X: "The one exception is the operation mesh-investigation.md's
+/// decision step names on a node-admin of the unheard mesh: carrier-edge-lost admits the same-Build
+/// node.create of a node-admin into that mesh ... nothing else in it is exempt"): mesh2 is held unheard
+/// with its recovery decided, and the Build accepted while it was heard deletes mesh2's second
+/// node-admin. That delete is an operation on a node-admin of the unheard mesh but not the decision
+/// step's create: the drive claims and dispatches nothing for it and names the hold.
+/// Must NOT happen: the decided recovery admitting any operation on a node-admin of the mesh.
+#[tokio::test]
+async fn a_decided_recovery_admits_no_delete_of_a_node_admin_of_the_held_mesh() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.nodes.push(node("mesh2.admin.1", true, false));
+    t.nodes.push(node("mesh2.admin.2", false, false));
+    t.nodes.push(node("mesh2.rpc.1", false, false));
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)]) };
+    let r = rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await;
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), rdm_admin::investigate::PeerMesh { unheard_ms: Some(61_000), recovery_decided: true, unreachable_decided: false });
+    let drive = Drive::detached(r.build.clone());
+    let end = r.env.run(&drive).await;
+    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("node.delete:mesh2.admin.2")), "the delete of mesh2's second admin waits for the mesh to be heard: {end:?}");
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing of the held mesh ran: {:?}", r.ran.0.lock().unwrap());
+}

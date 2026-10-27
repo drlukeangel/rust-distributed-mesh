@@ -1567,11 +1567,8 @@ impl AdminRunner {
                 // view holds a digest of, else rebuilt from the Build action and the data-root runtime
                 // record (`delete_stopped`; node-admin-lifecycle.md §6.1). Either carries the pinned
                 // birth, verified before any effect (build.md §4.4).
-                let held = self.topology.read().await.node(node).filter(|n| birth.is(n)).cloned();
-                let op = match held {
-                    Some(n) if !n.stopped && n.status != crate::model::NodeStatus::Dead => BuildOperation::RetireNode { node: node.clone(), exited: None, birth: Some(birth.clone()) },
-                    _ => BuildOperation::DeleteNode { node: node.clone(), node_id, from_incarnation },
-                };
+                let held = self.topology.read().await.node(node).cloned();
+                let op = crate::build::step_delete(node, &birth, held.as_ref());
                 self.run_op(build_id, lane, attempt, &op).await
             }
             S::Update { node, name } => {

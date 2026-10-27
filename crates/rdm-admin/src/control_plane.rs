@@ -49,6 +49,10 @@ pub struct ControlPlane {
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
     /// stopped or deleted from here (R-D1). Set once by the admin that owns the ladder.
     pub peer_mesh: std::sync::OnceLock<Arc<dyn Fn(&str) -> Option<crate::investigate::PeerMesh> + Send + Sync>>,
+    /// Node investigation of one exact birth (node-investigation.md; Q107 item 1), the one primitive:
+    /// gate 5 admits a delete of a birth neither stopped nor heard live only on its `exited` verdict
+    /// (build.md §4.4; Q219). Set once by the admin that runs it; unset, no verdict is held.
+    pub investigation: std::sync::OnceLock<Arc<dyn crate::seat_revision::PathProbe>>,
     /// The connection facts this admin holds (set once by the admin that owns its connections
     /// writer): the active Directs of the fleet, and this admin's own latest Directs and Proxies.
     pub connections: std::sync::OnceLock<Arc<std::sync::Mutex<rdm_core::connections::ConnectionsHeld>>>,
@@ -117,6 +121,7 @@ impl ControlPlane {
             connections: std::sync::OnceLock::new(),
             loads: std::sync::OnceLock::new(),
             peer_mesh: std::sync::OnceLock::new(),
+            investigation: std::sync::OnceLock::new(),
             fabric_recovery: std::sync::OnceLock::new(),
             seats: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
@@ -569,6 +574,10 @@ impl ControlPlane {
                 TopologyChange::Reconcile { .. } => crate::accepted::replacement_operations(&topology, &observed, &recorded),
                 _ => Vec::new(),
             };
+            // A replaced member's delete is pinned to the birth this acceptance saw at its path (Q218; Q228
+            // decided by Q218 and Q221): a birth replaced before the delete runs is refused `birth-replaced`.
+            let more = crate::accepted::replacement_pins(&replacements, &topology.pinned);
+            topology.pinned.extend(more);
             // A mesh whose own drift attempt is open is held by it: a topology operation on that mesh
             // is refused, naming the Build, the mesh and the mesh-primary holding it (R-BI7 caveat 3).
             if let Some(held) = operations.iter().chain(replacements.iter()).filter_map(op_mesh).find_map(|mesh| holding(&current, Some(&mesh))).filter(|_| !interrupts) {

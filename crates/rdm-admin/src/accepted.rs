@@ -907,6 +907,14 @@ pub(crate) fn replacement_operations(topology: &FabricTopology, observed: &Topol
     replacements_owed(topology, observed, recorded, &[])
 }
 
+/// The births a Reconcile's acceptance pins for the replacements it owes (`replacements`, its
+/// [`replacement_operations`]; build.md §4.4: "The operation carries the exact birth the gates
+/// pinned"), by path, beside the births it deletes (`pinned`): each replaced member's delete acts on
+/// the birth the acceptance saw there.
+pub(crate) fn replacement_pins(_replacements: &[BuildOperation], _pinned: &[(PathName, crate::build::PinnedBirth)]) -> Vec<(PathName, crate::build::PinnedBirth)> {
+    Vec::new()
+}
+
 /// The properties a Reconcile applies in place on the members it neither creates nor replaces (build.md
 /// §1, "The Build applies the diff": "compares each node's entry with what the node's row records and
 /// applies every property that differs, each by its own operation"), in path order: `node.config.update`
@@ -2783,6 +2791,46 @@ mod tests {
             lanes: Default::default(),
         };
         plan_with_replacements(&build, o, recorded).operations
+    }
+
+    /// CONTRACT (build.md §4.4 closing rule; Q218: "the fabric-primary pins (node_id, incarnation) at
+    /// acceptance"; Q228, decided by Q218 and Q221): a Reconcile accepted on a member whose executable it
+    /// changes pins the birth its acceptance saw at that path, and the replacement's delete and the create
+    /// over it carry that birth. The birth replaced between acceptance and the delete (recovered at the
+    /// same path.name under a new node id), the delete still carries the acceptance pin, so the executing
+    /// mesh-primary refuses it `birth-replaced` and the replacement birth is untouched.
+    /// Must NOT happen: the delete pinned to whatever birth the view holds when the attempt is planned.
+    #[test]
+    fn a_replacements_delete_carries_the_birth_its_acceptance_pinned() {
+        use NodeStatus::ReadyForTraffic as R;
+        let desired = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Gateway, 1)]);
+        let cur = FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&desired))].into() };
+        let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.gateway.1", R, true)], &["mesh1"]);
+        let rows = rows_on(&o, "a");
+        let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(&x.name.to_string(), Some(if x.name.kind == NodeKind::Gateway { "b" } else { "a" }))).collect();
+        let mut next = compile_against(&cur, &reconcile(request), &o, &rows).unwrap();
+        // The acceptance, as the control plane runs it: the replacements owed, then their pins.
+        let replacements = replacement_operations(&next, &o, &rows);
+        let more = replacement_pins(&replacements, &next.pinned);
+        next.pinned.extend(more);
+        let path: PathName = "mesh1.gateway.1".parse().unwrap();
+        let seen = crate::build::PinnedBirth::of(o.node(&path).unwrap()).unwrap();
+        assert!(next.pinned.iter().any(|(p, b)| *p == path && *b == seen), "the acceptance pins the birth it saw at the replaced path: {:?}", next.pinned);
+        // Recovered at the same path.name before the replacement's delete: a new node id there.
+        let mut now = o.clone();
+        let held = now.nodes.iter_mut().find(|x| x.name == path).unwrap();
+        held.node_id = NodeId::mint();
+        held.incarnation_id = Some(IncarnationId::mint());
+        let replacement = crate::build::PinnedBirth::of(now.node(&path).unwrap()).unwrap();
+        let ops = replacement_plan(&next, &now, &rows, vec![]);
+        let delete = ops.iter().find(|op| op.key() == "node.delete:mesh1.gateway.1").unwrap_or_else(|| panic!("the replacement's delete is planned: {ops:?}"));
+        let Some(BuildOperation::RetireNode { birth: Some(carried), .. }) = Some(delete) else { panic!("a replacement's delete composes its stop: {delete:?}") };
+        assert_eq!(*carried, seen, "the delete carries the acceptance pin, not the birth the view holds now");
+        let create = ops.iter().find_map(|op| match op { BuildOperation::CreateNode { node, over: Some(b), .. } if *node == path => Some(b.clone()), _ => None }).unwrap_or_else(|| panic!("the create over it is planned: {ops:?}"));
+        assert_eq!((create.node_id, create.incarnation), (seen.node_id.clone(), seen.incarnation.clone()), "the create is over the pinned birth");
+        let refused = carried.held_in(&now, "node.delete:mesh1.gateway.1", &path).expect_err("the executing mesh-primary refuses the replaced birth");
+        assert_eq!((refused.reason(), refused.observed.clone()), ("birth-replaced", Some(replacement.clone())));
+        assert_eq!(crate::build::PinnedBirth::of(now.node(&path).unwrap()), Some(replacement), "the replacement birth is untouched");
     }
 
     fn receipt(attempt: u32, operation: &str, step: &str, output: Option<serde_json::Value>) -> crate::build_state::BuildStepReceipt {
