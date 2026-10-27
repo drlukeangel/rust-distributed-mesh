@@ -3258,23 +3258,23 @@ Each open i143 unit, its rafka-v2 issue and where it stands. A unit leaves this 
 
 | issue | unit | state |
 |---|---|---|
-| #3211 | release-gate reds: red 1 (backbone heal) and red 3 | red 2 landed 5ddffdefa; red 1 read (caused by red 2's command, refused at HEAD); the cell's wait fixed in lane 7 (2999ba9aa), 10-run proof then landing; red 3 read from the soaks (#3232) |
-| #3215 | build.md §4.4 gates: Q218, Q219, Q220's cell, Q221, Q228 | built in lane 1 (11bb3b90d); RED only on #3222's race; lands after #3237 |
-| #3222 | the store reader's 40 ms refusal | built on origin/i143-3222-store-reader (33774971b), parked; lands first of the node store reads (Q237); next free lane |
+| #3211 | release-gate reds: red 1 (backbone heal) and red 3 | red 2 landed 5ddffdefa; red 1 read (caused by red 2's command, refused at HEAD); the cell's wait fixed in lane 7 (2999ba9aa), 10-run proof then landing; red 3 read from the soaks (rdm#80) |
+| #3215 | build.md §4.4 gates: Q218, Q219, Q220's cell, Q221, Q228 | built in lane 1 (11bb3b90d); RED only on rdm#78's race; lands after #3237 |
+| rdm#78 | the store reader's 40 ms refusal | built on origin/i143-3222-store-reader (33774971b), parked; lands first of the node store reads (Q237); next free lane |
 | #3229 | Q227 X: ordinary nodes read no connections, the carrier from topology | **landed 529b978dd** (connections.md rewritten; `NoActiveRoute` when every carrier refuses) |
 | #3230 | Q230: the data plane speaks proxy (words only, the carrier list stays) | lane 4, seat running |
-| #3231 | the carrier's via-tunnel span and splice outlive a Proxy deleted by id | open; next free lane |
-| #3232 | learning-soak findings: a peer mesh unheard after heal; a wedged admin re-born; a held birth no attempt acted on | routed: heal to #3211 (red 1's mechanism), re-born and held to #3215 (Q218/Q219); read again after #3215 lands |
+| rdm#79 | the carrier's via-tunnel span and splice outlive a Proxy deleted by id | open; next free lane |
+| rdm#80 | learning-soak findings: a peer mesh unheard after heal; a wedged admin re-born; a held birth no attempt acted on | routed: heal to #3211 (red 1's mechanism), re-born and held to #3215 (Q218/Q219); read again after #3215 lands |
 | #3233 | a Build after a node.stop loops node.create on the stopped path | lane 2: cause found (accepted.rs:1336 counts only a live birth), REDs queued |
 | #3234 | Q167 reads with the property filter; Q232 local query; Q233 read side | lane 6: wire, client, callers and pages built; a fresh seat finishes the no-store reads, the local nodes_get and Q233's read |
-| #3235 | Q210's owed point: a signal stop waits for the declaration queue | open; next free lane |
-| #3236 | Q235/Q236: a node's own config pushed up; a Build's config supersedes | open; the proposal docs/plans/proposal/q235-node-config-flow.md (P1-P5 decided) |
-| #3237 | Q227/Q234: node-admins read no store at start, join and hydration; OwnRow | lane 3: inventory accepted (item 7 moved to #3240), building the race path first |
-| #3239 | Q233 code: the row's status from the node's ack and completion; delete the mesh-primary's | open; next free lane |
-| #3240 | a mesh-primary's Atlas filled from the fabric-primary; put_runtime only by primaries; rehydrate unused | open; after #3237 |
-| #3241 | Q237: a node's point read of another node's row from the store | open; after #3222 |
-| #3242 | Q224: a mesh-primary's own Atlas answers its mesh's reads, passing others up | open; with #3240 |
-| #3243 | Q167 R-RD5: builds.get with the filter | open; its source waits on Luke's answer below |
+| rdm#81 | Q210's owed point: a signal stop waits for the declaration queue | open; next free lane |
+| rdm#82 | Q235/Q236: a node's own config pushed up; a Build's config supersedes | open; the proposal docs/plans/proposal/q235-node-config-flow.md (P1-P5 decided) |
+| #3237 | Q227/Q234: node-admins read no store at start, join and hydration; OwnRow | lane 3: inventory accepted (item 7 moved to rdm#84), building the race path first |
+| rdm#83 | Q233 code: the row's status from the node's ack and completion; delete the mesh-primary's | open; next free lane |
+| rdm#84 | a mesh-primary's Atlas filled from the fabric-primary; put_runtime only by primaries; rehydrate unused | open; after #3237 |
+| rdm#85 | Q237: a node's point read of another node's row from the store | open; after rdm#78 |
+| rdm#86 | Q224: a mesh-primary's own Atlas answers its mesh's reads, passing others up | open; with rdm#84 |
+| rdm#87 | Q167 R-RD5: builds.get with the filter | open; its source waits on Luke's answer below |
 
 Open with Luke or the architects (no unit until ruled):
 - Q231: does RDM hand the causing trace context to the application at its notices (an accepted Connection, a deletion op)? dev recommendation B.
@@ -3288,8 +3288,10 @@ Running outside the units: the learning-soak loop in lane 5 (each iteration kept
 #### The audit of every ruling and proposal, 2026-10-27 (the lead)
 
 Every INDEX row whose state was not landed, decided or withdrawn (Q63-Q214, 48 rows) and every file in docs/plans/proposal/ was read against main. Rows found done are done; Q63, Q64, Q65, Q67, Q139 and Q140 are rafka-v2's. What remains, each now tracked:
-- #3244, the vocabulary sweep: banned words written before the bans remain in crates/ (Q214's departed tail, Q111's exit-proof residue, and the rest by count).
+- rdm#88, the vocabulary sweep: banned words written before the bans remain in crates/ (Q214's departed tail, Q111's exit-proof residue, and the rest by count).
 - To Luke, a ruling or a withdrawal: the failure matrix (docs/plans/proposal/i143-failure-matrix.md says it lands as lifecycles/failure-matrix.md once approved; no ruling, no page); store-root-one-directory-per-entity.md (asks Luke's yes on R-SR1 to R-SR3; the code uses them and Q227 cited them; no INDEX row); Q110's open point (in standalone, an old node can write to the shared directory before it is refused; no recorded answer); ops-naming-proposal.md item 4 (gossip frame naming, waits on Luke's go-ahead); node-status-heartbeat-connections.md R-HB3 (parked post-beta).
 - Page sentences a ruling named and main no longer carries, each likely superseded by a later rewrite, to confirm: Q96 (the hand-back key), Q108 (the vacated seat line; the elections page was rewritten by Q107), Q94 (the envelope's "calls the winner"), Q76 (gossip.md §3.1's "node.delete replaces NodeStopped"), Q131 (the thawed-node rule has no page line).
-- 2026-10-27, open-work additions after the audit: #3244 (the vocabulary sweep), #3245 (the gate takes the box's turn lock; the learning-soak loop in lane 5 is stopped until it lands, because every gate ran beside a soak batch at load 346), docs/eng/consumer-guide-ops.md (33e41b590: an application's own Node RPC ops). #3218 and #3203 closed (done on main).
-- 2026-10-27, the ops guide's §8 tooling (docs/eng/consumer-guide-ops.md, landed 1cf00038e; Luke's expansion 0b7612c10; arch-1's corrections), each its own issue, in order of value, none blocking a first op: #3247 the reserved-variants helper; #3248 the compiled consumer example, built into the demo (Luke: not a separate CI crate); #3249 the conformance harness (Count and BrokerData pass unchanged; Rafka's first op runs it); #3250 recovery helpers over application persistence. #3246 (split from #3237): a node-admin's topology stores open without folding. The guide's query link flips to query.md in #3234's landing (lane 6, inbox 0005).
+- 2026-10-27, open-work additions after the audit: rdm#88 (the vocabulary sweep), #3245 (the gate takes the box's turn lock; the learning-soak loop in lane 5 is stopped until it lands, because every gate ran beside a soak batch at load 346), docs/eng/consumer-guide-ops.md (33e41b590: an application's own Node RPC ops). #3218 and #3203 closed (done on main).
+- 2026-10-27, the ops guide's §8 tooling (docs/eng/consumer-guide-ops.md, landed 1cf00038e; Luke's expansion 0b7612c10; arch-1's corrections), each its own issue, in order of value, none blocking a first op: rdm#90 the reserved-variants helper; rdm#91 the compiled consumer example, built into the demo (Luke: not a separate CI crate); rdm#92 the conformance harness (Count and BrokerData pass unchanged; Rafka's first op runs it); rdm#93 recovery helpers over application persistence. rdm#89 (split from #3237): a node-admin's topology stores open without folding. The guide's query link flips to query.md in #3234's landing (lane 6, inbox 0005).
+
+- 2026-10-27, RDM's issues move home (Luke): CLAUDE.md said since df378f7a2 (2026-10-13) that issues live in rafka-v2, so every RDM unit since 2026-10-14 was filed there; RDM's own repo had them to #77. The 16 units not yet started were copied with their comments to drlukeangel/rust-distributed-mesh and closed in rafka-v2 with a pointer: #3222→rdm#78, #3231→rdm#79, #3232→rdm#80, #3235→rdm#81, #3236→rdm#82, #3239→rdm#83, #3240→rdm#84, #3241→rdm#85, #3242→rdm#86, #3243→rdm#87, #3244→rdm#88, #3246→rdm#89, #3247→rdm#90, #3248→rdm#91, #3249→rdm#92, #3250→rdm#93. In flight, finished where they are: rafka-v2 #3211, #3215, #3230, #3233, #3234, #3237, #3245 (#3245 also points the lane scripts at RDM's repo). `rdm#N` is drlukeangel/rust-distributed-mesh#N.

@@ -13,7 +13,7 @@ is never built here.
   text.
 - **The record is `docs/plans/i143-prd.md`**, the only source of truth for remaining work: every
   state or remaining-work update goes in its row. Rulings are in `docs/plans/rulings/`, proposals
-  in `docs/plans/proposal/`. Issues and the i143 milestone are tracked in the rafka-v2 GitHub repo.
+  in `docs/plans/proposal/`. Issues and the i143 milestone are tracked in this repo, `drlukeangel/rust-distributed-mesh`.
 - **The canon in `/home/admin/rafka-v2/CLAUDE.md` applies here in full**: no change to gossip or the
   mesh without Luke's permission and a Jaeger flame; fix the root, never a coping layer; commands go
   down (fabric-primary → mesh-primary → node); the vocabulary bans; the durable-format rule and its
@@ -42,7 +42,7 @@ packet without a section 5 delta is returned, not reviewed. Every question and r
 - A lane is a folder with a source tree: `/home/admin/rdm-lanes/<n>`, numbered `1`–`7`. Reuse it;
   never a new worktree, never `.claude/worktrees`, never delete one. `/home/admin/rust-distributed-mesh`
   holds `main` and is not a lane.
-- Every unit has one rafka-v2 issue, one lane, one seat and one agent at a time, and runs through the
+- Every unit has one issue in this repo, one lane, one seat and one agent at a time, and runs through the
   lane verbs in `scripts/` (adapted from rafka-v2's `docs/eng/testing-lane-scripts.md`), never by hand:
   `lane-status.sh [lane…]` (free?); `lane-prep.sh <lane> <branch>` (claim on a fresh branch from
   `origin/main`); `lane-dispatch.sh --lane <n> --issue <N> --name … --title … --design <file>` (writes
