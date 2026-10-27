@@ -355,9 +355,27 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         let leaving_states: Vec<&Value> = states.iter().copied().filter(|sp| matches!(s(&sp["attributes"]["status"]).as_str(), "ConnectionsDeleting" | "Leaving")).collect();
         assert!(!leaving_states.is_empty(), "a {m} node held a mesh1 member's own connections-deleting or Leaving: {states:?}");
         assert!(leaving_states.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "a mesh1 member saying connections-deleting or Leaving is not routable at {m}: {leaving_states:?}");
-        // From its mesh channel, or from the read a gap on that channel pulls (gossip.md §3.3: "a node that
-        // notices a gap pulls").
-        assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.rpc.")) && matches!(sp["attributes"]["channel"].as_str(), Some("mesh-channel" | "topology-read"))), "a {m} ordinary node held a mesh1 member's own state from the mesh channel or its gap's read: {leaving_states:?}");
+        // Each ordinary node holds a member's own state from its mesh channel or the read a gap on that
+        // channel pulls, or it skipped those versions: gossip.md §3.3 "On a mismatch it marks that source's
+        // projection desynced, stops applying its deltas, and pulls the current full fabric topology from
+        // its own current mesh-primary", "A node that installs a pulled copy older than a delta it dropped
+        // while the pull was in flight pulls again (Q130)", and "A node that missed a lifecycle event
+        // recovers it from `MeshTopology.in_flight` or `MeshTopology.deleted`, through the next delta, full
+        // or top-up". A node desynced on mesh1 while its members left installs, from its top-up, mesh1 with
+        // every one of them deleted, and holds none of their transient states.
+        for ordinary in [format!("{m}.rpc.1"), format!("{m}.rpc.2")] {
+            let held_here = leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]) == ordinary && matches!(sp["attributes"]["channel"].as_str(), Some("mesh-channel" | "topology-read")));
+            let gap_at = named(&spans, "rdm.mesh.topology.update.via-gap").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == ordinary && sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).min();
+            let topped_up: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed")
+                .into_iter()
+                .filter(|sp| s(&sp["attributes"]["node"]) == ordinary && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["channel"] == "topology-read" && attr_u(sp, "departed") >= members.len() as u64 && gap_at.is_some_and(|g| start_ns(sp) >= g))
+                .collect();
+            assert!(
+                held_here || !topped_up.is_empty(),
+                "{ordinary} held a mesh1 member's own connections-deleting or Leaving from its mesh channel or a topology read, or, desynced on mesh1 (first gap {gap_at:?}), installed from its top-up mesh1 with all {} of its other members deleted: {leaving_states:?}",
+                members.len()
+            );
+        }
     }
     let routable = |sp: &Value| s(&sp["attributes"]["routable"]) == "true" || sp["attributes"]["routable"] == json!(true);
     let installed = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed");
