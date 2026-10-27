@@ -119,6 +119,11 @@ fn in_trace(trace: &str, named: &str) -> Vec<SpanData> {
     spans().get_finished_spans().unwrap().into_iter().filter(|s| s.name == named && s.span_context.trace_id().to_string() == trace).collect()
 }
 
+/// The spans named `named` linked (follows_from) to a span of `trace`: the dials the trace's calls started.
+fn linked_to_trace(trace: &str, named: &str) -> Vec<SpanData> {
+    spans().get_finished_spans().unwrap().into_iter().filter(|s| s.name == named && s.links.iter().any(|l| l.span_context.trace_id().to_string() == trace)).collect()
+}
+
 fn attr(s: &SpanData, key: &str) -> Option<String> {
     s.attributes.iter().find(|kv| kv.key.as_str() == key).map(|kv| kv.value.as_str().into_owned())
 }
@@ -201,7 +206,8 @@ async fn late_superseded_dial_never_pools() {
 /// caller's reply budget, three calls in a row each end `Indeterminate(ReplyDeadline)` on the one
 /// pooled connection, each of them reused; the connection stays pooled and the next call is
 /// answered on it. The caller's trace holds no `evict.via-timeout-strikes` span and no
-/// `create.via-dial` span: those reply timeouts evicted nothing and caused no redial.
+/// `create.via-dial` span linked to one of its calls (a dial is a root of its own trace, linked to the call
+/// that started it): those reply timeouts evicted nothing and caused no redial.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn three_reply_deadlines_leave_the_pooled_connection_in_place_and_reused() {
     spans();
@@ -229,7 +235,7 @@ async fn three_reply_deadlines_leave_the_pooled_connection_in_place_and_reused()
     drop(caller);
     let calls = in_trace(&trace, "rdm.node_rpc.request.update.via-call");
     let strikes = in_trace(&trace, "rdm.node_rpc.connection.evict.via-timeout-strikes");
-    let dials = in_trace(&trace, "rdm.node_rpc.connection.create.via-dial");
+    let dials = linked_to_trace(&trace, "rdm.node_rpc.connection.create.via-dial");
     let rows: Vec<String> = calls.iter().map(|s| format!("via-call outcome={:?} reason={:?} reused={:?}", attr(s, "outcome"), attr(s, "reason"), attr(s, "reused"))).collect();
     eprintln!("trace {trace}: {rows:?}; evict.via-timeout-strikes={}; create.via-dial={}; pooled={}", strikes.len(), dials.len(), r.client.pooled().len());
     assert!(strikes.is_empty(), "no reply deadline evicts the pooled connection: trace {trace} {rows:?}");

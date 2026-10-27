@@ -491,6 +491,9 @@ impl JsonlSpanExporter {
             "start_unix_nano": nanos(s.start_time),
             "end_unix_nano": nanos(s.end_time),
             "attributes": attrs,
+            // The spans this one follows from without being their child (a pooled dial's link to the call
+            // that started it): the causal edge a parent id does not carry.
+            "links": s.links.iter().map(|l| serde_json::json!({ "trace_id": l.span_context.trace_id().to_string(), "span_id": l.span_context.span_id().to_string() })).collect::<Vec<_>>(),
             // The log lines emitted inside this span, in order: what the span did, in its words.
             "events": s.events.iter().map(|e| serde_json::json!({
                 "name": e.name,

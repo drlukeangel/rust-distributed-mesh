@@ -363,21 +363,23 @@ impl Pool {
                     let (tx, rx) = watch::channel(None);
                     dials.insert(key.clone(), Dial { cancel, outcome: rx.clone(), addr: spec.addr });
                     let (pool, key) = (self.clone(), key.clone());
-                    // The one dial for `key`, under the call that started it: its steps (the superseded
-                    // paths retired, the connect) and how it ended, however many callers wait on it. It is
-                    // never the current span while the dial runs: the transport's connect spawns the
-                    // connection's driver task with the span current at that moment, and that task lives as
-                    // long as the pooled connection, so a current dial span would stay open (and keep the
-                    // call span above it open) until the connection closes. Its events name it as parent.
-                    // The task runs on the dispatcher of the dial span: its events reach that span's
-                    // subscriber, and the span ends there. A span's end releases its parent's reference
-                    // through the dispatcher of the thread it ends on, so a dial span ending on a worker that
-                    // holds another dispatcher would leave the call span (and every span above it) open
-                    // for good. A dial span no subscriber took has no parent to release and no subscriber
-                    // for its events: its task carries no dispatcher, so it never pins "none" over one
-                    // installed while it runs (a callsite first reached under a pinned "none" is cached as
-                    // never enabled, process-wide).
+                    // The one dial for `key`: its steps (the superseded paths retired, the connect) and how it
+                    // ended, however many callers wait on it. The pooled dial outlives the wait of the call that
+                    // started it (that call's deadline bounds its wait, never the dial), so it is no child of
+                    // that call: its span is a root of its own, linked (follows_from) to the call that started
+                    // it, the OpenTelemetry link for causally related work that is not nested (telemetry.md: a
+                    // call span's children are the serve span, the handler's spans and the invocation's end). A
+                    // dial that runs to the transport's connect timeout therefore holds no call span, and no
+                    // span above it, open past the call's own end. It is never the current span while the dial
+                    // runs: the transport's connect spawns the connection's driver task with the span current at
+                    // that moment, and that task lives as long as the pooled connection, so a current dial span
+                    // would stay open until the connection closes. Its events name it as parent. The task runs
+                    // on the dispatcher of the dial span: its events reach that span's subscriber, and the span
+                    // ends there. A dial span no subscriber took has no subscriber for its events: its task
+                    // carries no dispatcher, so it never pins "none" over one installed while it runs (a
+                    // callsite first reached under a pinned "none" is cached as never enabled, process-wide).
                     let span = tracing::info_span!(
+                        parent: None,
                         "rdm.node_rpc.connection.create.via-dial",
                         peer = %key.peer.fmt_short(),
                         incarnation_id = %key.birth(),
@@ -386,6 +388,7 @@ impl Pool {
                         outcome = tracing::field::Empty,
                         elapsed_ms = tracing::field::Empty,
                     );
+                    span.follows_from(tracing::Span::current());
                     let dispatch = tracing::Span::with_subscriber(&span, |(_, d): (&tracing::Id, &tracing::Dispatch)| d.clone());
                     let dial = async move {
                         let started = Instant::now();

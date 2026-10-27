@@ -152,6 +152,8 @@ struct Seen {
     trace_id: String,
     span_id: String,
     parent_span_id: String,
+    /// The spans this one follows from (trace id, span id): a dial's link to the call that started it.
+    links: Vec<(String, String)>,
     start: std::time::SystemTime,
     attributes: BTreeMap<String, String>,
 }
@@ -244,6 +246,7 @@ impl Capture {
                 trace_id: s.span_context.trace_id().to_string(),
                 span_id: s.span_context.span_id().to_string(),
                 parent_span_id: s.parent_span_id.to_string(),
+                links: s.links.iter().map(|l| (l.span_context.trace_id().to_string(), l.span_context.span_id().to_string())).collect(),
                 start: s.start_time,
                 attributes: s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect(),
             })
@@ -750,7 +753,7 @@ fn a_restart_that_lost_the_builds_facts_fetches_them() {
 /// the endpoints the story bound hold none of its spans. Must NOT happen: a span of the story lost because
 /// a worker thread picked its task up, or held open past the story by a task of the transport. Its trace:
 /// the cell's root ended; the one fetch span is its child, naming the blocker and the six facts it read;
-/// the fetch holds its one call and the call holds its one dial.
+/// the fetch holds its one call, and its one dial, a root of its own trace, is linked (follows_from) to that call.
 #[test]
 fn a_fetch_spawned_onto_a_worker_that_holds_no_dispatcher_is_still_captured() {
     let cap = capture_with_bare_workers();
@@ -775,8 +778,8 @@ fn a_fetch_spawned_onto_a_worker_that_holds_no_dispatcher_is_still_captured() {
     assert_eq!(fetches.len(), 1, "the fetch ran on a worker that holds no dispatcher and was still captured;\n{}", spans.render());
     assert_fetch(&spans, fetches[0], "mesh1.admin.2", &id, "no-current-build-wanted", "mesh1.admin.1", Some(6));
     let call = spans.calls_of(fetches[0])[0];
-    let dials: Vec<&Seen> = spans.named(DIAL).into_iter().filter(|d| d.parent_span_id == call.span_id && d.trace_id == call.trace_id).collect();
-    assert_eq!(dials.len(), 1, "the call's one dial is its child;\n{}", spans.render());
+    let dials: Vec<&Seen> = spans.named(DIAL).into_iter().filter(|d| d.links.contains(&(call.trace_id.clone(), call.span_id.clone()))).collect();
+    assert_eq!(dials.len(), 1, "the call's one dial is linked to it (follows_from), a root of its own trace;\n{}", spans.render());
     let roots: Vec<&Seen> = spans.named("rdm.test.build.update.via-worker-without-dispatcher").into_iter().filter(|r| r.span_id == spans.story.span_id).collect();
     assert_eq!(roots.len(), 1, "the cell's root ended with its story: nothing outlived the story holding it;\n{}", spans.render());
 }

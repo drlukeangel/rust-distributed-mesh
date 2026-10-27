@@ -288,16 +288,26 @@ fn caller_call<'a>(c: &'a NodeRpcClient, p: &Process, payload: &'static [u8]) ->
     (caller, trace, parent, fut)
 }
 
+/// The dial spans linked (follows_from) to `call`: the dials that call started.
+fn dials_of(call: &SpanData) -> Vec<SpanData> {
+    finished("rdm.node_rpc.connection.create.via-dial", None)
+        .into_iter()
+        .filter(|d| d.links.iter().any(|l| l.span_context.span_id() == call.span_context.span_id() && l.span_context.trace_id() == call.span_context.trace_id()))
+        .collect()
+}
+
 fn steps(s: &SpanData) -> Vec<String> {
     s.events.iter().filter_map(|e| e.attributes.iter().find(|kv| kv.key.as_str() == "step").map(|kv| kv.value.as_str().into_owned())).collect()
 }
 
-/// CONTRACT: the dial a call starts is one span, `rdm.node_rpc.connection.create.via-dial`, a
-/// child of that call's `via-call` span in the caller's trace, and it ends when the dial ends
-/// (outcome `connected`, its steps as events), while the connection it opened stays pooled for
-/// the next call. A dependency task that lives as long as the connection never holds it open.
+/// CONTRACT (telemetry.md: a call span's children are the serve span, the handler's spans and the
+/// invocation's end, never the dial; a pooled dial outlives the wait of the call that started it): the
+/// dial a call starts is one span, `rdm.node_rpc.connection.create.via-dial`, a root of its own trace
+/// linked (follows_from) to that call's `via-call` span, and it ends when the dial ends (outcome
+/// `connected`, its steps as events), while the connection it opened stays pooled for the next call.
+/// A dependency task that lives as long as the connection never holds it open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_dialed_calls_dial_span_ends_with_the_dial_under_its_call_span_while_the_connection_stays_pooled() {
+async fn a_dialed_calls_dial_span_ends_with_the_dial_linked_to_its_call_span_while_the_connection_stays_pooled() {
     spans();
     let p = process("mesh1.rpc.1").await;
     let (c, _) = client(Some("rdm"), &[&p.resolved]).await;
@@ -309,15 +319,16 @@ async fn a_dialed_calls_dial_span_ends_with_the_dial_under_its_call_span_while_t
     let call = finished("rdm.node_rpc.request.update.via-call", Some(&trace));
     assert_eq!(call.len(), 1, "the call span ended in the caller's trace: {call:?}");
     assert_eq!(call[0].parent_span_id.to_string(), parent, "the call span is a child of the caller's span");
-    let dial = finished("rdm.node_rpc.connection.create.via-dial", Some(&trace));
-    assert_eq!(dial.len(), 1, "the dial span ended with the dial, in the caller's trace, while its connection is still pooled: {dial:?}");
-    assert_eq!(dial[0].parent_span_id, call[0].span_context.span_id(), "the dial is a child of the call that started it");
+    assert!(finished("rdm.node_rpc.connection.create.via-dial", Some(&trace)).is_empty(), "the dial is no span of the caller's trace");
+    let dial = dials_of(&call[0]);
+    assert_eq!(dial.len(), 1, "the dial span ended with the dial, linked to the call that started it, while its connection is still pooled: {dial:?}");
+    assert_eq!(dial[0].parent_span_id, opentelemetry::trace::SpanId::INVALID, "the dial is a root of its own trace");
     assert_eq!(attr(&dial[0], "outcome").as_deref(), Some("connected"));
     assert_eq!(steps(&dial[0]), ["direct-addrs-replaced", "connect-returned"], "the dial's steps are its events");
     assert!(dial[0].end_time <= call[0].end_time, "the dial ended before the call that waited on it");
     eprintln!(
-        "trace {trace}: test.caller {parent} > rdm.node_rpc.request.update.via-call {} outcome={:?} > rdm.node_rpc.connection.create.via-dial {} outcome={:?} steps={:?}; pooled={}",
-        call[0].span_context.span_id(), attr(&call[0], "outcome"), dial[0].span_context.span_id(), attr(&dial[0], "outcome"), steps(&dial[0]), c.pooled().len()
+        "trace {trace}: test.caller {parent} > rdm.node_rpc.request.update.via-call {} outcome={:?} ~> rdm.node_rpc.connection.create.via-dial {} (trace {}) outcome={:?} steps={:?}; pooled={}",
+        call[0].span_context.span_id(), attr(&call[0], "outcome"), dial[0].span_context.span_id(), dial[0].span_context.trace_id(), attr(&dial[0], "outcome"), steps(&dial[0]), c.pooled().len()
     );
 
     // The next call reuses the pooled connection: no dial, and its call span ends too.
@@ -329,7 +340,7 @@ async fn a_dialed_calls_dial_span_ends_with_the_dial_under_its_call_span_while_t
     let call = finished("rdm.node_rpc.request.update.via-call", Some(&trace));
     assert_eq!(call.len(), 1, "{call:?}");
     assert!(steps(&call[0]).iter().any(|s| s == "pooled"), "the second call reused the connection: {:?}", steps(&call[0]));
-    assert!(finished("rdm.node_rpc.connection.create.via-dial", Some(&trace)).is_empty(), "a pooled call dials nothing");
+    assert!(dials_of(&call[0]).is_empty(), "a pooled call dials nothing");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
