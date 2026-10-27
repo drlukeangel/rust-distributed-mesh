@@ -64,9 +64,9 @@ impl NodeProtocol for CgShuffleRecord {
   unopened, `busy` at its admission bound, `connections_deleting` while the node deletes its
   connections, `malformed` when the body is too large or does not decode. `unauthorized` holds its
   codec position only: a mesh receiver never sends it, since nothing inside the mesh checks who sent
-  a call ([node-rpc.md §25](../architecture/node-rpc.md)). `peer_unresolved` is a receiver's answer
-  after topology convergence; a caller whose resolver names no node sends nothing and gets the
-  `NotSent` outcome, never this reply.
+  a call ([node-rpc.md §25](../architecture/node-rpc.md)). `peer_unresolved` is a codec position your reply
+  must carry; a caller whose resolver names no node sends nothing and gets the `NotSent` outcome,
+  never this reply.
 - **`classify_reply`** maps each variant to its code (`ReplyKind::Success`, `ReplyKind::new(Code::NotFound)`, ...),
   and **`reply_detail`** gives each its name for spans.
 - **`read_only`** (default `false`): return `true` for a request that changes nothing, so a caller may
@@ -108,8 +108,9 @@ async fn serve(peer: rdm_transport::PeerContext, request: ShuffleRequest) -> Res
   proves receipt, never execution, and it is sent only once the accepted work is recoverable. A
   handler that mutates anything records what it accepted first, then calls
   `peer.acceptance.accepted()`; a read-only request is accepted as it is dispatched; a handler that
-  calls nothing is accepted at its first reply frame, so a crash between accepting the work and
-  replying loses it. Delivery identity is not operation identity: a duplicate delivery of the same
+  calls nothing is accepted at its first reply frame. Return the reply only after recoverable
+  acceptance or a recorded result: a crash before either leaves the work with no guaranteed
+  recovery, since nothing durable names it. Delivery identity is not operation identity: a duplicate delivery of the same
   request is suppressed by the runtime, a second request for the same operation is yours to
   recognise by its operation id (node-rpc.md §33). You define how your pending work is rebuilt from
   your record after a restart; the runtime holds no durable queue.
