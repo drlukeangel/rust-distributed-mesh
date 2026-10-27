@@ -153,7 +153,7 @@ async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_b
 
 /// CONTRACT (build.md §4.4, gate order): "A node stands at the path" (fourth) is read before "The
 /// node's mesh is heard" (sixth): a steps Build whose step acts on a path no node stands at, in a peer
-/// mesh held unheard, is refused as acting on no node.
+/// mesh held unheard, is refused `unknown-node` naming the step (Q223).
 /// Must NOT happen: the steps refused `unheard-mesh` by the later gate first.
 #[tokio::test]
 async fn a_step_on_no_node_is_refused_unknown_before_the_heard_gate() {
@@ -162,7 +162,7 @@ async fn a_step_on_no_node_is_refused_unknown_before_the_heard_gate() {
     let steps = vec![rdm_core::build::Step::Stop { node: "mesh2.rpc.9".parse().unwrap() }];
     let span = tracing::info_span!("gates-steps");
     let out = r.cp.open_steps_in(span, "gates-steps-unknown", steps).await;
-    assert!(matches!(&out, Err(Refusal::Reject(BuildReject::StepNodeUnknown { .. }))), "the steps are refused as acting on no node before the heard gate, not {}", reason(&out));
+    assert!(matches!(&out, Err(Refusal::Reject(BuildReject::UnknownNode { step: Some(1), .. }))), "the steps are refused unknown-node, naming the step, before the heard gate (Q223), not {}", reason(&out));
 }
 
 /// CONTRACT (build.md §4.4: "A gate that fails refuses by name and nothing is written"; gate "The

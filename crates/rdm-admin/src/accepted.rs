@@ -134,7 +134,7 @@ impl MeshTopology {
     /// name for a path the mesh does not hold.
     pub fn set_spec(&mut self, spec: NodeSpec) -> Result<(), BuildReject> {
         if !self.nodes.contains(&spec.path) {
-            return Err(BuildReject::UnknownNode { node: spec.path.to_string() });
+            return Err(BuildReject::UnknownNode { node: spec.path.to_string(), step: None });
         }
         self.spec_by_path.insert(spec.path.clone(), spec);
         Ok(())
@@ -499,7 +499,7 @@ pub(crate) fn step_births(steps: &[Step], pinned: &[(PathName, PinnedBirth)]) ->
     let mut at: BTreeMap<PathName, Option<PinnedBirth>> = pinned.iter().map(|(p, b)| (p.clone(), Some(b.clone()))).collect();
     let mut out = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
-        let unknown = || BuildReject::StepNodeUnknown { step: i as u32 + 1, node: step.node().to_string() };
+        let unknown = || BuildReject::UnknownNode { node: step.node().to_string(), step: Some(i as u32 + 1) };
         let birth = match step {
             Step::Create { node, .. } => {
                 at.insert(node.clone(), None);
@@ -605,14 +605,14 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
         TopologyChange::RemoveNode { node } => {
             let m = next.meshes.get_mut(&node.mesh).ok_or_else(|| BuildReject::UnknownMesh { mesh: node.mesh.clone() })?;
             if !m.nodes.contains(node) {
-                return Err(BuildReject::UnknownNode { node: node.to_string() });
+                return Err(BuildReject::UnknownNode { node: node.to_string(), step: None });
             }
             // The authority removes a birth it sees: a view that has not heard the node yet refuses
             // by name rather than accepting a Build it would close with nothing to do. Which birth it
             // sees may be deleted (live, stopped, or recorded os-stopped) is its door's, which reads the
             // status rows (`ControlPlane::submit_checked`).
             if observed.node(node).is_none() {
-                return Err(BuildReject::UnknownNode { node: node.to_string() });
+                return Err(BuildReject::UnknownNode { node: node.to_string(), step: None });
             }
             if node.kind == NodeKind::NodeAdmin && m.count(NodeKind::NodeAdmin) <= 1 {
                 return Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh: node.mesh.clone() });
@@ -672,7 +672,7 @@ fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded)
     for spec in nodes {
         let path = &spec.path;
         if path.old {
-            return Err(BuildReject::UnknownNode { node: path.to_string() });
+            return Err(BuildReject::UnknownNode { node: path.to_string(), step: None });
         }
         if !is_valid_mesh_name(&path.mesh) {
             return Err(BuildReject::InvalidMeshName { mesh: path.mesh.clone() });
@@ -1238,7 +1238,7 @@ fn plan_with(
                     }
                 }
             }
-            Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-step-node-unknown", reason = %e).in_scope(|| tracing::info!("the Build's steps name a node no step can act on: nothing is planned")),
+            Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-unknown-node", reason = %e).in_scope(|| tracing::info!("the Build's steps name a node no step can act on: nothing is planned")),
         }
         return BuildPlan { operations: ops };
     }
@@ -1548,7 +1548,7 @@ mod tests {
             (TopologyChange::CreateMesh { desired: counts("mesh1", 1, 0) }, BuildReject::MeshAlreadyExists { mesh: "mesh1".into() }),
             (TopologyChange::CreateMesh { desired: counts("Mesh2", 1, 0) }, BuildReject::InvalidMeshName { mesh: "Mesh2".into() }),
             (TopologyChange::CreateMesh { desired: counts("mesh2", 0, 1) }, BuildReject::MeshWithoutAdmin { mesh: "mesh2".into() }),
-            (TopologyChange::RemoveNode { node: "mesh1.rpc.9".parse().unwrap() }, BuildReject::UnknownNode { node: "mesh1.rpc.9".into() }),
+            (TopologyChange::RemoveNode { node: "mesh1.rpc.9".parse().unwrap() }, BuildReject::UnknownNode { node: "mesh1.rpc.9".into(), step: None }),
             (TopologyChange::ReconcileMesh { desired: counts("mesh7", 1, 1) }, BuildReject::UnknownMesh { mesh: "mesh7".into() }),
             (
                 TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "other".into(), meshes: vec![counts("mesh1", 1, 1)] } },
@@ -2502,7 +2502,7 @@ mod tests {
             (vec![entry("mesh1.admin.1", None), entry("mesh1.rpc.4", None)], BuildReject::ExecutableMissing { node: "mesh1.rpc.4".into() }),
             (vec![entry("mesh1.admin.1", None), entry("mesh2.admin.1", None)], BuildReject::ExecutableMissing { node: "mesh2.admin.1".into() }),
             (vec![entry("mesh1.admin.1", None), entry("mesh1.admin.1", Some("b"))], BuildReject::NodeNamedTwice { node: "mesh1.admin.1".into() }),
-            (vec![entry("mesh1.admin.1", None), entry("mesh1.rpc.1.old", Some("b"))], BuildReject::UnknownNode { node: "mesh1.rpc.1.old".into() }),
+            (vec![entry("mesh1.admin.1", None), entry("mesh1.rpc.1.old", Some("b"))], BuildReject::UnknownNode { node: "mesh1.rpc.1.old".into(), step: None }),
             (vec![entry("mesh1.admin.1", None), entry("mesh2.rpc.1", Some("b"))], BuildReject::MeshWithoutAdmin { mesh: "mesh2".into() }),
         ] {
             assert_eq!(compile(&cur, &reconcile(request.clone()), &mn()), Err(want), "{request:?}");

@@ -771,7 +771,7 @@ impl ControlPlane {
             // the mesh, and only a delete acts on it (mesh-delete.md step 7).
             let deleted_mesh = kind == ActionKind::Delete && !path.old && !current.topology.meshes.contains_key(&path.mesh) && self.of_deleted_mesh(&path).await;
             if (kind == ActionKind::Delete && !(path.old || deleted_mesh)) || (!stopped_old && !deleted_mesh && !current.topology.contains(&path.base())) {
-                let reject = BuildReject::UnknownNode { node: path.to_string() };
+                let reject = BuildReject::UnknownNode { node: path.to_string(), step: None };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
@@ -795,7 +795,7 @@ impl ControlPlane {
                     } else {
                         self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string())
                     };
-                    let reject = BuildReject::UnknownNode { node: path.to_string() };
+                    let reject = BuildReject::UnknownNode { node: path.to_string(), step: None };
                     drop(t);
                     outer.in_scope(|| {
                         tracing::info_span!("rdm.node_admin.build.reject.via-unknown-node", route, detail = %reject, view = %why)
@@ -868,7 +868,7 @@ impl ControlPlane {
         async {
             self.require_fabric_primary(route).await?;
             if !self.atlas.holds_deleted(&node_id, &incarnation) && self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {
-                let reject = BuildReject::UnknownNode { node: path.to_string() };
+                let reject = BuildReject::UnknownNode { node: path.to_string(), step: None };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
@@ -1014,7 +1014,7 @@ impl ControlPlane {
             }
             let (_admitted, current, open) = self.mesh_settled(&path.mesh, &action).await?;
             if !current.topology.contains(&path) {
-                let reject = BuildReject::UnknownNode { node: path.to_string() };
+                let reject = BuildReject::UnknownNode { node: path.to_string(), step: None };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
@@ -1286,7 +1286,6 @@ pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
         "referenced-by-open-build" => tracing::info_span!("rdm.node_admin.build.reject.via-referenced-by-open-build", route, detail = %reject),
         "empty-steps" => tracing::info_span!("rdm.node_admin.build.reject.via-empty-steps", route, detail = %reject),
         "step-repeated" => tracing::info_span!("rdm.node_admin.build.reject.via-step-repeated", route, detail = %reject),
-        "step-node-unknown" => tracing::info_span!("rdm.node_admin.build.reject.via-step-node-unknown", route, detail = %reject),
         "topology-storage-provider-not-registered" => tracing::info_span!("rdm.node_admin.build.reject.via-topology-storage-provider-not-registered", route, detail = %reject),
         "topology-storage-provider-not-opened" => tracing::info_span!("rdm.node_admin.build.reject.via-topology-storage-provider-not-opened", route, detail = %reject),
         _ => tracing::info_span!("rdm.node_admin.build.reject.via-invalid-intent", route, detail = %reject),

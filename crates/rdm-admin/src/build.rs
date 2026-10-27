@@ -374,10 +374,15 @@ pub enum BuildReject {
         /// The mesh.
         mesh: String,
     },
-    /// The node is not one the fabric holds.
+    /// The node is not one the fabric holds (build.md §4.4 gate 4): for a steps Build, a step acting on
+    /// a `path.name` that holds no birth when the Build is accepted and that no earlier step of the
+    /// Build creates or renames a node to, the step named (Q223).
     UnknownNode {
         /// The node.
         node: String,
+        /// The step of a steps Build that names it, numbered from 1.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<u32>,
     },
     /// The node is not live.
     NodeNotLive {
@@ -494,14 +499,6 @@ pub enum BuildReject {
         /// The operation named twice.
         operation: String,
     },
-    /// A step acting on a `path.name` that holds no birth when the Build is accepted and that
-    /// no earlier step of the Build creates or renames a node to.
-    StepNodeUnknown {
-        /// The step, numbered from 1.
-        step: u32,
-        /// The `path.name` it names.
-        node: String,
-    },
     /// A complete-topology request (`Reconcile`) built from a read of a Build that is no longer the
     /// current one (proposal executable-bindings-at-create.md rule 1, optimistic concurrency): nothing
     /// is accepted, and the caller re-reads.
@@ -587,7 +584,6 @@ impl BuildReject {
             Self::ReferencedByOpenBuild { .. } => "referenced-by-open-build",
             Self::EmptySteps => "empty-steps",
             Self::StepRepeated { .. } => "step-repeated",
-            Self::StepNodeUnknown { .. } => "step-node-unknown",
             Self::BasedOnNotCurrent { .. } => "based-on-not-current",
             Self::NoNodeListed => "no-node-listed",
             Self::TopologyStorageProviderNotRegistered { .. } => "topology-storage-provider-not-registered",
@@ -608,7 +604,8 @@ impl fmt::Display for BuildReject {
             Self::MeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` needs at least one node-admin"),
             Self::UnknownMesh { mesh } => write!(f, "mesh `{mesh}` is not in the fabric"),
             Self::MeshIdUnknown { mesh } => write!(f, "mesh `{mesh}` is held, but no member has stated its id: its shutdown cannot be keyed"),
-            Self::UnknownNode { node } => write!(f, "node `{node}` is not in the fabric"),
+            Self::UnknownNode { node, step: None } => write!(f, "node `{node}` is not in the fabric"),
+            Self::UnknownNode { node, step: Some(step) } => write!(f, "step {step} of the Build acts on `{node}`, which holds no birth now and which no earlier step creates or renames a node to"),
             Self::NodeNotLive { node } => write!(f, "node `{node}` is not live"),
             Self::WouldLeaveMeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` would be left without a node-admin in the accepted topology"),
             Self::MeshAlreadyExists { mesh } => write!(f, "mesh `{mesh}` already exists"),
@@ -627,7 +624,6 @@ impl fmt::Display for BuildReject {
             Self::ReferencedByOpenBuild { node, build_id } => write!(f, "node `{node}`'s stopped birth is referenced by open Build {build_id}: it keeps it, and the stopped-node collector deletes nothing it holds"),
             Self::EmptySteps => write!(f, "a Build needs at least one step"),
             Self::StepRepeated { operation } => write!(f, "the Build names operation `{operation}` twice: each step's receipts are keyed by its operation, so a Build names each operation once"),
-            Self::StepNodeUnknown { step, node } => write!(f, "step {step} of the Build acts on `{node}`, which holds no birth now and which no earlier step creates or renames a node to"),
             Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
             Self::BasedOnNotCurrent { based_on, current } => write!(f, "the request is based on Build {based_on}, and the current Build is {current}: nothing is accepted; read the topology again and submit from it"),
             Self::NoNodeListed => write!(f, "the request lists no node: a fabric with no mesh is fabric.delete, never a topology request; nothing is accepted"),
