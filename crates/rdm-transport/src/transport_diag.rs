@@ -1,4 +1,4 @@
-//! The transport diagnostic sink (R-QH1): the iroh and noq handshake, path and packet lines of
+//! The transport diagnostic sink (R-QH1): the iroh and noq handshake and path event lines of
 //! this process, and the node's own dial, accept and bind lines, in one file of the node's own
 //! log directory, `<RDM_DATA_DIR>/transport-diag.log` (a process with no data directory writes
 //! its own `<service>.<pid>-<pid ns>.transport-diag.log` in `RDM_EVIDENCE_DIR`, beside its span files). A red gate keeps every node directory's log files, so both ends of
@@ -14,19 +14,17 @@
 //! written by a thread of their own ([`LogSink`]), so a held disk never holds a runtime worker.
 //! It observes only: no transport setting, timeout or retry depends on it.
 //!
-//! What a pair of these files separates, for one dial: the client's `noq.packet sent` lines for
-//! the Initial space and the server's `noq.packet received` lines for the same handshake (no
-//! server reply, or a reply sent and never received, or received and not processed), the server's
-//! endpoint lines for a datagram it dropped before any connection took it, and both sides'
-//! error chains.
+//! What a pair of these files separates, for one dial: the client's and the server's handshake
+//! events (no server reply, a reply sent and never received, or received and not processed), the
+//! server's endpoint lines for a datagram it dropped before any connection took it, and both sides'
+//! error chains. It records events only and enables no iroh or noq span: an enabled span exists for
+//! every layer of the process, and one iroh entered across an `.await` and left on a worker becomes
+//! the parent of noq's `drive` span, created under noq's connection lock, where tracing-subscriber's
+//! "tried to clone a span that already closed" poisons that lock.
 
 use crate::log_sink::LogSink;
-use std::fmt::Write as _;
 use std::io::Write as _;
-use tracing::field::{Field, Visit};
-use tracing::span::{Attributes, Id};
 use tracing::Subscriber;
-use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Layer};
 
@@ -126,79 +124,22 @@ where
             }
         }
     });
-    let lines = tracing_subscriber::fmt::layer().with_ansi(false).with_target(true).with_thread_names(true).with_writer(sink.clone()).with_filter(filter());
-    let packets = PacketLayer { sink: sink.clone() }.with_filter(tracing_subscriber::filter::filter_fn(PacketLayer::admits));
-    Some((lines.and_then(packets), sink))
-}
-
-/// The noq packet spans of the handshake, one line each: `send{space, pn, path_id}` as
-/// `noq.packet sent`, `recv{space, pn}` (an authenticated, decrypted packet) as `noq.packet received`
-/// and `first recv` (the server's first Initial of a connection) as `noq.packet first-received`,
-/// each with the noq connection handle (`drive{id}`) it belongs to. Only the Initial and Handshake
-/// spaces are written: the handshake is the evidence, and application data is every packet after it.
-struct PacketLayer {
-    sink: LogSink,
-}
-
-/// The noq connection handle a span belongs to, kept in the `drive` span's extensions.
-struct Drive(String);
-
-#[derive(Default)]
-struct Fields(String, Option<String>);
-
-impl Visit for Fields {
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        let v = format!("{value:?}");
-        if field.name() == "space" {
-            self.1 = Some(v.clone());
-        }
-        let _ = write!(self.0, " {}={v}", field.name());
-    }
-    fn record_str(&mut self, field: &Field, value: &str) {
-        self.record_debug(field, &format_args!("{value}"));
-    }
-}
-
-impl PacketLayer {
-    fn admits(meta: &tracing::Metadata<'_>) -> bool {
-        meta.is_span() && (meta.target().starts_with("noq_proto::connection") && matches!(meta.name(), "send" | "recv" | "first recv") || meta.target().starts_with("noq::connection") && meta.name() == "drive")
-    }
-}
-
-impl<S> Layer<S> for PacketLayer
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-{
-    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        let mut fields = Fields::default();
-        attrs.record(&mut fields);
-        let meta = attrs.metadata();
-        if meta.name() == "drive" {
-            if let Some(span) = ctx.span(id) {
-                span.extensions_mut().insert(Drive(fields.0.trim().to_string()));
-            }
-            return;
-        }
-        if fields.1.as_deref().is_some_and(|s| s.contains("Data")) {
-            return;
-        }
-        let conn = ctx
-            .span(id)
-            .and_then(|s| s.scope().skip(1).find_map(|p| p.extensions().get::<Drive>().map(|d| d.0.clone())))
-            .unwrap_or_default();
-        let what = match meta.name() {
-            "send" => "sent",
-            "recv" => "received",
-            _ => "first-received",
-        };
-        // The fmt lines' clock and format, so both kinds of line sort together.
-        let mut ts = String::new();
-        let _ = tracing_subscriber::fmt::time::FormatTime::format_time(&tracing_subscriber::fmt::time::SystemTime, &mut tracing_subscriber::fmt::format::Writer::new(&mut ts));
-        let thread = std::thread::current();
-        let line = format!("{ts}  TRACE noq.packet {what} conn{{{conn}}}{} thread={}\n", fields.0, thread.name().unwrap_or("-"));
-        let mut w = tracing_subscriber::fmt::MakeWriter::make_writer(&self.sink);
-        let _ = w.write_all(line.as_bytes());
-    }
+    // Events only: the layer enables no span of iroh or noq. A span it enabled would exist for every
+    // layer of the process, and iroh enters some of its spans with a guard held across an `.await`
+    // (`endpoint.rs` `bind_under_no_span`): on a multi-thread runtime the exit runs on another worker,
+    // the span stays on the first worker's stack after it closes, and noq's `drive` span, created
+    // while noq holds its connection's state lock, takes it as its parent. tracing-subscriber then
+    // panics "tried to clone a span that already closed" under that lock, the lock is poisoned and
+    // every later stream operation of that connection panics (the in-process cells that hung only
+    // in evidence runs, and Rafka 141's MM-new stall, 2026-10-26).
+    use tracing_subscriber::filter::FilterExt;
+    let lines = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_target(true)
+        .with_thread_names(true)
+        .with_writer(sink.clone())
+        .with_filter(tracing_subscriber::filter::filter_fn(|m| m.is_event()).and(filter()));
+    Some((lines, sink))
 }
 
 #[cfg(test)]

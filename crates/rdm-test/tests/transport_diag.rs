@@ -124,10 +124,6 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     assert!(failed.contains(&format!("peer={expected}")) && failed.contains(&format!("addr={maker_addr}")) && failed.contains("local=") && failed.contains("error="), "the connect failure lacks the expected key, the maker's address, the local socket or the chain: {failed}");
     let refused = line_with(&maker, &["step=\"accept-failed\""]).unwrap_or_else(|| panic!("the maker logged no accept failure:\n{maker}"));
     assert!(refused.contains("remote_addr=") && refused.contains("error="), "the accept failure lacks the remote address or the chain: {refused}");
-    assert!(line_with(&dialler, &["noq.packet sent", "space=Initial"]).is_some(), "the dialler's Initial is not in its file:\n{dialler}");
-    assert!(line_with(&dialler, &["noq.packet received"]).is_some(), "the maker's reply, received by the dialler, is not in its file:\n{dialler}");
-    assert!(line_with(&maker, &["noq.packet first-received"]).is_some(), "the dialler's first Initial, received by the maker, is not in its file:\n{maker}");
-    assert!(line_with(&maker, &["noq.packet sent", "space=Initial"]).is_some(), "the maker's reply is not in its file:\n{maker}");
 
     let spans: String = std::fs::read_dir(&run).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
     assert!(!spans.is_empty(), "neither process exported a span");
