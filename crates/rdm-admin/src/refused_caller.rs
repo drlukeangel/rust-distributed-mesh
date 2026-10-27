@@ -10,6 +10,12 @@
 //! fabric-primary, which terminates its runtime (`RecoverySubmitter::report_terminate`, the
 //! returned-birth path); a caller re-admitted is commanded back through `node.mesh.join`
 //! (`crate::heard_again`). One decision in flight per birth.
+//!
+//! Q217 (Luke, 2026-10-27): "delete a caller deletes the caller, not just from the record but
+//! literally as well: if they come back and they are deleted they get actually deleted." A caller whose
+//! record is deleted is deleted, its runtime terminated, its record left deleted: never re-admitted. A
+//! path the current Build still needs is recovered by a re-create at that path.name, a new birth, by
+//! node recovery (the mesh-primary's owed resubmit, `RecoverySubmitter::owed_submits`), never here.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -51,7 +57,7 @@ impl RefusedCallers {
             "rdm.node_admin.node.update.via-refused-caller",
             node = %me, door, node_id = %node_id, incarnation_id = %incarnation.as_str(),
             subject = tracing::field::Empty, decision = tracing::field::Empty, own = tracing::field::Empty,
-            root = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
+            root = tracing::field::Empty, needed = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
         );
         let decided = tracing::Instrument::instrument(self.decide_and_act(atlas, &span, node_id, incarnation), span.clone()).await;
         self.in_flight.lock().unwrap().remove(&key);
@@ -115,25 +121,19 @@ impl RefusedCallers {
             }
         };
         span.record("decision", decided.name());
+        // A deleted birth's path the topology still needs is node recovery's to re-create (Q217).
+        if let CallerDecision::DeleteDeletedBirth { needed, .. } = &decided {
+            span.record("needed", *needed);
+        }
         let outcome = match &decided {
-            CallerDecision::DeleteHeld { .. } | CallerDecision::DeleteUnneeded { .. } => match &self.recovery.client {
-                Some(client) => match self.recovery.report_terminate(client, path.clone(), node_id.clone(), incarnation.clone()).await {
-                    Ok(()) => "terminate-reported".to_string(),
-                    Err(e) => {
-                        span.record("detail", e.as_str());
-                        "terminate-unreported".to_string()
-                    }
-                },
-                None => "no-client".to_string(),
+            CallerDecision::DeleteHeld { .. } | CallerDecision::DeleteUnneeded { .. } | CallerDecision::DeleteDeletedBirth { .. } => match self.recovery.report_terminate(self.recovery.client.as_ref(), path.clone(), node_id.clone(), incarnation.clone()).await {
+                Ok(()) => "terminate-reported".to_string(),
+                Err(e) => {
+                    span.record("detail", e.as_str());
+                    "terminate-unreported".to_string()
+                }
             },
-            // The existing admission, node.mesh.join, takes a birth whose record is live: the join door
-            // verifies the exact birth against the deployment its record holds. A caller whose record is
-            // deleted and whose name is released has none to rejoin through.
-            CallerDecision::ReAdmit { deleted: true, .. } => {
-                span.record("detail", format!("{path}: the caller's record is deleted and its name released; node.mesh.join admits only a birth whose record is live").as_str());
-                "re-admit-not-admissible".to_string()
-            }
-            CallerDecision::ReAdmit { deleted: false, .. } => match self.heard_again.get() {
+            CallerDecision::ReAdmit { .. } => match self.heard_again.get() {
                 Some(heard_again) => {
                     let mut caller = crate::model::Node::allocated(path.clone());
                     caller.node_id = node_id.clone();
@@ -160,5 +160,142 @@ impl FabricAtlas {
         tokio::spawn(async move {
             callers.decide(&atlas, door, &node_id, &incarnation).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Q207 and Q217 through the declaration door: the chaos red's shape (#3211 red 3).
+    use super::*;
+    use crate::model::{Node, NodeKind};
+    use crate::topology::Topology;
+    use crate::storage::{NodeRow, NodesStorage as _};
+    use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest};
+
+    fn birth(path: &str, kind: NodeKind) -> Node {
+        let mut n = Node::allocated(path.parse().unwrap());
+        n.node_id = NodeId::mint();
+        n.incarnation_id = Some(IncarnationId::mint());
+        n.mesh = n.name.mesh.clone();
+        n.kind = kind;
+        n.status = NodeStatus::ReadyForTraffic;
+        n
+    }
+
+    /// CONTRACT (Q207, Q217; #3211 red 3): a birth of mesh1.rpc.2 was deleted (its record written
+    /// deleted, its Digest refused, so no view holds it), and its runtime comes back and declares
+    /// Stopped to its mesh-primary, the fabric-primary here. The declaration is refused `SubjectUnknown`
+    /// at once, and the declaration door decides the caller by its path.name and the atlas: nothing
+    /// else is at the path and its record is deleted, so it is deleted (`delete-deleted-birth`), the
+    /// current Build still needing the path (`needed`, node recovery's re-create), decided at the root
+    /// itself, and reported for `node.terminate` (`via-returned-reported` naming the exact birth; the
+    /// rig builds no Build door, so the open is refused naming it).
+    /// Must NOT happen: the refusal and nothing decided (the red), the caller re-admitted, or the
+    /// refusal held on the decision.
+    #[tokio::test]
+    async fn a_deleted_birth_that_declares_stopped_is_refused_and_deleted_through_the_declaration_door() {
+        let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-declaration").expect("the cell's evidence file can be created");
+        let mut admin = birth("mesh1.admin.1", NodeKind::NodeAdmin);
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let caller = birth("mesh1.rpc.2", NodeKind::RpcNode);
+        let caller_inc = caller.incarnation_id.clone().unwrap();
+        let fabric_id = rdm_core::FabricId::mint();
+        let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process };
+        let mesh = crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: crate::model::ScopeStatus::ReadyForTraffic };
+        // The current Build names both paths: the deleted caller's path is still needed.
+        let planned = Topology { fabric: fabric.clone(), meshes: vec![mesh.clone()], nodes: vec![admin.clone(), caller.clone()] };
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        // This admin's view holds itself only: the caller's Digest is refused as a deleted birth.
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: vec![mesh], nodes: vec![admin.clone()] }));
+        // The node records: the admin's live, the caller's deleted.
+        let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
+        for (n, status) in [(&admin, NodeStatus::ReadyForTraffic), (&caller, NodeStatus::Deleted)] {
+            let mut r = NodeRow::new(n.name.clone(), n.node_id.clone(), status);
+            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+            rows.put_node(&r).await.unwrap();
+        }
+        let atlas = Arc::new(FabricAtlas::default());
+        atlas.scope(&*rows, ["mesh1".to_string()].into()).await.unwrap();
+        let recovery = crate::admin::RecoverySubmitter {
+            me: admin.name.clone(),
+            topology: topology.clone(),
+            digest_view: Default::default(),
+            provider: Arc::new(crate::deployment::process::ProcessDeploymentProvider::new()),
+            nodes_storage: rows.clone(),
+            written: Default::default(),
+            door: Default::default(),
+            client: None,
+            builds: builds.clone(),
+            data_root: Default::default(),
+            gone_dirs: Default::default(),
+        };
+        atlas.refused_callers(Arc::new(RefusedCallers::new(admin.node_id.clone(), recovery, Default::default())));
+        let authority = crate::status_rpc::StatusAuthority {
+            certs: None,
+            app_channels: None,
+            declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
+            stopped: Default::default(),
+            me: admin.name.clone(),
+            node_id: admin.node_id.clone(),
+            fabric_id,
+            topology: topology.clone(),
+            declared: Default::default(),
+            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
+            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
+            mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
+            commands: Arc::new(crate::node_commands::CommandView::default()),
+            own: Default::default(),
+            mesh_deleter: Default::default(),
+            hold_next_reply: Default::default(),
+            wake: Default::default(),
+            fabric_states: Default::default(),
+            atlas: Default::default(),
+            fabric_recovery: Default::default(),
+            nodes_storage: rows.clone(),
+            caches: Default::default(),
+            configs: Default::default(),
+            republish: Default::default(),
+            configure: Default::default(),
+            pre_node_ready: Default::default(),
+            rename: Default::default(),
+            row_moved: Default::default(),
+            loads: None,
+            digest_view: None,
+            builds: builds.clone(),
+        };
+        let _ = authority.atlas.set(atlas.clone());
+        let declare = StatusRequest::DeclareNodeState { node_id: caller.node_id.clone(), incarnation: caller_inc.clone(), state: NodeState::Stopped, operation: None };
+        let reply = authority.apply_from(None, None, &declare).await;
+        assert_eq!(reply, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "the deleted birth's declaration is refused at once");
+        // The decision runs on its own task: it ends once its one span closes.
+        let decided = |spans: &[serde_json::Value]| spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-refused-caller").map(|s| s["attributes"].clone());
+        let mut spans = capture.spans().expect("the cell's spans can be read");
+        for _ in 0..200 {
+            if decided(&spans).is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+            spans = capture.spans().expect("the cell's spans can be read");
+        }
+        let d = decided(&spans).unwrap_or_else(|| panic!("the declaration door decided the caller: {spans:?}"));
+        assert_eq!(d["door"], "declaration", "{d}");
+        assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's path.name: {d}");
+        assert_eq!(d["own"], "delete-deleted-birth", "{d}");
+        assert_eq!(d["decision"], "delete-deleted-birth", "a caller whose record is deleted is deleted, never re-admitted (Q217): {d}");
+        assert_eq!(d["needed"], "true", "the current Build still needs the path: node recovery re-creates it: {d}");
+        assert_eq!(d["root"], "self", "the fabric-primary decides from its own atlas: {d}");
+        // The rig builds no Build door: the termination's open is refused naming it (node_replace's
+        // e2e runs it to the runtime's end).
+        assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some("mesh1.admin.1: its Build door is not built yet")), "{d}");
+        let reported = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-returned-reported").map(|s| s["attributes"].clone()).unwrap_or_else(|| panic!("the caller was reported for node.terminate: {spans:?}"));
+        assert_eq!((reported["returned"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh1.rpc.2"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the terminate report names the exact birth: {reported}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -32,8 +32,10 @@ A caller birth a primary does not hold (its Digest refused by name under [gossip
 rules](../gossip.md#31-frame-catalog), or its status declaration refused `SubjectUnknown`) is decided by
 its path.name and the primary's atlas, one decision for the fabric-primary and every mesh-primary
 (Q207): another birth at that path.name now, or an op executing that re-creates it there, deletes the
-caller; nothing there and the topology needing the path re-admits it through
+caller; nothing there, its record live and the topology needing the path re-admits it through
 [node.mesh.join](node-mesh-join.md); nothing there and the topology not needing it deletes it. A
+caller whose record is deleted is deleted, its runtime terminated, never re-admitted; a path still
+needed is recovered by re-create (Q217). A
 node-admin's atlas is its topology and its in-flight commands over the meshes it is primary for, its own
 mesh as a mesh-primary and every mesh as the fabric-primary, each filled once from the node records as
 it takes that primary and narrowed off as it hands it away. A node-admin that is not the fabric-primary

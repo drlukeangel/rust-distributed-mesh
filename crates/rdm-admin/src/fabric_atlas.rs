@@ -97,12 +97,21 @@ pub(crate) enum CallerDecision {
         /// The caller's `path.name`.
         path: PathName,
     },
-    /// Nothing is at the path and the topology needs it: the caller is re-admitted.
+    /// The caller's record is deleted and nothing else is at the path: the caller is deleted, its
+    /// runtime terminated, never re-admitted (Q217). A path the topology still `needed` is recovered by
+    /// a re-create at that path.name, a new birth, through node recovery (its owed resubmit,
+    /// `RecoverySubmitter::owed_submits`).
+    DeleteDeletedBirth {
+        /// The caller's `path.name`.
+        path: PathName,
+        /// Whether the current Build's topology names the path.
+        needed: bool,
+    },
+    /// The caller's record is live, nothing else is at the path and the topology needs it: the caller
+    /// is re-admitted.
     ReAdmit {
         /// The caller's `path.name`.
         path: PathName,
-        /// The caller's record as the atlas holds it.
-        deleted: bool,
     },
     /// The atlas holds no record of the caller: it has no `path.name` to decide on.
     NoRecord,
@@ -119,6 +128,7 @@ impl CallerDecision {
         match self {
             CallerDecision::DeleteHeld { .. } => "delete-path-held",
             CallerDecision::DeleteUnneeded { .. } => "delete-path-unneeded",
+            CallerDecision::DeleteDeletedBirth { .. } => "delete-deleted-birth",
             CallerDecision::ReAdmit { .. } => "re-admit",
             CallerDecision::NoRecord => "no-record",
             CallerDecision::NotMine { .. } => "not-mine",
@@ -128,7 +138,7 @@ impl CallerDecision {
     /// The caller's `path.name`, when the atlas holds its record.
     pub(crate) fn path(&self) -> Option<&PathName> {
         match self {
-            CallerDecision::DeleteHeld { path, .. } | CallerDecision::DeleteUnneeded { path } | CallerDecision::ReAdmit { path, .. } | CallerDecision::NotMine { path } => Some(path),
+            CallerDecision::DeleteHeld { path, .. } | CallerDecision::DeleteUnneeded { path } | CallerDecision::DeleteDeletedBirth { path, .. } | CallerDecision::ReAdmit { path } | CallerDecision::NotMine { path } => Some(path),
             CallerDecision::NoRecord => None,
         }
     }
@@ -137,8 +147,9 @@ impl CallerDecision {
     /// node-admin that is not the fabric-primary verifies at the root, and the root's answer wins: it
     /// may have missed an op). `root` lists the current birth of every path the current Build's
     /// topology names, a deleted one omitted: another birth at the caller's path there is held; the
-    /// caller's own birth there is the root's current birth, needed; no row is nothing at the path,
-    /// needed as this admin's own read of the current Build says.
+    /// caller's own birth there is the root's current birth, live and needed: re-admitted; no row at a
+    /// path the topology needs is the caller's record deleted at the root: deleted, never re-admitted
+    /// (Q217); no row at a path it does not need is unneeded.
     pub(crate) fn verified(self, caller: (&NodeId, &IncarnationId), root: &rdm_core::views::AtlasView, needed: bool) -> CallerDecision {
         let Some(path) = self.path().cloned() else { return self };
         if matches!(self, CallerDecision::NotMine { .. }) {
@@ -146,9 +157,9 @@ impl CallerDecision {
         }
         let (node_id, incarnation) = caller;
         match root.node(&path.to_string()) {
-            Some(r) if r.node_id == *node_id && r.incarnation_id.as_ref().is_none_or(|i| i == incarnation) => CallerDecision::ReAdmit { path, deleted: false },
+            Some(r) if r.node_id == *node_id && r.incarnation_id.as_ref().is_none_or(|i| i == incarnation) => CallerDecision::ReAdmit { path },
             Some(r) => CallerDecision::DeleteHeld { path, by: format!("{}@{}", r.node_id, r.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("")) },
-            None if needed => CallerDecision::ReAdmit { path, deleted: true },
+            None if needed => CallerDecision::DeleteDeletedBirth { path, needed },
             None => CallerDecision::DeleteUnneeded { path },
         }
     }
@@ -419,8 +430,9 @@ impl FabricAtlas {
     /// Q207: the caller birth `(node_id, incarnation)` a primary refused as one it does not hold, decided
     /// from this atlas alone (its records and the ops executing; never the gossip view, never a store
     /// read): another birth at the caller's `path.name`, or an op executing that fills it, deletes the
-    /// caller; nothing there and `planned` (the current Build's topology, by mesh) naming the path
-    /// re-admits it; nothing there and the topology not naming it deletes it.
+    /// caller; nothing there and the caller's record deleted deletes it, never re-admitted (Q217);
+    /// nothing there, its record live and `planned` (the current Build's topology, by mesh) naming the
+    /// path re-admits it; nothing there and the topology not naming it deletes it.
     pub(crate) fn refused_caller(&self, node_id: &NodeId, incarnation: &IncarnationId, planned: &BTreeMap<String, Vec<PathName>>) -> CallerDecision {
         let held = self.held.lock().unwrap();
         let Some(caller) = held.records.get(node_id) else { return CallerDecision::NoRecord };
@@ -441,8 +453,13 @@ impl FabricAtlas {
         if let Some(a) = held.accepted.get(&path.to_string()).filter(|a| gone(caller) && a.operation.starts_with("node.create:")) {
             return CallerDecision::DeleteHeld { path, by: a.operation.clone() };
         }
-        if planned.get(&path.mesh).is_some_and(|paths| paths.contains(&path)) {
-            CallerDecision::ReAdmit { deleted: gone(caller), path }
+        let needed = planned.get(&path.mesh).is_some_and(|paths| paths.contains(&path));
+        // A caller whose record is deleted is deleted for real (Q217): its record stays deleted, and a
+        // needed path is recovered by a re-create, a new birth.
+        if gone(caller) {
+            CallerDecision::DeleteDeletedBirth { path, needed }
+        } else if needed {
+            CallerDecision::ReAdmit { path }
         } else {
             CallerDecision::DeleteUnneeded { path }
         }
@@ -794,26 +811,36 @@ mod tests {
         assert_eq!(decided, CallerDecision::DeleteHeld { path: path("mesh2.compute.2"), by: format!("{}@{}", new.node_id, new_inc.as_str()) });
     }
 
-    /// CONTRACT (Q207): nothing else is at the caller's path.name and the current Build's topology names
-    /// it: the caller is re-admitted (its record live: one the gossip view lost; its record deleted
-    /// alike). Must NOT happen: a needed path's only birth deleted.
+    /// CONTRACT (Q207): nothing else is at the caller's path.name, its record is live (one the gossip
+    /// view lost) and the current Build's topology names it: the caller is re-admitted. Must NOT
+    /// happen: a needed path's only live birth deleted.
     #[tokio::test]
-    async fn nothing_at_a_needed_path_re_admits_the_caller() {
+    async fn nothing_at_a_needed_path_re_admits_a_caller_whose_record_is_live() {
         let (live, live_inc) = record("mesh1.rpc.1", NodeStatus::ReadyForTraffic);
-        let (gone, gone_inc) = record("mesh1.rpc.2", NodeStatus::Deleted);
-        let atlas = atlas_of(&[&live, &gone], &["mesh1"]).await;
-        let needed = planned(&["mesh1.rpc.1", "mesh1.rpc.2"]);
-        assert_eq!(atlas.refused_caller(&live.node_id, &live_inc, &needed), CallerDecision::ReAdmit { path: path("mesh1.rpc.1"), deleted: false });
-        assert_eq!(atlas.refused_caller(&gone.node_id, &gone_inc, &needed), CallerDecision::ReAdmit { path: path("mesh1.rpc.2"), deleted: true });
+        let atlas = atlas_of(&[&live], &["mesh1"]).await;
+        assert_eq!(atlas.refused_caller(&live.node_id, &live_inc, &planned(&["mesh1.rpc.1"])), CallerDecision::ReAdmit { path: path("mesh1.rpc.1") });
     }
 
-    /// CONTRACT (Q207): nothing is at the caller's path.name and the topology does not name it: the
-    /// caller is deleted.
+    /// CONTRACT (Q217, Luke: "delete a caller deletes the caller, not just from the record but
+    /// literally as well: if they come back and they are deleted they get actually deleted"): a caller
+    /// whose record is deleted, nothing else at its path.name, is deleted whether or not the topology
+    /// needs the path; the decision names the need, the path a re-create recovers. Must NOT happen: a
+    /// deleted birth re-admitted.
+    #[tokio::test]
+    async fn a_caller_whose_record_is_deleted_is_deleted_needed_or_not() {
+        let (gone, gone_inc) = record("mesh1.rpc.2", NodeStatus::Deleted);
+        let atlas = atlas_of(&[&gone], &["mesh1"]).await;
+        assert_eq!(atlas.refused_caller(&gone.node_id, &gone_inc, &planned(&["mesh1.rpc.2"])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc.2"), needed: true });
+        assert_eq!(atlas.refused_caller(&gone.node_id, &gone_inc, &planned(&["mesh1.rpc.1"])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc.2"), needed: false });
+    }
+
+    /// CONTRACT (Q207): nothing is at the caller's path.name, its record is live, and the topology does
+    /// not name the path: the caller is deleted.
     #[tokio::test]
     async fn nothing_at_an_unneeded_path_deletes_the_caller() {
-        let (gone, gone_inc) = record("mesh1.rpc.3", NodeStatus::Deleted);
-        let atlas = atlas_of(&[&gone], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(&gone.node_id, &gone_inc, &planned(&["mesh1.rpc.1"])), CallerDecision::DeleteUnneeded { path: path("mesh1.rpc.3") });
+        let (live, live_inc) = record("mesh1.rpc.3", NodeStatus::ReadyForTraffic);
+        let atlas = atlas_of(&[&live], &["mesh1"]).await;
+        assert_eq!(atlas.refused_caller(&live.node_id, &live_inc, &planned(&["mesh1.rpc.1"])), CallerDecision::DeleteUnneeded { path: path("mesh1.rpc.3") });
     }
 
     /// CONTRACT (Q207, the atlas is topology and in-flight ops): an op accepted on the caller's path that
@@ -836,7 +863,7 @@ mod tests {
         let atlas = atlas_of(&[&born], &["mesh1"]).await;
         let build = crate::build::BuildId::parse("66h8qrqvaajk").unwrap();
         atlas.note_accepted(&build, 1, &AttemptAction::Recover { path: path("mesh1.rpc.2"), from_incarnation: IncarnationId::mint(), node_id: NodeId::mint(), backbone: false });
-        assert_eq!(atlas.refused_caller(&born.node_id, &born_inc, &planned(&["mesh1.rpc.2"])), CallerDecision::ReAdmit { path: path("mesh1.rpc.2"), deleted: false });
+        assert_eq!(atlas.refused_caller(&born.node_id, &born_inc, &planned(&["mesh1.rpc.2"])), CallerDecision::ReAdmit { path: path("mesh1.rpc.2") });
     }
 
     /// CONTRACT (Q207): an older birth of a node whose newer birth is current at the path is deleted.
@@ -862,7 +889,8 @@ mod tests {
 
     /// CONTRACT (Q207, "call home and verify at the root"): the fabric-primary's `fabrics.atlas.get`
     /// wins over the mesh-primary's own decision: another birth at the path there deletes the caller;
-    /// the caller current there is re-admitted; no row there is nothing at the path.
+    /// the caller current there is re-admitted; no row at a needed path is the caller's record deleted
+    /// there, deleted and never re-admitted (Q217); no row at an unneeded path is unneeded.
     #[test]
     fn the_root_answer_wins() {
         let (caller, inc) = (NodeId::mint(), IncarnationId::mint());
@@ -871,12 +899,13 @@ mod tests {
             nodes: vec![rdm_core::views::AtlasNodeView { name: at.clone(), node_id: node_id.clone(), incarnation_id: Some(i.clone()), status: rdm_core::views::NodeStatus::ReadyForTraffic, stopped: false, accepted: None, observed: None }],
         };
         let (other, other_inc) = (NodeId::mint(), IncarnationId::mint());
-        let mine = CallerDecision::ReAdmit { path: at.clone(), deleted: true };
+        let mine = CallerDecision::ReAdmit { path: at.clone() };
         assert_eq!(mine.clone().verified((&caller, &inc), &row(&other, &other_inc), true), CallerDecision::DeleteHeld { path: at.clone(), by: format!("{other}@{}", other_inc.as_str()) });
         let held = CallerDecision::DeleteHeld { path: at.clone(), by: "x".into() };
-        assert_eq!(held.clone().verified((&caller, &inc), &row(&caller, &inc), true), CallerDecision::ReAdmit { path: at.clone(), deleted: false });
+        assert_eq!(held.clone().verified((&caller, &inc), &row(&caller, &inc), true), CallerDecision::ReAdmit { path: at.clone() });
         let empty = rdm_core::views::AtlasView { nodes: vec![] };
-        assert_eq!(held.clone().verified((&caller, &inc), &empty, true), CallerDecision::ReAdmit { path: at.clone(), deleted: true });
+        assert_eq!(mine.verified((&caller, &inc), &empty, true), CallerDecision::DeleteDeletedBirth { path: at.clone(), needed: true }, "a caller this admin holds live is deleted when the root holds no live record of it");
+        assert_eq!(held.clone().verified((&caller, &inc), &empty, true), CallerDecision::DeleteDeletedBirth { path: at.clone(), needed: true });
         assert_eq!(held.verified((&caller, &inc), &empty, false), CallerDecision::DeleteUnneeded { path: at.clone() });
     }
 

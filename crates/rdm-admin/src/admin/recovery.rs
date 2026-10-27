@@ -589,8 +589,9 @@ impl RecoverySubmitter {
     /// The caller birth `(node_id, incarnation)` at `path` Q207's decision deletes, reported to the
     /// fabric-primary, which terminates its runtime under `node.terminate:<path>@<incarnation>`
     /// (node-investigation.md): `build.create { Change(Terminate) }`, opened here when this admin is the
-    /// fabric-primary. `Ok` once the fabric-primary answered (opened, or already applied).
-    pub(crate) async fn report_terminate(&self, client: &Arc<rdm_transport::NodeRpcClient>, path: PathName, node_id: NodeId, incarnation: IncarnationId) -> Result<(), String> {
+    /// fabric-primary, through its own Build door; any other admin sends it up through `client`. `Ok`
+    /// once the fabric-primary answered (opened, or already applied).
+    pub(crate) async fn report_terminate(&self, client: Option<&Arc<rdm_transport::NodeRpcClient>>, path: PathName, node_id: NodeId, incarnation: IncarnationId) -> Result<(), String> {
         let me = self.held_name();
         let span = tracing::info_span!("rdm.node_admin.node.update.via-returned-reported", node = %me, returned = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), outcome = tracing::field::Empty);
         let fabric_primary = self.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
@@ -624,6 +625,10 @@ impl RecoverySubmitter {
             }
         } else {
             use rdm_core::build::{Build, BuildChange, BuildRequest, BuildSubmit};
+            let Some(client) = client else {
+                span.record("outcome", "no-client");
+                return Err(format!("{me}: no node-RPC client to report {path} ({node_id}) to {fp_name}"));
+            };
             let req = BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Terminate { node: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }) };
             let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Stream { send: std::time::Duration::from_secs(10) }, ..rdm_transport::CallOptions::default() };
             match client.call_stream::<Build>(&rdm_transport::NodeTarget::ExactNode(fp_id), &req, &opts).await {

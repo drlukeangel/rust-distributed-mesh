@@ -2901,6 +2901,7 @@ async fn a_re_created_birth_that_comes_back_is_deleted_by_its_path_name_verified
     for d in &decisions {
         assert_eq!(d["node"], "mesh2.admin.1", "mesh2's primary decides its own mesh's caller: {facts}");
         assert_eq!(d["subject"], NODE, "decided at the caller's path.name: {facts}");
+        assert!(d["door"] == "digest" || d["door"] == "declaration", "decided at a door a refused caller comes through, its Digest or its declaration: {facts}");
         assert_eq!(d["decision"], "delete-path-held", "another birth is at the path: the caller is deleted: {facts}");
         assert_eq!(d["root"], "agrees", "the fabric-primary's atlas agrees: {facts}");
     }
