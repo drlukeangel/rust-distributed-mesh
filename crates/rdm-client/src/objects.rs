@@ -268,12 +268,12 @@ impl Nodes {
         self.workflow(WorkflowKind::Delete(node.clone()), BuildChange::RemoveNode { node: node.clone() }).await
     }
 
-    /// A recipe: one Build of node primitives (`BuildChange::Recipe`), each step its op's own
+    /// Steps: one Build of node primitives (`BuildChange::Steps`), each step its op's own
     /// workflow, run in order by RDM (build.md §1; lifecycles/node-replace.md). The caller owns the
-    /// recipe. The stream is `Started`, then every step's events in step order, ending `Complete`
+    /// steps. The stream is `Started`, then every step's events in step order, ending `Complete`
     /// or `Failed { step, reason }` naming the step that failed; a resume never runs a completed step.
-    pub async fn recipe(&self, steps: Vec<rdm_core::build::RecipeStep>) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Recipe(steps.clone()), BuildChange::Recipe { steps }).await
+    pub async fn steps(&self, steps: Vec<rdm_core::build::Step>) -> Result<WorkflowStream, CallEnd> {
+        self.workflow(WorkflowKind::Steps(steps.clone()), BuildChange::Steps { steps }).await
     }
 
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md` C1): command the holder at

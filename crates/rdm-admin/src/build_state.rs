@@ -66,8 +66,10 @@ pub enum AttemptReason {
     /// The delete of a stopped birth at its `.old` path, or of a deleted mesh's last admin, was
     /// requested (`node.delete:<path>`, node.delete's one key).
     Delete,
-    /// A recipe was submitted: one Build of node primitives (build.md §1).
-    Recipe,
+    /// Steps were submitted: one Build of node primitives (build.md §1). Its journal name stays
+    /// `recipe`, the name `builds.jsonl` already holds (Q211 renamed the variant only, as `roll` before it).
+    #[serde(rename = "recipe")]
+    Steps,
     /// An adoption launch opened it (Q156; fabric-recovery.md "Nothing alive"): the fabric-recovery attempt
     /// a node-admin a person launched at the lost fabric-primary's path.name claims, `node.delete:<path>`
     /// then `node.create:<path>` as a recovery's. Abandoned because a live admin answered, it owes no exit
@@ -88,7 +90,7 @@ impl AttemptReason {
             Self::Start => "start",
             Self::Recovery => "recovery",
             Self::Delete => "delete",
-            Self::Recipe => "recipe",
+            Self::Steps => "steps",
             Self::Adoption => "adoption",
         }
     }
@@ -1275,7 +1277,7 @@ fn describe_open(o: &AttemptOpened) -> String {
         Some(crate::accepted::AttemptAction::Start { path, from_incarnation }) => format!("start of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Delete { path, from_incarnation }) => format!("delete of {path} from {from_incarnation}"),
-        Some(crate::accepted::AttemptAction::Recipe { steps, .. }) => format!("recipe of {} step(s): {}", steps.len(), steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(", ")),
+        Some(crate::accepted::AttemptAction::Steps { steps, .. }) => format!("{} step(s): {}", steps.len(), steps.iter().map(crate::build::step_key).collect::<Vec<_>>().join(", ")),
         Some(crate::accepted::AttemptAction::Terminate { path, node_id, from_incarnation }) => format!("termination of the deleted birth {node_id} at {from_incarnation} of {path}"),
         None => "no fenced action".to_string(),
     };
@@ -3721,6 +3723,23 @@ mod tests {
         assert_eq!(serde_json::from_str::<BuildFact>(&serde_json::to_string(&new).unwrap()).unwrap(), new);
         let fabric = serde_json::to_value(BuildFact::Claim(claim("b1", 2, "mesh1.admin.1"))).unwrap();
         assert!(fabric.get("mesh").is_none() && fabric.get("claimant").is_none(), "a fabric-lane line is written as before: {fabric}");
+    }
+
+    /// CONTRACT (Q211: the Build's ordered list is steps; the rename moves no durable format): an attempt
+    /// that carries steps is written to `builds.jsonl` under the tags the journal already holds,
+    /// `"reason":"recipe"` and `"action":"recipe"`, and a line written before the rename reads back as
+    /// `AttemptReason::Steps` carrying `AttemptAction::Steps`. Views and spans name the reason `steps`.
+    #[test]
+    fn an_attempt_of_steps_keeps_the_journal_tags_written_before_the_rename() {
+        let node: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
+        let mut steps = opened("b1", 2, AttemptReason::Steps);
+        steps.action = Some(crate::accepted::AttemptAction::Steps { steps: vec![rdm_core::build::Step::Stop { node }], pinned: vec![] });
+        let line = serde_json::to_value(BuildFact::Opened(steps.clone())).unwrap();
+        assert_eq!((line["reason"].as_str(), line["action"]["action"].as_str()), (Some("recipe"), Some("recipe")), "{line}");
+        let old = line.to_string();
+        assert!(old.contains(r#""reason":"recipe""#) && old.contains(r#""action":"recipe""#), "{old}");
+        assert_eq!(serde_json::from_str::<BuildFact>(&old).unwrap(), BuildFact::Opened(steps));
+        assert_eq!(AttemptReason::Steps.as_str(), "steps");
     }
 
     /// CONTRACT (i146 Q61 A; build.md §5.2: "Restarting every node-admin at once must not erase the facts

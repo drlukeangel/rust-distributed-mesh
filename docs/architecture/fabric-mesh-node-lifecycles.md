@@ -92,7 +92,7 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 | [node.delete](lifecycles/node-delete.md) | Removing a node and releasing its identity |
 | [node.connections.delete](lifecycles/node-connections-delete.md) | Closing a node's connections while its process keeps running: all of them gracefully, or exactly the named ones |
 | [node recovery (RDM)](lifecycles/node-recovery.md) | Replacing a member whose exit its mesh-primary proved |
-| [Rafka replace](lifecycles/node-replace.md) | Replacing a node under Rafka's recipe: the predecessor renamed `<name>.old` live and stopped, the successor re-born at `<name>` |
+| [Rafka replace](lifecycles/node-replace.md) | Replacing a node under Rafka's steps: the predecessor renamed `<name>.old` live and stopped, the successor re-born at `<name>` |
 | [node status (internal)](lifecycles/node-status.md) | The node's status report and its mesh-primary's apply; not a caller op |
 | [node.topology.get](lifecycles/node-topology-get.md) | Reading a node's held topology; a [running node's reconnect](lifecycles/node-topology-get.md#running-node-reconnect) |
 | [node.name.update](lifecycles/node-name-update.md) | Renaming a node |
@@ -141,7 +141,7 @@ node.connections.delete:<path.name>
 
 A typed call has one canonical name, noun.verb, and a command completes as noun.verb in the past tense: node.create completes as node.created, node.connections.delete as node.connections.deleted. The Rust request and reply variants (`NodeRequest::Create`, `NodeReply::Created`), the Build step key (`noun.verb:<path.name>`, an opaque string, see [the Build schema](node-rpc-envelope.md#build-schema)) and the span (`rdm.<component>.<noun>.<verb>.via-...`) are rendered from it mechanically and are never named by hand.
 
-A new node is node.created. Birth and re-birth are the application's names for its own workflows, never RDM operations. Rafka names its own recover/replace recipe without creating an RDM opcode.
+A new node is node.created. Birth and re-birth are the application's names for its own workflows, never RDM operations. Rafka names its own recover/replace steps without creating an RDM opcode.
 
 **Node RPC op code.** A row of the [op ledger](node-rpc-envelope.md#the-op-ledger). A code is
 not a Build operation identity: only `build_id + attempt + operation` names a Build operation.

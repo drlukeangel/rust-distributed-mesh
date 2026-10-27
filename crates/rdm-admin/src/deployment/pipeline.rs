@@ -14,12 +14,12 @@
 //!   -> RemoveTopologyMembership -> Complete
 //! delete of a crashed target: NodeDeleting -> TerminateRuntime (the exact exit proof, nothing sent)
 //!   -> NodeDeleted (from the mesh-primary's recorded exit proof) -> RemoveTopologyMembership -> Complete
-//! update: UpdateNode (a recipe's node.name.update of a name through node.name.update's own core) -> Complete
+//! update: UpdateNode (a Build's node.name.update of a name through node.name.update's own core) -> Complete
 //! ```
 //!
 //! Node recovery (node-recovery.md "Steps") is two operations of these, never a sequence of its
-//! own: the delete of the crashed target, then the create over its data dir. A recipe
-//! (lifecycles/node-replace.md) is likewise its steps' own operations, in order.
+//! own: the delete of the crashed target, then the create over its data dir. A Build's steps
+//! (lifecycles/node-replace.md) are likewise their own operations, in order.
 //!
 //! A removal releases identity, never storage: the data dir and its endpoint key stay
 //! (node-delete.md "Storage"), and no step here deletes a node's storage.
@@ -170,10 +170,10 @@ impl StartStep {
     }
 }
 
-/// The steps of a recipe's `node.name.update` as a Build operation.
+/// The steps of a Build's `node.name.update` as a Build operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateStep {
-    /// A recipe's name put.
+    /// A Build's name put.
     UpdateNode,
     /// The update is done.
     Complete,
@@ -189,7 +189,7 @@ impl UpdateStep {
     }
 }
 
-/// The steps of a recipe's `node.mesh.leave` as a Build operation (`node.mesh.leave:<path>`,
+/// The steps of a Build's `node.mesh.leave` as a Build operation (`node.mesh.leave:<path>`,
 /// node-mesh-leave.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeaveStep {
@@ -1018,7 +1018,7 @@ pub(crate) enum StopProof {
     /// provider's terminal proof judges.
     Lenient,
     /// stop-node admitted and `stopped` received, or the step fails by name: a whole node.stop, a
-    /// standalone one (a recipe's stop included), whose only proof is
+    /// standalone one (a Build's stop included), whose only proof is
     /// that reply (node-stop.md "Completion": the matching `node.stopped`).
     Stopped,
 }
@@ -1414,7 +1414,7 @@ impl DeploymentPipeline<'_> {
         self.create_with_claim(req, claim_for, pre_node_ready, before_launch).await
     }
 
-    /// `create_with` for a recipe's create of a replace's successor at the name its predecessor
+    /// `create_with` for a Build's create of a replace's successor at the name its predecessor
     /// released (`ClaimFor::Successor`, node-replace.md step 3): a fresh data dir, its row inheriting
     /// the predecessor's config and tags.
     pub(crate) async fn create_successor_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>) -> Result<Created, PipelineError> {
@@ -1431,7 +1431,7 @@ impl DeploymentPipeline<'_> {
         use tracing::Instrument;
         let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
         // Boxed where it is made: the create's steps are one large state machine, and every caller (a
-        // recipe step, a recovery, a drive) holds only the box on its worker's stack.
+        // step, a recovery, a drive) holds only the box on its worker's stack.
         Box::pin(self.create_steps(req, claim_for, pre_node_ready, before_launch).instrument(span))
     }
 
@@ -2621,7 +2621,7 @@ impl DeploymentPipeline<'_> {
         node.data_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", node.name, node.node_id)))
     }
 
-    /// A recipe's node.mesh.leave of `node` (`node.mesh.leave:<path>`, node-mesh-leave.md): `leave`
+    /// A Build's node.mesh.leave of `node` (`node.mesh.leave:<path>`, node-mesh-leave.md): `leave`
     /// is the mesh-primary's carry of `LeaveMesh` to the exact birth, then `Complete`.
     pub fn leave_mesh<'a, F>(&'a self, build_id: &'a BuildId, attempt: u32, node: &'a PathName, leave: F) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>>
     where
@@ -2637,7 +2637,7 @@ impl DeploymentPipeline<'_> {
         .instrument(span))
     }
 
-    /// node.name.update of the name of `node` as a recipe's step (node-name-update.md;
+    /// node.name.update of the name of `node` as a Build's step (node-name-update.md;
     /// lifecycles/node-replace.md step 2), as ONE operation `node.update:<path>`: `UpdateNode`, the
     /// update `put` (node.name.update's own core at the node's mesh-primary, answered `NameUpdated`
     /// or refused by name), then `Complete`.

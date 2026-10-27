@@ -249,8 +249,8 @@ fn birth(world: &World, digest_view: &DigestView, fabric_id: &FabricId, path: &s
     n
 }
 
-/// Realises `CreateNode` as the admin does (a recipe's node.create is the create workflow,
-/// `AdminRunner::recipe_step`): the real fence first; a birth only when it clears.
+/// Realises `CreateNode` as the admin does (a Build's node.create is the create workflow,
+/// `AdminRunner::step`): the real fence first; a birth only when it clears.
 struct Runner {
     world: Arc<World>,
     view: Arc<RwLock<Topology>>,
@@ -290,7 +290,7 @@ impl OperationRunner for Runner {
         use rdm_admin::build_state::BuildStateAdapter as _;
         let created;
         let op = match op {
-            BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node, .. }, .. } => {
+            BuildOperation::Step { step: rdm_core::build::Step::Create { node, .. }, .. } => {
                 created = BuildOperation::CreateNode { node: node.clone(), over: None, executable: None };
                 &created
             }
@@ -980,8 +980,8 @@ async fn a_successor_recovers_a_sibling_admin_known_only_by_its_durable_runtime_
     assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the durable row's exact runtime exited: the next attempt of the same Build is open");
     let current = e.builds.current().await.unwrap().unwrap();
     let action = current.action;
-    assert_eq!(one_step_create_of(&action).as_deref(), Some(lost), "the durable row's birth reads exited: the mesh that lost its mesh-primary gets node.create of its node-admin, a one-step recipe, never a Recover or a replace: {action:?}");
-    assert_eq!(current.reason, rdm_admin::build_state::AttemptReason::Recipe, "the attempt is a recipe's");
+    assert_eq!(one_step_create_of(&action).as_deref(), Some(lost), "the durable row's birth reads exited: the mesh that lost its mesh-primary gets node.create of its node-admin, a single step, never a Recover or a replace: {action:?}");
+    assert_eq!(current.reason, rdm_admin::build_state::AttemptReason::Steps, "the attempt carries steps");
     let _ = old;
 }
 
@@ -1249,7 +1249,7 @@ mod one_attempt_number {
     async fn a_drift_attempt_that_loses_its_number_to_a_requested_stop_opens_nothing() {
         let e = estate().await;
         let k = lose_a_node(&e).await;
-        let g = gate(&e, Holds::Attempt(AttemptReason::Recipe));
+        let g = gate(&e, Holds::Attempt(AttemptReason::Steps));
         let cp = door(&e, e.builds.clone()).await;
         // The drift pass either stops at the log's door with its number computed, or it ended
         // without opening anything: that is the cell's failure, named, never a wait.
@@ -1296,7 +1296,7 @@ mod one_attempt_number {
         assert_eq!(drift, Some((e.builds.current_build().await.unwrap().into_build_id().unwrap(), k + 1)), "the drift pass took the free number");
         let held = opened_facts(&e, k + 1).await;
         assert_eq!(held.len(), 1, "one Opened fact for attempt {}: {held:?}", k + 1);
-        assert_eq!(held[0].reason, AttemptReason::Recipe, "the number is the drift attempt's, a one-step node.create recipe: {held:?}");
+        assert_eq!(held[0].reason, AttemptReason::Steps, "the number is the drift attempt's, a single node.create step: {held:?}");
         let refusal = rest.expect_err("the stop lost the number and was told so");
         match refusal {
             Refusal::AttemptTaken(detail) => assert!(detail.contains(&format!("{}", k + 1)), "the refusal names the attempt: {detail}"),
@@ -1437,19 +1437,19 @@ mod one_attempt_number {
         let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
         let action = e.builds.current().await.unwrap().unwrap().action;
-        assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a one-step recipe: {action:?}");
+        assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a single step: {action:?}");
     }
 }
 
 /// CONTRACT (mesh-investigation.md step 6): a fabric primary that took the seat holds a peer mesh it
 /// never heard on the backbone as `ready` from topology alone (topology is not liveness). Once the
 /// ladder has decided that mesh's recovery (`carrier-edge-lost`), the verdict opens the next attempt of
-/// the accepted Build with node.create of the mesh's first node-admin, a one-step recipe whose reason is
-/// the recipe's; the create's own fence asks the provider about the lost admin and deletes it only on its
+/// the accepted Build with node.create of the mesh's first node-admin, a single step whose reason is
+/// `steps`; the create's own fence asks the provider about the lost admin and deletes it only on its
 /// exact exit, so the opening recovers nothing. Must NOT happen: the decided mesh
 /// waits forever because its view never says it is silent, or the verdict opens a Recover.
 #[tokio::test]
-async fn a_decided_peer_mesh_held_ready_from_topology_opens_the_one_step_create_recipe() {
+async fn a_decided_peer_mesh_held_ready_from_topology_opens_the_one_create_step() {
     let e = estate().await;
     let before = e.builds.current().await.unwrap().unwrap();
     let me: PathName = e.fabric_primary().await.parse().unwrap();
@@ -1467,8 +1467,8 @@ async fn a_decided_peer_mesh_held_ready_from_topology_opens_the_one_step_create_
     let decided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &|_| false).await;
     assert_eq!(decided, Some((before.build_id.clone(), before.attempt + 1)), "the verdict opens the next attempt of the same Build");
     let opened = e.builds.current().await.unwrap().unwrap();
-    assert_eq!(one_step_create_of(&opened.action).as_deref(), Some(format!("{lost}.admin.1").as_str()), "node.create of the mesh's first node-admin, a one-step recipe on the existing carrier: {:?}", opened.action);
-    assert_eq!(opened.reason, rdm_admin::build_state::AttemptReason::Recipe, "the attempt is a recipe's");
+    assert_eq!(one_step_create_of(&opened.action).as_deref(), Some(format!("{lost}.admin.1").as_str()), "node.create of the mesh's first node-admin, a single step on the existing carrier: {:?}", opened.action);
+    assert_eq!(opened.reason, rdm_admin::build_state::AttemptReason::Steps, "the attempt carries steps");
 }
 
 /// CONTRACT: a departure is not drift. A birth whose proven departure the authority holds
@@ -1503,7 +1503,7 @@ async fn a_durable_runtime_row_of_a_deleted_birth_opens_no_attempt() {
 /// included, has crashed while the fabric is alive. No member answers, so the ladder's 60 s decision
 /// comes out `unreachable` and the mesh is held as ever; the fabric-primary then reads the provider's
 /// exact exit proof of every node-admin of the mesh and, only if every one is proven exited, opens
-/// node.create of the mesh's first node-admin as the one-step recipe on the same accepted Build.
+/// node.create of the mesh's first node-admin as the single step on the same accepted Build.
 mod fully_crashed_mesh {
     use super::unheard_mesh_hold::{meshes, pass, pass_with, Held};
     use super::*;
@@ -1548,7 +1548,7 @@ mod fully_crashed_mesh {
 
     /// CONTRACT (R-ML3; mesh-investigation.md step 5, "No member answers"): every node of a peer mesh
     /// has crashed, its node-admins included. The ladder's 60 s decision found the mesh `unreachable`,
-    /// so the fabric-primary opens the next attempt of the SAME accepted Build as the one-step recipe
+    /// so the fabric-primary opens the next attempt of the SAME accepted Build as the single step
     /// node.create of the mesh's first node-admin (no new wire variant), and the drive runs it to the
     /// Build's completion; the opening rides `via-proven-drift`. Before the decision nothing opens.
     /// Must NOT happen: the held mesh waiting for ever (the opening needs the ladder's
@@ -1573,8 +1573,8 @@ mod fully_crashed_mesh {
             let opened = pass(&e, &mut started, &mut held, &decided).await;
             assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decision opens the next attempt of the same Build");
             let current = e.builds.current().await.unwrap().unwrap();
-            assert_eq!(one_step_create_of(&current.action).as_deref(), Some(admins[0].as_str()), "node.create of the mesh's first node-admin, a one-step recipe on the existing carrier: {:?}", current.action);
-            assert_eq!(current.reason, rdm_admin::build_state::AttemptReason::Recipe, "the attempt is a recipe's");
+            assert_eq!(one_step_create_of(&current.action).as_deref(), Some(admins[0].as_str()), "node.create of the mesh's first node-admin, a single step on the existing carrier: {:?}", current.action);
+            assert_eq!(current.reason, rdm_admin::build_state::AttemptReason::Steps, "the attempt carries steps");
             // The drive reads the ladder's hold: the create the decision opened is the one thing that crosses the fence.
             e.converge_under(Arc::new(HeldPeer { mesh: peer_mesh.clone(), held: DECIDED_UNREACHABLE.unwrap() })).await;
             assert_eq!(e.born(), vec![admins[0].clone()], "the create ran: the mesh's first node-admin is born, and nothing else of the mesh");
@@ -1590,7 +1590,7 @@ mod fully_crashed_mesh {
         let drift = named("rdm.node_admin.build.update.via-proven-drift");
         assert_eq!(drift.len(), 1, "{drift:?}");
         let d = &drift[0]["attributes"];
-        assert_eq!((d["action"].as_str(), d["reason"].as_str()), (Some("recipe"), Some("recipe")), "{d}");
+        assert_eq!((d["action"].as_str(), d["reason"].as_str()), (Some("steps"), Some("steps")), "{d}");
         println!("build_id={trace_id} trace_id={} opening={d}", drift[0]["trace_id"].as_str().unwrap_or_default());
     }
 
@@ -1897,7 +1897,7 @@ mod unheard_mesh_hold {
         let opened = pass(&e, &mut started, &mut held, &decided).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decision releases the first recovering node-admin");
         let action = e.builds.current().await.unwrap().unwrap().action;
-        assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a one-step recipe: {action:?}");
+        assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a single step: {action:?}");
         let first = e.node_id(&admins[0]).await;
         assert!(!held.iter().any(|(n, _)| n.as_str() == first), "the admin the decision released is not held");
         // The restore runs on the same Build (mesh-investigation.md step 6): its attempt is claimed for the
@@ -1963,14 +1963,14 @@ async fn a_birth_whose_delete_the_build_receipted_is_not_surplus() {
 }
 
 /// The records a drift pass puts its exit proofs through: a status store held in memory.
-/// The node the attempt's action creates when it is the one-step recipe `node.create` of one node
+/// The node the attempt's action creates when it is the single step `node.create` of one node
 /// (mesh-investigation.md step 6: the node-admin joins the live mesh on the same accepted Build); `None`
 /// for any other action.
 fn one_step_create_of(action: &Option<rdm_admin::accepted::AttemptAction>) -> Option<String> {
-    use rdm_core::build::RecipeStep;
+    use rdm_core::build::Step;
     match action {
-        Some(rdm_admin::accepted::AttemptAction::Recipe { steps, .. }) => match steps.as_slice() {
-            [RecipeStep::Create { node, .. }] => Some(node.to_string()),
+        Some(rdm_admin::accepted::AttemptAction::Steps { steps, .. }) => match steps.as_slice() {
+            [Step::Create { node, .. }] => Some(node.to_string()),
             _ => None,
         },
         _ => None,

@@ -306,7 +306,7 @@ pub enum ClaimFor {
     /// takes the tags with the config from the `Deleted` row at the key, indexed under the new node's
     /// id in that one write (§8, recovery).
     Recovery,
-    /// A recipe's node.create of a replace's successor at the `<name>` its predecessor released
+    /// A Build's node.create of a replace's successor at the `<name>` its predecessor released
     /// (node-replace.md step 3, Inherited): the row takes the config and the tags of the predecessor's
     /// row, the retained `<name>.old` row or else the `Deleted` row at the key, its tags indexed under
     /// the new node's id in that one write, and the predecessor's `node_type`; a retained `.old` row is

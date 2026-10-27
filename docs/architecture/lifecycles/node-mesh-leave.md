@@ -13,7 +13,7 @@ a fresh Node RPC dial for its rename, stop, start or delete.
 
 | Field | Contract |
 |---|---|
-| Commander | The workflow that stops or deletes the node: its mesh-primary for a member, the fabric-primary for a mesh-primary (a mesh's last admin included, mesh-delete.md step 7). A recipe's `node.mesh.leave` step ([node replace](node-replace.md) steps 1 and Rollback) is commanded by the node's mesh-primary, after the step before it deleted the node's connections, and the mesh-primary holds the node's `node.mesh.left` for its rename. Commands go down |
+| Commander | The workflow that stops or deletes the node: its mesh-primary for a member, the fabric-primary for a mesh-primary (a mesh's last admin included, mesh-delete.md step 7). A Build's `node.mesh.leave` step ([node replace](node-replace.md) steps 1 and Rollback) is commanded by the node's mesh-primary, after the step before it deleted the node's connections, and the mesh-primary holds the node's `node.mesh.left` for its rename. Commands go down |
 | Executor | The node itself |
 | Entry | The exact `(node.id, incarnation)`, connections-deleted: `node.connections.delete { All }` completed with its receipt (`Established`, or `Deadline` with the held ids recorded). A node that still holds a connection is refused `BusyHoldingConnections { connections }` and leaves nothing |
 | Leaves | Its gossip neighbours on its mesh (and the backbone, a node-admin) and its Node RPC pool; the control plane, which are not connections (R-CR5) |

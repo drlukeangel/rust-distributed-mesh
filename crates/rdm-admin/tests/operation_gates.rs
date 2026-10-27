@@ -152,17 +152,17 @@ async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_b
 }
 
 /// CONTRACT (build.md §4.4, gate order): "A node stands at the path" (fourth) is read before "The
-/// node's mesh is heard" (sixth): a recipe whose step acts on a path no node stands at, in a peer
+/// node's mesh is heard" (sixth): a steps Build whose step acts on a path no node stands at, in a peer
 /// mesh held unheard, is refused as acting on no node.
-/// Must NOT happen: the recipe refused `unheard-mesh` by the later gate first.
+/// Must NOT happen: the steps refused `unheard-mesh` by the later gate first.
 #[tokio::test]
-async fn a_recipe_step_on_no_node_is_refused_unknown_before_the_heard_gate() {
+async fn a_step_on_no_node_is_refused_unknown_before_the_heard_gate() {
     let r = rig(view(NodeStatus::ReadyForTraffic)).await;
     let _ = r.cp.peer_mesh.set(Arc::new(|m: &str| (m == "mesh2").then_some(PeerMesh { unheard_ms: Some(40_000), recovery_decided: false, unreachable_decided: false })));
-    let steps = vec![rdm_core::build::RecipeStep::Stop { node: "mesh2.rpc.9".parse().unwrap() }];
-    let span = tracing::info_span!("gates-recipe");
-    let out = r.cp.open_recipe_in(span, "gates-recipe-unknown", steps).await;
-    assert!(matches!(&out, Err(Refusal::Reject(BuildReject::RecipeNodeUnknown { .. }))), "the recipe is refused as acting on no node before the heard gate, not {}", reason(&out));
+    let steps = vec![rdm_core::build::Step::Stop { node: "mesh2.rpc.9".parse().unwrap() }];
+    let span = tracing::info_span!("gates-steps");
+    let out = r.cp.open_steps_in(span, "gates-steps-unknown", steps).await;
+    assert!(matches!(&out, Err(Refusal::Reject(BuildReject::StepNodeUnknown { .. }))), "the steps are refused as acting on no node before the heard gate, not {}", reason(&out));
 }
 
 /// CONTRACT (build.md §4.4: "A gate that fails refuses by name and nothing is written"; gate "The

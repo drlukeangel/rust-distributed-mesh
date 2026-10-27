@@ -1340,11 +1340,11 @@ pub enum BuildChange {
     Reserved4,
     RemoveMesh { mesh: String },
     Reserved6,
-    // RecipeStep = Create | Stop | Update | Start | Delete: one node primitive per step. Create names
+    // Step = Create | Stop | Update | Start | Delete: one node primitive per step. Create names
     // the node and the executable binding the Build fixes for it (launch id, hash); the executing
     // admin launches that binding, verified at launch, whichever admin runs or resumes the step.
-    // A recipe is one Build of node primitives (lifecycles/node-replace.md).
-    Recipe { steps: Vec<RecipeStep> },
+    // Steps are one Build of node primitives (lifecycles/node-replace.md).
+    Steps { steps: Vec<Step> },
     // Every create names the node's create spec, its properties flat (Q166):
     // NodeSpec { path, storage, placement, executable, tags, config }. The executable (path, sha256,
     // image) the node runs is compiled onto the accepted topology's entry and recorded on the row at

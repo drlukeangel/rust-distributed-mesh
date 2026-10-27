@@ -301,9 +301,9 @@ async fn a_stop_of_a_node_already_connections_deleted_and_left_answers_each_prim
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(SETTLE).await;
     let path: PathName = NODE.parse().unwrap();
-    use rdm_core::build::RecipeStep;
-    let steps = vec![RecipeStep::DeleteConnections { node: path.clone() }, RecipeStep::LeaveMesh { node: path.clone() }, RecipeStep::Stop { node: path.clone() }];
-    let got = frames(estate.nodes_obj().await.recipe(steps).await.expect("the recipe was accepted")).await;
+    use rdm_core::build::Step;
+    let steps = vec![Step::DeleteConnections { node: path.clone() }, Step::LeaveMesh { node: path.clone() }, Step::Stop { node: path.clone() }];
+    let got = frames(estate.nodes_obj().await.steps(steps).await.expect("the Build was accepted")).await;
     assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
 
     estate.stop().await;
@@ -473,7 +473,7 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
 /// CONTRACT (R-JN1; node-replace.md steps 1-2 and Rollback step 2; node-start.md step 2; R12/R13;
 /// CLAUDE.md read rule): in a mesh of three node-admins, the non-primary `mesh1.admin.3` has its
 /// connections deleted, leaves its mesh and the backbone, is renamed `mesh1.admin.3.old` live and is
-/// stopped there, as the predecessor's half of a replace recipe. Every admin lists the stopped birth at
+/// stopped there, as the predecessor's half of the replace steps. Every admin lists the stopped birth at
 /// the row's name, `mesh1.admin.2`, which performed no rename, included: its view reads the name from
 /// the row on the shared store root. `node.start` of `mesh1.admin.3.old` makes the same process
 /// rejoin: its join presents `mesh1.admin.3.old`, the name it took off its mesh, and is admitted under
@@ -507,14 +507,14 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     let pid = estate.pid_of(path.to_string().as_str()).await;
 
     // The predecessor's half of a replace: its connections, its mesh, its name live, then its stop.
-    use rdm_core::build::RecipeStep;
+    use rdm_core::build::Step;
     let steps = vec![
-        RecipeStep::DeleteConnections { node: path.clone() },
-        RecipeStep::LeaveMesh { node: path.clone() },
-        RecipeStep::Update { node: path.clone(), name: renamed.clone() },
-        RecipeStep::Stop { node: renamed.clone() },
+        Step::DeleteConnections { node: path.clone() },
+        Step::LeaveMesh { node: path.clone() },
+        Step::Update { node: path.clone(), name: renamed.clone() },
+        Step::Stop { node: renamed.clone() },
     ];
-    let half = frames(nodes.recipe(steps).await.expect("the recipe was accepted")).await;
+    let half = frames(nodes.steps(steps).await.expect("the Build was accepted")).await;
     assert_eq!(half.last(), Some(&Frame::Complete), "{half:?}");
     // Every admin's view names the stopped birth by its row, the one that performed no rename included.
     for admin in &admins {

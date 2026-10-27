@@ -146,7 +146,7 @@ impl ViewReads {
 /// name, a live rename reaching it as `ApplyNodeName`). One that does not (stopped, silent past the
 /// staleness floor, held true offline) may have had its row moved while it said
 /// nothing: a stopped node's `node.name.update` (R13: it is told nothing and reads the name at its next
-/// join), the replace recipe's renames included. Beside the names: which births' rows released their
+/// join), the replace's renames included. Beside the names: which births' rows released their
 /// name, read for every birth read here and for each birth that publishes a name another birth the
 /// view holds is listed at too (rare: a deleted birth whose deletion this view has not applied), so
 /// the projection lists the current birth at a contested path ([`RowNames::takes_path`]).

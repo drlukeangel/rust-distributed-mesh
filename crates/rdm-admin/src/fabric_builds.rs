@@ -376,22 +376,22 @@ mod tests {
         }
     }
 
-    /// CONTRACT (build.md §1: "Rafka's replace recipe is submitted as one Build of node primitives";
-    /// lifecycles/node-replace.md): the attempt a recipe opens travels in a Build message with its steps
-    /// and the births it pinned, so every admin folds the same recipe and plans the same remaining
+    /// CONTRACT (build.md §1: "Rafka's replace steps (one Build of node primitives ...)";
+    /// lifecycles/node-replace.md): the attempt the steps open travels in a Build message with its steps
+    /// and the births it pinned, so every admin folds the same steps and plans the same remaining
     /// steps from it.
     #[test]
-    fn a_recipe_attempt_travels_the_build_topic_with_its_steps_and_pinned_births() {
-        use rdm_core::build::RecipeStep;
+    fn an_attempt_travels_the_build_topic_with_its_steps_and_pinned_births() {
+        use rdm_core::build::Step;
         let node: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
         let pin = crate::build::PinnedBirth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let opened = crate::build_state::AttemptOpened {
             mesh: None,
             build_id: BuildId::parse("3qcfk1kq47m9").unwrap(),
             attempt: 2,
-            reason: crate::build_state::AttemptReason::Recipe,
-            action: Some(crate::accepted::AttemptAction::Recipe {
-                steps: vec![RecipeStep::DeleteConnections { node: node.clone() }, RecipeStep::LeaveMesh { node: node.clone() }, RecipeStep::Update { node: node.clone(), name: node.renamed() }, RecipeStep::Stop { node: node.renamed() }, RecipeStep::Create { node: node.clone(), executable: None }, RecipeStep::Delete { node: node.renamed() }],
+            reason: crate::build_state::AttemptReason::Steps,
+            action: Some(crate::accepted::AttemptAction::Steps {
+                steps: vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }, Step::Update { node: node.clone(), name: node.renamed() }, Step::Stop { node: node.renamed() }, Step::Create { node: node.clone(), executable: None }, Step::Delete { node: node.renamed() }],
                 pinned: vec![(node.clone(), pin)],
             }),
             opened_by: "mesh1.admin.1".into(),
@@ -399,9 +399,9 @@ mod tests {
         };
         let bytes = match encode(vec![BuildFact::Opened(opened.clone())]) {
             Ok(b) => b,
-            Err(e) => panic!("the recipe's Opened fact must have a wire shape: {e}"),
+            Err(e) => panic!("the Build's Opened fact must have a wire shape: {e}"),
         };
-        assert_eq!(BuildMessage::from_bytes(&bytes).unwrap().facts, vec![BuildFact::Opened(opened)], "a peer folds the same recipe");
+        assert_eq!(BuildMessage::from_bytes(&bytes).unwrap().facts, vec![BuildFact::Opened(opened)], "a peer folds the same steps");
     }
 
     /// CONTRACT (proposal node-primary-update Part C1 step 5: "This is the commit. From this write the

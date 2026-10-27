@@ -5,7 +5,7 @@
 //! exact node `path.name`s per Mesh ([`FabricTopology`]). A submitted change ([`TopologyChange`]) is
 //! input only: [`compile`] applies it once to the current accepted topology and yields the next
 //! complete map; the change itself is kept on the Build as history, never read to plan. Planning
-//! is always `topology − observed` ([`plan`]). A stop, a start, a recovery or a recipe changes no topology:
+//! is always `topology − observed` ([`plan`]). A stop, a start, a recovery or a Build's steps change no topology:
 //! it is an attempt of the current Build carrying its [`AttemptAction`].
 //!
 //! Counts (`FabricDesired`, `MeshDesired`) stay API convenience: the compiler resolves them to
@@ -14,7 +14,7 @@
 
 use rdm_core::meta::NodeSpec;
 use crate::build::{BuildId, BuildOperation, BuildPlan, BuildReject, FabricDesired, MeshDesired, PinnedBirth};
-use rdm_core::build::RecipeStep;
+use rdm_core::build::Step;
 use crate::build_state::{BuildStateAdapter, BuildStateError};
 use crate::fabric_storage::{FabricIdentity, FabricStorage, FabricStorageError};
 use crate::model::{is_valid_mesh_name, IncarnationId, MeshId, NodeId, NodeKind, NodeStatus, PathName};
@@ -375,7 +375,7 @@ fn replaced_by_target(target: Option<&rdm_core::binding::Binding>, row: Option<&
 }
 
 /// What one attempt of a Build does beyond realizing its topology: a standalone node op, a recovery
-/// or a recipe, fenced to the births it acts on. Never part of the topology.
+/// or steps, fenced to the births they act on. Never part of the topology.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AttemptAction {
@@ -420,21 +420,23 @@ pub enum AttemptAction {
     },
     /// Delete the stopped exact birth a rename left at `<path>.old` (node-delete.md): its stop steps
     /// are done; the provider's exact Exited is the proof, then `NodeDeleted` and its Deleted row. The
-    /// topology never names a `.old` path: this action is its only door outside a recipe.
+    /// topology never names a `.old` path: this action is its only door outside a Build's steps.
     Delete {
         /// The node's `.old` path.
         path: PathName,
         /// The birth deleted.
         from_incarnation: IncarnationId,
     },
-    /// A recipe (`BuildChange::Recipe`; build.md §1: "Rafka's replace recipe is submitted as one Build
-    /// of node primitives"; lifecycles/node-replace.md): its steps run in order, each as its op's own
-    /// operation ([`BuildOperation::RecipeStep`]), and a step whose `Complete` is receipted for this
-    /// recipe never runs again. `pinned` is the exact birth each path the recipe acts on held when it
-    /// was accepted; a path an earlier step creates holds no birth yet and is not pinned.
-    Recipe {
+    /// Steps (`BuildChange::Steps`; build.md §1: "Rafka's replace steps (one Build of node
+    /// primitives)"; lifecycles/node-replace.md): they run in order, each as its op's own operation
+    /// ([`BuildOperation::Step`]), and a step whose `Complete` is receipted for these steps never runs
+    /// again. `pinned` is the exact birth each path a step acts on held when the Build was accepted; a
+    /// path an earlier step creates holds no birth yet and is not pinned. Its journal tag stays
+    /// `recipe`, the tag `builds.jsonl` already holds (Q211 renamed the variant only, as `roll` before it).
+    #[serde(rename = "recipe")]
+    Steps {
         /// The steps, in order.
-        steps: Vec<RecipeStep>,
+        steps: Vec<Step>,
         /// The birth each path a step acts on held at acceptance.
         pinned: Vec<(PathName, PinnedBirth)>,
     },
@@ -450,18 +452,18 @@ pub enum AttemptAction {
     },
 }
 
-/// A recipe accepted against `observed` (the fabric-primary's view): refused by name when it has no
-/// step, names one operation twice, or acts on a path that holds no birth and that no earlier step
+/// Steps accepted against `observed` (the fabric-primary's view): refused by name when there is no
+/// step, when they name one operation twice, or acts on a path that holds no birth and that no earlier step
 /// creates or renames a node to; otherwise the action that pins every path's birth.
-pub(crate) fn recipe_action(steps: Vec<RecipeStep>, observed: &Topology) -> Result<AttemptAction, BuildReject> {
+pub(crate) fn steps_action(steps: Vec<Step>, observed: &Topology) -> Result<AttemptAction, BuildReject> {
     if steps.is_empty() {
-        return Err(BuildReject::EmptyRecipe);
+        return Err(BuildReject::EmptySteps);
     }
     let mut keys = BTreeSet::new();
     for step in &steps {
-        let key = crate::build::recipe_step_key(step);
+        let key = crate::build::step_key(step);
         if !keys.insert(key.clone()) {
-            return Err(BuildReject::RecipeStepRepeated { operation: key });
+            return Err(BuildReject::StepRepeated { operation: key });
         }
     }
     // Each path a step acts on before any earlier step makes a node there is pinned to the birth the
@@ -476,40 +478,40 @@ pub(crate) fn recipe_action(steps: Vec<RecipeStep>, observed: &Topology) -> Resu
             }
         }
         match step {
-            RecipeStep::Create { node, .. } => {
+            Step::Create { node, .. } => {
                 made.insert(node.clone());
             }
-            RecipeStep::Update { name, .. } => {
+            Step::Update { name, .. } => {
                 made.insert(name.clone());
             }
             _ => {}
         }
     }
-    recipe_births(&steps, &pinned)?;
-    Ok(AttemptAction::Recipe { steps, pinned })
+    step_births(&steps, &pinned)?;
+    Ok(AttemptAction::Steps { steps, pinned })
 }
 
-/// The exact birth each step of a recipe is fenced to: the pinned birth of the node its path names
-/// when the step runs, followed through the recipe's own creates and renames; `None` for a node an
+/// The exact birth each step of a Build is fenced to: the pinned birth of the node its path names
+/// when the step runs, followed through the Build's own creates and renames; `None` for a node an
 /// earlier step creates (its executor resolves it at its path). `Err` names the first step acting on
 /// a path that holds no node when it runs.
-pub(crate) fn recipe_births(steps: &[RecipeStep], pinned: &[(PathName, PinnedBirth)]) -> Result<Vec<Option<PinnedBirth>>, BuildReject> {
+pub(crate) fn step_births(steps: &[Step], pinned: &[(PathName, PinnedBirth)]) -> Result<Vec<Option<PinnedBirth>>, BuildReject> {
     let mut at: BTreeMap<PathName, Option<PinnedBirth>> = pinned.iter().map(|(p, b)| (p.clone(), Some(b.clone()))).collect();
     let mut out = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
-        let unknown = || BuildReject::RecipeNodeUnknown { step: i as u32 + 1, node: step.node().to_string() };
+        let unknown = || BuildReject::StepNodeUnknown { step: i as u32 + 1, node: step.node().to_string() };
         let birth = match step {
-            RecipeStep::Create { node, .. } => {
+            Step::Create { node, .. } => {
                 at.insert(node.clone(), None);
                 None
             }
-            RecipeStep::Update { node, name } => {
+            Step::Update { node, name } => {
                 let birth = at.remove(node).ok_or_else(unknown)?;
                 at.insert(name.clone(), birth.clone());
                 birth
             }
-            RecipeStep::Delete { node } => at.remove(node).ok_or_else(unknown)?,
-            RecipeStep::Stop { node } | RecipeStep::Start { node } | RecipeStep::DeleteConnections { node } | RecipeStep::LeaveMesh { node } => at.get(node).cloned().ok_or_else(unknown)?,
+            Step::Delete { node } => at.remove(node).ok_or_else(unknown)?,
+            Step::Stop { node } | Step::Start { node } | Step::DeleteConnections { node } | Step::LeaveMesh { node } => at.get(node).cloned().ok_or_else(unknown)?,
         };
         out.push(birth);
     }
@@ -735,9 +737,9 @@ pub(crate) struct ActionProgress {
     finished: bool,
     /// How far a recovery's two operations got for its exited birth.
     recovery: RecoveryProgress,
-    /// Per step of a recipe, whether its operation's `Complete` is receipted in an attempt that
-    /// carried the recipe.
-    recipe: Vec<bool>,
+    /// Per step of a Build, whether its operation's `Complete` is receipted in an attempt that
+    /// carried these steps.
+    steps_done: Vec<bool>,
 }
 
 /// How far a node recovery's two operations (node-recovery.md "Steps": node.delete, then node.create)
@@ -788,17 +790,17 @@ impl ActionProgress {
             let recovery = recovery_progress(build, path, node_id, from_incarnation).0;
             return Self { started: false, finished: recovery == RecoveryProgress::Recovered, recovery, ..Self::default() };
         }
-        // A recipe: each step is done once its operation's `Complete` is receipted in an attempt that
-        // carried this recipe (a recipe names each operation once, `recipe_action`).
-        if let Some(action @ AttemptAction::Recipe { steps, .. }) = &build.action {
-            let recipe = steps
+        // Steps: each step is done once its operation's `Complete` is receipted in an attempt that
+        // carried these steps (a Build names each operation once, `steps_action`).
+        if let Some(action @ AttemptAction::Steps { steps, .. }) = &build.action {
+            let steps_done = steps
                 .iter()
                 .map(|step| {
-                    let operation = crate::build::recipe_step_key(step);
+                    let operation = crate::build::step_key(step);
                     build.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action))
                 })
                 .collect();
-            return Self { recipe, ..Self::default() };
+            return Self { steps_done, ..Self::default() };
         }
         Self::default()
     }
@@ -1223,20 +1225,20 @@ fn plan_with(
         }
         return BuildPlan { operations: ops };
     }
-    // A recipe is its steps, in order, each its op's own operation, until the receipts say it is done.
-    // The topology is unchanged, the generic loop plans nothing beside it, and no other member is
+    // Steps are planned in order, each its op's own operation, until the receipts say each is done.
+    // The topology is unchanged, the generic loop plans nothing beside them, and no other member is
     // swept. A step on a node an earlier step creates carries no birth: its executor resolves the node
     // at its path when the step runs.
-    if let Some(AttemptAction::Recipe { steps, pinned }) = action {
-        match recipe_births(steps, pinned) {
+    if let Some(AttemptAction::Steps { steps, pinned }) = action {
+        match step_births(steps, pinned) {
             Ok(births) => {
                 for (i, (step, birth)) in steps.iter().zip(births).enumerate() {
-                    if !progress.recipe.get(i).copied().unwrap_or(false) {
-                        ops.push(BuildOperation::RecipeStep { step: step.clone(), birth });
+                    if !progress.steps_done.get(i).copied().unwrap_or(false) {
+                        ops.push(BuildOperation::Step { step: step.clone(), birth });
                     }
                 }
             }
-            Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-recipe-node-unknown", reason = %e).in_scope(|| tracing::info!("the recipe's steps name a node no step can act on: nothing is planned")),
+            Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-step-node-unknown", reason = %e).in_scope(|| tracing::info!("the Build's steps name a node no step can act on: nothing is planned")),
         }
         return BuildPlan { operations: ops };
     }
@@ -1350,7 +1352,7 @@ fn plan_with(
     // (every member, dead or live, by the retire pipeline), never member by member.
     // A surplus birth's retirement is its own attempt (no action): an attempt that carries an action
     // repairs exactly its birth.
-    // A recipe that failed stops at its step, and resuming it or running its compensation steps is the
+    // A Build that failed stops at its step, and resuming it or running its compensation steps is the
     // caller's (lifecycles/node-replace.md "Rollback").
     let mut extra: Vec<&PathName> = observed
         .members()
@@ -1832,41 +1834,41 @@ mod tests {
         assert_eq!(wire, backbone, "the backbone action crosses a Build message as itself");
     }
 
-    /// The replace recipe of `node` (lifecycles/node-replace.md steps 1-3, the predecessor retained).
-    fn replace_recipe(node: &PathName) -> Vec<RecipeStep> {
+    /// The replace steps of `node` (lifecycles/node-replace.md steps 1-3, the predecessor retained).
+    fn replace_steps(node: &PathName) -> Vec<Step> {
         vec![
-            RecipeStep::DeleteConnections { node: node.clone() },
-            RecipeStep::LeaveMesh { node: node.clone() },
-            RecipeStep::Update { node: node.clone(), name: node.renamed() },
-            RecipeStep::Stop { node: node.renamed() },
-            RecipeStep::Create { node: node.clone(), executable: None },
+            Step::DeleteConnections { node: node.clone() },
+            Step::LeaveMesh { node: node.clone() },
+            Step::Update { node: node.clone(), name: node.renamed() },
+            Step::Stop { node: node.renamed() },
+            Step::Create { node: node.clone(), executable: None },
         ]
     }
 
-    /// CONTRACT (build.md §1: "Rafka's replace recipe is submitted as one Build of node primitives";
+    /// CONTRACT (build.md §1: "Rafka's replace steps (one Build of node primitives ...)";
     /// lifecycles/node-replace.md steps 1-3; the Build carrier: completed steps are not rerun): an
-    /// accepted recipe pins the birth its predecessor path holds and plans its steps in order, each its
+    /// accepted Build of steps pins the birth its predecessor path holds and plans its steps in order, each its
     /// op's own operation (`node.connections.delete:<name>`, `node.mesh.leave:<name>`,
     /// `node.update:<name>`, `node.stop:<name>.old`, `node.create:<name>`), never a replace operation
     /// and never a generic create or retire beside them. The predecessor's steps carry its pinned
     /// birth, followed through its rename to `.old`; the successor's create carries none (its executor
     /// resolves the node its create made at the name the rename released). A step whose `Complete` is
-    /// receipted in an attempt that carried this recipe is not planned again; a `Complete` of the same
-    /// operation in an attempt that carried another action is no progress. Refused by name: an empty
-    /// recipe, an operation named twice, and a step on a path no birth holds and no earlier step makes.
+    /// receipted in an attempt that carried these steps is not planned again; a `Complete` of the same
+    /// operation in an attempt that carried another action is no progress. Refused by name: no
+    /// step, an operation named twice, and a step on a path no birth holds and no earlier step makes.
     #[test]
-    fn a_recipe_plans_its_steps_in_order_and_never_reruns_a_completed_one() {
+    fn a_build_plans_its_steps_in_order_and_never_reruns_a_completed_one() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
         let o = mn();
         let path: PathName = "mesh1.rpc.1".parse().unwrap();
         let held = o.node(&path).unwrap();
         let pin = PinnedBirth { node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().unwrap() };
-        let steps = replace_recipe(&path);
-        let action = recipe_action(steps.clone(), &o).unwrap();
-        assert_eq!(action, AttemptAction::Recipe { steps: steps.clone(), pinned: vec![(path.clone(), pin.clone())] }, "only the predecessor's path holds a birth at acceptance");
+        let steps = replace_steps(&path);
+        let action = steps_action(steps.clone(), &o).unwrap();
+        assert_eq!(action, AttemptAction::Steps { steps: steps.clone(), pinned: vec![(path.clone(), pin.clone())] }, "only the predecessor's path holds a birth at acceptance");
         let births = [Some(pin.clone()), Some(pin.clone()), Some(pin.clone()), Some(pin.clone()), None];
-        let all: Vec<BuildOperation> = steps.iter().zip(births.iter()).map(|(s, b)| BuildOperation::RecipeStep { step: s.clone(), birth: b.clone() }).collect();
+        let all: Vec<BuildOperation> = steps.iter().zip(births.iter()).map(|(s, b)| BuildOperation::Step { step: s.clone(), birth: b.clone() }).collect();
         assert_eq!(plan(&cur, &o, Some(&action)).operations, all);
         let keys: Vec<String> = all.iter().map(BuildOperation::key).collect();
         assert_eq!(
@@ -1894,7 +1896,7 @@ mod tests {
             executor: None,
             steps,
             last_failure: None,
-            reason: AttemptReason::Recipe,
+            reason: AttemptReason::Steps,
             action: Some(action.clone()),
             attempt_actions: [(3, AttemptAction::Stop { path: path.clone(), from_incarnation: pin.incarnation.clone() }), (4, action.clone())].into(),
             attempt_executors: Default::default(),
@@ -1911,17 +1913,17 @@ mod tests {
         assert_eq!(plan_for_build(&build(vec![receipt(3, &keys[1])]), &o).operations, all, "another action's Complete of the same operation is no progress");
         let mut done = first_three;
         done.extend(keys[3..].iter().map(|k| receipt(4, k)));
-        assert_eq!(plan_for_build(&build(done), &o).operations, vec![], "every step receipted: the recipe is done");
+        assert_eq!(plan_for_build(&build(done), &o).operations, vec![], "every step receipted: the Build is done");
         // Refusals.
-        assert_eq!(recipe_action(vec![], &o), Err(BuildReject::EmptyRecipe));
+        assert_eq!(steps_action(vec![], &o), Err(BuildReject::EmptySteps));
         assert_eq!(
-            recipe_action(vec![RecipeStep::Stop { node: path.clone() }, RecipeStep::Stop { node: path.clone() }], &o),
-            Err(BuildReject::RecipeStepRepeated { operation: "node.stop:mesh1.rpc.1".into() })
+            steps_action(vec![Step::Stop { node: path.clone() }, Step::Stop { node: path.clone() }], &o),
+            Err(BuildReject::StepRepeated { operation: "node.stop:mesh1.rpc.1".into() })
         );
-        assert_eq!(recipe_action(vec![RecipeStep::Start { node: "mesh1.rpc.9".parse().unwrap() }], &o), Err(BuildReject::RecipeNodeUnknown { step: 1, node: "mesh1.rpc.9".into() }));
+        assert_eq!(steps_action(vec![Step::Start { node: "mesh1.rpc.9".parse().unwrap() }], &o), Err(BuildReject::StepNodeUnknown { step: 1, node: "mesh1.rpc.9".into() }));
         assert_eq!(
-            recipe_action(vec![RecipeStep::Update { node: path.clone(), name: path.renamed() }, RecipeStep::Stop { node: path.clone() }], &o),
-            Err(BuildReject::RecipeNodeUnknown { step: 2, node: "mesh1.rpc.1".into() }),
+            steps_action(vec![Step::Update { node: path.clone(), name: path.renamed() }, Step::Stop { node: path.clone() }], &o),
+            Err(BuildReject::StepNodeUnknown { step: 2, node: "mesh1.rpc.1".into() }),
             "the node left the path at its rename: nothing is at it for the stop"
         );
     }

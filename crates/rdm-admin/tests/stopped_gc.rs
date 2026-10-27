@@ -100,20 +100,20 @@ async fn settle(builds: &MemoryBuildStateAdapter, id: &BuildId) {
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
 }
 
-/// The replace recipe of the birth `b` (lifecycles/node-replace.md), pinned to it: `b`'s connections
+/// The replace steps of the birth `b` (lifecycles/node-replace.md), pinned to it: `b`'s connections
 /// deleted, its mesh left, renamed `.old` live and stopped, the successor created at its name, `b`
 /// deleted at `.old`.
-fn replace_recipe(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
-    use rdm_core::build::RecipeStep;
+fn replace_steps(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
+    use rdm_core::build::Step;
     let node = b.0.clone();
-    AttemptAction::Recipe {
+    AttemptAction::Steps {
         steps: vec![
-            RecipeStep::DeleteConnections { node: node.clone() },
-            RecipeStep::LeaveMesh { node: node.clone() },
-            RecipeStep::Update { node: node.clone(), name: node.renamed() },
-            RecipeStep::Stop { node: node.renamed() },
-            RecipeStep::Create { node: node.clone(), executable: None },
-            RecipeStep::Delete { node: node.renamed() },
+            Step::DeleteConnections { node: node.clone() },
+            Step::LeaveMesh { node: node.clone() },
+            Step::Update { node: node.clone(), name: node.renamed() },
+            Step::Stop { node: node.renamed() },
+            Step::Create { node: node.clone(), executable: None },
+            Step::Delete { node: node.renamed() },
         ],
         pinned: vec![(node, rdm_admin::build::PinnedBirth { node_id: b.1.clone(), incarnation: b.2.clone() })],
     }
@@ -233,11 +233,11 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     let refused = cp.collect_stopped(&candidates[0], TTL).await;
     assert!(matches!(&refused, Err(Refusal::Reject(r)) if r.reason() == "node-not-stopped"), "{refused:?}");
 
-    // After the scan: the accepted Build opens the replace recipe of mesh1.rpc.2's birth, whose attempt
-    // fails mid-recipe: the Build is open, not in flight, and keeps the birth as its rollback point.
+    // After the scan: the accepted Build opens the replace steps of mesh1.rpc.2's birth, whose attempt
+    // fails part-way: the Build is open, not in flight, and keeps the birth as its rollback point.
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Recipe, action: Some(replace_recipe(&other)), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
+        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Steps, action: Some(replace_steps(&other)), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
         BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
         BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() , code: rdm_core::outcome::Code::FailedPrecondition } }),
     ]).await;
@@ -254,10 +254,10 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
 
 /// CONTRACT (§6.9 Selection: "except a birth an open Build still references (a replace
 /// mid-transfer keeps its rollback point)"): `mesh1.rpc.1`, stopped past the ttl, is the birth a
-/// replace recipe left mid-recipe (its attempt failed, the Build is not settled). The scan says it is
+/// replace steps left part-way (its attempt failed, the Build is not settled). The scan says it is
 /// referenced by that Build and the sweep submits nothing for it.
 #[tokio::test]
-async fn a_stopped_birth_an_open_replace_recipe_references_is_skipped() {
+async fn a_stopped_birth_an_open_replace_build_references_is_skipped() {
     let (spans, _g) = capture("i143-3072-referenced");
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = view("mesh1.admin.1");
@@ -269,7 +269,7 @@ async fn a_stopped_birth_an_open_replace_recipe_references_is_skipped() {
     period(&cp, &builds, &young, true, now(&cp)).await;
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Recipe, action: Some(replace_recipe(&old)), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
+        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Steps, action: Some(replace_steps(&old)), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
         BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
         BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() , code: rdm_core::outcome::Code::FailedPrecondition } }),
     ]).await;

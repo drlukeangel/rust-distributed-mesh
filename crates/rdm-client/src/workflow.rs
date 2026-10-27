@@ -23,7 +23,7 @@ use rdm_core::names::{NodeEvent, NodeOp, NodeStep};
 use crate::build_stream::{BuildFrame, BuildReceipts, BuildStream};
 use crate::{Accepted, BuildId, BuildView, CallEnd, StepView};
 use rdm_core::PathName;
-use rdm_core::build::{RecipeStep, StepResult};
+use rdm_core::build::{Step, StepResult};
 
 /// A frame of a workflow's reply stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,9 +85,9 @@ pub enum WorkflowKind {
     /// `node.connections.delete { All }` of this node: `node.connections.delete:<path.name>`. The
     /// process keeps running.
     DeleteConnections(PathName),
-    /// A recipe: one Build of node primitives, each step its own op's operation, in order
-    /// (`BuildChange::Recipe`; build.md §1, lifecycles/node-replace.md).
-    Recipe(Vec<RecipeStep>),
+    /// Steps: one Build of node primitives, each step its own op's operation, in order
+    /// (`BuildChange::Steps`; build.md §1, lifecycles/node-replace.md).
+    Steps(Vec<Step>),
 }
 
 /// One row of the mapping from a Build receipt to the canonical names.
@@ -98,7 +98,7 @@ struct Row {
     /// The step events the step's `Complete` receipt announces, in order.
     events: &'static [NodeEvent],
     terminal: bool,
-    /// The exact operation key the row belongs to, for a recipe's step: two steps of one recipe
+    /// The exact operation key the row belongs to, for a Build's step: two steps of one Build
     /// share an operation prefix (a stop of the predecessor and of the successor) and differ by path.
     key: Option<String>,
     /// A step of the operation's stop half, which node.delete of an already stopped or proven-exited
@@ -169,21 +169,21 @@ fn shutdown_rows(operation: &'static str) -> Vec<Row> {
     ]
 }
 
-/// The rows of one recipe step, in pipeline order, each keyed to the step's exact operation. Each
+/// The rows of one step, in pipeline order, each keyed to the step's exact operation. Each
 /// step is its op's own workflow: the same rows that op's call streams.
-fn recipe_step_rows(step: &RecipeStep) -> Vec<Row> {
+fn step_rows(step: &Step) -> Vec<Row> {
     let mut rows: Vec<Row> = match step {
-        RecipeStep::Create { .. } => create_rows!("node.create", &[NodeEvent::Created]).into(),
-        RecipeStep::Stop { .. } => stop_rows(),
-        RecipeStep::Update { .. } => vec![row("node.update", "UpdateNode", NodeStep::Update, &[], false), row("node.update", "Complete", NodeStep::Update, &[NodeEvent::Updated], false)],
-        RecipeStep::Start { .. } => start_rows!("node.start", &[], NodeStep::Start).into(),
+        Step::Create { .. } => create_rows!("node.create", &[NodeEvent::Created]).into(),
+        Step::Stop { .. } => stop_rows(),
+        Step::Update { .. } => vec![row("node.update", "UpdateNode", NodeStep::Update, &[], false), row("node.update", "Complete", NodeStep::Update, &[NodeEvent::Updated], false)],
+        Step::Start { .. } => start_rows!("node.start", &[], NodeStep::Start).into(),
         // node.delete's own workflow, whatever the node's name: a stopped birth's runs no stop half.
-        RecipeStep::Delete { .. } => delete_rows(),
-        RecipeStep::DeleteConnections { .. } => vec![
+        Step::Delete { .. } => delete_rows(),
+        Step::DeleteConnections { .. } => vec![
             row("node.connections.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
             row("node.connections.delete", "Complete", NodeStep::ConnectionsDelete, &[], false),
         ],
-        RecipeStep::LeaveMesh { .. } => vec![row("node.mesh.leave", "LeaveMesh", NodeStep::MeshLeave, &[NodeEvent::MeshLeft], false), row("node.mesh.leave", "Complete", NodeStep::MeshLeave, &[], false)],
+        Step::LeaveMesh { .. } => vec![row("node.mesh.leave", "LeaveMesh", NodeStep::MeshLeave, &[NodeEvent::MeshLeft], false), row("node.mesh.leave", "Complete", NodeStep::MeshLeave, &[], false)],
     };
     for r in &mut rows {
         r.terminal = false;
@@ -192,16 +192,16 @@ fn recipe_step_rows(step: &RecipeStep) -> Vec<Row> {
     rows
 }
 
-/// The workflow step a recipe step is, for a failure no row names.
-fn recipe_node_step(step: &RecipeStep) -> NodeStep {
+/// The workflow step a step is, for a failure no row names.
+fn node_step_of(step: &Step) -> NodeStep {
     match step {
-        RecipeStep::Create { .. } => NodeStep::Create,
-        RecipeStep::Stop { .. } => NodeStep::Stop,
-        RecipeStep::Update { .. } => NodeStep::Update,
-        RecipeStep::Start { .. } => NodeStep::Start,
-        RecipeStep::Delete { .. } => NodeStep::Delete,
-        RecipeStep::DeleteConnections { .. } => NodeStep::ConnectionsDelete,
-        RecipeStep::LeaveMesh { .. } => NodeStep::MeshLeave,
+        Step::Create { .. } => NodeStep::Create,
+        Step::Stop { .. } => NodeStep::Stop,
+        Step::Update { .. } => NodeStep::Update,
+        Step::Start { .. } => NodeStep::Start,
+        Step::Delete { .. } => NodeStep::Delete,
+        Step::DeleteConnections { .. } => NodeStep::ConnectionsDelete,
+        Step::LeaveMesh { .. } => NodeStep::MeshLeave,
     }
 }
 
@@ -231,7 +231,7 @@ fn delete_rows() -> Vec<Row> {
 }
 
 impl WorkflowKind {
-    /// The node call this workflow is; `None` for a recipe, which is a Build of several.
+    /// The node call this workflow is; `None` for steps, which are a Build of several.
     pub fn op(&self) -> Option<NodeOp> {
         Some(match self {
             Self::Create => NodeOp::Create,
@@ -239,25 +239,25 @@ impl WorkflowKind {
             Self::Start(_) => NodeOp::Start,
             Self::Delete(_) => NodeOp::Delete,
             Self::DeleteConnections(_) => NodeOp::ConnectionsDelete,
-            Self::Recipe(_) => return None,
+            Self::Steps(_) => return None,
         })
     }
 
-    /// The span of the call: the node op's own, or for a recipe
-    /// `rdm.node_admin.build.create.via-recipe` naming its steps.
+    /// The span of the call: the node op's own, or for steps
+    /// `rdm.node_admin.build.create.via-steps` naming them.
     pub fn span(&self) -> tracing::Span {
         match (self.op(), self) {
             (Some(op), _) => op.span(),
-            (None, Self::Recipe(steps)) => tracing::info_span!(
-                "rdm.node_admin.build.create.via-recipe",
+            (None, Self::Steps(steps)) => tracing::info_span!(
+                "rdm.node_admin.build.create.via-steps",
                 op = "build.create",
-                steps = %steps.iter().map(|s| format!("{}:{}", recipe_node_step(s).name(), s.node())).collect::<Vec<_>>().join(" "),
+                steps = %steps.iter().map(|s| format!("{}:{}", node_step_of(s).name(), s.node())).collect::<Vec<_>>().join(" "),
                 outcome = tracing::field::Empty,
                 failed_step = tracing::field::Empty,
                 build_id = tracing::field::Empty,
                 attempt = tracing::field::Empty,
             ),
-            (None, _) => unreachable!("only a recipe names no node op"),
+            (None, _) => unreachable!("only steps name no node op"),
         }
     }
 
@@ -283,10 +283,10 @@ impl WorkflowKind {
             // stop half is already done and is no row of its workflow.
             Self::Delete(n) if n.old => delete_rows().into_iter().filter(|r| !r.stop_half).collect(),
             Self::Delete(_) => delete_rows(),
-            // A recipe's rows are its steps' own, each keyed to its exact operation; only the last
+            // A Build's rows are its steps' own, each keyed to its exact operation; only the last
             // row of the last step ends the workflow.
-            Self::Recipe(steps) => {
-                let mut rows: Vec<Row> = steps.iter().flat_map(recipe_step_rows).collect();
+            Self::Steps(steps) => {
+                let mut rows: Vec<Row> = steps.iter().flat_map(step_rows).collect();
                 if let Some(last) = rows.last_mut() {
                     last.terminal = true;
                 }
@@ -300,7 +300,7 @@ impl WorkflowKind {
         match self {
             Self::Create => prefix == "node.create" && key.starts_with("node.create:"),
             Self::Stop(n) | Self::Start(n) | Self::Delete(n) | Self::DeleteConnections(n) => key == format!("{prefix}:{n}"),
-            Self::Recipe(steps) => steps.iter().any(|s| key == format!("{prefix}:{}", s.node())),
+            Self::Steps(steps) => steps.iter().any(|s| key == format!("{prefix}:{}", s.node())),
         }
     }
 
@@ -312,7 +312,7 @@ impl WorkflowKind {
             Self::Start(_) => NodeStep::Start,
             Self::Delete(_) => NodeStep::Delete,
             Self::DeleteConnections(_) => NodeStep::ConnectionsDelete,
-            Self::Recipe(steps) => steps.iter().find(|s| key.split_once(':').is_some_and(|(_, p)| p == s.node().to_string())).map(recipe_node_step).unwrap_or(NodeStep::Create),
+            Self::Steps(steps) => steps.iter().find(|s| key.split_once(':').is_some_and(|(_, p)| p == s.node().to_string())).map(node_step_of).unwrap_or(NodeStep::Create),
         }
     }
 }

@@ -37,7 +37,7 @@ pub struct Binding {
     /// Lowercase hex sha256 of the executable's bytes.
     pub sha256: String,
     /// The image the executable must run in (a container provider); absent for a host process.
-    /// Always written (a recipe's Create step carries the binding on the positional Build wire).
+    /// Always written (a Build's Create step carries the binding on the positional Build wire).
     #[serde(default)]
     pub image: Option<String>,
 }

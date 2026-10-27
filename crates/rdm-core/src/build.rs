@@ -41,7 +41,7 @@ pub struct Build;
 
 /// What a caller submits. The fabric-primary compiles it once against the accepted topology (a
 /// topology change opens a new Build) or opens the next attempt of the accepted Build (a
-/// connections delete, stop, start, recovery or recipe, targeted at the births it acts on).
+/// connections delete, stop, start, recovery or steps, targeted at the births it acts on).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildChange {
     /// Reserved position: the removed count form `ReconcileFabric` (proposal
@@ -95,14 +95,14 @@ pub enum BuildChange {
         /// The exited instance's incarnation.
         incarnation: IncarnationId,
     },
-    /// A recipe: one Build whose steps are node primitives, run in order (build.md §1: "Rafka's
-    /// replace recipe is submitted as one Build of node primitives"; lifecycles/node-replace.md).
-    /// The caller owns the recipe; RDM executes each step as its op's own workflow and records the
-    /// step's receipts. A resumed recipe never runs a completed step again. The topology is unchanged:
-    /// a recipe is the next attempt of the accepted Build.
-    Recipe {
+    /// Steps: one Build whose steps are node primitives, run in order (build.md §1: "Rafka's
+    /// replace steps (one Build of node primitives ...)"; lifecycles/node-replace.md).
+    /// The caller owns the steps; RDM executes each step as its op's own workflow and records the
+    /// step's receipts. A resume never runs a completed step again. The topology is unchanged:
+    /// the steps are the next attempt of the accepted Build.
+    Steps {
         /// The steps, in the order they run.
-        steps: Vec<RecipeStep>,
+        steps: Vec<Step>,
     },
     /// Delete the fabric (`fabric.delete`, lifecycles/fabric-delete.md): run `mesh.delete` on each
     /// mesh leaf-inward (the fabric-primary's own mesh last, where the fabric seat stays put),
@@ -158,18 +158,18 @@ impl BuildChange {
     }
 }
 
-/// One step of a [`BuildChange::Recipe`]: one node primitive acting on the node a `path.name` names
-/// when the step runs. A path an earlier step of the same recipe creates or renames to names the node
+/// One step of a [`BuildChange::Steps`]: one node primitive acting on the node a `path.name` names
+/// when the step runs. A path an earlier step of the same steps creates or renames to names the node
 /// that step left there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RecipeStep {
+pub enum Step {
     /// node.create at `node`: a new node.id, incarnation and data dir at that exact `path.name`
     /// (for a replace's successor, the `<name>` its predecessor released), claimed before anything is
     /// launched.
     Create {
         /// The `path.name` the node is created at.
         node: PathName,
-        /// The executable binding the Build fixes for the node (node-rpc-envelope.md "Build recipe";
+        /// The executable binding the Build fixes for the node (node-rpc-envelope.md "Build schema";
         /// node-replace.md step 3): whichever admin runs or resumes the step launches it, re-hashed at
         /// the launch, and the node's row records it beside `config`. Absent, the node runs the
         /// executable its seeding row records (the predecessor's, a recovered node's), and only a
@@ -218,7 +218,7 @@ pub enum RecipeStep {
     },
 }
 
-impl RecipeStep {
+impl Step {
     /// The `path.name` the step acts on when it runs.
     pub fn node(&self) -> &PathName {
         match self {

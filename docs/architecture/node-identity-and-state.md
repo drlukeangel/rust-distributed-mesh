@@ -77,7 +77,7 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   dial resolves `path.name` → `endpoint_id` at DIAL time (§2.2), never from a stored copy. A stored
   64-hex `endpoint_id` is refused by name.
 - **The id names one node INSTANCE and is never reissued.** A stop or a start keeps the id,
-  incarnation, endpoint and port; a new bin is a new node with a fresh id (the replace recipe), and so
+  incarnation, endpoint and port; a new bin is a new node with a fresh id (the replace steps), and so
   is a node that replaces another or is added (§2.3).
 - **A node PROCESS has an incarnation.** The `Node` row carries `incarnation_id`, an opaque id minted by the
   one minter at node.create, naming the exact runtime that serves the node's id and `path.name`. It stays the

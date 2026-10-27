@@ -463,7 +463,7 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
 /// CONTRACT (node-stop.md, Entry: "Live exact `(node.id, incarnation)`", Status: "stopped with a live
 /// process"; node-rpc-envelope.md, Workflow: "A later attempt resumes from the recorded receipts, never
 /// from step 1, and validates those receipts against the accepted operation and exact births before it
-/// reuses them"): a recipe Build stops `mesh1.rpc.1` (its `Complete` receipt durable: stopped, its
+/// reuses them"): a Build of steps stops `mesh1.rpc.1` (its `Complete` receipt durable: stopped, its
 /// process alive) and then creates `mesh1.rpc.3`; every runtime of the fabric is lost inside that
 /// Build, the create's first receipt held by the faulted fabric-primary's door. The fabric-primary,
 /// restarted on its own data dir as both primaries, resumes the Build and completes it. The stopped
@@ -486,10 +486,10 @@ async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_record
     // The fabric-primary's door holds the create's first receipt: the stop before it is complete and
     // durable, and the Build's attempt is open.
     let door = rdm_test::faults::Door::at(&estate, &fp).await;
-    let cut = "recipe:create";
+    let cut = "steps:create";
     door.arm(cut, json!({"kind": "receipt", "step": "PrepareStorage", "operation": "node.create:mesh1.rpc.3"})).await;
     let rpc1: rdm_client::PathName = Estate::path("mesh1.rpc.1");
-    let stream = estate.nodes_obj().await.recipe(vec![rdm_core::build::RecipeStep::Stop { node: rpc1 }, rdm_core::build::RecipeStep::Create { node: Estate::path("mesh1.rpc.3"), executable: Some(estate.executables.of(rdm_client::LaunchKind::RpcNode)) }]).await.unwrap_or_else(|e| panic!("the recipe is accepted: {e}"));
+    let stream = estate.nodes_obj().await.steps(vec![rdm_core::build::Step::Stop { node: rpc1 }, rdm_core::build::Step::Create { node: Estate::path("mesh1.rpc.3"), executable: Some(estate.executables.of(rdm_client::LaunchKind::RpcNode)) }]).await.unwrap_or_else(|e| panic!("the Build is accepted: {e}"));
     let held = door.wait_held(cut).await;
 
     // The fault: every runtime of the fabric, at once, inside the Build.

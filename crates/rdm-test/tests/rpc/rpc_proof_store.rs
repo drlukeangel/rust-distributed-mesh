@@ -7,8 +7,8 @@
 //!    logical node serves the value written before it.
 //! 3. A killed node is recovered by its mesh-primary (node-recovery.md): a new logical node at
 //!    the same path.name over the inherited data dir and endpoint key, so it keeps the store.
-//! 4. The replace recipe (node-replace.md: one Build of node primitives) does not inherit it:
-//!    `path:` reaches the successor, whose store is empty; the recipe's node.delete of the predecessor
+//! 4. The replace steps (node-replace.md: one Build of node primitives) do not inherit it:
+//!    `path:` reaches the successor, whose store is empty; the Build's node.delete of the predecessor
 //!    at `<path>.old` publishes its departure, so `exact:<old>` resolves Gone and never follows the
 //!    replacement.
 //! 5. A key or value over its limit is refused by name, and writes nothing.
@@ -116,11 +116,11 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     // One Build at a time: the replace below is submitted once the recovery attempt has completed.
     build_log::lane_attempt_complete(&estate.carrier().await, &accepted, "mesh1", lane_before + 1, Duration::from_secs(60)).await;
 
-    // 4. The replace recipe does not inherit it: the successor's data dir is its own.
+    // 4. The replace steps do not inherit it: the successor's data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
     {
         let node: rdm_core::PathName = NODE.parse().unwrap();
-        let mut stream = estate.nodes_obj().await.recipe(rdm_test::recipes::replace(&node)).await.expect("the replace recipe was accepted");
+        let mut stream = estate.nodes_obj().await.steps(rdm_test::steps::replace(&node)).await.expect("the replace steps were accepted");
         Estate::complete(&mut stream).await;
     }
     let replacement = estate
@@ -133,8 +133,8 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
     assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
-    // The recipe stopped the predecessor and renamed it `<path>.old`; its node.delete there is the
-    // recipe's step that releases its identity, and its NodeDeleted is the departure (node-rpc.md:
+    // The Build stopped the predecessor and renamed it `<path>.old`; its node.delete there is the
+    // Build's step that releases its identity, and its NodeDeleted is the departure (node-rpc.md:
     // Gone comes only from NodeDeleted). A node's own live resolver knows more: that delete published the old
     // birth's departure, so the other rpc node answers Gone for the old id, the new holder for
     // the path, and Unknown for an id nobody ever saw.

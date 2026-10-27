@@ -3,7 +3,7 @@
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Typed calls and wire mapping](../node-rpc-envelope.md#typed-object-contract)
 
 `node.name.update` renames a node. It is a single call, not a lifecycle operation: it moves no status
-and is not a Build step by itself, though a recipe such as [replace](node-replace.md) calls it as a
+and is not a Build step by itself, though the [replace](node-replace.md) steps call it as a
 step. A node's other properties have their own commands ([node properties](../node-rpc-envelope.md#node-properties));
 [node.config.update](node-config-update.md) replaces its application config.
 
@@ -11,7 +11,7 @@ step. A node's other properties have their own commands ([node properties](../no
 
 | Field | Contract |
 |---|---|
-| Caller / executor | Caller to the node's mesh-primary, the only writer of its mesh's rows (Forward `0x1A` when not directly reachable). Before a mesh has a primary, the fabric-primary acts as its writer. The replace recipe calls it as a step; a caller may call it alone |
+| Caller / executor | Caller to the node's mesh-primary, the only writer of its mesh's rows (Forward `0x1A` when not directly reachable). Before a mesh has a primary, the fabric-primary acts as its writer. The replace steps call it as a step; a caller may call it alone |
 | Entry | The exact `(node.id, incarnation)` and the new name. Nothing else: no path, no mesh, no type, no tags |
 | Precondition | The node is live and admits no connection: this mesh-primary holds the birth's `node.connections.deleted` of an `All`, then its `node.mesh.left` ([node.mesh.leave](node-mesh-leave.md)), and it holds zero connections. A stopped node is never renamed; a ready-for-traffic node, or one still holding a connection, is refused. No new connection is admitted from the row write through `ApplyNodeName`, retries after an interruption included |
 | Validation | The exact birth matches the held record, else `RejectedStaleIncarnation { held }`; the receiver is the node's writer, else `ReceiverNotPrimary { needed }` (R-RX5); the precondition holds, else `RejectedAdmittingConnections { status, held_connections }`; the name is within the name grammar, else `RejectedName { reason }`. A rename may take any name within the grammar, unique within its path |

@@ -2,7 +2,7 @@
 //! fields independently of codec round trips; enums are append-only.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
-use rdm_core::build::{Build, BuildChange, RecipeStep, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
+use rdm_core::build::{Build, BuildChange, Step, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
 use rdm_core::context::CallContext;
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::{DecodeFailure, NodeProtocol};
@@ -24,15 +24,15 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
         ),
         (
             BuildRequest::Create {
-                submit: BuildSubmit::Change(BuildChange::Recipe {
+                submit: BuildSubmit::Change(BuildChange::Steps {
                     steps: vec![
-                        RecipeStep::DeleteConnections { node: "m.rpc.1".parse().unwrap() },
-                        RecipeStep::LeaveMesh { node: "m.rpc.1".parse().unwrap() },
-                        RecipeStep::Update { node: "m.rpc.1".parse().unwrap(), name: "m.rpc.1.old".parse().unwrap() },
-                        RecipeStep::Stop { node: "m.rpc.1.old".parse().unwrap() },
-                        RecipeStep::Create { node: "m.rpc.1".parse().unwrap(), executable: None },
-                        RecipeStep::Start { node: "m.rpc.1.old".parse().unwrap() },
-                        RecipeStep::Delete { node: "m.rpc.1.old".parse().unwrap() },
+                        Step::DeleteConnections { node: "m.rpc.1".parse().unwrap() },
+                        Step::LeaveMesh { node: "m.rpc.1".parse().unwrap() },
+                        Step::Update { node: "m.rpc.1".parse().unwrap(), name: "m.rpc.1.old".parse().unwrap() },
+                        Step::Stop { node: "m.rpc.1.old".parse().unwrap() },
+                        Step::Create { node: "m.rpc.1".parse().unwrap(), executable: None },
+                        Step::Start { node: "m.rpc.1.old".parse().unwrap() },
+                        Step::Delete { node: "m.rpc.1.old".parse().unwrap() },
                     ],
                 }),
             },

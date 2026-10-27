@@ -203,11 +203,11 @@ fn accepted_on(action: &AttemptAction) -> Vec<(PathName, String)> {
         AttemptAction::Delete { path, .. } => vec![(path.clone(), format!("node.delete:{path}"))],
         AttemptAction::Recover { path, .. } => vec![(path.clone(), format!("node.create:{path}"))],
         AttemptAction::Terminate { path, from_incarnation, .. } => vec![(path.clone(), format!("node.terminate:{path}@{}", from_incarnation.as_str()))],
-        AttemptAction::Recipe { steps, .. } => {
+        AttemptAction::Steps { steps, .. } => {
             let mut out: Vec<(PathName, String)> = Vec::new();
             for step in steps {
                 if !out.iter().any(|(p, _)| p == step.node()) {
-                    out.push((step.node().clone(), crate::build::recipe_step_key(step)));
+                    out.push((step.node().clone(), crate::build::step_key(step)));
                 }
             }
             out
@@ -225,7 +225,7 @@ fn birth_of_step(p: &BuildProjection, attempt: u32, path: &PathName, output: Opt
         AttemptAction::DeleteConnections { path: at, from_incarnation } | AttemptAction::Stop { path: at, from_incarnation } | AttemptAction::Start { path: at, from_incarnation } | AttemptAction::Delete { path: at, from_incarnation } | AttemptAction::Recover { path: at, from_incarnation, .. } => {
             (at == path).then(|| from_incarnation.clone())
         }
-        AttemptAction::Recipe { pinned, .. } => pinned.iter().find(|(at, _)| at == path).map(|(_, b)| b.incarnation.clone()),
+        AttemptAction::Steps { pinned, .. } => pinned.iter().find(|(at, _)| at == path).map(|(_, b)| b.incarnation.clone()),
         AttemptAction::Terminate { .. } => None,
     }
 }
@@ -518,7 +518,7 @@ impl FabricAtlas {
         let lifecycle = take_effect(&mut held, p, s);
         let node_of = |held: &Held| -> Option<NodeId> {
             let pinned = match p.attempt_actions.get(&attempt) {
-                Some(AttemptAction::Recipe { pinned, .. }) => pinned.iter().find(|(at, _)| *at == path).map(|(_, b)| b.node_id.clone()),
+                Some(AttemptAction::Steps { pinned, .. }) => pinned.iter().find(|(at, _)| *at == path).map(|(_, b)| b.node_id.clone()),
                 _ => None,
             };
             pinned.or_else(|| held.records.values().find(|r| r.name == path && !matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn)).map(|r| r.node_id.clone()))
@@ -540,10 +540,10 @@ impl FabricAtlas {
             }
             "node.start" => Taken::Effect(lifecycle),
             "node.update" => {
-                // The recipe's node.name.update: the name the step names (the receipt carries none).
+                // The Build's node.name.update: the name the step names (the receipt carries none).
                 let to = match p.attempt_actions.get(&attempt) {
-                    Some(AttemptAction::Recipe { steps, .. }) => steps.iter().find_map(|st| match st {
-                        rdm_core::build::RecipeStep::Update { node, name } if *node == path => Some(name.clone()),
+                    Some(AttemptAction::Steps { steps, .. }) => steps.iter().find_map(|st| match st {
+                        rdm_core::build::Step::Update { node, name } if *node == path => Some(name.clone()),
                         _ => None,
                     }),
                     _ => None,

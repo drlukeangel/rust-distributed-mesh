@@ -79,7 +79,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // mesh-primary; for a lost node-admin of a mesh with a live mesh-primary, that mesh-primary,
         // and a mesh primary's own recovery by the admin its mesh seats in its place
         // (mesh-recovery.md:8-9). A mesh with no other live admin lost its mesh-primary: that is no
-        // node recovery, and no admin executes one. Its node-admin is created by a recipe's node.create
+        // node recovery, and no admin executes one. Its node-admin is created by a Build's node.create
         // (below), the fabric-primary's once the mesh holds no admin that is not proven gone
         // (mesh-investigation.md "A node-admin joins the live mesh").
         BuildOperation::RetireNode { node, exited: Some(_) } | BuildOperation::CreateNode { node, over: Some(_), .. } => {
@@ -89,10 +89,10 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
                 mesh_executor(&node.mesh, None, t)
             }
         }
-        // A recipe step is executed as the op it calls: a create as node.create, every other step as
+        // A step is executed as the op it calls: a create as node.create, every other step as
         // the node op on its node (the mesh-primary of the node's mesh writes its row, R13).
-        BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node, .. }, .. } => mesh_executor(&node.mesh, None, t),
-        BuildOperation::RecipeStep { step, .. } => node_op_executor(step.node(), op, t),
+        BuildOperation::Step { step: rdm_core::build::Step::Create { node, .. }, .. } => mesh_executor(&node.mesh, None, t),
+        BuildOperation::Step { step, .. } => node_op_executor(step.node(), op, t),
         // A member node of any kind is born by its own mesh's primary admin (the fabric primary when
         // the mesh has none): the rule names no role, so a product's kinds get the same executor as
         // the proof product's rpc node. A mesh's missing node-admin is created by that mesh's primary
@@ -121,7 +121,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
 }
 
 /// The executor of a node op (retire, connections delete, stop, start, delete, and a
-/// recipe's step) on `node` in view `t`.
+/// Build's step) on `node` in view `t`.
 fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Option<PathName> {
     let fabric = || t.fabric_primary().map(|n| n.name.clone());
     // The holder of its cohort's seat moves that seat first, by node.primary.update its mesh-primary
@@ -187,7 +187,7 @@ pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
         | BuildOperation::UpdateConfig { node }
         | BuildOperation::CreateTags { node, .. }
         | BuildOperation::DeleteTags { node, .. } => node,
-        BuildOperation::RecipeStep { step, .. } => step.node(),
+        BuildOperation::Step { step, .. } => step.node(),
         _ => return format!("{}: no admin holds the seat that executes it in this view", op.key()),
     };
     let held: Vec<String> = held_admins(&node.mesh, Some(node), t).into_iter().map(|n| format!("{} ({:?})", n.name, n.status)).collect();
@@ -247,7 +247,7 @@ fn is_primary(node: &PathName, t: &Topology) -> bool {
 /// other node-admin in its mesh is still named: node.primary.update refuses it by name (the Build door
 /// refuses it first, `control_plane::last_admin`).
 pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
-    use rdm_core::build::RecipeStep;
+    use rdm_core::build::Step;
     if let BuildOperation::ShutdownMesh { mesh, .. } = op {
         if !t.meshes.iter().any(|m| m.name != *mesh && m.status != crate::model::ScopeStatus::Dead) {
             return None;
@@ -256,10 +256,10 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
         return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false, successor: None });
     }
     let (node, delete) = match op {
-        BuildOperation::RetireNode { node, exited: None } | BuildOperation::RecipeStep { step: RecipeStep::Delete { node }, .. } => (node, true),
+        BuildOperation::RetireNode { node, exited: None } | BuildOperation::Step { step: Step::Delete { node }, .. } => (node, true),
         BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
-        | BuildOperation::RecipeStep { step: RecipeStep::Stop { node } | RecipeStep::DeleteConnections { node }, .. } => (node, false),
+        | BuildOperation::Step { step: Step::Stop { node } | Step::DeleteConnections { node }, .. } => (node, false),
         _ => return None,
     };
     if node.kind != NodeKind::NodeAdmin {
@@ -714,17 +714,17 @@ mod tests {
         assert_eq!(who(&BuildOperation::StopNode { node: p2.parse().unwrap(), from_incarnation: crate::model::IncarnationId::mint() }, &moved), m2, "once the seat moved, the new mesh primary executes the former holder's stop");
         let rename = |n: &str| {
             let node: PathName = n.parse().unwrap();
-            BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Update { name: node.renamed(), node }, birth: None }
+            BuildOperation::Step { step: rdm_core::build::Step::Update { name: node.renamed(), node }, birth: None }
         };
-        let make = |n: &str| BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node: n.parse().unwrap(), executable: None }, birth: None };
-        assert_eq!(who(&rename("mesh2.rpc.1"), &t), "mesh2.admin.1", "a recipe's update of a member is its mesh primary's, the writer of its row");
-        assert_eq!(who(&rename(m2), &t3), p2, "a recipe's update of a non-primary admin is its mesh primary's");
-        assert_eq!(who(&rename(p2), &moved), m2, "a recipe's update of a former mesh primary after its node.connections.delete moved the seat is the new mesh primary's");
-        assert_eq!(who(&make("mesh2.rpc.1"), &t), "mesh2.admin.1", "a recipe's create, a replace successor's at the name its predecessor released, is node.create's executor");
-        let recipe_connections = |n: &str| BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::DeleteConnections { node: n.parse().unwrap() }, birth: None };
-        assert_eq!(who(&recipe_connections(p2), &t3), "", "a recipe's node.connections.delete of a mesh primary waits for its seat to move");
-        assert!(seat_move(&recipe_connections(p2), &t3).is_some_and(|m| m.mesh_seat && !m.fabric_seat), "a recipe's node.connections.delete of mesh2's primary moves its mesh seat first");
-        assert_eq!(who(&recipe_connections(p2), &moved), m2, "once the seat moved, the new mesh primary executes the recipe's node.connections.delete");
+        let make = |n: &str| BuildOperation::Step { step: rdm_core::build::Step::Create { node: n.parse().unwrap(), executable: None }, birth: None };
+        assert_eq!(who(&rename("mesh2.rpc.1"), &t), "mesh2.admin.1", "a Build's update of a member is its mesh primary's, the writer of its row");
+        assert_eq!(who(&rename(m2), &t3), p2, "a Build's update of a non-primary admin is its mesh primary's");
+        assert_eq!(who(&rename(p2), &moved), m2, "a Build's update of a former mesh primary after its node.connections.delete moved the seat is the new mesh primary's");
+        assert_eq!(who(&make("mesh2.rpc.1"), &t), "mesh2.admin.1", "a Build's create, a replace successor's at the name its predecessor released, is node.create's executor");
+        let steps_connections = |n: &str| BuildOperation::Step { step: rdm_core::build::Step::DeleteConnections { node: n.parse().unwrap() }, birth: None };
+        assert_eq!(who(&steps_connections(p2), &t3), "", "a Build's node.connections.delete of a mesh primary waits for its seat to move");
+        assert!(seat_move(&steps_connections(p2), &t3).is_some_and(|m| m.mesh_seat && !m.fabric_seat), "a Build's node.connections.delete of mesh2's primary moves its mesh seat first");
+        assert_eq!(who(&steps_connections(p2), &moved), m2, "once the seat moved, the new mesh primary executes the Build's node.connections.delete");
         let connections = |n: &str| BuildOperation::DeleteConnections { node: n.parse().unwrap(), from_incarnation: crate::model::IncarnationId::mint() };
         let stop = |n: &str| BuildOperation::StopNode { node: n.parse().unwrap(), from_incarnation: crate::model::IncarnationId::mint() };
         assert_eq!(who(&connections("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member's node.connections.delete is its mesh primary's");

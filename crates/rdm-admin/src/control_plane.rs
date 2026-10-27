@@ -676,27 +676,27 @@ impl ControlPlane {
         self.open_attempt_in(span, route, reason, path, kind).await
     }
 
-    /// Open the next attempt of the accepted Build as the recipe `steps` (`BuildChange::Recipe`;
-    /// build.md §1: "Rafka's replace recipe is submitted as one Build of node primitives";
+    /// Open the next attempt of the accepted Build as `steps` (`BuildChange::Steps`;
+    /// build.md §1: "Rafka's replace steps (one Build of node primitives ...)";
     /// lifecycles/node-replace.md), under `span`. The topology is unchanged; the Build stays the
-    /// current one. Refused by name: a recipe with no step, one naming an operation twice, or one
+    /// current one. Refused by name: a Build with no step, one naming an operation twice, or one
     /// acting on a path that holds no birth and that no earlier step makes
-    /// ([`crate::accepted::recipe_action`]); a step in a mesh held by its own drift attempt (R-BI7
+    /// ([`crate::accepted::steps_action`]); a step in a mesh held by its own drift attempt (R-BI7
     /// caveat 3); a step on a node of a peer mesh this fabric-primary holds unheard (R-D1); a
     /// node.connections.delete, stop or delete of a seat holder while no other node of its type in its
     /// mesh can take its seat (R-MT1, Q7).
-    pub async fn open_recipe_in(&self, span: tracing::Span, route: &'static str, steps: Vec<rdm_core::build::RecipeStep>) -> Result<Opened, Refusal> {
+    pub async fn open_steps_in(&self, span: tracing::Span, route: &'static str, steps: Vec<rdm_core::build::Step>) -> Result<Opened, Refusal> {
         let outer = tracing::Span::current();
         async {
             self.require_fabric_primary(route).await?;
-            let summary = steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(" ");
+            let summary = steps.iter().map(crate::build::step_key).collect::<Vec<_>>().join(" ");
             let (_admitted, current) = self.current_settled().await?;
             for step in &steps {
                 let node = step.node();
                 if let Some(held) = holding(&current, Some(&node.mesh)) {
                     outer.in_scope(|| {
                         tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %node.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %node)
-                            .in_scope(|| tracing::info!("the recipe acts in a mesh held by its own drift attempt: one attempt in flight per mesh"))
+                            .in_scope(|| tracing::info!("the steps act in a mesh held by its own drift attempt: one attempt in flight per mesh"))
                     });
                     return Err(Refusal::BuildInProgress(held));
                 }
@@ -709,7 +709,7 @@ impl ControlPlane {
             self.atlas.apply(&mut t);
             // A node stands at every path a step acts on, before its mesh is read heard and before a
             // primary's successor is looked for (build.md §4.4's order).
-            let action = match crate::accepted::recipe_action(steps.clone(), &t) {
+            let action = match crate::accepted::steps_action(steps.clone(), &t) {
                 Ok(a) => a,
                 Err(reject) => {
                     outer.in_scope(|| reject_span(route, &reject));
@@ -726,11 +726,11 @@ impl ControlPlane {
                     }
                 }
                 let step_action = match step {
-                    rdm_core::build::RecipeStep::Stop { .. } => Some("stop"),
-                    rdm_core::build::RecipeStep::Delete { .. } => Some("delete"),
+                    rdm_core::build::Step::Stop { .. } => Some("stop"),
+                    rdm_core::build::Step::Delete { .. } => Some("delete"),
                     // A seat holder's seats move at its node.connections.delete { All }, the first step of
                     // a replace (node-connections-delete.md step 0; node-replace.md step 1).
-                    rdm_core::build::RecipeStep::DeleteConnections { .. } => Some("node.connections.delete"),
+                    rdm_core::build::Step::DeleteConnections { .. } => Some("node.connections.delete"),
                     _ => None,
                 };
                 if let Some(reject) = step_action.and_then(|a| last_admin(node, a, &t)) {
@@ -739,7 +739,7 @@ impl ControlPlane {
                 }
             }
             drop(t);
-            self.open_with(&current, None, AttemptReason::Recipe, action, route, &outer, &summary, span.clone()).await
+            self.open_with(&current, None, AttemptReason::Steps, action, route, &outer, &summary, span.clone()).await
         }
         .instrument(span.clone())
         .await
@@ -1178,7 +1178,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     // The holder of any other cohort's seat: its mesh-primary's node.primary.update needs another node
     // of its type (Q7); the delete of a type's only node in its mesh skips the update, whether the node
     // leaves the topology (a removal) or is re-created at the same path.name (node recovery, an executable
-    // replacement, the replace recipe's Delete step): R5, node-primary-update.md "No-successor cases".
+    // replacement, the replace's Delete step): R5, node-primary-update.md "No-successor cases".
     if target.kind != crate::model::NodeKind::NodeAdmin {
         let holds = t.node_type_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
         let only_of_cohort = t.nodes_of_type(&node.mesh, target.kind).all(|n| n.node_id == target.node_id);
@@ -1284,9 +1284,9 @@ pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
         "no-secondary" => tracing::info_span!("rdm.node_admin.build.reject.via-no-secondary", route, detail = %reject),
         "node-not-stopped" => tracing::info_span!("rdm.node_admin.build.reject.via-node-not-stopped", route, detail = %reject),
         "referenced-by-open-build" => tracing::info_span!("rdm.node_admin.build.reject.via-referenced-by-open-build", route, detail = %reject),
-        "empty-recipe" => tracing::info_span!("rdm.node_admin.build.reject.via-empty-recipe", route, detail = %reject),
-        "recipe-step-repeated" => tracing::info_span!("rdm.node_admin.build.reject.via-recipe-step-repeated", route, detail = %reject),
-        "recipe-node-unknown" => tracing::info_span!("rdm.node_admin.build.reject.via-recipe-node-unknown", route, detail = %reject),
+        "empty-steps" => tracing::info_span!("rdm.node_admin.build.reject.via-empty-steps", route, detail = %reject),
+        "step-repeated" => tracing::info_span!("rdm.node_admin.build.reject.via-step-repeated", route, detail = %reject),
+        "step-node-unknown" => tracing::info_span!("rdm.node_admin.build.reject.via-step-node-unknown", route, detail = %reject),
         "topology-storage-provider-not-registered" => tracing::info_span!("rdm.node_admin.build.reject.via-topology-storage-provider-not-registered", route, detail = %reject),
         "topology-storage-provider-not-opened" => tracing::info_span!("rdm.node_admin.build.reject.via-topology-storage-provider-not-opened", route, detail = %reject),
         _ => tracing::info_span!("rdm.node_admin.build.reject.via-invalid-intent", route, detail = %reject),
@@ -1457,7 +1457,7 @@ mod tests {
     /// admin executes the stop until it has; the stop of mesh1.rpc.2, which holds no seat, moves nothing
     /// and its mesh's primary executes it. The Build door admits a stop of mesh1.rpc.1 and refuses a
     /// stop of mesh2.rpc.1 by name with Q7's text; its delete, by the node.delete route or the
-    /// replace recipe's Delete step, skips the update as its removal does (R5).
+    /// replace's Delete step, skips the update as its removal does (R5).
     /// Must NOT happen: a cohort holder stopped with its seat unmoved, or the sole node of its type in a
     /// mesh stopped while its mesh has other nodes.
     #[test]
@@ -1489,11 +1489,11 @@ mod tests {
         assert_eq!(crate::executor::seat_move(&retire_sole, &t), None, "retiring the sole member of a non-admin cohort moves no seat");
         // R5 (Luke 2026-10-24, arm (a); node-primary-update.md "No-successor cases": "the delete of a
         // type's only node in its mesh, whether the node leaves the topology (a removal) or is re-created
-        // at the same `path.name`"): the replace recipe's Delete step and the node.delete route of a
+        // at the same `path.name`"): the replace's Delete step and the node.delete route of a
         // type's only node skip the update as a removal does, refused `no-secondary` at no step.
         assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t).is_none(), "the delete of a type's only node skips node.primary.update: {:?}", last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t));
-        let delete_step = crate::build::BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Delete { node: "mesh2.rpc.1".parse().unwrap() }, birth: None };
-        assert_eq!(crate::executor::seat_move(&delete_step, &t), None, "the recipe's delete of a type's only node moves no primary");
+        let delete_step = crate::build::BuildOperation::Step { step: rdm_core::build::Step::Delete { node: "mesh2.rpc.1".parse().unwrap() }, birth: None };
+        assert_eq!(crate::executor::seat_move(&delete_step, &t), None, "the Build's delete of a type's only node moves no primary");
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The

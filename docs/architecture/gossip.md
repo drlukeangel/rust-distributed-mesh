@@ -271,7 +271,7 @@ What a stopped node is, and why its endpoint stays reachable, is [States](lifecy
 The announcement is not node.deleted or provider proof and refreshes no liveness.
 
 node.restart is removed (Q183): callers run node.stop then node.start, and the stop's stopped is
-published as NodeStopped. An exit and a new birth under a new node.id is the [recover recipe](lifecycles/node-recovery.md), not a restart. No other gossip frame is renamed here.
+published as NodeStopped. An exit and a new birth under a new node.id are the [recover steps](lifecycles/node-recovery.md), not a restart. No other gossip frame is renamed here.
 NodeStopped is a postcard enum variant with byte fixtures; it rides the same in-flight mechanism as
 NodeDeleting. NodeStopped stays in the in-flight overlay until the next
 lifecycle op on the same `(node.id, incarnation)`. node.start clears it at

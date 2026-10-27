@@ -391,7 +391,7 @@ mod tests {
     /// still holds a live birth at its path (a view that has not heard the mesh lost, or the exited
     /// birth a node recovery creates over) or holds none. A live sibling makes it not the first; a
     /// node that is not a node-admin is never one. Must NOT happen: the two node.create paths
-    /// (the recipe's create and node recovery's) answering differently for one view.
+    /// (the Build's create and node recovery's) answering differently for one view.
     #[test]
     fn a_node_admin_is_the_first_admin_when_no_other_node_admin_of_its_mesh_is_live() {
         use NodeStatus::{Dead, ReadyForTraffic as R};

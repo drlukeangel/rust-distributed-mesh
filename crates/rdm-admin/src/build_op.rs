@@ -135,15 +135,15 @@ impl BuildDoor {
             BuildChange::DeleteConnections { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::DeleteConnections, node.clone(), ActionKind::DeleteConnections).await,
             BuildChange::Stop { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Stop, node.clone(), ActionKind::Stop).await,
             BuildChange::Start { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Start, node.clone(), ActionKind::Start).await,
-            BuildChange::Recipe { steps } => {
+            BuildChange::Steps { steps } => {
                 let span = tracing::info_span!(
-                    "rdm.node_admin.build.update.via-recipe",
+                    "rdm.node_admin.build.update.via-steps",
                     route = "build.create",
                     build_id = tracing::field::Empty,
                     attempt = tracing::field::Empty,
-                    steps = %steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(" "),
+                    steps = %steps.iter().map(crate::build::step_key).collect::<Vec<_>>().join(" "),
                 );
-                cp.open_recipe_in(span, "build.create", steps.clone()).await
+                cp.open_steps_in(span, "build.create", steps.clone()).await
             }
             BuildChange::Terminate { node, node_id, incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "build.create", node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = tracing::field::Empty, attempt = tracing::field::Empty);

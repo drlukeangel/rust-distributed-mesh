@@ -111,8 +111,8 @@ pub enum BuildOperation {
         /// dir the new node takes over whole, with the endpoint key it holds. `None`: a fresh data dir.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         over: Option<ExitedBirth>,
-        /// The executable binding the Build fixes for the launch, as a recipe's Create step carries it
-        /// (node-rpc-envelope.md "Build recipe"): a topology create and a replacement's create carry
+        /// The executable binding the Build fixes for the launch, as a Build's Create step carries it
+        /// (node-rpc-envelope.md "Build schema"): a topology create and a replacement's create carry
         /// the path's entry's (build-deployment.md §2), so the launch never takes the binding a
         /// Deleted row still records. `None`: the path's entry in the stored Build, else the row's
         /// (a recovery's, node-recovery.md "Retained"); a create nothing names one for is refused by
@@ -163,16 +163,16 @@ pub enum BuildOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exited: Option<ExitedBirth>,
     },
-    /// One step of a recipe (`BuildChange::Recipe`; build.md §1, lifecycles/node-replace.md): its op's
+    /// One step of a Build (`BuildChange::Steps`; build.md §1, lifecycles/node-replace.md): its op's
     /// own workflow on the node its path names when it runs, `create-node`, `stop-node`,
     /// `update-node` (node.update's own core at the node's mesh-primary), `start-node`,
     /// `retire-node` (node.delete), node.connections.delete `{ All }` or node.mesh.leave. `birth`
-    /// fences it to the exact birth its node was when the recipe was accepted; `None` for a node an
-    /// earlier step of the recipe created, which the executor resolves at its path when the step runs.
-    RecipeStep {
+    /// fences it to the exact birth its node was when the Build was accepted; `None` for a node an
+    /// earlier step of the Build created, which the executor resolves at its path when the step runs.
+    Step {
         /// The step.
-        step: rdm_core::build::RecipeStep,
-        /// The exact birth the step is fenced to, for a node the recipe did not create.
+        step: rdm_core::build::Step,
+        /// The exact birth the step is fenced to, for a node the Build did not create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         birth: Option<PinnedBirth>,
     },
@@ -261,17 +261,17 @@ impl BuildOperation {
     pub fn node(&self) -> Option<&PathName> {
         match self {
             Self::CreateNode { node, .. } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
-            Self::RecipeStep { step, .. } => Some(step.node()),
+            Self::Step { step, .. } => Some(step.node()),
             Self::TerminateNode { node, .. } | Self::UpdateConfig { node } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } | Self::BlockStorage { .. } | Self::SwitchStorage { .. } | Self::UnblockStorage { .. } | Self::FinishStorage { .. } => None,
         }
     }
 
-    /// The node a create operation makes (`create-node`, or a recipe's Create step); `None` for any
+    /// The node a create operation makes (`create-node`, or a Build's Create step); `None` for any
     /// other operation.
     pub fn created_node(&self) -> Option<&PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::RecipeStep { step: rdm_core::build::RecipeStep::Create { node, .. }, .. } => Some(node),
+            Self::CreateNode { node, .. } | Self::Step { step: rdm_core::build::Step::Create { node, .. }, .. } => Some(node),
             _ => None,
         }
     }
@@ -284,7 +284,7 @@ impl BuildOperation {
             Self::DeleteConnections { node, .. } => format!("node.connections.delete:{node}"),
             Self::StopNode { node, .. } => format!("node.stop:{node}"),
             Self::StartNode { node, .. } => format!("node.start:{node}"),
-            Self::RecipeStep { step, .. } => recipe_step_key(step),
+            Self::Step { step, .. } => step_key(step),
             // node.delete has one key, whatever the node's name and whatever state the birth is
             // deleted from (a stopped birth's delete runs no stop steps, a live one's stops it first).
             Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => format!("node.delete:{node}"),
@@ -303,10 +303,10 @@ impl BuildOperation {
     }
 }
 
-/// The operation key of a recipe step: its op's own key, the one that op's workflow receipts under.
+/// The operation key of a step: its op's own key, the one that op's workflow receipts under.
 /// One op has one key, whatever the node's name: node.delete's is `node.delete:<path>`.
-pub fn recipe_step_key(step: &rdm_core::build::RecipeStep) -> String {
-    use rdm_core::build::RecipeStep as S;
+pub fn step_key(step: &rdm_core::build::Step) -> String {
+    use rdm_core::build::Step as S;
     match step {
         S::Create { node, .. } => format!("node.create:{node}"),
         S::Stop { node } => format!("node.stop:{node}"),
@@ -318,7 +318,7 @@ pub fn recipe_step_key(step: &rdm_core::build::RecipeStep) -> String {
     }
 }
 
-/// The exact birth a recipe step is fenced to: the birth its node was when the recipe was accepted.
+/// The exact birth a step is fenced to: the birth its node was when the Build was accepted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PinnedBirth {
     /// The node.id.
@@ -485,18 +485,18 @@ pub enum BuildReject {
         /// The open Build.
         build_id: String,
     },
-    /// A recipe with no step: a Build of nothing.
-    EmptyRecipe,
-    /// A recipe naming one operation twice: a step's receipts are keyed by its operation
+    /// A Build with no step: a Build of nothing.
+    EmptySteps,
+    /// A Build naming one operation twice: a step's receipts are keyed by its operation
     /// (`<op>:<path.name>`), so two steps of one key cannot be told apart and a resume could not say
     /// which one completed.
-    RecipeStepRepeated {
+    StepRepeated {
         /// The operation named twice.
         operation: String,
     },
-    /// A recipe step acting on a `path.name` that holds no birth when the recipe is accepted and that
-    /// no earlier step of the recipe creates or renames a node to.
-    RecipeNodeUnknown {
+    /// A step acting on a `path.name` that holds no birth when the Build is accepted and that
+    /// no earlier step of the Build creates or renames a node to.
+    StepNodeUnknown {
         /// The step, numbered from 1.
         step: u32,
         /// The `path.name` it names.
@@ -585,9 +585,9 @@ impl BuildReject {
             Self::NoSecondary { .. } => "no-secondary",
             Self::NodeNotStopped { .. } => "node-not-stopped",
             Self::ReferencedByOpenBuild { .. } => "referenced-by-open-build",
-            Self::EmptyRecipe => "empty-recipe",
-            Self::RecipeStepRepeated { .. } => "recipe-step-repeated",
-            Self::RecipeNodeUnknown { .. } => "recipe-node-unknown",
+            Self::EmptySteps => "empty-steps",
+            Self::StepRepeated { .. } => "step-repeated",
+            Self::StepNodeUnknown { .. } => "step-node-unknown",
             Self::BasedOnNotCurrent { .. } => "based-on-not-current",
             Self::NoNodeListed => "no-node-listed",
             Self::TopologyStorageProviderNotRegistered { .. } => "topology-storage-provider-not-registered",
@@ -625,9 +625,9 @@ impl fmt::Display for BuildReject {
             ),
             Self::NodeNotStopped { node, found } => write!(f, "node `{node}` is not the birth the stopped-node collector selected at its delete's admission: {found}; nothing is deleted from the scan's decision"),
             Self::ReferencedByOpenBuild { node, build_id } => write!(f, "node `{node}`'s stopped birth is referenced by open Build {build_id}: it keeps it, and the stopped-node collector deletes nothing it holds"),
-            Self::EmptyRecipe => write!(f, "a recipe needs at least one step"),
-            Self::RecipeStepRepeated { operation } => write!(f, "the recipe names operation `{operation}` twice: each step's receipts are keyed by its operation, so a recipe names each operation once"),
-            Self::RecipeNodeUnknown { step, node } => write!(f, "step {step} of the recipe acts on `{node}`, which holds no birth now and which no earlier step creates or renames a node to"),
+            Self::EmptySteps => write!(f, "a Build needs at least one step"),
+            Self::StepRepeated { operation } => write!(f, "the Build names operation `{operation}` twice: each step's receipts are keyed by its operation, so a Build names each operation once"),
+            Self::StepNodeUnknown { step, node } => write!(f, "step {step} of the Build acts on `{node}`, which holds no birth now and which no earlier step creates or renames a node to"),
             Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
             Self::BasedOnNotCurrent { based_on, current } => write!(f, "the request is based on Build {based_on}, and the current Build is {current}: nothing is accepted; read the topology again and submit from it"),
             Self::NoNodeListed => write!(f, "the request lists no node: a fabric with no mesh is fabric.delete, never a topology request; nothing is accepted"),
@@ -659,17 +659,17 @@ pub(crate) fn shutdown_mesh(observed: &Topology, mesh: &str) -> Result<BuildOper
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_core::build::RecipeStep;
+    use rdm_core::build::Step;
 
-    /// CONTRACT: the node a create operation makes is named for `create-node` and for a recipe's Create
+    /// CONTRACT: the node a create operation makes is named for `create-node` and for a Build's Create
     /// step alike, and for no other operation: the drive's fence on a fully crashed mesh admits a create
     /// of its first node-admin and nothing else.
     #[test]
     fn only_a_create_operation_names_the_node_it_creates() {
         let node: PathName = "mesh2.admin.1".parse().unwrap();
         assert_eq!(BuildOperation::CreateNode { node: node.clone(), over: None, executable: None }.created_node(), Some(&node));
-        assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Create { node: node.clone(), executable: None }, birth: None }.created_node(), Some(&node));
-        assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Stop { node: node.clone() }, birth: None }.created_node(), None);
-        assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Start { node: node.clone() }, birth: None }.created_node(), None);
+        assert_eq!(BuildOperation::Step { step: Step::Create { node: node.clone(), executable: None }, birth: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::Step { step: Step::Stop { node: node.clone() }, birth: None }.created_node(), None);
+        assert_eq!(BuildOperation::Step { step: Step::Start { node: node.clone() }, birth: None }.created_node(), None);
     }
 }

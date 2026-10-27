@@ -140,7 +140,7 @@ pub struct PrecedingUpdate {
 /// alone; of a node of any other type, its type's primary's update; for a mesh retire, the
 /// fabric-primary's under that mesh. None for any other operation.
 pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> Vec<PrecedingUpdate> {
-    use rdm_core::build::RecipeStep;
+    use rdm_core::build::Step;
     use crate::fabric_handover::update_operation;
     use rdm_core::Seat;
     let key = op.key();
@@ -149,7 +149,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
         BuildOperation::RetireNode { node, exited: None }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
-        | BuildOperation::RecipeStep { step: RecipeStep::Stop { node } | RecipeStep::Delete { node } | RecipeStep::DeleteConnections { node }, .. }
+        | BuildOperation::Step { step: Step::Stop { node } | Step::Delete { node } | Step::DeleteConnections { node }, .. }
             if node.kind == NodeKind::NodeAdmin =>
         {
             [Seat::MeshPrimary, Seat::FabricPrimary].into_iter().map(|seat| PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(seat, build_id.as_str(), run, &key), holder: Some(node.clone()) }).collect()
@@ -158,7 +158,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
         BuildOperation::RetireNode { node, exited: None }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
-        | BuildOperation::RecipeStep { step: RecipeStep::Stop { node } | RecipeStep::Delete { node } | RecipeStep::DeleteConnections { node }, .. } => {
+        | BuildOperation::Step { step: Step::Stop { node } | Step::Delete { node } | Step::DeleteConnections { node }, .. } => {
             vec![PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(Seat::Cohort(node.kind), build_id.as_str(), run, &key), holder: Some(node.clone()) }]
         }
         _ => Vec::new(),

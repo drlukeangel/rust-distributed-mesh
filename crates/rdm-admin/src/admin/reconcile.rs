@@ -260,15 +260,15 @@ pub(crate) fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepR
 /// of four things, in this order:
 /// - a peer mesh whose investigation decided `carrier-edge-lost` (`decided`): the verdict runs
 ///   node.create of the mesh's first node-admin into the live mesh, on this same Build and the mesh's
-///   own MeshId (mesh-investigation.md step 6). The attempt is the one-step recipe of that create
-///   (`AttemptAction::Recipe`, reason Recipe); the create's own fence asks the provider about the lost
+///   own MeshId (mesh-investigation.md step 6). The attempt is the single step of that create
+///   (`AttemptAction::Steps`, reason Steps); the create's own fence asks the provider about the lost
 ///   admin and deletes it only on its exact exit, so nothing is proven or recorded here;
 /// - a peer mesh whose investigation decided `unreachable` (`unreachable`: mesh-investigation.md step
-///   5, "No member answers"): the same recipe, for the mesh's first node-admin
+///   5, "No member answers"): the same steps, for the mesh's first node-admin
 ///   ([`unanswered_peer_mesh`]); the drive that claims that attempt authors the fabric `degraded`
 ///   ([`Records::open_mesh_recovery`], R-DG1);
 /// - a mesh this authority hears (it is not held unheard) that lost its mesh-primary, whose unheard
-///   node-admin the provider was asked about: the same recipe, for that admin, on whatever verdict
+///   node-admin the provider was asked about: the same steps, for that admin, on whatever verdict
 ///   (node-recovery.md step 3, Q111). A peer mesh held unheard is otherwise evidence only (R-D1);
 /// - surplus: a live birth of a kept mesh the topology does not name, or an incomplete mesh.delete.
 ///
@@ -471,15 +471,15 @@ pub async fn reconcile_drift(
     // The node-admin a recovery owes a node.create: the carrier-edge-lost verdict's, or the fully crashed mesh's.
     let recover_admin: Option<&PathName> = verdict.as_ref().map(|(_, admin)| admin).or(crashed.as_ref().map(|(_, admin)| admin));
     let attempt = current.attempt + 1;
-    // The create of a node-admin into a live mesh is a one-step recipe on the existing carrier
-    // (`BuildChange::Recipe`; no new wire variant): the node the create names pins the birth the view
+    // The create of a node-admin into a live mesh is a single step on the existing carrier
+    // (`BuildChange::Steps`; no new wire variant): the node the create names pins the birth the view
     // holds there, so a later loss of the same path is a different action.
-    let create_of = |admin: &PathName| crate::accepted::recipe_action(vec![rdm_core::build::RecipeStep::Create { node: admin.clone(), executable: None }], t);
+    let create_of = |admin: &PathName| crate::accepted::steps_action(vec![rdm_core::build::Step::Create { node: admin.clone(), executable: None }], t);
     let (key, scope, action) = if let Some(admin) = recover_admin {
         match create_of(admin) {
             Ok(action) => (vec![admin.to_string()], admin.to_string(), Some(action)),
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.build.reject.via-recipe-unplannable", build_id = %current.build_id.log(), node = %me, create = %admin, detail = %e).in_scope(|| tracing::info!("the verdict's node.create is no recipe the planner accepts: no attempt"));
+                tracing::info_span!("rdm.node_admin.build.reject.via-steps-unplannable", build_id = %current.build_id.log(), node = %me, create = %admin, detail = %e).in_scope(|| tracing::info!("the verdict's node.create is no step the planner accepts: no attempt"));
                 return None;
             }
         }
@@ -494,7 +494,7 @@ pub async fn reconcile_drift(
                 match create_of(path) {
                     Ok(action) => (vec![path.to_string()], scope, Some(action)),
                     Err(e) => {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-recipe-unplannable", build_id = %current.build_id.log(), node = %me, create = %path, detail = %e).in_scope(|| tracing::info!("the node.create of the unheard admin is no recipe the planner accepts: no attempt"));
+                        tracing::info_span!("rdm.node_admin.build.reject.via-steps-unplannable", build_id = %current.build_id.log(), node = %me, create = %path, detail = %e).in_scope(|| tracing::info!("the node.create of the unheard admin is no step the planner accepts: no attempt"));
                         return None;
                     }
                 }
@@ -503,7 +503,7 @@ pub async fn reconcile_drift(
             None => (surplus.clone(), format!("surplus: {}", surplus.join(" ")), None),
         }
     };
-    let reason = if action.is_some() { crate::build_state::AttemptReason::Recipe } else { crate::build_state::AttemptReason::ProvenDrift };
+    let reason = if action.is_some() { crate::build_state::AttemptReason::Steps } else { crate::build_state::AttemptReason::ProvenDrift };
     // An opening is keyed on what the attempt decides on, never on its number: a failed attempt
     // whose inputs are all as they were when it opened gets no next attempt from here, and one
     // input moving opens exactly one (lifecycles/node-status.md: "a failed Build ... gets its next
@@ -542,7 +542,7 @@ pub async fn reconcile_drift(
     started.retain(|k| !(k.0 == current.build_id && k.1 == 0 && k.2.len() == 3 && k.2[0] == "opened" && k.2[1] == ident));
     started.insert(opened_at);
     started.insert(opening);
-    let action_name = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::DeleteConnections { .. } => "connections-delete", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover", crate::accepted::AttemptAction::Delete { .. } => "delete", crate::accepted::AttemptAction::Recipe { .. } => "recipe", crate::accepted::AttemptAction::Terminate { .. } => "terminate" }).unwrap_or("none");
+    let action_name = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::DeleteConnections { .. } => "connections-delete", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover", crate::accepted::AttemptAction::Delete { .. } => "delete", crate::accepted::AttemptAction::Steps { .. } => "steps", crate::accepted::AttemptAction::Terminate { .. } => "terminate" }).unwrap_or("none");
     let span = match &verdict {
         Some((mesh, admin)) => tracing::info_span!(
             "rdm.node_admin.build.update.via-carrier-edge-lost",

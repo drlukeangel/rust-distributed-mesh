@@ -10,9 +10,9 @@
 
 use crate::build_log;
 use rdm_client::{BuildFrame, CallEnd, Change, Frame, NodeEvent, NodeStatus, Nodes, PathName};
-use rdm_core::build::RecipeStep;
+use rdm_core::build::Step;
 use rdm_test::estate::{descends_from, named, wait_for, Estate, Owner};
-use rdm_test::recipes::{predecessor_steps, replace as replace_recipe, rollback as rollback_recipe};
+use rdm_test::steps::{predecessor_steps, replace as replace_steps, rollback as rollback_steps};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use rdm_test::process_faults::{ExactRuntime, Fault};
 use serde_json::{json, Value};
@@ -956,11 +956,11 @@ async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
     out
 }
 
-/// CONTRACT (lifecycles/node-replace.md: "Replace is Rafka's recipe, submitted as one Build. RDM
+/// CONTRACT (lifecycles/node-replace.md: "Replace is Rafka's steps, submitted as one Build. RDM
 /// executes its primitives and records their receipts; it has no replace opcode"; steps 1-3: "A node is
 /// renamed only while it is live: its connections deleted and its mesh left first ...; it is stopped
 /// after. A stopped node is never renamed"; build.md §1): the caller submits the replace of
-/// `mesh1.rpc.1` as ONE recipe over the `node` object, and RDM runs its steps in order, each as its own
+/// `mesh1.rpc.1` as ONE Build over the `node` object, and RDM runs its steps in order, each as its own
 /// op's operation: node[1].connections.delete `{ All }`, node[1].mesh.leave, node[1].update
 /// (`mesh1.rpc.1.old`), node[1].stop at `.old`, node.create(`mesh1.rpc.1`), node[1].delete at `.old`.
 /// The stream is `Started`, every step's events in that order, `Complete`; the Build's operations are
@@ -975,8 +975,8 @@ async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
 /// at `.old`, its data dir kept). RDM moves no data. At the end `mesh1.rpc.1` is the successor, ready,
 /// and nothing is listed at `.old`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
-    let (mut estate, _birth) = estate("a_replace_recipe_runs_as_one_build_of_node_primitives_in_order").await;
+async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
+    let (mut estate, _birth) = estate("a_replace_runs_as_one_build_of_node_primitives_in_order").await;
     const NODE: &str = "mesh1.rpc.1";
     let path: PathName = NODE.parse().unwrap();
     let old = format!("{NODE}.old");
@@ -989,7 +989,7 @@ async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
     std::fs::create_dir_all(segment.parent().unwrap()).unwrap();
     std::fs::write(&segment, b"records").unwrap();
 
-    let stream = nodes.recipe(replace_recipe(&path)).await.expect("the recipe was accepted");
+    let stream = nodes.steps(replace_steps(&path)).await.expect("the Build was accepted");
     let accepted = stream.accepted().clone();
     let got = frames(stream).await;
     assert!(matches!(got.first(), Some(Frame::Started { .. })), "{got:?}");
@@ -1017,7 +1017,7 @@ async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
         format!("node.create:{NODE}"),
         format!("node.delete:{old}"),
     ];
-    assert_eq!(operations, keys.to_vec(), "the recipe's operations, in order: {b:#}");
+    assert_eq!(operations, keys.to_vec(), "the Build's operations, in order: {b:#}");
 
     // The end state: the successor holds the name, ready; nothing at `.old`.
     let after = estate.meshes_obj().await.nodes("mesh1", None).await.expect("mesh.nodes.get");
@@ -1068,9 +1068,9 @@ async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
     assert_eq!(s(&deleted[0]["attributes"]["operation"]), format!("node.delete:{old}"));
     let rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| s(&sp["attributes"]["subject"]) == old).collect();
     assert!(rows.len() == 1 && s(&rows[0]["attributes"]["outcome"]) == "row-deleted" && s(&rows[0]["attributes"]["node_id"]) == before.node_id.to_string(), "one Deleted row at .old for the predecessor: {rows:#?}");
-    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "nothing of the recipe is drift");
+    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "nothing of the Build is drift");
     let create = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["node"]) == NODE).cloned().expect("the successor's create operation span");
-    estate.artifact("recipe.json", &json!({"operations": keys, "leave": left[0], "rename_old": r1, "stopped_old": stopped1[0], "claim": claim, "node_deleted": deleted[0], "deleted_row": rows[0]}));
+    estate.artifact("steps.json", &json!({"operations": keys, "leave": left[0], "rename_old": r1, "stopped_old": stopped1[0], "claim": claim, "node_deleted": deleted[0], "deleted_row": rows[0]}));
     estate.record_trace_url(create["trace_id"].as_str().unwrap_or(""));
 }
 
@@ -1114,8 +1114,8 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
     assert_eq!(tagged.name(), "tags-created", "the mesh-primary wrote the label's row: {tagged:?}");
     wait_for(&format!("{node_path} carries its tag"), Duration::from_secs(30), || async { (estate.node_view(node_path).await.tags == labels).then_some(()) }).await;
 
-    let create_steps: Vec<RecipeStep> = replace_recipe(&Estate::path(node_path)).into_iter().take(5).collect();
-    let got = frames(estate.nodes_obj().await.recipe(create_steps).await.expect("the recipe up to the successor's create was accepted")).await;
+    let create_steps: Vec<Step> = replace_steps(&Estate::path(node_path)).into_iter().take(5).collect();
+    let got = frames(estate.nodes_obj().await.steps(create_steps).await.expect("the Build up to the successor's create was accepted")).await;
     assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
     let after = until_node_where(&estate, node_path, &format!("{node_path} ready under a new NodeId"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     let spans = wait_for("the successor's claim, the retained row's mark and the successor's join under the name are exported", Duration::from_secs(60), || async {
@@ -1166,7 +1166,7 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
 /// stopped process with AfterStop under `<name>.old` ... 3. node[1]: node.connections.delete `{ scope:
 /// All }`, node.mesh.leave, then node.name.update to `<name>` ..., then node[1].stop and node[1].start
 /// under `<name>`. Its ready-for-traffic ends the rollback"): `mesh1.rpc.1` is replaced up to the
-/// successor's create (the predecessor stopped at `.old`), then the rollback runs as one recipe of nine
+/// successor's create (the predecessor stopped at `.old`), then the rollback runs as one Build of nine
 /// steps, each its own op's operation in order. The successor at `mesh1.rpc.1` has its connections
 /// deleted, leaves its mesh and is deleted on its exit proof; the predecessor starts as
 /// `mesh1.rpc.1.old` (the same process), has its connections deleted, leaves its mesh, takes
@@ -1175,8 +1175,8 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
 /// successor's process exited. Both of the predecessor's renames are of a node off its mesh
 /// (`connections=deleted mesh=left`, applied), and no rename of a stopped node is decided.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replace_rolled_back_by_its_recipe_ends_with_the_predecessor_ready_under_its_name() {
-    let (mut estate, _birth) = estate("a_replace_rolled_back_by_its_recipe_ends_with_the_predecessor_ready_under_its_name").await;
+async fn a_replace_rolled_back_by_its_steps_ends_with_the_predecessor_ready_under_its_name() {
+    let (mut estate, _birth) = estate("a_replace_rolled_back_by_its_steps_ends_with_the_predecessor_ready_under_its_name").await;
     const NODE: &str = "mesh1.rpc.1";
     let path: PathName = NODE.parse().unwrap();
     let old = format!("{NODE}.old");
@@ -1184,15 +1184,15 @@ async fn a_replace_rolled_back_by_its_recipe_ends_with_the_predecessor_ready_und
     let before = estate.meshes_obj().await.nodes("mesh1", None).await.expect("mesh.nodes.get").into_iter().find(|n| n.name == path).expect("node.get lists the node");
     let pid = estate.pid_of(NODE).await;
 
-    let forward: Vec<RecipeStep> = replace_recipe(&path).into_iter().take(5).collect();
-    let got = frames(nodes.recipe(forward).await.expect("the replace up to the successor's create was accepted")).await;
+    let forward: Vec<Step> = replace_steps(&path).into_iter().take(5).collect();
+    let got = frames(nodes.steps(forward).await.expect("the replace up to the successor's create was accepted")).await;
     assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
     let successor = estate.meshes_obj().await.nodes("mesh1", None).await.expect("mesh.nodes.get").into_iter().find(|n| n.name == path).expect("the successor at the name");
     assert_ne!(successor.node_id, before.node_id, "the successor is a re-birth");
     let successor_pid = estate.pid_of(NODE).await;
     assert_ne!(successor_pid, pid, "the successor runs its own process");
 
-    let stream = nodes.recipe(rollback_recipe(&path)).await.expect("the rollback recipe was accepted");
+    let stream = nodes.steps(rollback_steps(&path)).await.expect("the rollback steps were accepted");
     let accepted = stream.accepted().clone();
     let got = frames(stream).await;
     assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
@@ -1247,10 +1247,10 @@ async fn a_replace_rolled_back_by_its_recipe_ends_with_the_predecessor_ready_und
 /// released.
 const DELETE_STOPPED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"];
 
-/// CONTRACT: the recipe's `node[1].delete` of the stopped predecessor at `<path>.old`
+/// CONTRACT: the Build's `node[1].delete` of the stopped predecessor at `<path>.old`
 /// (lifecycles/node-replace.md step 2; node-delete.md) as its own call: `mesh1.rpc.1` has its
 /// connections deleted, leaves its mesh, is renamed `mesh1.rpc.1.old` live by node.name.update at its
-/// mesh-primary and is stopped there (the predecessor's half of a replace recipe), then `build.create` of a
+/// mesh-primary and is stopped there (the predecessor's half of the replace steps), then `build.create` of a
 /// RemoveNode change at `<path>.old` is the next attempt of the accepted Build (reason delete,
 /// action delete fenced to the exact stopped birth, no Build minted). One operation
 /// `node.delete:<path>.old` (node.delete's one key) asks the provider to end the stopped runtime
@@ -1310,7 +1310,7 @@ async fn deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_execut
     estate.shutdown().await;
 }
 
-/// The stopped birth a recipe's rename left at `<path>.old`: who it was, where, who renamed it.
+/// The stopped birth a Build's rename left at `<path>.old`: who it was, where, who renamed it.
 struct StoppedBirth {
     node: String,
     before: Value,
@@ -1333,7 +1333,7 @@ async fn objects(estate: &Estate) -> Nodes {
 }
 
 /// `node` off its mesh, renamed `<node>.old` live and stopped there by the predecessor's half of a
-/// replace recipe (lifecycles/node-replace.md steps 1-2): the stopped birth a recipe's `node[1].delete`
+/// replace steps (lifecycles/node-replace.md steps 1-2): the stopped birth a Build's `node[1].delete`
 /// deletes.
 async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &str) -> StoppedBirth {
     let path: PathName = node.parse().unwrap();
@@ -1343,10 +1343,10 @@ async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &str) -> St
     // The fabric-primary as fabric.get names it, and the node's mesh-primary as mesh.get names it.
     let fabric_primary = estate.fabrics_obj().await.get().await.expect("fabric.get").fabric_primary.expect("a fabric-primary").to_string();
     let primary = estate.meshes_obj().await.get(&path.mesh).await.expect("mesh.get").primary_admin.expect("the node's mesh-primary");
-    let got = frames(nodes.recipe(predecessor_steps(&path)).await.expect("the predecessor's half of the replace was accepted")).await;
+    let got = frames(nodes.steps(predecessor_steps(&path)).await.expect("the predecessor's half of the replace was accepted")).await;
     assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
     let mesh = estate.meshes_obj().await.nodes(&path.mesh, None).await.expect("mesh.nodes.get");
-    let stopped = mesh.iter().find(|n| n.name == path.renamed() && n.stopped).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node} stopped at {} once its recipe completed: {mesh:#?}", path.renamed()));
+    let stopped = mesh.iter().find(|n| n.name == path.renamed() && n.stopped).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node} stopped at {} once its steps completed: {mesh:#?}", path.renamed()));
     assert_eq!(stopped.node_id.to_string(), s(&before["node_id"]), "the stopped birth at {} is {node}'s", path.renamed());
     assert!(alive(pid), "the stopped {node} ({pid}) is alive before its delete");
     StoppedBirth { node: node.to_string(), before, pid, old_dir, renamed_by: primary.to_string(), fabric_primary }
@@ -1413,7 +1413,7 @@ async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, stopped: 
     executor
 }
 
-/// CONTRACT (lifecycles/node-replace.md, the same recipe for a node-admin): the replace recipe of a
+/// CONTRACT (lifecycles/node-replace.md, the same steps for a node-admin): the replace steps of a
 /// node-admin that holds no seat runs as one Build of node primitives: the predecessor has its
 /// connections deleted, leaves its mesh and the backbone, is renamed `<path>.old` live and then stopped
 /// (its NodeStopped drops it from every view), the successor is a re-birth at the path, and the
@@ -1431,7 +1431,7 @@ async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
     let node = s(&before["name"]);
     let node_path = Estate::path(&node);
     let nodes_obj = objects(&estate).await;
-    let got = frames(nodes_obj.recipe(replace_recipe(&node_path)).await.expect("the recipe was accepted")).await;
+    let got = frames(nodes_obj.steps(replace_steps(&node_path)).await.expect("the Build was accepted")).await;
     assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
     at_most_one_live_birth(&estate, &[stays.clone()], &node).await;
     let after = until_new_birth(&estate, &node, &before, SETTLE).await;
@@ -1990,7 +1990,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
 /// cohort with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary
 /// of type <node_type> in mesh <mesh>`, until a secondary is available. The holder stays primary, nothing
 /// is cut off, no row is written, and the workflow that commanded it ... fails by name with that
-/// reason"): in a fabric whose fabric-primary is its mesh's only node-admin, each of the changes Recipe (replace),
+/// reason"): in a fabric whose fabric-primary is its mesh's only node-admin, each of the changes Steps (replace),
 /// DeleteConnections and Stop of the fabric-primary, submitted by `build.create`, is refused by name, `last-admin`
 /// with exactly `cannot transfer: no secondary of type node-admin in mesh <its mesh>`, one
 /// `rdm.node_admin.build.reject.via-last-admin` per call with the same text. The mesh seat has no
@@ -2010,7 +2010,7 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     let node = Estate::path(&fp);
     let carrier = estate.carrier().await;
     for (action, change) in [
-        ("replace", Change::Recipe { steps: replace_recipe(&node) }),
+        ("replace", Change::Steps { steps: replace_steps(&node) }),
         ("node.connections.delete", Change::DeleteConnections { node: node.clone() }),
         ("stop", Change::Stop { node: node.clone() }),
     ] {
@@ -2048,8 +2048,8 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
 /// other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type
 /// <node_type> in mesh <mesh>` ... The holder stays primary, nothing is cut off, no row is written, and
 /// the workflow that commanded it ... fails by name with that reason"; node-replace.md: the replace
-/// recipe never leaves a mesh with no live node-admin): in a fabric whose mesh2 has one node-admin, its
-/// mesh-primary and not the fabric-primary, `build.create` of a replace Recipe of mesh2's primary is refused
+/// steps never leave a mesh with no live node-admin): in a fabric whose mesh2 has one node-admin, its
+/// mesh-primary and not the fabric-primary, `build.create` of the replace steps of mesh2's primary is refused
 /// `last-admin` with exactly `cannot transfer: no secondary of type node-admin in mesh mesh2`, under one
 /// `rdm.node_admin.build.reject.via-last-admin` with the same text, before any step (its first, the
 /// node.connections.delete that moves a seat holder's seats, has no successor): no attempt opens, no
@@ -2065,7 +2065,7 @@ async fn a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refuse
     let mp = s(&primary["name"]);
     let attempt = build_log::build_value(&estate.carrier().await, &birth_build).await["attempt"].clone();
     let q7 = "cannot transfer: no secondary of type node-admin in mesh mesh2";
-    match estate.carrier().await.create(Change::Recipe { steps: replace_recipe(&Estate::path(&mp)) }).await {
+    match estate.carrier().await.create(Change::Steps { steps: replace_steps(&Estate::path(&mp)) }).await {
         // The call ends naming the reason, then the refusal's text: `<reason>: <text>`.
         Err(CallEnd::Rejected { reason, detail }) => assert_eq!((reason.as_str(), detail.as_str()), ("last-admin", format!("last-admin: {q7}").as_str()), "the replace of {mp} is refused with Q7's exact text"),
         Ok(_) => panic!("the replace of {mp}, mesh2's only node-admin, was accepted"),
@@ -2719,25 +2719,25 @@ async fn exe_of(estate: &Estate, node: &str) -> std::path::PathBuf {
     std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node} (pid {pid}): /proc exe: {e}"))
 }
 
-/// The reason of the Failed frame a recipe ends with.
-async fn failed_recipe(nodes: &Nodes, steps: Vec<RecipeStep>) -> String {
-    let got = frames(nodes.recipe(steps).await.expect("the recipe was accepted")).await;
+/// The reason of the Failed frame a Build ends with.
+async fn failed_steps(nodes: &Nodes, steps: Vec<Step>) -> String {
+    let got = frames(nodes.steps(steps).await.expect("the Build was accepted")).await;
     match got.last() {
         Some(Frame::Failed { reason, .. }) => reason.clone(),
-        other => panic!("the recipe ended {other:?}, not Failed: {got:?}"),
+        other => panic!("the Build ended {other:?}, not Failed: {got:?}"),
     }
 }
 
-/// CONTRACT (node-rpc-envelope.md "Build recipe": "Create names the node and the executable binding the
+/// CONTRACT (node-rpc-envelope.md "Build schema": "Create names the node and the executable binding the
 /// Build fixes for it (launch id, hash); the executing admin launches that binding, verified at launch,
-/// whichever admin runs or resumes the step"; node-replace.md step 3: "The Build fixes the bin on the
-/// recipe's Create step, so every admin that runs or resumes the step launches that one, and the row
+/// whichever admin runs or resumes the step"; node-replace.md step 3: "The Build fixes the bin on its
+/// Create step, so every admin that runs or resumes the step launches that one, and the row
 /// records it beside `config`"; node-recovery.md "Retained": "config and the executable (both seeded
 /// from the deleted row: a recovered node runs the bin its row records, never the recovering
 /// admin's)"; build-deployment.md §2: every create names its executable): the fabric is born on
 /// binding set A (`rpc_node` = the built rpc node), every path named on set A's executable of its kind,
 /// and mesh1's and mesh2's admins alike launch set A's. A Create binding, a copy the set does not name, is the Create step of a
-/// replace recipe of `mesh1.rpc.1` (run by mesh1's admin) and of `mesh2.rpc.1` (run by mesh2's admin):
+/// replace steps of `mesh1.rpc.1` (run by mesh1's admin) and of `mesh2.rpc.1` (run by mesh2's admin):
 /// both successors run that copy. `mesh1.rpc.1` is then killed and recovered over its inherited data
 /// dir, and `mesh2.rpc.1` held (SIGSTOP) and recovered over a newly allocated one: each recovered node
 /// runs the copy its row records, not set A's. A Create step naming a file that is not there,
@@ -2763,15 +2763,15 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
     assert_eq!(exe_of(&estate, "mesh2.rpc.2").await, rpc_a.executable, "mesh2's admin launches set A's rpc node, the one its path names");
 
     let nodes = objects(&estate).await;
-    let with_binding = |node: &PathName, b: &Binding| -> Vec<RecipeStep> {
-        replace_recipe(node).into_iter().map(|s| match s {
-            RecipeStep::Create { node, .. } => RecipeStep::Create { node, executable: Some(b.clone()) },
+    let with_binding = |node: &PathName, b: &Binding| -> Vec<Step> {
+        replace_steps(node).into_iter().map(|s| match s {
+            Step::Create { node, .. } => Step::Create { node, executable: Some(b.clone()) },
             other => other,
         }).collect()
     };
     for node in ["mesh1.rpc.1", "mesh2.rpc.1"] {
         let path: PathName = node.parse().unwrap();
-        let got = frames(nodes.recipe(with_binding(&path, &binding)).await.expect("the recipe was accepted")).await;
+        let got = frames(nodes.steps(with_binding(&path, &binding)).await.expect("the Build was accepted")).await;
         assert_eq!(got.last(), Some(&Frame::Complete), "the replace of {node}: {got:?}");
         let n = until_node_where(&estate, node, &format!("{node} ready"), SETTLE, ready).await;
         assert_eq!(exe_of(&estate, node).await, fixed, "{node}'s successor runs the executable its Build fixed, not its admin's: {n}");
@@ -2795,10 +2795,10 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
 
     // The refusals, by name, nothing launched.
     let absent = Binding { executable: execs.join("not-there"), ..binding.clone() };
-    let reason = failed_recipe(&nodes, vec![RecipeStep::Create { node: "mesh1.rpc.7".parse().unwrap(), executable: Some(absent) }]).await;
+    let reason = failed_steps(&nodes, vec![Step::Create { node: "mesh1.rpc.7".parse().unwrap(), executable: Some(absent) }]).await;
     assert!(reason.contains("not-there") && reason.contains("cannot be read"), "a missing file is refused by name: {reason}");
     let mismatched = Binding { sha256: "0".repeat(64), ..binding.clone() };
-    let reason = failed_recipe(&nodes, vec![RecipeStep::Create { node: "mesh1.rpc.8".parse().unwrap(), executable: Some(mismatched) }]).await;
+    let reason = failed_steps(&nodes, vec![Step::Create { node: "mesh1.rpc.8".parse().unwrap(), executable: Some(mismatched) }]).await;
     assert!(reason.contains("rpc-node-fixed") && reason.contains("the binding expects"), "a hash mismatch is refused by name: {reason}");
     for node in ["mesh1.rpc.7", "mesh1.rpc.8"] {
         assert!(!estate.node_values().await.iter().any(|n| n["name"] == node), "nothing is launched at {node}");

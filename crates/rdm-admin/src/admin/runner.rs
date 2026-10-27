@@ -234,7 +234,7 @@ impl AdminRunner {
         self.template_launching(kind, mesh, PathBuf::new(), None).await
     }
 
-    /// The template a node.create of `node` launches from (node-rpc-envelope.md "Build recipe";
+    /// The template a node.create of `node` launches from (node-rpc-envelope.md "Build schema";
     /// node-replace.md step 3; node-recovery.md "Retained"; build-deployment.md §2): the binding
     /// `requested` names (the Build's: a step's, or the path's entry), else the one the node's seeding
     /// row records (the row at the path, else its `<name>.old` row: the predecessor's, the exited
@@ -853,7 +853,7 @@ impl AdminRunner {
     /// path's over the predecessor's kept data dir (`inherited`, `RDM_INHERITED_DATA_DIR=1`, the endpoint
     /// key loaded from it), an `Ephemeral` path's over a newly allocated data dir with a newly minted key
     /// (`RDM_INHERITED_DATA_DIR=0`); config and tags seeded from the Deleted row (node-replace.md
-    /// "Inherited"), launching `executable`, the path's entry's. The Build fixes the binding, as a recipe's Create
+    /// "Inherited"), launching `executable`, the path's entry's. The Build fixes the binding, as a Build's Create
     /// step does, so the launch never takes the one the Deleted row still records; the claim records it
     /// on the node's row, so a later node recovery runs it (node-recovery.md "Retained"). A kept data dir
     /// is the one the delete's `TerminateRuntime` receipt names: the delete stopped the exact runtime
@@ -1270,7 +1270,7 @@ impl OperationRunner for AdminRunner {
 impl AdminRunner {
     pub(crate) fn run_op<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, op: &'a BuildOperation) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
         // Boxed where it is made: the operation's workflows are one large state machine, and every
-        // caller (the executor, a recipe's steps) holds only the box on its worker's stack.
+        // caller (the executor, a Build's steps) holds only the box on its worker's stack.
         Box::pin(self.run_op_body(build_id, lane, attempt, op))
     }
 
@@ -1349,7 +1349,7 @@ impl AdminRunner {
             }
             BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.delete_mesh(build_id, attempt, mesh, mesh_id).await,
             BuildOperation::DeleteFabric { fabric_id } => crate::mesh_delete::complete_fabric_delete(&*builds, &*self.fabric_storage, build_id, attempt, fabric_id, &self.me.to_string()).await.map_err(Into::into),
-            BuildOperation::RecipeStep { step, birth } => return self.recipe_step(build_id, lane, attempt, step, birth.as_ref()).await,
+            BuildOperation::Step { step, birth } => return self.step(build_id, lane, attempt, step, birth.as_ref()).await,
             BuildOperation::UpdateConfig { node } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt, operation = %op.key());
                 self.apply_in_place(build_id, attempt, node, op).instrument(span).await
@@ -1440,7 +1440,7 @@ impl AdminRunner {
         self.pipeline(&template).apply_in_place(build_id, attempt, node, key.clone(), step, put).await.map_err(crate::executor::RunEnd::from)
     }
 
-    /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a recipe's
+    /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a Build's
     /// create step, whose claim is a replace successor's), its name claimed for `claim_for`.
     fn create_node<'a>(&'a self, build_id: &'a crate::build::BuildId, attempt: u32, node: &'a PathName, executable: Option<&'a rdm_core::binding::Binding>, claim_for: crate::node_rows::ClaimFor) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
         // Boxed where it is made, as `run_op`.
@@ -1462,9 +1462,9 @@ impl AdminRunner {
         .await
     }
 
-    /// One step of a recipe (`BuildChange::Recipe`; lifecycles/node-replace.md): the op it names, run
+    /// One step of a Build (`BuildChange::Steps`; lifecycles/node-replace.md): the op it names, run
     /// as that op's own workflow on the exact birth the step acts on, the one it is fenced to, or for a
-    /// node an earlier step of the recipe created, the birth this executor holds at the step's path.
+    /// node an earlier step of the Build created, the birth this executor holds at the step's path.
     /// node.create is the create workflow, its claim a replace successor's ([`ClaimFor::Successor`]);
     /// node.connections.delete the standalone `{ All }`; node.mesh.leave carried by this admin as the
     /// node's mesh-primary, which holds its `node.mesh.left`; node.stop the standalone stop;
@@ -1472,17 +1472,17 @@ impl AdminRunner {
     /// the stopped birth; node.delete node.delete's workflow from the state the birth is in.
     ///
     /// [`ClaimFor::Successor`]: crate::node_rows::ClaimFor::Successor
-    pub(crate) fn recipe_step<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, step: &'a rdm_core::build::RecipeStep, birth: Option<&'a crate::build::PinnedBirth>) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
+    pub(crate) fn step<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, step: &'a rdm_core::build::Step, birth: Option<&'a crate::build::PinnedBirth>) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
         // Boxed where it is made, as `run_op`: a step runs `run_op` again, and neither holds the
         // other's state machine inline.
-        Box::pin(self.recipe_step_body(build_id, lane, attempt, step, birth))
+        Box::pin(self.step_body(build_id, lane, attempt, step, birth))
     }
 
-    async fn recipe_step_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, step: &rdm_core::build::RecipeStep, birth: Option<&crate::build::PinnedBirth>) -> Result<(), crate::executor::RunEnd> {
-        use rdm_core::build::RecipeStep as S;
+    async fn step_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, step: &rdm_core::build::Step, birth: Option<&crate::build::PinnedBirth>) -> Result<(), crate::executor::RunEnd> {
+        use rdm_core::build::Step as S;
         let me = self.held_name();
         let node = step.node();
-        let key = crate::build::recipe_step_key(step);
+        let key = crate::build::step_key(step);
         if let S::Create { node, executable } = step {
             return self.create_node(build_id, attempt, node, executable.as_ref(), crate::node_rows::ClaimFor::Successor).await;
         }
@@ -1493,7 +1493,7 @@ impl AdminRunner {
                 let held = seen.or_else(|| self.handles.lock().unwrap().get(node).map(|(n, _)| n.clone()));
                 match held.and_then(|n| n.incarnation_id.clone().map(|incarnation| crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation })) {
                     Some(b) => b,
-                    None => return Err(crate::executor::RunEnd::failed(format!("{key}: the step acts on the node an earlier step of the recipe made at {node}, and {me} holds no birth at {node}"))),
+                    None => return Err(crate::executor::RunEnd::failed(format!("{key}: the step acts on the node an earlier step of the Build made at {node}, and {me} holds no birth at {node}"))),
                 }
             }
         };
@@ -1770,7 +1770,7 @@ mod tests {
     use rdm_core::binding::Binding;
 
     /// CONTRACT (e12.s91; node-rpc-envelope.md "the executable binding the Build fixes ... verified at
-    /// launch"): a binding a recipe step or a row names is checked against the provider that launches it,
+    /// launch"): a binding a step or a row names is checked against the provider that launches it,
     /// as the startup set is. An image under the process provider, and no image or another image under
     /// the container provider, are refused by name before anything is hashed; no image under the process
     /// provider and the runtime image under the container provider pass.

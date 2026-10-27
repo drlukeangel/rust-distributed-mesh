@@ -164,7 +164,7 @@ pub enum Swept {
 }
 
 /// Whether an attempt's fenced action acts on the birth `incarnation`: the one birth a node op is
-/// fenced to, or any birth a recipe pinned.
+/// fenced to, or any birth a Build pinned.
 fn acts_on(action: &AttemptAction, incarnation: &IncarnationId) -> bool {
     match action {
         AttemptAction::DeleteConnections { from_incarnation, .. }
@@ -172,7 +172,7 @@ fn acts_on(action: &AttemptAction, incarnation: &IncarnationId) -> bool {
         | AttemptAction::Start { from_incarnation, .. }
         | AttemptAction::Recover { from_incarnation, .. }
         | AttemptAction::Delete { from_incarnation, .. } => from_incarnation == incarnation,
-        AttemptAction::Recipe { pinned, .. } => pinned.iter().any(|(_, b)| b.incarnation == *incarnation),
+        AttemptAction::Steps { pinned, .. } => pinned.iter().any(|(_, b)| b.incarnation == *incarnation),
         AttemptAction::Terminate { from_incarnation, .. } => from_incarnation == incarnation,
     }
 }

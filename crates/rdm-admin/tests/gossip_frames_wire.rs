@@ -196,25 +196,25 @@ fn facts() -> Vec<BuildFact> {
     let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Stop, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56 });
     out.push(action(None));
     out.push(action(Some(AttemptAction::Stop { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
-    // A recipe (build.md §1; lifecycles/node-replace.md): its steps and the births it pinned.
+    // Steps (build.md §1; lifecycles/node-replace.md): the steps and the births they pinned.
     {
-        use rdm_core::build::RecipeStep;
+        use rdm_core::build::Step;
         let node: rdm_admin::model::PathName = "mesh2.rpc.1".parse().unwrap();
         let pin = rdm_admin::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         out.push(BuildFact::Opened(AttemptOpened {
             mesh: None,
             build_id: bid("3qcfk1kq47m9"),
             attempt: 2,
-            reason: AttemptReason::Recipe,
-            action: Some(AttemptAction::Recipe {
+            reason: AttemptReason::Steps,
+            action: Some(AttemptAction::Steps {
                 steps: vec![
-                    RecipeStep::DeleteConnections { node: node.clone() },
-                    RecipeStep::LeaveMesh { node: node.clone() },
-                    RecipeStep::Update { node: node.clone(), name: node.renamed() },
-                    RecipeStep::Stop { node: node.renamed() },
+                    Step::DeleteConnections { node: node.clone() },
+                    Step::LeaveMesh { node: node.clone() },
+                    Step::Update { node: node.clone(), name: node.renamed() },
+                    Step::Stop { node: node.renamed() },
                     // The executable the Build fixes rides the positional wire with every field written.
-                    RecipeStep::Create { node: node.clone(), executable: Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/opt/rpc-node".into(), sha256: "ab".repeat(32), image: None }) },
-                    RecipeStep::Delete { node: node.renamed() },
+                    Step::Create { node: node.clone(), executable: Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/opt/rpc-node".into(), sha256: "ab".repeat(32), image: None }) },
+                    Step::Delete { node: node.renamed() },
                 ],
                 pinned: vec![(node, pin)],
             }),

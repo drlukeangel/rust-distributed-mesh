@@ -2,7 +2,7 @@
 
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Typed calls and wire mapping](../node-rpc-envelope.md#typed-object-contract)
 
-Replace is Rafka's recipe, submitted as one Build. RDM executes its primitives
+Replace is Rafka's steps, submitted as one Build. RDM executes its primitives
 and records their receipts; it has no replace opcode or knowledge of Rafka data.
 A Build provides durable resumable execution, not automatic rollback.
 
@@ -10,9 +10,9 @@ A Build provides durable resumable execution, not automatic rollback.
 
 | Field | Contract |
 |---|---|
-| Recipe owner | Rafka |
-| Precondition | The Day-0 Build is Complete. Before then it is the Build in progress, the recipe's Build is refused by name, `build-in-progress` (Q170), and nothing runs |
-| Writer | The node's [row writer](../node-identity-and-state.md#25-one-system-org-one-projection-one-writer-per-mesh) writes every row of this recipe |
+| Steps owner | Rafka |
+| Precondition | The Day-0 Build is Complete. Before then it is the Build in progress, the steps' Build is refused by name, `build-in-progress` (Q170), and nothing runs |
+| Writer | The node's [row writer](../node-identity-and-state.md#25-one-system-org-one-projection-one-writer-per-mesh) writes every row of these steps |
 | Successor | Created at `<name>` once the predecessor has released it: a re-birth, with a new node.id, incarnation and runtime; new port; key from its specified data dir; its `Create` step names its executable ([build-deployment.md](../build-deployment.md)) |
 | Predecessor | Its connections deleted, it leaves its mesh, then it is renamed `<name>.old` and stopped, or deleted |
 | Immutable exe | New bin/budgets require this new node, never a start of the stopped one |
@@ -34,15 +34,15 @@ is connected to it and nothing routes to it; it is stopped after. A stopped node
    `<name>.old`, with its incarnation and data retained. If no rollback is wanted, node[1].delete
    releases the identity instead of the rename and the stop.
 3. [node.create](node-create.md) of node[2] at `<name>`, free only because the row above moved the
-   key: a re-birth with a new node.id, incarnation and the specified bin. The Build fixes the bin on the
-   recipe's Create step, so every admin that runs or resumes the step launches that one, and the row
+   key: a re-birth with a new node.id, incarnation and the specified bin. The Build fixes the bin on its
+   Create step, so every admin that runs or resumes the step launches that one, and the row
    records it beside `config`. Its row inherits config and
    tags from the predecessor row (the retained `<name>.old` row, or the Deleted row at `<name>`),
    whose labels leave the active tags index. Its ready-for-traffic is the cutover: `path.name` now
    resolves to the successor. A claim that finds `<name>` held is refused `NameHeld { by: node[1] }`
    and the Build stops at this step by name.
-4. Rafka transfers its data as its own recipe step. RDM interprets no application data.
-   The recipe declares when a move ends rollback, or when a copy is reclaimed on commit.
+4. Rafka transfers its data as its own step. RDM interprets no application data.
+   The steps declare when a move ends rollback, or when a copy is reclaimed on commit.
 
 ## Rollback
 
@@ -58,7 +58,7 @@ While node[1] is stopped as `<name>.old` and its data remains available:
    [node.mesh.join](node-mesh-join.md) rejoins it, and its ready-for-traffic ends the rollback.
 
 No general rollback is inferred from Build durability. A missing or failed receipt
-leaves the recipe at the named step; resume or run the explicit compensation steps.
+leaves the Build at the named step; resume or run the explicit compensation steps.
 
 ## Command, completion and gossip messages
 
@@ -83,19 +83,19 @@ rollback:
 Stop publishes its mesh-primary NodeStopped overlay; delete publishes NodeDeleting and
 NodeDeleted. The successor's digest under `<name>` is the only
 new birth peers hear, and it is dissemination: the row is the fact, the apply's
-reply is the receipt ([node.name.update](node-name-update.md)). The recipe's caller acts on streamed events and receipts, never on
+reply is the receipt ([node.name.update](node-name-update.md)). The steps' caller acts on streamed events and receipts, never on
 peer gossip.
 
 ## Mermaid sequence diagram
 
 ```mermaid
 sequenceDiagram
-    participant R as Rafka recipe
+    participant R as Rafka steps
     participant F as Fabric-primary
     participant M as Mesh-primary (executor, writes rows)
     participant N1 as node[1]
     participant N2 as node[2]
-    R->>F: build.create(replace recipe)
+    R->>F: build.create(replace steps)
     F->>M: build.attempt.run
     M->>N1: node.connections.delete All, then node.mesh.leave
     M-->>F: node.connections.deleted, node.mesh.left

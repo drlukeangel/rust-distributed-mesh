@@ -111,12 +111,12 @@ impl Caller {
     }
 }
 
-/// The replace recipe of `p` (lifecycles/node-replace.md: one Build of node primitives) submitted to
+/// The replace steps of `p` (lifecycles/node-replace.md: one Build of node primitives) submitted to
 /// the fabric-primary the admin at `entry` names, over the `node` objects: the Build it runs on, and
 /// the caller's reply stream read to its end on a task of its own: its frames, how a stream that
 /// broke before its terminal ended, and, when the stream ended `FabricPrimaryMoved`, the Build followed on at
 /// the admin it named as soon as it is named.
-async fn replace_by_recipe(estate: &Estate, entry: &rdm_client::PathName, p: &str) -> (String, tokio::task::JoinHandle<Followed>) {
+async fn replace_by_steps(estate: &Estate, entry: &rdm_client::PathName, p: &str) -> (String, tokio::task::JoinHandle<Followed>) {
     use rdm_client::{Meshes, Nodes};
     let peers = estate.peers().await;
     let (nodes, meshes) = (Nodes::new(peers.carrier_at(entry.clone())), Meshes::new(peers.carrier_at(entry.clone())));
@@ -126,7 +126,7 @@ async fn replace_by_recipe(estate: &Estate, entry: &rdm_client::PathName, p: &st
         }
     }
     let node: rdm_core::PathName = p.parse().unwrap();
-    let mut stream = nodes.recipe(rdm_test::recipes::replace(&node)).await.expect("the replace recipe was accepted");
+    let mut stream = nodes.steps(rdm_test::steps::replace(&node)).await.expect("the replace steps were accepted");
     let build = stream.accepted().build_id.to_string();
     let caller = Caller { peers, entry: entry.clone(), kind: stream.kind().clone(), accepted: stream.accepted().clone() };
     let frames = tokio::spawn(async move {
@@ -477,8 +477,8 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
 }
 
 /// CONTRACT (lifecycles/node-primary-update.md "Both primaries" and its numbered sequence; node-replace.md
-/// steps 1 and 3): the fabric-primary P, its mesh's mesh-primary, is replaced by the replace recipe (one
-/// Build of node primitives; never a signal). Before the recipe's first step on P, its
+/// steps 1 and 3): the fabric-primary P, its mesh's mesh-primary, is replaced by the replace steps (one
+/// Build of node primitives; never a signal). Before the Build's first step on P, its
 /// node.connections.delete, P runs node.primary.update: its election over its own view with itself
 /// excluded names H, the other admin of its mesh, and the same-mesh successor becomes both primaries.
 /// 1. The update is a step of the attempt P claimed for itself (`build.update.via-claim-decision` at P,
@@ -488,7 +488,7 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
 /// 2. H installs the election's result the call carries, both entries naming H, and answers
 ///    node.primary.updated (`primary.update.via-primary-updated` at H, outcome `held`, under P's update).
 /// 3. The commanding Build continues on H's direct answer (step 6): P's attempt ends handed off, H claims
-///    the next attempt and dispatches the recipe, and every step on P runs in H's attempt after H
+///    the next attempt and dispatches the Build, and every step on P runs in H's attempt after H
 ///    answered. The caller's stream attached at P ends `FabricPrimaryMoved` naming H, and the caller
 ///    follows the same Build there to `Complete`.
 /// 4. The record follows the role (step 5): H records `is_primary` and `is_fabric_primary` on its own row.
@@ -508,7 +508,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     let h_id = s(&node(&nodes, &h_name)["node_id"]);
     let h_path = Estate::path(&h_name);
     estate.enter(&h_path).await;
-    let (build, outer) = replace_by_recipe(&estate, &h_path, &p).await;
+    let (build, outer) = replace_by_steps(&estate, &h_path, &p).await;
     // Sampled while the hand-over runs: no admin's view ever shows two fabric primaries.
     let mut worst = 0usize;
     let until = std::time::Instant::now() + Duration::from_secs(120);
@@ -528,9 +528,9 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     // The fabric is ready-for-traffic once its planned births are all ready, set by the new
     // fabric-primary.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    // The recipe is complete when the caller's last stream ends `Complete` and `build.get` says no step
+    // The Build is complete when the caller's last stream ends `Complete` and `build.get` says no step
     // is left, never when a span says so; the fabric is stopped only after.
-    let Followed { first, broke, onward, kind, accepted } = tokio::time::timeout(Duration::from_secs(120), outer).await.expect("the caller read the recipe to its terminal within 120 s").expect("the caller's stream task");
+    let Followed { first, broke, onward, kind, accepted } = tokio::time::timeout(Duration::from_secs(120), outer).await.expect("the caller read the Build to its terminal within 120 s").expect("the caller's stream task");
     // Step 5: H, the mesh's writer from its answer on, records both primaries on its own row.
     let last = std::sync::Mutex::new(None::<Value>);
     let recorded = tokio::time::timeout(Duration::from_secs(30), async {
@@ -586,13 +586,13 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     // H answered: P's successor is no primary, so nothing moves again.
     let mut p_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && (attr(sp, "node") == p || attr(sp, "node") == p_old) && num(sp, "attempt").is_some_and(|a| a >= transfer_attempt)).collect();
     p_steps.sort_by_key(|sp| at_ns(sp));
-    assert!(!p_steps.is_empty(), "the recipe's steps on P ran: {p_steps:#?}");
+    assert!(!p_steps.is_empty(), "the Build's steps on P ran: {p_steps:#?}");
     for sp in &p_steps {
         assert_eq!(num(sp, "attempt"), Some(transfer_attempt + 1), "step {} on P ran in H's attempt: {sp:#?}", attr(sp, "step"));
         assert!(at_ns(sp) >= sp_end(&installed), "no step on P ran before H answered: {sp:#?}");
     }
     // P was the fabric-primary driving the Build: the caller's stream attached there ends with
-    // FabricPrimaryMoved naming H, and H drives the rest of the recipe.
+    // FabricPrimaryMoved naming H, and H drives the rest of the Build.
     assert!(matches!(first.last(), Some(rdm_client::Frame::FabricPrimaryMoved { fabric_primary: Some(to) }) if *to == h_name), "the caller's stream ends FabricPrimaryMoved naming H: {first:?}, broke: {broke:?}");
     // A planned move leaves no fault anywhere in the run (the fault span of a handler is a root of its
     // own trace, so the whole run is read).
@@ -603,11 +603,11 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     assert!(stale.is_empty(), "an attempt after the update was claimed for the stopped P: {stale:#?}");
     let lost: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "outcome") == "executor-lost").collect();
     assert!(lost.is_empty(), "the drive dispatched to a lost executor: {lost:#?}");
-    // The recipe runs as attempts of the accepted Build and completes once.
-    let (followed, receipts) = onward.unwrap_or_else(|why| panic!("the caller could not follow the recipe past FabricPrimaryMoved: {why}"));
+    // The Build runs as attempts of the accepted Build and completes once.
+    let (followed, receipts) = onward.unwrap_or_else(|why| panic!("the caller could not follow the Build past FabricPrimaryMoved: {why}"));
     assert!(matches!(followed.last().and_then(|frames| frames.last()), Some(rdm_client::Frame::Complete)), "the caller's resubmitted stream ends Complete: {followed:?}");
-    assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Complete, "build.get: the recipe's Build is complete: {receipts:?}");
-    let resume = rdm_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the recipe's steps");
+    assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Complete, "build.get: the steps' Build is complete: {receipts:?}");
+    let resume = rdm_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the Build's steps");
     let step_keys: Vec<String> = {
         let p = p.parse::<rdm_core::PathName>().unwrap();
         vec![format!("node.connections.delete:{p}"), format!("node.mesh.leave:{p}"), format!("node.update:{p}"), format!("node.stop:{p_old}"), format!("node.create:{p}"), format!("node.delete:{p_old}")]

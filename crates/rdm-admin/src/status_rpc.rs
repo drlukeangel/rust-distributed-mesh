@@ -817,7 +817,7 @@ impl StatusAuthority {
         }
     }
 
-    /// `node.name.update` (`UpdateName`) at this admin, a caller's or a replace recipe's step
+    /// `node.name.update` (`UpdateName`) at this admin, a caller's or a replace's step
     /// in-process: the one validator and writer of a rename.
     pub async fn update_name(&self, req: &StatusRequest) -> StatusReply {
         let StatusRequest::UpdateName { node_id, incarnation, .. } = req else { unreachable!("update_name is called for UpdateName only") };
