@@ -192,3 +192,55 @@ async fn command_mesh_join(
     span.in_scope(|| tracing::info!(node = %node.name, outcome = %outcome, "a birth heard again is commanded back through node.mesh.join"));
     outcome
 }
+
+/// Whether the admin born as `me` commands `node.mesh.join` to `subject` in its view now
+/// (node-mesh-join.md, Commander: "Standalone: the node's mesh-primary, after a tickle that reached
+/// the exact birth; the fabric-primary for a mesh-primary. Commands go down"). `Err` names why not.
+pub(crate) fn commands_join(_view: &crate::topology::Topology, _me: &crate::model::NodeId, _subject: &Node) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{NodeKind, NodeStatus};
+    use crate::topology::Topology;
+
+    fn at(name: &str, kind: NodeKind, primary: bool, fabric_primary: bool) -> Node {
+        let mut n = Node::allocated(name.parse().unwrap());
+        n.incarnation_id = Some(IncarnationId::mint());
+        n.mesh = name.split('.').next().unwrap().into();
+        n.kind = kind;
+        n.status = NodeStatus::ReadyForTraffic;
+        n.is_primary = primary;
+        n.is_fabric_primary = fabric_primary;
+        n
+    }
+
+    /// CONTRACT (node-mesh-join.md, Commander: "the node's mesh-primary ...; the fabric-primary for a
+    /// mesh-primary. Commands go down"; #3211 red 2, gate 19d4afbee release: mesh2.admin.1 stopped
+    /// publishing mesh2 at 484.371, held mesh2.admin.2's seat at 484.404, and commanded
+    /// `node.mesh.join:mesh2.admin.2` at 484.416): an admin commands a node of a mesh only as that
+    /// mesh's primary, and a mesh-primary only as the fabric-primary. Must NOT happen: a former
+    /// mesh-primary commanding the mesh's primary, or the fabric-primary commanding a peer mesh's node.
+    #[test]
+    fn only_the_mesh_primary_commands_its_node_and_only_the_fabric_primary_commands_a_mesh_primary() {
+        let fp = at("mesh1.admin.1", NodeKind::NodeAdmin, true, true);
+        let rpc = at("mesh1.rpc.1", NodeKind::RpcNode, false, false);
+        let former = at("mesh2.admin.1", NodeKind::NodeAdmin, false, false);
+        let m2p = at("mesh2.admin.2", NodeKind::NodeAdmin, true, false);
+        let broker = at("mesh2.broker.1", NodeKind::RpcNode, false, false);
+        let view = Topology {
+            fabric: crate::model::Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![fp.clone(), rpc.clone(), former.clone(), m2p.clone(), broker.clone()],
+        };
+        assert!(commands_join(&view, &former.node_id, &m2p).is_err(), "a former mesh-primary does not command the mesh's primary");
+        assert!(commands_join(&view, &former.node_id, &broker).is_err(), "an admin that is not its mesh's primary commands none of its nodes");
+        assert!(commands_join(&view, &fp.node_id, &broker).is_err(), "the fabric-primary commands a peer mesh's node only through its mesh-primary");
+        assert_eq!(commands_join(&view, &fp.node_id, &m2p), Ok(()), "the fabric-primary commands a mesh-primary");
+        assert_eq!(commands_join(&view, &m2p.node_id, &broker), Ok(()), "the mesh-primary commands its own mesh's node");
+        assert_eq!(commands_join(&view, &m2p.node_id, &former), Ok(()), "the mesh-primary commands its own mesh's other node-admin");
+        assert_eq!(commands_join(&view, &fp.node_id, &rpc), Ok(()), "the fabric-primary, mesh1's primary, commands mesh1's node");
+    }
+}
