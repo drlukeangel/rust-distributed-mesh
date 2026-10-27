@@ -215,11 +215,15 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     let t = mn();
     let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let me: PathName = "mesh1.admin.1".parse().unwrap();
+    // The fabric-primary's node records, one store for its door and its writer (boot.rs): its door
+    // accepts an action on a birth from its record, never from the gossip view (Q197).
+    let records = crate::records_of(&t).await;
     let control = Arc::new(ControlPlane::new(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
+    let _ = control.node_rows.set(records.clone());
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
     let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() });
-    let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rdm_admin::storage::MemoryNodesStorage::default())));
+    let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), records));
     let _ = rig.sink.1.set(rows.clone());
     let env = Arc::new(DriveEnv {
         me: me.clone(),

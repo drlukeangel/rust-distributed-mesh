@@ -153,8 +153,8 @@ fn live_roster(records: &[Node]) -> Result<Vec<RosterBirth>, String> {
 
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage
-            .write_record(&NodeRow { topology_storage_provider: None,
+        // The record a create wrote: the node's row and its birth.
+        let mut row = NodeRow { topology_storage_provider: None,
                 name: n.name.clone(),
                 node_id: n.node_id.clone(),
                 status: NodeStatus::ReadyForTraffic,
@@ -169,9 +169,11 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 mesh_id: None,
                 storage_persistence: None,
                 placement: None,
-            })
-            .await
-            .unwrap();
+            };
+        if let Some(incarnation) = &n.incarnation_id {
+            row.birth_mut(incarnation, &n.name);
+        }
+        storage.write_record(&row).await.unwrap();
         assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
         let h = handle(&n.name.to_string(), 50_000);
         storage
@@ -239,6 +241,9 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial.clone(), "mesh1.admin.1").await.unwrap();
     let mut cp = ControlPlane::new(builds.clone(), accepted, m1_a1.name.clone(), observed.read().await.clone(), crate::adopted_time());
     cp.topology = observed.clone();
+    // The fabric-primary's door reads the node records its writers wrote (boot.rs: one nodes store),
+    // never a birth from the gossip view (Q197).
+    let _ = cp.node_rows.set(nodes_storage.clone());
     let opened = cp.submit("POST /api/build", TopologyChange::DeleteFabric).await.expect("DeleteFabric is accepted as a Build");
     let build_id = opened.build_id;
     builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();

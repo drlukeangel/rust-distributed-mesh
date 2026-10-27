@@ -1195,11 +1195,15 @@ mod one_attempt_number {
         Arc::new(Gate { inner: e.builds.clone(), holds, arrived: Notify::new(), release: Notify::new() })
     }
 
-    /// The fabric-primary's REST door over `builds`, on the estate's view and accepted Build.
+    /// The fabric-primary's REST door over `builds`, on the estate's view and accepted Build, and its
+    /// node records: one row per birth the estate created, as its nodes.storage holds them. The door
+    /// accepts an action on a birth from its record (the atlas, R-FA1), never from the gossip view
+    /// (Q197): the view says which births are unheard, the records that they were created.
     async fn door(e: &Estate, builds: Arc<dyn BuildStateAdapter>) -> Arc<ControlPlane> {
         let me: PathName = e.fabric_primary().await.parse().unwrap();
         let mut cp = ControlPlane::new(builds, e.accepted.clone(), me, e.view.read().await.clone(), crate::adopted_time());
         cp.topology = e.view.clone();
+        let _ = cp.node_rows.set(crate::records_of(&*e.view.read().await).await);
         Arc::new(cp)
     }
 
@@ -1277,12 +1281,18 @@ mod one_attempt_number {
         let k = lose_a_node(&e).await;
         let g = gate(&e, Holds::Attempt(AttemptReason::Stop));
         let cp = door(&e, g.clone()).await;
-        let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, "mesh2.rpc.1".parse().unwrap(), rdm_admin::control_plane::ActionKind::Stop), async {
-            g.arrived.notified().await;
-            let d = drift_pass(&e, &*e.builds).await;
-            g.release.notify_one();
-            d
-        });
+        let rest = cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, "mesh2.rpc.1".parse().unwrap(), rdm_admin::control_plane::ActionKind::Stop);
+        tokio::pin!(rest);
+        // The stop either stops at the log's door with its number computed, or it ended without
+        // opening anything: that is the cell's failure, named, never a wait.
+        tokio::select! {
+            biased;
+            _ = g.arrived.notified() => {}
+            ended = &mut rest => panic!("the stop ended without reaching the Build log's door to open attempt {}: {ended:?}", k + 1),
+        }
+        let drift = drift_pass(&e, &*e.builds).await;
+        g.release.notify_one();
+        let rest = rest.await;
         assert_eq!(drift, Some((e.builds.current_build().await.unwrap().into_build_id().unwrap(), k + 1)), "the drift pass took the free number");
         let held = opened_facts(&e, k + 1).await;
         assert_eq!(held.len(), 1, "one Opened fact for attempt {}: {held:?}", k + 1);
@@ -1392,11 +1402,17 @@ mod one_attempt_number {
         // The stopped node holds no seat: a seat holder's stop runs node.primary.update first, and the
         // writer's view takes the moved seat from its view loop, which this harness does not run.
         let target = secondary_rpc(&e, &own).await;
-        let stop = tokio::spawn({
+        let mut stop = tokio::spawn({
             let (cp, path): (_, PathName) = (cp.clone(), target.parse().unwrap());
             async move { cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, path, rdm_admin::control_plane::ActionKind::Stop).await }
         });
-        g.arrived.notified().await;
+        // The stop either stops at the log's door inside its write, or it ended without opening
+        // anything: that is the cell's failure, named, never a wait.
+        tokio::select! {
+            biased;
+            _ = g.arrived.notified() => {}
+            ended = &mut stop => panic!("the stop of {target} ended without reaching the Build log's door: {ended:?}"),
+        }
         let t = e.view.read().await.clone();
         let me_id = own_id(&t, &me);
         let refused = {
