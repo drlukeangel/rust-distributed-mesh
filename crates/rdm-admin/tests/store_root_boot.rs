@@ -560,7 +560,10 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     // after the Build reload; the rafka-time adoption follows its pulls.
     let _ = root.until(&mut running, BUILD_RELOADED, RECOVERS_WITHIN);
     let _ = root.until(&mut running, INHERITED_ROOT, RECOVERS_WITHIN);
-    let spans = root.until(&mut running, "rdm.mesh.entry.update.via-rafka-time-adopted", RECOVERS_WITHIN);
+    let _ = root.until(&mut running, "rdm.mesh.entry.update.via-rafka-time-adopted", RECOVERS_WITHIN);
+    // The deployment span closes, and reaches the evidence file, only once the boot returns
+    // (entry.rs), which can be after the rafka-time adoption's span: read the spans once it is there.
+    let spans = root.until(&mut running, "rdm.mesh.node.create.via-deployment", RECOVERS_WITHIN);
     let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("no storage step: {spans:?}"));
     let attr = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or_default().to_string();
     assert_eq!((attr(opened, "fabric_id"), attr(opened, "mesh_id"), attr(opened, "inherited_root")), (root.fabric_id.to_string(), root.mesh_id.to_string(), "true".to_string()), "{opened}");
