@@ -1398,6 +1398,8 @@ impl Dialer {
         }
         let caller_span = tracing::Span::current();
         let traceparent = crate::traceparent_of(&caller_span);
+        // A cold discovery's cost runs from the open's start to its Proxy Connected (connections.md §12).
+        let begun = std::time::Instant::now();
         let own = self.registry.inner.sink.own_birth();
         let res = {
             let held = self.registry.inner.sink.held();
@@ -1440,7 +1442,7 @@ impl Dialer {
                     incarnation: carrier_inc,
                 };
                 return self
-                    .open_tunnel(&own, &carrier_birth, destination, Some(&proxy), &caller_span, traceparent)
+                    .open_tunnel(&own, &carrier_birth, destination, Some(&proxy), None, &caller_span, traceparent)
                     .await;
             }
             EffectiveRoute::Direct { .. } => {}
@@ -1473,7 +1475,7 @@ impl Dialer {
                             incarnation: carrier_inc,
                         };
                         return self
-                            .open_tunnel(&own, &carrier_birth, destination, None, &caller_span, traceparent)
+                            .open_tunnel(&own, &carrier_birth, destination, None, Some(begun), &caller_span, traceparent)
                             .await;
                     }
                 }
@@ -1691,6 +1693,7 @@ impl Dialer {
         carrier: &Birth,
         destination: &Birth,
         held_proxy: Option<&NodeConnection>,
+        cold_discovery: Option<std::time::Instant>,
         caller_span: &tracing::Span,
         traceparent: Option<String>,
     ) -> Result<Connection, ConnectError> {
@@ -1705,6 +1708,7 @@ impl Dialer {
                 entry = tracing::field::Empty,
                 kind = tracing::field::Empty,
                 state = tracing::field::Empty,
+                effective_route_cold_discovery_ms = tracing::field::Empty,
             )
         });
         tunnel_span.in_scope(|| tracing::info!("opening data-plane proxy tunnel through carrier"));
@@ -1877,6 +1881,9 @@ impl Dialer {
                 tunnel_span.record("entry", recorded.id.to_string().as_str());
                 tunnel_span.record("kind", "proxy");
                 tunnel_span.record("state", "connected");
+                if let Some(begun) = cold_discovery {
+                    tunnel_span.record("effective_route_cold_discovery_ms", begun.elapsed().as_millis() as u64);
+                }
                 let (closed_tx, closed_rx) = watch::channel(None);
                 self.registry.register_active(
                     row_id.clone(),
