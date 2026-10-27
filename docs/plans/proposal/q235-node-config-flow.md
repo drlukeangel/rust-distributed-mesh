@@ -88,7 +88,8 @@ carries the node's own whole row from the mesh-primary's Atlas (Q234). It never 
 >
 > The update runs one of two ways. A caller's goes down from the fabric-primary. A node's own goes up
 > from the node, so its mesh-primary and the fabric-primary hold the map the node will be hydrated with
-> and a Build is diffed against.
+> and a Build is diffed against; every install, at the node and in each atlas, is ordered by the row's
+> revision.
 
 **node-config-update.md, the numbered sequence (lines 12–18), old:** steps 1–4 as on main (step 1:
 "The caller sends `node.config.update` to the fabric-primary. A node sends its own through the
@@ -98,23 +99,26 @@ node-admin it joined through…").
 
 > ### A caller's update
 >
-> 1. The caller sends `node.config.update` to the fabric-primary, which writes the map to the node in
->    its Atlas and sends the command to the node's mesh-primary (Forward `0x1A` when not directly
->    reachable).
-> 2. The mesh-primary writes the record and its Atlas.
-> 3. A live node is sent `ApplyNodeConfig`; it applies the map. The command completes after `Applied`
->    or `AlreadyApplied`. A stopped node is sent nothing: the command completes after the durable row
->    write, and its next start receives the config in its hydration sync.
-> 4. Emit `node.config.updated`.
+> 1. The caller sends `node.config.update` to the fabric-primary, which sends the command to the
+>    node's mesh-primary (Forward `0x1A` when not directly reachable).
+> 2. The mesh-primary writes the record, stepping its revision, and its atlas.
+> 3. A live node is sent `ApplyNodeConfig` with the map and its revision; it installs the map over an
+>    older revision. The command completes after `Applied` or `AlreadyApplied`. A stopped node is sent
+>    nothing: the command completes after the durable row write, and its next start receives the config
+>    in its hydration sync.
+> 4. The completion carries the row as written; the fabric-primary writes it into its atlas over an
+>    older revision. Emit `node.config.updated`.
 >
 > ### A node's own update
 >
-> 1. The node sends its map to its mesh-primary, owed until answered. A node-admin's own goes in
->    process to the admin it joined through.
-> 2. The mesh-primary writes the record and its Atlas, and answers the node `Applied` or refuses it by
->    name. On `Applied`, the node holds the map.
-> 3. The mesh-primary sends the map up to the fabric-primary, owed until acknowledged; the
->    fabric-primary writes it into its Atlas. A mesh-primary that is the fabric-primary writes both at
+> 1. The node holds the map and sends it to the mesh-primary its topology view names, owed until
+>    answered and retargeted on a primary change; in process when that mesh-primary is this process.
+> 2. The mesh-primary writes the record, stepping its revision, and its atlas, and answers the node
+>    `Applied` or refuses it by name; either answer carries the row as written, which the node installs
+>    over an older revision.
+> 3. The mesh-primary owes the row to the fabric-primary, keyed by the node and its revision, until
+>    acknowledged; the fabric-primary writes it into its atlas over an older revision. A successor
+>    mesh-primary owes it again from the row. A mesh-primary that is the fabric-primary writes both at
 >    step 2.
 > 4. Emit `node.config.updated`.
 
@@ -154,25 +158,44 @@ node-admin it joined through…").
 query.md (new, its draft with the architects) states the reads: the mesh-primary's Atlas for its own
 mesh, the fabric-primary's for the rest, and the node's own whole row on its own entry.
 
-## 5. Open points, decided (the lead, 2026-10-27)
+## 5. Open points, decided (the lead, 2026-10-27; arch-1's seven findings folded in)
 
-- **P1, the order of two writers: the mesh-primary's row write is the one order; no version field.**
-  `NodeRow` has no version and `put_node` takes none. The fabric-primary's atlas takes a map only as
-  the mesh-primary reports it: a caller's update keeps today's write-ahead with the put-back on a
-  refusal (`atlas.rs:356`), and takes the row as written from the down command's completion; a node's
-  own update reaches it as the mesh-primary's push, owed in order (Q210's queue, one in flight). Both
-  atlases end on what the row holds.
-- **P2, when the node holds its own map: when it sends it (Q235, Luke: the node holds the map it sent
-  and its own entry takes it at once).** On the mesh-primary's refusal by name the node puts back the
-  map it held before, the atlas's own put-back. There is no "config cap": the refusal is whichever
-  the mesh-primary names (`node_config.rs`).
-- **P3, an update still owed at a restart: Q210.** The update is one declaration in the node's owed
-  queue; a signal stop waits for the queue within Q206's bound and names the outcome in its span; an
-  update unsent past the bound is named there, the next start's hydration sync hands the node the
-  row's map, and the application sends again if it still wants the change. No new machinery.
-- **P4, a node-admin's own config: no special case.** In process to the admin it joined through; a
-  mesh-primary's own update writes its row and its atlas, then pushes up.
+- **P1, order: the row's `revision`, minted by the row writer, governs every install.** `NodeRow`
+  gains `revision: u64`, stepped by the mesh-primary on every write of the row (a durable format
+  moved: the commit carries the marker). Every carrier of a map names it: `ApplyNodeConfig`, the
+  reply to a node's own update, the push up, the down command's completion and the hydration sync.
+  Every recipient (the node, both atlases, `Atlas::write_config`) installs a map only over an older
+  revision and drops the rest, so a delayed reply or apply never overwrites a newer map. The
+  fabric-primary no longer writes its atlas ahead of the row: a caller's update goes down first, and
+  the fabric-primary's atlas takes the row as written, with its revision, from the mesh-primary's
+  completion. No read ever answers a map the row has not committed.
+- **P2, the node holds the map it sent at once (Q235, Luke); the reply carries the row.** `Applied`
+  and a refusal by name both carry the row as written and its revision; the node installs that over
+  an older revision, never a put-back from its own memory. There is no "config cap": the refusal is
+  whichever the mesh-primary names (`node_config.rs`).
+- **P3, an update at a restart or a crash: unsent is abandoned, committed is never lost.** An update
+  still in the node's owed queue is abandoned under the signal stop's bound (Q210, Q206), named in the
+  stop's outcome span when there is one; a crash promises no span. An update the row holds but the
+  node never heard answered is not lost: the next start's hydration sync hands the node the row's map
+  and revision. The mesh-primary's push up is an owed declaration keyed by the node and its revision
+  (status_declare's model): a successor mesh-primary rebuilds it from its mesh's rows at the seat
+  change and owes it again, so a crash between the row write and the push is recovered from the row
+  (§43: the owner reconstructs owed work from durable evidence).
+- **P4, a node-admin's own config: no special case.** The destination of every node's own update is
+  the mesh-primary its topology view names, retargeted on a primary change with the rest of its
+  queue (Q210); never "the admin it joined through", which after a hand-over may hold no atlas. The
+  hop is in process only when that mesh-primary is this process.
+
+The freshness contract: on `Applied` the row and the mesh-primary's atlas hold the map; the
+fabric-primary's atlas holds it once the push is acknowledged, bounded by the owed delivery, and a
+read from it may lag by that. Q236's read-before-compose is not a lock: two PUTs are ordered by the
+row's revision.
 
 Words: pages say "atlas" in prose (Q224), "hydration sync" (Q234), and "PUT, never PATCH" (the Node
 properties section's casing). The Topology op 0x1E reply's text, which Q234 also owes, is missing
 from §4 and goes in before the landing.
+
+Cells, RED first, before the landing: a reply and an apply delivered out of order leave the newer
+revision installed; the mesh-primary gone after the row write and before the push, the successor
+pushes the row; a hand-over with an update owed, delivered to the new mesh-primary; the local filter
+self-only against mixed scope (query.md §2).

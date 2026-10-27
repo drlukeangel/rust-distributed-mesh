@@ -80,12 +80,16 @@ node.topology_view.nodes_get([["id", [me]]])                                  my
 - **Properties:** for every other node, only what gossip carries: `id`, `name`, `kind`, `mesh`,
   `status`, the endpoint and the primaries. Gossip carries what routing needs and nothing else
   (Q203). For the node's own entry, every property of its row, `config.<key>` and `tags` included.
-- **Refused:** a property only rows carry (`tags`, `config.<key>`, `executable`, …), asked of any
-  node but the node itself, is `INVALID_ARGUMENT` by name, naming `nodes.get`: the local view never
-  answers it as no match.
+- **Scope, decided before matching:** a local query is self-scoped only when its filter holds an `id`
+  pair whose one value is the node's own id. A self-scoped query may name every property of the row.
+  Any other local query may name only what gossip carries: a row-only property (`tags`,
+  `config.<key>`, `executable`, …) in it is `INVALID_ARGUMENT` by name, naming `nodes.get`, whatever
+  rows would have matched. The local view never answers a row-only property as no match.
 - **Freshness:** best effort, as of the last digest heard; a node silent past the staleness floor
-  (`RDM_STALENESS_MS`) leaves the view. The truth is the external query (§1); a node routes off this
-  view and reads rows when it needs the record.
+  (`RDM_STALENESS_MS`) leaves the view. The record is the external query (§1): the mesh-primary's
+  atlas holds a node's map from its `Applied`; the fabric-primary's holds it once the mesh-primary's
+  push is acknowledged, bounded by the owed delivery, and may lag by that. Every install is ordered by
+  the row's revision (the config flow, P1).
 
 ## Open question for the architects: Q233, what a query answers as a node's status
 
@@ -152,10 +156,17 @@ dev recommendation: A. The progress is already on the operation's stream and the
 Routing does not need it in status, because the node refuses new work by name while its connections
 are being deleted. A sub-status is a second field that every writer must keep in step with the stream.
 
-**Ruled X (the lead, 2026-10-27, INDEX):** a query answers the state the mesh-primary last recorded from the
-node's own frame (pending, ready, connections-deleting, connections-deleted, leaving, left, stopped, deleted);
-starting, stopping and deleting, set from an admission or a claim, are the operation's progress, read on its
-stream and the Build's receipts, never answered as status. A would delete states Luke's vocabulary names.
+**Ruled X (the lead, 2026-10-27, INDEX; arch-1's findings folded in):** a query answers the state the
+mesh-primary last recorded from the node's own frame (pending, ready, connections-deleting,
+connections-deleted, leaving, left, stopped) or from the delete's receipt (deleted: an exited node reports
+nothing; the provider's exit proof and the writer's receipt set it). starting, stopping and deleting, set from
+an admission or a claim, are the operation's progress, read on its stream and the Build's receipts, never
+the row's status. Routing is untouched: the routing stop (states.md:81-84) is applied by a peer on receipt of
+the fact, the gossiped digest and the NodeStopped and NodeDeleting frames, which keep carrying every
+routing-stop state. A would delete states Luke's vocabulary names. Page text owed with the landing, Luke's yes
+on it: states.md's three rows (starting, stopping, deleting) say they are the operation's, published as
+routing-stop facts and never written as the row's status. Cell: a stop admitted leaves the query at `ready`
+and the peers' routing stop in force until the node's frames move the row.
 
 
 ---
