@@ -98,6 +98,7 @@ mod mesh_delete_workflow;
 mod mesh_delete_source;
 mod mesh_delete_view;
 mod build_admission;
+mod operation_gates;
 mod build_claim;
 mod build_drive;
 mod build_run;
