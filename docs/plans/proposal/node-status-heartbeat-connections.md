@@ -25,7 +25,7 @@ rest stays here.
    published again"; it never says started, connections-deleted or ready-for-traffic. The
    mesh-primary's status fact is the only thing that moves a member's status. Receivers hold both. A
    heartbeat with a higher number never clears stopped; deleted is terminal for the birth. This holds in
-   Digests, Members aggregates, deltas, fulls, topology reads and join answers — otherwise another receive
+   Digests, mesh topologies, deltas, fulls, topology reads and join answers — otherwise another receive
    path rebuilds status from node-authored data. A receiver holding a heartbeat but no authoritative
    status keeps the birth non-routable (the states.md routing rule).
 2. **`digest_seq` orders heartbeats and nothing else.** Gossip's four orderings stay; there is no
@@ -97,8 +97,8 @@ ruling text. The code still lands with its Jaeger flame (CLAUDE.md rule 1).
   `topology_version`. There is no new topic and no status counter. "Own-mesh members receive
   authoritative statuses through the primary's versioned member projection. Missing versions or an
   unknown source epoch trigger GetTopology repair. Receivers install the complete snapshot atomically;
-  they do not queue unmatched status events." Peer meshes receive it as today, through Members and
-  MembersDelta.
+  they do not queue unmatched status events." Peer meshes receive it as today, through MeshTopology and
+  MeshTopologyDelta.
 - **Field sources for an own-mesh birth.** Liveness, endpoints with freshness and the runtime fact come
   from the node's Digest. Status comes from the projection. A full therefore never overwrites fresher
   Digest endpoints.
@@ -121,8 +121,8 @@ ruling text. The code still lands with its Jaeger flame (CLAUDE.md rule 1).
     this it is set by the node's mesh-primary.
   - Add rows for starting, pending, connections-deleted, stopping and deleting, each set by the node's
     mesh-primary.
-  - gossip.md §3.1: the Digest row lists `status`; under this it carries liveness only. The Members
-    and MembersDelta rows gain the own-mesh channel publication and the field-source and
+  - gossip.md §3.1: the Digest row lists `status`; under this it carries liveness only. The MeshTopology
+    and MeshTopologyDelta rows gain the own-mesh channel publication and the field-source and
     events-vs-statuses rules.
 
 ### R-HB3 (parked post-beta): which replies carry the node's heartbeat number as evidence

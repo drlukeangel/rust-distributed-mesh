@@ -406,7 +406,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     want_later.extend(["mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|n| n.to_string()));
     let later_nodes = Estate::values(&estate.settles_to_named(&want_later, Duration::from_secs(60)).await);
     ready_under(&estate, &second).await;
-    // mesh2.rpc.1 learns of mesh1.rpc.1 from the MembersDelta its mesh-primary forwards (gossip.md §3.3),
+    // mesh2.rpc.1 learns of mesh1.rpc.1 from the MeshTopologyDelta its mesh-primary forwards (gossip.md §3.3),
     // not from the admin's view the cell settled on: the origination waits until mesh2.rpc.1's own
     // resolver holds the destination.
     wait_for("mesh2.rpc.1's own resolver holds mesh1.rpc.1", Duration::from_secs(30), || async {

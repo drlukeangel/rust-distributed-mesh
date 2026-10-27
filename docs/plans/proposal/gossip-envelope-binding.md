@@ -23,7 +23,7 @@ reconstructs author birth, event identity or sequence from a name or transport s
 | source | String `rdm://<fabric_id>/<node_id>/<incarnation>`; canonical typed identifiers; always the original author, including an empty projection. |
 | type | One of the 22 exact literals below. |
 | subject | String with the reviewed percent-escaped subject grammar. Ordinary operation subject names its full exact-birth operation; transfer subject is exactly `handover/<build_id>/<attempt>/<operation>`. |
-| sequence | Optional String: scalar `P(u64)` for Digest, Members, MembersDelta and Seated; composite `P(seat_revision) + "." + P(changed_at_rafka_ms)` for statuses; absent on operation facts and reserved kinds. P has exactly 20 zero-padded decimal digits. sequencetype is absent. |
+| sequence | Optional String: scalar `P(u64)` for Digest, MeshTopology, MeshTopologyDelta and Seated; composite `P(seat_revision) + "." + P(changed_at_rafka_ms)` for statuses; absent on operation facts and reserved kinds. P has exactly 20 zero-padded decimal digits. sequencetype is absent. |
 | time | RFC3339 UTC with millisecond precision from the authored rafka-time; resends retain it. It is never an authority revision or an unrelated-operation ordering. |
 | datacontenttype | String `application/octet-stream`. |
 | data | Opaque postcard bytes selected by type; no JSON/base64 representation on this wire. |
@@ -58,8 +58,8 @@ retain per-cohort revisions/stage/content in data; their receipt supplies no sea
 | Page position | Kind | Literal type | sequence / subject |
 |---|---|---|---|
 | 1 | Digest | `rdm.mesh.digest` | P(digest_seq), birth |
-| 2 | Members | `rdm.mesh.members` | P(topology_version), source projection |
-| 3 | MembersDelta | `rdm.mesh.members.delta` | P(topology_version), source projection; base_version in data |
+| 2 | MeshTopology | `rdm.mesh.members` | P(topology_version), source projection |
+| 3 | MeshTopologyDelta | `rdm.mesh.members.delta` | P(topology_version), source projection; base_version in data |
 | 4 | NodeDeleting | `rdm.node.deleting` | absent, lifecycle operation; carried topology_version in data |
 | 5 | NodeDeleted | `rdm.node.deleted` | absent, terminal lifecycle operation |
 | 6 | NodeRestarting | `rdm.node.restarting` | absent, lifecycle operation; carried topology_version in data |
@@ -110,8 +110,8 @@ measurement of the unimplemented envelope. The actual golden reports measured co
 | Kind | K (B) |
 |---|---:|
 | Digest | 202 |
-| Members | 203 |
-| MembersDelta | 209 |
+| MeshTopology | 203 |
+| MeshTopologyDelta | 209 |
 | NodeDeleting | 174 |
 | NodeDeleted | 173 |
 | NodeRestarting | 176 |
@@ -143,8 +143,8 @@ Old (verbatim):
 | frame | category | subject | ordering | identity |
 |---|---|---|---|---|
 | `Digest` | replacement state | the exact birth | `digest_seq`, higher is newer | `(birth, digest_seq)` |
-| `Members` (source publication and forwarded full) | snapshot | `(mesh, source_publisher)` | `topology_version` against the installed-version floor: within one publisher revision a lower version never overwrites a higher installed one whatever its `published_at_rafka_ms`, including a version installed by a topology read | `(mesh, source_publisher, topology_version, snapshot_id, chunk_index)` |
-| `MembersDelta` | delta | `(mesh, source_publisher)` | `base_version` = installed: apply; `topology_version` ≤ installed: stale (duplicate if already applied); `base_version` > installed: gap, repair | `(mesh, source_publisher, base_version, topology_version)` |
+| `MeshTopology` (source publication and forwarded full) | snapshot | `(mesh, source_publisher)` | `topology_version` against the installed-version floor: within one publisher revision a lower version never overwrites a higher installed one whatever its `published_at_rafka_ms`, including a version installed by a topology read | `(mesh, source_publisher, topology_version, snapshot_id, chunk_index)` |
+| `MeshTopologyDelta` | delta | `(mesh, source_publisher)` | `base_version` = installed: apply; `topology_version` ≤ installed: stale (duplicate if already applied); `base_version` > installed: gap, repair | `(mesh, source_publisher, base_version, topology_version)` |
 | `NodeDeleting`, `NodeRestarting`, `NodeStopped` | operation fact, carrying the publisher's `topology_version` as the projection it rides | `(build_id, attempt, operation, node_id, incarnation)` | the fact: reconciled against the operation's completion and the birth's later lifecycle (a `NodeRestarting` after that restart's `node.started` reopens nothing); the carried `topology_version`: replacement state for the projection | the operation identity |
 | `NodeDeleted` | operation fact, terminal | `(build_id, attempt, operation, node_id, incarnation)` | stands after any unrelated frame; never discarded because other traffic arrived first | the operation identity |
 | `MeshStatus`, `FabricStatus` | replacement state | `(mesh \| fabric, publisher)` | `changed_at_rafka_ms`, higher is newer. **Gap:** they carry a publisher string and a timestamp, not the publisher's revision, so a delayed predecessor's frame is not refused by revision; closing it is an i147 packet (a field, or the status riding the publisher's projection) | `(subject, publisher, changed_at_rafka_ms)` |
@@ -161,8 +161,8 @@ New:
 | frame / type | category | source / subject | sequence / data validity | id / identity |
 |---|---|---|---|---|
 | `Digest` (`rdm.mesh.digest`) | replacement state | the author birth / that exact birth | `P(digest_seq)`, higher is newer | birth and digest sequence |
-| `Members` (`rdm.mesh.members`, source publication and forwarded full) | snapshot | the original author birth / `(mesh, source_publisher)` | `P(topology_version)` against the installed floor, including a topology read; equal material version admits a new publication's hearing and distinct unfinished chunks | source projection, topology version, publication owner's exact birth and counter, chunk index; a resend keeps id |
-| `MembersDelta` (`rdm.mesh.members.delta`) | delta | the original author birth / `(mesh, source_publisher)` | `P(topology_version)`; `base_version` in data equals installed to apply, ahead requests repair as via-gap, lower version is stale | source projection, base version and topology version |
+| `MeshTopology` (`rdm.mesh.members`, source publication and forwarded full) | snapshot | the original author birth / `(mesh, source_publisher)` | `P(topology_version)` against the installed floor, including a topology read; equal material version admits a new publication's hearing and distinct unfinished chunks | source projection, topology version, publication owner's exact birth and counter, chunk index; a resend keeps id |
+| `MeshTopologyDelta` (`rdm.mesh.members.delta`) | delta | the original author birth / `(mesh, source_publisher)` | `P(topology_version)`; `base_version` in data equals installed to apply, ahead requests repair as via-gap, lower version is stale | source projection, base version and topology version |
 | `NodeDeleting`, `NodeRestarting`, `NodeStopped` (`rdm.node.deleting`, `rdm.node.restarting`, `rdm.node.stopped`) | operation fact | the author birth / `(build_id, attempt, operation, node_id, incarnation)` | absent; the operation cannot reopen after completion or the exact birth's later lifecycle. The carried `topology_version` is data, checked on the projection's own subject by its existing per-publisher floor rule, even for a repeated fact | kind and the complete operation identity; a repeat runs no effect twice, including when the carried version is refused |
 | `NodeDeleted` (`rdm.node.deleted`) | operation fact, terminal | the author birth / `(build_id, attempt, operation, node_id, incarnation)` | absent; stands after unrelated traffic | kind and the complete operation identity |
 | `MeshStatus`, `FabricStatus` (`rdm.mesh.status`, `rdm.fabric.status`) | replacement state | the author birth / stable mesh or fabric status scope | `P(committed seat revision) + "." + P(changed_at_rafka_ms)`, lexical order; the publisher takes its revision from its own held committed seat row. A predecessor's later timestamp loses to the successor's higher revision; within one holder its change time orders changes | subject and composite sequence; equal sequence is duplicate with identical content, inconsistent with different content |
@@ -179,7 +179,7 @@ Old (verbatim):
 
 ```text
 A publisher change: a delayed frame from a predecessor publisher cannot overwrite the successor's
-projection where the frame carries the publisher's committed revision (`Members`, `Seated`,
+projection where the frame carries the publisher's committed revision (`MeshTopology`, `Seated`,
 `PrimaryUpdated`); for `MeshStatus` and `FabricStatus` this is the gap above until closed.
 ```
 

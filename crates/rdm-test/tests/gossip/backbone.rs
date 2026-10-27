@@ -9,7 +9,7 @@
 //! Cells (s9 acceptance 1-5), from public surfaces and span evidence only:
 //! 1. ordinary nodes subscribe to their own mesh channel only, never to the
 //!    backbone, yet learn both meshes; every admin joins the backbone;
-//! 2. exactly one aggregate publisher per mesh, its admin primary: a
+//! 2. exactly one mesh topology publisher per mesh, its admin primary: a
 //!    non-primary admin never publishes;
 //! 3. losing a mesh's admin primary moves publication to its successor;
 //! 5. ...and that successor forwards the peer mesh again, so the mesh's
@@ -156,7 +156,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
         assert!(subs.iter().any(|(x, c)| x == n && c == "backbone"), "{n} joins the backbone");
     }
 
-    // 2. One aggregate publisher per mesh, its admin primary.
+    // 2. One mesh topology publisher per mesh, its admin primary.
     let none: BTreeMap<String, u64> = BTreeMap::new();
     for m in ["mesh1", "mesh2"] {
         let p = s(&primary(&nodes, m)["name"]);
@@ -270,7 +270,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     let mut dead = dead;
     dead.insert(fp_name.clone(), now_ns());
     // The winner is read with the publisher, in one poll: until the lost
-    // primary's mesh is heard again through its successor's aggregate, a
+    // primary's mesh is heard again through its successor's mesh topology, a
     // peer mesh's admin may briefly name itself in its own view (and, gated,
     // publishes nothing). The converged view names the one publisher.
     let next = estate

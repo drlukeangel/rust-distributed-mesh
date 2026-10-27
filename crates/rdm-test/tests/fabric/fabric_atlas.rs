@@ -164,7 +164,7 @@ async fn fabrics_atlas_get_answers_every_node_the_fabric_primary_holds() {
 
 /// CONTRACT (fabric-atlas.md R-FA2: "Command admission writes it at acceptance; execution progress
 /// writes it from each attempt's receipts as they stream up `build.attempt.run`, before the caller is
-/// answered `Complete`"): with the other mesh's aggregate withheld from the backbone (so no gossip
+/// answered `Complete`"): with the other mesh's topology withheld from the backbone (so no gossip
 /// observation can be the source) and the fabric-primary held after it claimed the `node.stop`
 /// attempt and before it dispatched it, the atlas already names the accepted stop on the node; once
 /// released, the moment the stop streams `Complete`, the atlas holds the node stopped with nothing
@@ -225,7 +225,7 @@ async fn atlas_holds_for(estate: &Estate, node: &PathName, floors: u32, why: &st
 /// never moves it backward"): for each node-admin of the other mesh, stopped then started by the
 /// fabric-primary, the atlas holds the node stopped from the stop's `Complete` and live, the same
 /// birth, from the start's `Complete`, and keeps each for two staleness floors read every gossip
-/// interval while the other mesh's aggregates, which reach the fabric-primary after its own receipts,
+/// interval while the other mesh's mesh topologies, which reach the fabric-primary after its own receipts,
 /// arrive. Must NOT happen: a digest of the birth from before its stop taking it live again while it is
 /// stopped, or the other mesh's projection still carrying the stop (or its `NodeStopped`) taking it
 /// stopped again after the start completed.

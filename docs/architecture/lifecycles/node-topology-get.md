@@ -30,7 +30,7 @@ install complete source snapshots, then resume deltas
 
 The request, reply variants, install rules and spans are the
 [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm). The node's own Digest and
-its mesh-primary's aggregates follow the [frame catalog](../gossip.md#31-frame-catalog) and
+its mesh-primary's mesh topologies follow the [frame catalog](../gossip.md#31-frame-catalog) and
 the [cross-mesh projection](../gossip.md#33-cross-mesh-topology-inside-a-mesh-deltas-full-snapshots-and-the-top-up).
 Read completion does not prove a runtime exited.
 

@@ -200,7 +200,7 @@ mod tests {
 
     /// CONTRACT (lifecycles/states.md: "Mesh: `pending` → `ready-for-traffic` → `deleting` →
     /// `deleted` ... deleted is final"; mesh-delete.md step 7: the fabric-primary stops the deleted
-    /// mesh's last admin, "from that admin's stop on it publishes the deleted mesh's aggregate"): the
+    /// mesh's last admin, "from that admin's stop on it publishes the deleted mesh's topology"): the
     /// fabric-primary accepted mesh.deleted for mesh1 and holds mesh1's last admin, mesh1.admin.1, from
     /// that admin's own digest. The admin is stopped: the digest view holds it stopped. The view still states
     /// mesh1 deleted, under its id, with the stopped admin its one node. Must NOT happen: the stopped
@@ -1780,7 +1780,7 @@ mod tests {
     }
 
     /// CONTRACT (gossip.md `NodeDeleting`: keyed `(kind, build_id, attempt, operation)`, "the fact
-    /// rides `Members.in_flight` until the operation completes", and `Members.in_flight` is "while
+    /// rides `MeshTopology.in_flight` until the operation completes", and `MeshTopology.in_flight` is "while
     /// the operation is claimed and has no completed receipt (derived from Build facts at each publication)";
     /// node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that workflow:
     /// its Build ends Failed, and the mesh-primary's next tick finds the member still proven exited
@@ -1830,14 +1830,14 @@ mod tests {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             overlays_from_facts(&facts, &digest_view, &mut named);
         }
-        assert_eq!(digest_view.in_flight(), Vec::<rdm_core::LifecycleOp>::new(), "the failed attempt's overlay leaves Members.in_flight: its operation is no longer claimed by that attempt");
+        assert_eq!(digest_view.in_flight(), Vec::<rdm_core::LifecycleOp>::new(), "the failed attempt's overlay leaves MeshTopology.in_flight: its operation is no longer claimed by that attempt");
         let closed = capture.named("rdm.mesh.topology.update.via-deleting-closed-by-facts");
         assert_eq!(closed.len(), 1, "the close is spanned once: {closed:?}");
         let a = &closed[0].attributes;
         let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
         assert_eq!((attr("operation"), attr("build_id"), attr("attempt"), attr("by")), ("node.delete:mesh2.rpc.1".to_string(), "9r7cpewghdkk".to_string(), "2".to_string(), "attempt-failed".to_string()), "the attempt the facts ended: {a:?}");
         eprintln!("span rdm.mesh.topology.update.via-deleting-closed-by-facts trace_id={} {a:?}", closed[0].trace_id);
-        // A late copy of the closed attempt's overlay (a frame, an aggregate) is applied once, not again.
+        // A late copy of the closed attempt's overlay (a frame, a mesh topology) is applied once, not again.
         assert!(!digest_view.deleting(op.clone()), "the closed overlay is not opened again by a copy of it");
         // The mesh primary's next tick: the member's exact runtime is proven exited.
         let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
@@ -3390,7 +3390,7 @@ mod tests {
     }
 
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
-    /// node's digest, only the stop overlay the mesh topology carries (`Members.in_flight`, read
+    /// node's digest, only the stop overlay the mesh topology carries (`MeshTopology.in_flight`, read
     /// by `GetTopology`). Its view lists the node `Leaving` and stopped from that overlay.
     #[test]
     fn a_successor_admin_lists_a_stopped_node_from_the_stop_overlay_it_read() {

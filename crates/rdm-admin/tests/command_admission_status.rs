@@ -44,7 +44,7 @@ fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
 /// CONTRACT (states.md "Who sets each state"): at the mesh-primary of mesh1, the accepted
 /// `stop-node` command's hook sets the member it names stopping (`Leaving`), with no heartbeat of the
 /// member saying it: the status is held for the birth and its member projection, what the publication
-/// checklist puts into the mesh's aggregate, carries it. The member's connections-deleting is its own
+/// checklist puts into the mesh's topology, carries it. The member's connections-deleting is its own
 /// report (the node command's `ConnectionsDeleting` frame), recorded as `digest_view.reported`; no command
 /// hook sets it. A member of another mesh is not this primary's to set. Must NOT happen: a member's
 /// stopping left to its own heartbeat, or a connections-deleting set before the node reported it.

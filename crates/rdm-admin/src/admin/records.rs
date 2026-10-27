@@ -803,7 +803,7 @@ impl Records {
             let arrivals = self.rows.get().map(|rows| rows.arrivals(&held, &t)).unwrap_or_default();
             // The backbone holds the meshes this view names, each deleted or not, from this install on
             // and in the order views are installed: the fabric-primary publishes a deleted mesh's
-            // aggregate from its last admin's stop on (mesh-delete.md step 7), and never a live
+            // mesh topology from its last admin's stop on (mesh-delete.md step 7), and never a live
             // mesh's (R-RX4). Its own mesh.deleted receipt is one such install
             // (`admin::mesh_delete::record_mesh_deleted`), so a stop that follows it reads the mesh deleted.
             *held = t.clone();

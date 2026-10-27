@@ -160,7 +160,7 @@ impl ForwardPath {
         }
         let frames: Vec<_> = frames.into_iter().map(|f| forwarder.author_frame(f, now_ms)).collect();
         let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-        let fulls = frames.iter().filter(|f| matches!(f.data(), Frame::Members { .. })).count();
+        let fulls = frames.iter().filter(|f| matches!(f.data(), Frame::MeshTopology { .. })).count();
         let len = frames.len();
         self.enqueue(Job::Replayed { me: me.to_string(), epoch, frames });
         (len, fulls, bytes)
@@ -194,8 +194,8 @@ fn frames_of(out: Forward) -> Vec<Frame> {
 /// The source a forward frame belongs to: mesh, publisher and the version it moves the source to.
 fn identity(frame: &Frame) -> Option<(&str, &PublisherId, u64)> {
     match frame.data() {
-        Frame::Members { mesh, publisher, topology_version, .. } => Some((mesh, publisher, *topology_version)),
-        Frame::MembersDelta { mesh, source_publisher, topology_version, .. } => Some((mesh, source_publisher, *topology_version)),
+        Frame::MeshTopology { mesh, publisher, topology_version, .. } => Some((mesh, publisher, *topology_version)),
+        Frame::MeshTopologyDelta { mesh, source_publisher, topology_version, .. } => Some((mesh, source_publisher, *topology_version)),
         _ => None,
     }
 }
@@ -297,7 +297,7 @@ async fn send_forward(sink: &Sink, owes_full: &AtomicBool, me: String, source: O
             frames
         }
         Forward::Delta(frame) => {
-            if let (Frame::MembersDelta { base_version, changed, removed, in_flight, departed, .. }, Some((mesh, publisher, version))) = (frame.data(), &source) {
+            if let (Frame::MeshTopologyDelta { base_version, changed, removed, in_flight, deleted: departed, .. }, Some((mesh, publisher, version))) = (frame.data(), &source) {
                 tracing::info_span!(
                     "rdm.mesh.topology.update.via-forwarded-delta",
                     node = %me,
@@ -408,8 +408,8 @@ mod tests {
                         anyhow::bail!("the channel refused call {n}");
                     }
                     let key = match f.data() {
-                        Frame::MembersDelta { base_version, topology_version, .. } => (*base_version, *topology_version),
-                        Frame::Members { topology_version, .. } => (0, *topology_version),
+                        Frame::MeshTopologyDelta { base_version, topology_version, .. } => (*base_version, *topology_version),
+                        Frame::MeshTopology { topology_version, .. } => (0, *topology_version),
                         Frame::Digest { .. } if me.carried_marker => (1, 1),
                         other => panic!("not a forward: {other:?}"),
                     };
@@ -555,8 +555,8 @@ mod tests {
                         me.release.acquire().await.unwrap().forget();
                     }
                     let key = match f.data() {
-                        Frame::MembersDelta { base_version, topology_version, .. } => (*base_version, *topology_version),
-                        Frame::Members { topology_version, .. } => (0, *topology_version),
+                        Frame::MeshTopologyDelta { base_version, topology_version, .. } => (*base_version, *topology_version),
+                        Frame::MeshTopology { topology_version, .. } => (0, *topology_version),
                         Frame::Digest { .. } => (1, 1),
                         other => panic!("not a forward: {other:?}"),
                     };
@@ -665,7 +665,7 @@ mod tests {
         let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
         path.set_role(true);
         let (p, q) = (publisher(), publisher());
-        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::Members { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("mesh2.admin.1".into()), topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, departed: dep }.authored(&test_author(), 0, 1)).len();
+        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::MeshTopology { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("mesh2.admin.1".into()), topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, deleted: dep }.authored(&test_author(), 0, 1)).len();
         assert!(chunks > 1, "the full spans {chunks} chunks");
         path.source("mesh2.admin.1", "mesh1", &p, 10, &big(10), 1);
         path.source("mesh2.admin.1", "mesh3", &q, 5, &source_at(&ids, 5), 2);

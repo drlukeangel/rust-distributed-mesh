@@ -437,7 +437,7 @@ impl Estate {
     }
 
     /// Wait until the node `witness` retains the departure of `node_id` in its held view of `mesh`
-    /// (`node.topology.get`): a node learns a departure by gossip or from the retained aggregate, never
+    /// (`node.topology.get`): a node learns a departure by gossip or from the retained mesh topology, never
     /// from a reply stream it holds, so the witness reports it and one that never does is named.
     pub async fn holds_departure(&self, witness: &str, mesh: &str, node_id: &str) {
         let witness_view = self.node_view(witness).await;

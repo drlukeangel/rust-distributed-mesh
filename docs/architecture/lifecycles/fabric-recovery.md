@@ -52,7 +52,7 @@ the same order starts the workflow again, resuming the attempt from its recorded
      the mark, once the record has named the unheard primary for one staleness floor in its own view: a
      record learned after a heal names a primary whose silence in this admin's view began before the
      record did. It takes no primary role. It needs no probe to know it is alive.
-   - *Outside its mesh*: a mesh-primary hears nothing of that mesh once its aggregate stops, so it runs
+   - *Outside its mesh*: a mesh-primary hears nothing of that mesh once its mesh topology stops, so it runs
      [mesh investigation](mesh-investigation.md)'s ladder on it: the fabric-primary first, then its other
      node-admins. An answer from any of them ends the investigation and the fabric-primary stays in that
      mesh. No answer from any of them by the decision step starts fabric recovery at the lowest
@@ -88,7 +88,7 @@ the same order starts the workflow again, resuming the attempt from its recorded
 |---|---|---|
 | mark `PendingReconnect`, every admin | 30 s | 3 s |
 | its own mesh: fabric recovery starts, at the first tick after the mark | 30 to 32 s | 3 to 3.5 s |
-| its own mesh: the mesh's aggregate published again | by 34 s | by 4 s |
+| its own mesh: the mesh's topology published again | by 34 s | by 4 s |
 | outside its mesh: probe 1, probe 2, decision ([mesh investigation](mesh-investigation.md)) | 20 s, 40 s, 60 s | 2 s, 4 s, 6 s |
 | outside its mesh: the row, when nobody in that mesh answered either probe | 60 s | 6 s |
 | the workflow completes, when the node at the fabric-primary's path.name is ReadyForTraffic | — | — |

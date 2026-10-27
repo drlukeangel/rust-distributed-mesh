@@ -51,7 +51,7 @@ pub struct Context {
     pub sequence: Option<String>,
     /// Authored Rafka-time in milliseconds.
     pub time_ms: u64,
-    /// Birth and existing counter of this publication's owner, for Members only.
+    /// Birth and existing counter of this publication's owner, for MeshTopology only.
     pub publication: Option<(Birth, u64)>,
     /// Original author’s W3C parent; preserved through replay and forwarding.
     pub traceparent: Option<String>,
@@ -135,7 +135,7 @@ impl Context {
                 time_ms = digest.emitted_at_rafka_ms;
                 format!("birth/{}", path(&birth_parts(&source)))
             }
-            Frame::Members { mesh, publisher, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, .. } => {
+            Frame::MeshTopology { mesh, publisher, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, .. } => {
                 source = Birth::publisher(&author.fabric, publisher);
                 sequence = Some(p(*topology_version)); time_ms = *published_at_rafka_ms;
                 publication = Some((author.clone(), *snapshot_id));
@@ -143,7 +143,7 @@ impl Context {
                 identity.extend(birth_parts(author)); identity.push(snapshot_id.to_string()); identity.push(chunk_index.to_string());
                 format!("mesh/{}/publisher/{}", escaped(mesh), path(&birth_parts(&source)))
             }
-            Frame::MembersDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, .. } => {
+            Frame::MeshTopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, .. } => {
                 source = Birth::publisher(&author.fabric, source_publisher);
                 sequence = Some(p(*topology_version)); time_ms = *published_at_rafka_ms;
                 identity.push(mesh.clone()); identity.extend(birth_parts(&source)); identity.push(base_version.to_string()); identity.push(topology_version.to_string());
@@ -207,9 +207,9 @@ pub(crate) fn encode_data(context: &Context, data: &[u8], dataschema: Option<&st
 fn body(context: &Context, frame: &Frame) -> Result<Vec<u8>, WireError> {
     let raw = wire::encode(frame.data())?;
     let mut data = raw[1..].to_vec();
-    if matches!(frame.data(), Frame::Members { .. }) {
+    if matches!(frame.data(), Frame::MeshTopology { .. }) {
         // Existing fields retain their order; only the publication id gains its owner's birth.
-        let (prefix, counter_at) = members_prefix(&data)?;
+        let (prefix, counter_at) = mesh_topology_prefix(&data)?;
         let (owner, counter) = context.publication.as_ref().ok_or_else(|| invalid("missing publication owner"))?;
         let mut out = prefix;
         out.extend(wire::encode(&(owner.fabric.clone(), owner.node.clone(), owner.incarnation.clone(), *counter))?);
@@ -218,9 +218,9 @@ fn body(context: &Context, frame: &Frame) -> Result<Vec<u8>, WireError> {
     Ok(data)
 }
 
-// Parse only the fixed Members prefix and existing counter to find its byte boundary. Domain
-// entries remain opaque here; the selected Members schema reads them after type validation.
-fn members_prefix(data: &[u8]) -> Result<(Vec<u8>, usize), WireError> {
+// Parse only the fixed MeshTopology prefix and existing counter to find its byte boundary. Domain
+// entries remain opaque here; the selected MeshTopology schema reads them after type validation.
+fn mesh_topology_prefix(data: &[u8]) -> Result<(Vec<u8>, usize), WireError> {
     let mut cursor = data;
     let _: String = wire::take(&mut cursor)?;
     let _: PublisherId = wire::take(&mut cursor)?;

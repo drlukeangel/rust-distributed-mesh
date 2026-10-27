@@ -23,7 +23,7 @@ Rules that bind every change below:
 |---|---|---|
 | `65122557`, `62f306d4` | QUIC handshake diagnostics on both ends, evidence runs only (R-QH1); the plb cell's setup race | e12.s46 #3074 |
 | `3693defb`, `b2ff768d` | a node's own connections end follows its held name (R-CN1); the rename precondition R-CR1a / R-CR2 / R-CR3 (§2 item 19) | e12.s47 #3075 |
-| `a207a281`, `e8e86195` | one routing rule; a stop quiesces the stop gate before its final aggregate and cut (§2 item 21) | e12.s45 #3073 |
+| `a207a281`, `e8e86195` | one routing rule; a stop quiesces the stop gate before its final mesh topology and cut (§2 item 21) | e12.s45 #3073 |
 | `d5d09cf8`, `bd201c0c`, `4925e59a` | the offline tickle's window; the R-D1 fence on elapsed t; the recovery loop on the gossip-interval grid | e12.s23 #3016 |
 | `53bfee29`, `806df1bc` | admission on the natural key (R-DK1): commands, rounds, mesh-delete; the drain bound | e12.s48 #3076 |
 | `cb2596ac` | the last admin publishes MeshStatus Dead, held by mesh id (R-NS1, R-MD1) | e12.s40 #3067 |
@@ -122,7 +122,7 @@ Suggested layout: `src/workflows/<page>.rs` and `src/primitives/*`, folded into 
 | # | change | doc or ruling that requires it | landing |
 |---|---|---|---|
 | 1 | mesh.delete deletes each member with the whole node.delete (stop, exit proof, NodeDeleting/NodeDeleted, row Deleted written by the mesh-primary) | lifecycles/mesh-delete.md steps 3–4 | s41 (in flight: exit proof + Deleted row), s49 (#3068, #3078) |
-| 2 | mesh.delete ends at mesh.deleted: remove the in-workflow final-primary stop, `OwnerResume::FinalExited`, and MeshLeft-after-exit; the final primary's end is a separate node.delete, fabric-primary executor; from its stop the fabric-primary publishes that mesh's aggregate (a stopped final primary is no primary, R-NS1 item 2) | mesh-delete.md steps 5–7; R-NS1; R-MD1 | s49, after s41 (#3078) |
+| 2 | mesh.delete ends at mesh.deleted: remove the in-workflow final-primary stop, `OwnerResume::FinalExited`, and MeshLeft-after-exit; the final primary's end is a separate node.delete, fabric-primary executor; from its stop the fabric-primary publishes that mesh's topology (a stopped final primary is no primary, R-NS1 item 2) | mesh-delete.md steps 5–7; R-NS1; R-MD1 | s49, after s41 (#3078) |
 | 3 | delete RDM's replace path (`ReplaceNode`, `RenamePredecessor`, `HandoffStorage`, drift `Replace`); replace is Rafka's recipe over node.create(`<name>.new`) / stop / update / start / delete | lifecycles/node-replace.md; envelope `BuildChange` drops `Replace` | new story; until it lands, item 19 makes RDM's replace stop the successor before the rename (#3087) |
 | 4 | node recovery is delete + create + `node.update` copying caller-owned meta (the copy step does not exist); a lost mesh opens a recovery, not a Replace | lifecycles/node-recovery.md | s33 follow-up (#3088) |
 | 5 | node rows, name claims (claimed before launch) and config writes move from the fabric-primary to the mesh-primary; mesh and fabric name claims added | node-identity-and-state.md §2.7/§2.8; envelope #meta-and-config; R-OW1 | s41 (in flight), s36; mesh/fabric claims a follow-on (#3068, #3089) |
@@ -141,7 +141,7 @@ Suggested layout: `src/workflows/<page>.rs` and `src/primitives/*`, folded into 
 | 18 | per-caller admission stays keyed by the caller's EndpointId, as the code has it; the doc now says so | node-rpc.md §17.1 | none (answered, §3 Q4) |
 | 19 | rename precondition: node.update's name change is refused by name unless the node is not ready-for-traffic and holds no connection (stopped, or `node.connections.deleted`); `ApplyNodeName` answers `Busy` naming held routes; `node.connections.delete { scope: All \| Connections([id, …]) }` as its own call, empty list refused, completion names closed and unknown ids; node.stop's cut calls the same core with All | R-CR1, R-CR1a, R-CR2, R-CR3 (rulings page) | landed b2ff768d (#3075) |
 | 20 | named typed refusals for an epoch overflow and a stale mesh-delete round (no codec variant today; never NotReady) | node-rpc-envelope.md Status | new story (#3099) |
-| 21 | a stop quiesces the stop gate (no gated turn in progress) before its final aggregate and cut | node-stop.md step 4; R-ON1; gossip.md (last aggregate carries itself Leaving) | landed e8e86195 (#3073) |
+| 21 | a stop quiesces the stop gate (no gated turn in progress) before its final mesh topology and cut | node-stop.md step 4; R-ON1; gossip.md (last mesh topology carries itself Leaving) | landed e8e86195 (#3073) |
 | 22 | the election's lost set is read from durable exit-proof rows (never an in-memory feed); exit-row reads happen before the view lock; a proof once read is never withdrawn | CLAUDE.md read rule; elections §4.1 | s41 (in flight) |
 | 23 | the view reads a stopped birth's renamed name by node id through the node-row id index, before the view lock | CLAUDE.md read rule (indexes); R12 | s42 follow-up (after s41; `durable format moved`: the id index) |
 | 24 | the graceful connections cut replaces the drain (R-CR4 ruled A; R-CR5 ruled A: `All` is just connections) | rulings page R-CR4, R-CR5 | #3083 |

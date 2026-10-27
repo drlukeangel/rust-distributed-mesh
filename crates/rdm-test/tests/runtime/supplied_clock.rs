@@ -7,7 +7,7 @@
 //! CONTRACT: on a real fabric, the heartbeats a node publishes are ordered by `digest_seq` alone.
 //! An observer on the mesh channel decodes the real frames: one birth's `digest_seq` rises with
 //! every heartbeat it hears, each stamped with Rafka-time from the clock the binary composed (the
-//! OS clock for an RDM executable), and a `Members` publication is stamped the same way. Then the
+//! OS clock for an RDM executable), and a `MeshTopology` publication is stamped the same way. Then the
 //! observer broadcasts a heartbeat of that very birth that is OLDER by sequence but stamped a year
 //! ahead and saying `Joining` (a heartbeat carries liveness, never a status, gossip.md §3.1): the
 //! node-admin that hears it holds the member as it was, because
@@ -158,10 +158,10 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     let fabric = fabric_view.id.clone();
     let mesh1_id = fabric_view.meshes.iter().find(|m| m.name == "mesh1").and_then(|m| m.id.clone()).expect("the fabric view names mesh1's id");
 
-    // The real frames: several heartbeats of the rpc node's one birth, and a Members publication.
+    // The real frames: several heartbeats of the rpc node's one birth, and a MeshTopology publication.
     let observer = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
-    until_arrival("the observer decodes six heartbeats of the rpc node and a Members publication", Duration::from_secs(60), &observer.arrivals, || {
-        let members = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::Members { .. }));
+    until_arrival("the observer decodes six heartbeats of the rpc node and a MeshTopology publication", Duration::from_secs(60), &observer.arrivals, || {
+        let members = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { .. }));
         (observer.heartbeats_of(NODE).len() >= 6 && members).then_some(())
     })
     .await;
@@ -177,15 +177,15 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
         let skew = h.0.heard_at_ms.abs_diff(h.1.emitted_at_rafka_ms);
         assert!(skew < 5_000, "emitted_at_rafka_ms is the composed clock's reading, within 5 s of when the frame was heard: {:?}", row(h));
     }
-    let members_published: Vec<u64> = observer
+    let mesh_topology_published: Vec<u64> = observer
         .all()
         .iter()
         .filter_map(|x| match x.frame.data() {
-            Frame::Members { published_at_rafka_ms, .. } if x.channel == "backbone" => Some(x.heard_at_ms.abs_diff(*published_at_rafka_ms)),
+            Frame::MeshTopology { published_at_rafka_ms, .. } if x.channel == "backbone" => Some(x.heard_at_ms.abs_diff(*published_at_rafka_ms)),
             _ => None,
         })
         .collect();
-    assert!(!members_published.is_empty() && members_published.iter().all(|skew| *skew < 5_000), "published_at_rafka_ms is Rafka-time from the composed clock: skews {members_published:?}");
+    assert!(!mesh_topology_published.is_empty() && mesh_topology_published.iter().all(|skew| *skew < 5_000), "published_at_rafka_ms is Rafka-time from the composed clock: skews {mesh_topology_published:?}");
 
     // The adversary: the very birth, an OLDER sequence, a stamp a year ahead, saying Leaving.
     let held_before = estate.node_view(NODE).await;
@@ -219,7 +219,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
         "cell": CELL,
         "observer_heartbeats_before_forgery": before.iter().map(row).collect::<Vec<_>>(),
         "digest_seq_rises": seqs,
-        "members_publication_skews_ms": members_published,
+        "mesh_topology_publication_skews_ms": mesh_topology_published,
         "forged": { "digest_seq": forged.digest_seq, "emitted_at_rafka_ms": forged.emitted_at_rafka_ms, "node_state": "Joining", "last_real_digest_seq": last.digest_seq, "last_real_emitted_at_rafka_ms": last.emitted_at_rafka_ms },
         "member_before": { "status": held_before.status, "incarnation_id": held_before.incarnation_id },
         "member_after_9s": { "status": held_after.status, "incarnation_id": held_after.incarnation_id },

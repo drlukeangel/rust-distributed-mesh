@@ -1,5 +1,5 @@
-//! A mesh primary's Members anti-entropy is a perpetual timer (gossip.md §3.2: "PERPETUAL TIMERS …
-//! Members anti-entropy — the mesh primary on the backbone; a few seconds; also sent at once on a
+//! A mesh primary's mesh topology anti-entropy is a perpetual timer (gossip.md §3.2: "PERPETUAL TIMERS …
+//! mesh topology anti-entropy — the mesh primary on the backbone; a few seconds; also sent at once on a
 //! material change"). The fabric-primary reads a peer mesh's liveness from that publication alone:
 //! t is the time since its last direct backbone receipt from the mesh (mesh-investigation.md), and
 //! from the track rung (`investigate::Rungs::track`, twice the backbone interval) the mesh is held
@@ -160,7 +160,7 @@ impl Capture {
     }
 }
 
-/// CONTRACT (gossip.md §3.2, the `Members` row: "on its anti-entropy timer and at once on a material
+/// CONTRACT (gossip.md §3.2, the `MeshTopology` row: "on its anti-entropy timer and at once on a material
 /// change"; mesh-investigation.md: t from the last direct backbone receipt; R-D1): a mesh primary
 /// whose reads of the shared store take three backbone intervals each goes on publishing its mesh
 /// on the backbone every interval. A peer mesh's t of it stays under the track rung the whole time
@@ -251,6 +251,6 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
     assert!(held_reads >= 1, "the store was never held for a whole read inside the window: the cell proved nothing");
     assert!(
         worst < track,
-        "the peer mesh's t of the publisher reached {worst:?} while the publisher's store reads were held, at or past the track rung {track:?}: the fabric-primary would hold a live, serving mesh unheard (R-D1). The Members anti-entropy waited on the admin's store reads. Backbone receipts at the peer (start ns, snapshot id): {receipts:?}"
+        "the peer mesh's t of the publisher reached {worst:?} while the publisher's store reads were held, at or past the track rung {track:?}: the fabric-primary would hold a live, serving mesh unheard (R-D1). The mesh topology anti-entropy waited on the admin's store reads. Backbone receipts at the peer (start ns, snapshot id): {receipts:?}"
     );
 }

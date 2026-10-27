@@ -1,7 +1,7 @@
 //! Forwarding into a Mesh is done by that Mesh's current primary alone (gossip.md §2 rules: "only
-//! receiving peer mesh primaries forward remote aggregates locally").
+//! receiving peer mesh primaries forward remote mesh topologies locally").
 //!
-//! CONTRACT: a node-admin of mesh1 that is not its primary hears a peer mesh's aggregate on the
+//! CONTRACT: a node-admin of mesh1 that is not its primary hears a peer mesh's topology on the
 //! backbone and holds each new version of it, and puts nothing of it onto mesh1's channel: no
 //! forwarded full, no forwarded delta, and a member reached only through it holds no version of
 //! that source. The same admin given the seat forwards at its next publication, and the member installs
@@ -117,7 +117,7 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         };
         // Its own publications publish nothing (no seat), and its mesh holds nothing of mesh2.
         for _ in 0..5 {
-            assert!(!admin_bb.publish(&admin_m, vec![]).await, "an admin with no seat publishes no aggregate");
+            assert!(!admin_bb.publish(&admin_m, vec![]).await, "an admin with no seat publishes no mesh topology");
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert_eq!(rpc_m.held_source_version("mesh2"), None, "a member reached only through a non-primary admin holds no version of mesh2 (it holds v{v2})");

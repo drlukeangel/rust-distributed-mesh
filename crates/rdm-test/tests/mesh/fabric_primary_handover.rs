@@ -5,11 +5,11 @@
 //!
 //! mesh-delete.md, steps 5-7: "`mesh.deleted`: when every member has its exact exit proof, the
 //! mesh-primary, still alive, writes the mesh row deleted and reports mesh.deleted to the
-//! fabric-primary ... After mesh.deleted the mesh-primary keeps publishing its aggregate, itself the
+//! fabric-primary ... After mesh.deleted the mesh-primary keeps publishing its mesh topology, itself the
 //! only member and the mesh deleted ... A separate node.delete deletes the mesh-primary. The
 //! fabric-primary is its executor, proves its exit and, as acting primary of a mesh that has no
 //! primary, writes its row deleted; from that admin's stop on it publishes the deleted mesh's
-//! aggregate." R-MD1 items 2-3: mesh-left requires complete exact-birth terminal coverage, and
+//! mesh topology." R-MD1 items 2-3: mesh-left requires complete exact-birth terminal coverage, and
 //! "Peers retain the Dead mesh and its final birth while that birth lives": the fabric-primary
 //! publishes MeshLeft only once the final birth's node.delete has its exact exit proof. R-RX4 (a
 //! live mesh with no primary goes unheard) does not cover a deleted mesh.
@@ -19,9 +19,9 @@
 //! mesh1 node (subfeature `fabric-primary-handover`). Then `node.delete` of mesh1's last admin.
 //!
 //! R-NS1 (gossip.md, "Mesh delete"): after mesh.deleted the last admin, still its mesh's primary,
-//! keeps publishing its aggregate with itself the only member and MeshStatus Dead, and every peer
+//! keeps publishing its mesh topology with itself the only member and MeshStatus Dead, and every peer
 //! holds the deleted mesh with that one member while it lives. "From the stop on the fabric-primary
-//! is that mesh's publisher of record ... it publishes the deleted mesh's own Members aggregate on
+//! is that mesh's publisher of record ... it publishes the deleted mesh's own mesh topology on
 //! the backbone, publisher itself, `digests` empty, the stopped admin in `in_flight` as NodeStopped
 //! ... until ... a delete moves the birth to `deleted` as NodeDeleted." The
 //! seat lands on the lowest NodeId among mesh2's and mesh3's primaries (the election's, never
@@ -77,18 +77,18 @@ fn alive(pid: u64) -> bool {
 /// CONTRACT: deleting the mesh that holds the fabric seat hands the seat to a surviving mesh's
 /// primary first, then deletes the mesh. The mesh.delete ends at mesh.deleted: the fabric-primary
 /// validates the handoff and records its completion receipt, and stops nothing of mesh1's final
-/// primary, which stays alive, publishing mesh1's aggregate with itself the only member and
+/// primary, which stays alive, publishing mesh1's topology with itself the only member and
 /// MeshStatus Dead, while every peer holds mesh1 with that one member. Its end is a separate
 /// node.delete the fabric-primary executes: node.stop, exact exit proof, its row Deleted,
-/// NodeDeleted in `departed`, then the fabric-primary's own aggregate for mesh1; only then, with
+/// NodeDeleted in `departed`, then the fabric-primary's own mesh topology for mesh1; only then, with
 /// every birth proven exited, mesh-left. No MeshLeft is published between the handoff and the final
 /// birth's exit proof.
 ///
-/// Adversarial (R-NS2: "Final aggregates and leadership announcements are best-effort dissemination.
+/// Adversarial (R-NS2: "Final mesh topologies and leadership announcements are best-effort dissemination.
 /// A stop does not wait for their delivery. Committed lifecycle facts remain recoverable after the
 /// sender cuts gossip, and the executing authority updates its own view from the matching completion
 /// and publishes that fact as its author: ... the fabric-primary for a mesh's last admin"): the last
-/// admin's final aggregate before its stop, itself stopping, is withheld (the fault door's
+/// admin's final mesh topology before its stop, itself stopping, is withheld (the fault door's
 /// `announcement` cut) and its stop cuts its transport right behind it. The deleted mesh's final state
 /// reaches every surviving mesh from the fabric-primary, which executed the delete and publishes it as
 /// the author.
@@ -363,17 +363,17 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let installed = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed");
 
     // 1. While it lives: after mesh.deleted the last admin keeps publishing
-    // mesh1's aggregate with itself the only member and MeshStatus Dead. Every peer held mesh1 dead
+    // mesh1's topology with itself the only member and MeshStatus Dead. Every peer held mesh1 dead
     // with that one member while it lived (read above, on each surviving admin's own view); which
     // frame brought it there is best-effort dissemination (R-NS2), so no particular one is expected.
     let final_exit = terminal_end(&final_name, true);
     let lone: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1 && start_ns(sp) < final_exit).collect();
-    assert!(!lone.is_empty(), "the last admin {final_name} published mesh1's aggregate with itself the only member while it lived");
+    assert!(!lone.is_empty(), "the last admin {final_name} published mesh1's topology with itself the only member while it lived");
     let dead_row: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-dead-row").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
     assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= start_ns(&completion)), "the last admin {final_name} committed mesh1's row Dead at mesh.deleted: {dead_row:?}");
     let dead_sent: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && sp["attributes"]["scope"] == "mesh:mesh1" && sp["attributes"]["status"] == "dead").collect();
     assert!(dead_sent.iter().any(|sp| start_ns(sp) < final_exit), "the last admin {final_name} sent MeshStatus Dead for mesh1 while it lived: {dead_sent:?}");
-    eprintln!("bullet 1: {final_name} lone aggregate trace {}, MeshStatus Dead trace {}", s(&lone[0]["trace_id"]), dead_sent.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());
+    eprintln!("bullet 1: {final_name} lone mesh topology trace {}, MeshStatus Dead trace {}", s(&lone[0]["trace_id"]), dead_sent.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());
 
     // 2. The final primary's node.delete under C, executed by the fabric-primary: its whole node.stop
     // (the delete of a mesh's only node skips node.primary.update, R-MT1: "delete is skipped if it's
@@ -408,7 +408,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     for (name, id) in mesh1_ids.iter() {
         assert!(s(&dropped["attributes"]["dropped"]).split(", ").any(|d| d == format!("{name} {id}")), "mesh-left took the address of {name} ({id}) off its record: {dropped}");
     }
-    // e12.s72: the deleted mesh's last admin publishes the final aggregate (`published == "true"`,
+    // e12.s72: the deleted mesh's last admin publishes the final mesh topology (`published == "true"`,
     // `status == "Leaving"`, carrying `node.delete:<final_name>` in `in_flight`) after its stop's
     // `node.connections.delete { All }` and before its transport cut.
     let final_cut = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's transport was cut by its stop");
@@ -416,7 +416,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let leaving_aggregate: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-leaving-aggregate").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).collect();
     assert!(
         leaving_aggregate.iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "Leaving" && attr_u(sp, "members") == 1 && sp["attributes"]["published"] == "true" && start_ns(sp) >= final_all_end && end_ns(sp) <= final_cut),
-        "the last admin {final_name} published mesh1's final aggregate carrying itself Leaving after its All and before its stop's cut: {leaving_aggregate:?}"
+        "the last admin {final_name} published mesh1's final mesh topology carrying itself Leaving after its All and before its stop's cut: {leaving_aggregate:?}"
     );
     let final_stopped_at = order.iter().find(|(n, _, _)| n == "StopNode").map(|(_, _, e)| *e).expect("the final primary's stop was answered");
     let final_after_stop: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == final_name && start_ns(sp) > final_stopped_at).collect();

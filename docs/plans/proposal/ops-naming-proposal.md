@@ -307,7 +307,7 @@ delete        mesh.delete                      old shutdown-mesh, leave-mesh / L
                                                DELETE /api/meshes/{id}; run by the fabric-primary
               > fabric.primary.update          first, if this mesh holds the fabric-primary seat
                 < mesh.deleting                the mesh-primary publishes its mesh's state
-                                               (Leaving) in its own aggregate; peers learn it
+                                               (Leaving) in its own mesh topology; peers learn it
                                                only there; replaces the fabric-primary's old
                                                mesh-leaving gossip (backbone + own mesh)
               > node.delete                    every member except the primary node-admin:
@@ -317,9 +317,9 @@ delete        mesh.delete                      old shutdown-mesh, leave-mesh / L
                                                retired; old MeshLeave / MeshLeft
               then a separate call: someone has to report the end of the thing, so the
               mesh-primary is not deleted inside its own mesh.delete. Until that call it keeps
-              publishing its aggregate, itself the only member, mesh status Dead, so the dead
+              publishing its mesh topology, itself the only member, mesh status Dead, so the dead
               mesh and its last admin stay in every topology; stopped or deleted, the
-              fabric-primary publishes that mesh's own aggregate (itself the publisher, no
+              fabric-primary publishes that mesh's own topology (itself the publisher, no
               digests, the birth in in_flight or departed) until a start or departed retention
               node.delete                      the mesh-primary node-admin; the fabric-primary is
                                                the executor and proves its exit
@@ -441,7 +441,7 @@ Unique ownership of a name is by insert-and-fail at every step of replace and ro
 
 ## Decisions and why
 
-- **Stopped nodes are garbage after a ttl, by config.** The contract is [the stopped-node garbage collector](../../architecture/fabric-node-lifecycle.md#stopped-node-garbage-collector), fabric-node-lifecycle.md §6.9. `stopped_node_ttl`: a node stopped longer than it is collected. The fabric-primary, the sole Build driver, sweeps every ttl and submits an ordinary node.delete Build for each such node (exit proof, row Deleted, name released, NodeDeleted in the aggregate, departed retention); the sweep deletes nothing itself. A stopped birth an open Build still references is skipped, so a replace mid-transfer keeps its rollback point. The age is the current stopped period's own stop receipt in the Build log, never an earlier stop before a later start; the receipt is durable, so it survives a fabric-primary handover, and a birth whose receipt cannot be read is not expired, it is skipped by name. The sweep only selects: the stopped and open-Build checks run again at the delete Build's admission, serialized with it, so a node started or referenced after the scan is refused there, never deleted from a stale decision. One topology Build runs at a time, so the sweep submits one delete and the rest wait for the next sweep; a `BuildInProgress` refusal drops nothing, the candidate is simply seen again. Timing: a node is eligible after one ttl and is normally collected between one and two ttl, plus Build contention. No frame gains a field. Blank means forever: no sweep, the node stays until its own start or delete. RDM's shipped config sets 30 minutes; Rafka's deployment sets 1 hour.
+- **Stopped nodes are garbage after a ttl, by config.** The contract is [the stopped-node garbage collector](../../architecture/fabric-node-lifecycle.md#stopped-node-garbage-collector), fabric-node-lifecycle.md §6.9. `stopped_node_ttl`: a node stopped longer than it is collected. The fabric-primary, the sole Build driver, sweeps every ttl and submits an ordinary node.delete Build for each such node (exit proof, row Deleted, name released, NodeDeleted in the mesh topology, departed retention); the sweep deletes nothing itself. A stopped birth an open Build still references is skipped, so a replace mid-transfer keeps its rollback point. The age is the current stopped period's own stop receipt in the Build log, never an earlier stop before a later start; the receipt is durable, so it survives a fabric-primary handover, and a birth whose receipt cannot be read is not expired, it is skipped by name. The sweep only selects: the stopped and open-Build checks run again at the delete Build's admission, serialized with it, so a node started or referenced after the scan is refused there, never deleted from a stale decision. One topology Build runs at a time, so the sweep submits one delete and the rest wait for the next sweep; a `BuildInProgress` refusal drops nothing, the candidate is simply seen again. Timing: a node is eligible after one ttl and is normally collected between one and two ttl, plus Build contention. No frame gains a field. Blank means forever: no sweep, the node stays until its own start or delete. RDM's shipped config sets 30 minutes; Rafka's deployment sets 1 hour.
 
 - **CRUD alone isn't enough.** Drain, stop and start change a node that keeps existing, so they aren't create or delete. Treating stop as delete is already causing confusion, because today the demo's plain `DELETE /api/nodes/<name>` is really a stop that keeps the row and the data.
 - **Drain and connections.delete both stay.** `node.drain` is graceful: it refuses new work and lets in-flight work finish. `node.connections.delete` is a hard cut. Stop runs drain, waits for `drained`, then deletes the connections and reports `node.stopped` on the stream; the mesh primary publishes the departure to peers (R-ON1).

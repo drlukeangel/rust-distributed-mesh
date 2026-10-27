@@ -11,7 +11,7 @@
 //!   (`Established`, or `Deadline` at the bound). `Connections` closes exactly the named entries.
 //!   Gossip neighbours and the Node RPC pool are not connections: neither scope touches them.
 //! - `StopNode`: the whole `node.connections.delete { All }`, then hold the node's own tasks, declare
-//!   `Leaving` to the authority, publish a mesh-primary node-admin's last aggregate with itself
+//!   `Leaving` to the authority, publish a mesh-primary node-admin's last mesh topology with itself
 //!   `Leaving` (gossip.md, "Mesh delete"), then the stop's own transport cut (gossip neighbours and the
 //!   Node RPC pool; never the endpoint and never the commander's connection the call rides), and answer
 //!   `StopConnectionsDeleted` (Data) with the `All`'s receipt and `NodeStopped` (Terminal) on that stream. The process stays alive,
@@ -1074,7 +1074,7 @@ impl NodeSelf {
         }
         // 4. A stopping node gossips nothing (node-stop.md step 4, R-ON1; Q95), a command's stop and a
         // signal's alike. The one exception is R-NS1 item 2: when node.delete reaches a deleted mesh's
-        // last admin, still its primary, its final aggregate carries the mesh deleted and itself
+        // last admin, still its primary, its final mesh topology carries the mesh deleted and itself
         // deleting, then nothing. It follows the hold, so no gated turn publishes after it.
         let mesh_deleted = self.topology_view.digest_view.statuses.mesh(&self.held_name().mesh).is_some_and(|h| h.status == "deleted" || h.status == "dead");
         // node.delete runs node.stop's steps: a deleted mesh's last admin is stopped only as its delete.
@@ -1096,7 +1096,7 @@ impl NodeSelf {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
             tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.held_name(), mesh = %self.held_name().mesh, operation = %operation, status = "Leaving", members = count, published)
-                .in_scope(|| tracing::info!("the last aggregate before the stop carries this node Leaving"));
+                .in_scope(|| tracing::info!("the last mesh topology before the stop carries this node Leaving"));
         }
         // 5. The stop's own step after its connections are deleted (node-stop.md step 3;
         // node-mesh-leave.md): leave the mesh and cut its transport, its gossip neighbours and its

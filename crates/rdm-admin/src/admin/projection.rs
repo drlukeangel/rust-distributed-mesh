@@ -515,7 +515,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         rows.place(&mut nodes, name, n);
     }
     // An own-mesh birth this admin holds only from its mesh-primary's projection (gossip.md §3.1
-    // `Members`: what every node-admin holds of every Mesh; the member's own Digest never reached this
+    // `MeshTopology`: what every node-admin holds of every Mesh; the member's own Digest never reached this
     // admin): listed as the projection carried it, never routable, its status the projection's while
     // it is within the staleness floor of this admin first holding it, and past the floor marked
     // `PendingReconnect` by this admin's own pruner (node-recovery.md "Detection and proof" step 1),

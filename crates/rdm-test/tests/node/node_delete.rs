@@ -10,7 +10,7 @@
 //!    routable. Only after the provider proved the runtime terminal does it publish
 //!    `NodeDeleted`: a peer mesh's rpc node then answers `Gone` for the old id, `Unknown` for
 //!    the path (no holder) and for an id nobody saw, and still `Found` for the surviving node.
-//! 2. A node born after the events learns the departure from the retained aggregate, never
+//! 2. A node born after the events learns the departure from the retained mesh topology, never
 //!    having heard an event.
 //! 3. The pre-notice is never emitted before the executor's claim, the departure never before
 //!    the terminal proof, and the departure is not drift: nothing is reborn.
@@ -61,7 +61,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let exact_victim = format!("exact:{victim_id}");
     estate.artifact("nodes-before.json", &json!(before));
 
-    // The peer mesh's rpc node holds mesh2's nodes through the forwarded aggregate.
+    // The peer mesh's rpc node holds mesh2's nodes through the forwarded mesh topology.
     estate.witness_holds_birth(WITNESS_NODE, VICTIM).await;
     let found = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
     assert_eq!(resolution(&found), "found", "{found}");
@@ -107,7 +107,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert_eq!(resolution(&never), "unknown", "{never}");
     estate.artifact("resolutions.json", &json!({"gone": gone, "path": path, "survivor": survivor, "never": never}));
 
-    // 2. A node born after the events learns the departure from the retained aggregate.
+    // 2. A node born after the events learns the departure from the retained mesh topology.
     let mut spawn = estate.create_node("mesh1", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
     Estate::complete(&mut spawn).await;
     let late = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 1)]).await);
@@ -116,7 +116,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let late_gone = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer["name"])), "--query", &exact_victim]);
     assert_eq!(resolution(&late_gone), "gone", "the newcomer holds the departure it never heard as an event: {late_gone}");
     // And one born into the executor's own mesh, which learns it from its own primary's
-    // overlays rather than a forwarded aggregate.
+    // overlays rather than a forwarded mesh topology.
     let mut spawn2 = estate.create_node("mesh2", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
     Estate::complete(&mut spawn2).await;
     let late2 = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 2)]).await);
@@ -239,8 +239,8 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let heard_deleting = named(&spans, "rdm.mesh.topology.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     let heard_deleted = named(&spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     // The victim's own mesh hears the pre-notice on its channel. A peer mesh gets it only inside a backbone
-    // aggregate while the operation is open (`in_flight`: "while the operation is claimed and has no
-    // completed receipt", gossip.md Members): a retirement that completes within one aggregate interval
+    // mesh topology while the operation is open (`in_flight`: "while the operation is claimed and has no
+    // completed receipt", gossip.md MeshTopology): a retirement that completes within one mesh topology interval
     // reaches it as the retained departure alone, which `heard_deleted` below covers for every node.
     assert!(heard_deleting >= 2, "the victim's own mesh heard the pre-notice: {heard_deleting}");
     // Each receiver's overlay install shows the victim found, live and not routable as the overlay

@@ -5,7 +5,7 @@
 //! The design (docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md, R-RX3, Luke
 //! 2026-10-12): "One check in the gossip receive path, for every frame kind. A frame whose order key
 //! is older than ... the newest the receiver holds for the same source is ignored. Order keys already
-//! on the wire, so no new field: Members and MembersDelta: `published_at_rafka_ms` then
+//! on the wire, so no new field: MeshTopology and MeshTopologyDelta: `published_at_rafka_ms` then
 //! `topology_version`, per mesh; Digest: `digest_seq`, per birth; lifecycle facts:
 //! `topology_version`." R-RX2: "One mesh has one publisher on the backbone: its mesh-primary ... No
 //! cross-publisher ordering rule and no seat-epoch field are added." R-RX1: no receiver refuses an
@@ -173,7 +173,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         until("the member to hold mesh1.rpc.2 at digest_seq 7", || seq_at_member(&rpc2) == Some(7)).await;
 
         // The late frames, each published before what the member holds of its source.
-        let late_full = Frame::Members {
+        let late_full = Frame::MeshTopology {
             mesh: "mesh1".into(),
             publisher: pub1.clone(),
             forwarded_by: Some("mesh1.admin.1".into()),
@@ -184,9 +184,9 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
             chunk_count: 1,
             digests: vec![p1_d.clone(), rpc1.clone()],
             in_flight: vec![],
-            departed: vec![],
+            deleted: vec![],
         };
-        let late_delta = Frame::MembersDelta { mesh: "mesh1".into(), source_publisher: pub1.clone(), base_version: pred_version, topology_version: pred_version + 1, published_at_rafka_ms: pred_stamp, changed: vec![], removed: vec![rpc1.node.node_id.to_string()], in_flight: vec![], departed: vec![] };
+        let late_delta = Frame::MeshTopologyDelta { mesh: "mesh1".into(), source_publisher: pub1.clone(), base_version: pred_version, topology_version: pred_version + 1, published_at_rafka_ms: pred_stamp, changed: vec![], removed: vec![rpc1.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
         let late_stop = StatusEvent::Stopped.frame(op_of(&rpc4, "stop-node"), pub2.clone(), deleting_version - 1);
         let late_heartbeat = Frame::Digest { digest: with_seq(&rpc2, 3) };
         // The cell's story starts here: an ignore before this instant is gossip's own reordering during setup
@@ -218,13 +218,13 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let mut said: Vec<_> = ignored.iter().map(|s| fields(s)).collect();
         let birth = |d: &MeshDigest| format!("{}/{}", d.node.node_id, d.node.incarnation.as_str());
         let mut expected = vec![
-            ("mesh:mesh1".to_string(), "members".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", v2 + 7), "rdm.mesh.topology.reject.via-stale".to_string()),
-            ("mesh:mesh1".to_string(), "members-delta".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", pred_version + 1), "rdm.mesh.topology.reject.via-stale".to_string()),
+            ("mesh:mesh1".to_string(), "mesh-topology".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", v2 + 7), "rdm.mesh.topology.reject.via-stale".to_string()),
+            ("mesh:mesh1".to_string(), "mesh-topology-delta".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", pred_version + 1), "rdm.mesh.topology.reject.via-stale".to_string()),
             ("mesh:mesh1".to_string(), "node-stopped".to_string(), format!("{pub2} mesh1"), format!("topology_version={deleting_version}"), format!("topology_version={}", deleting_version - 1), "rdm.mesh.topology.reject.via-stale".to_string()),
             ("mesh:mesh1".to_string(), "digest".to_string(), birth(&rpc2), "digest_seq=7".to_string(), "digest_seq=3".to_string(), "rdm.mesh.topology.reject.via-stale".to_string()),
         ];
         // The successor's delta stamp is the member's held key of mesh1: read it from the span itself.
-        let held_stamp = ignored.iter().find(|s| attr(s, "frame") == "members").map(|s| attr(s, "held_key")).unwrap_or_default();
+        let held_stamp = ignored.iter().find(|s| attr(s, "frame") == "mesh-topology").map(|s| attr(s, "held_key")).unwrap_or_default();
         for e in expected.iter_mut().take(2) {
             e.3 = held_stamp.clone();
         }
@@ -326,7 +326,7 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
                     let event = tokio::select! { event = local.next() => event, event = remote.next() => event };
                     if let Some(Ok(iroh_gossip::api::Event::Received(message))) = event {
                         let frame = Frame::decode(&message.content).unwrap();
-                        if matches!(frame.data(), Frame::Members { .. }) { events.push(frame); }
+                        if matches!(frame.data(), Frame::MeshTopology { .. }) { events.push(frame); }
                     }
                 }
                 events

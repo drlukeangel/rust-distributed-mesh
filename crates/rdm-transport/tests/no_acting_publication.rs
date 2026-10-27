@@ -2,8 +2,8 @@
 //! own mesh-primary publishes that mesh on the backbone; a live mesh with no primary goes unheard,
 //! and its new mesh-primary publishes once it is established. The fabric-primary executes the stops
 //! and deletes of a live peer mesh's nodes like any executor, and none of it makes it that mesh's
-//! publisher: its publication has no aggregate of that mesh to put out, so nothing wakes it.
-//! (A deleted mesh's aggregate from its last admin's stop on is `deleted_mesh_aggregate`'s.)
+//! publisher: its publication has no mesh topology of that mesh to put out, so nothing wakes it.
+//! (A deleted mesh's topology from its last admin's stop on is `deleted_mesh_aggregate`'s.)
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
@@ -83,7 +83,7 @@ async fn node() -> Node {
 /// the publication returns at its deadline and no earlier; the NodeStopped is stamped by the executor
 /// role with the version the fabric-primary holds, never an acting counter of mesh2; and no span
 /// names the fabric-primary an acting primary. Must NOT happen: the executed stop or delete waking
-/// the publication to publish an aggregate of mesh2, whose primary is gone.
+/// the publication to publish a mesh topology of mesh2, whose primary is gone.
 #[test]
 fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_for_that_mesh() {
     let dir = crate::evidence_dir();

@@ -63,7 +63,7 @@ fn run(malformed: bool) {
             };
             let older = traced(status("traced", 0));
             let inconsistent = traced(Frame::MeshStatus { mesh: "traced".into(), status: "leaving".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 });
-            let gap = traced(Frame::MembersDelta { mesh: "mesh2".into(), source_publisher: rdm_core::PublisherId { node: "mesh2.admin.1".into(), node_id: author.node.clone(), incarnation: author.incarnation.clone() }, base_version: 10, topology_version: 11, published_at_rafka_ms: 1, changed: vec![], removed: vec![], in_flight: vec![], departed: vec![] });
+            let gap = traced(Frame::MeshTopologyDelta { mesh: "mesh2".into(), source_publisher: rdm_core::PublisherId { node: "mesh2.admin.1".into(), node_id: author.node.clone(), incarnation: author.incarnation.clone() }, base_version: 10, topology_version: 11, published_at_rafka_ms: 1, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] });
             let (mut attrs, _): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&event.encode()).unwrap();
             attrs.retain(|(n, _)| n != "sequence"); attrs.iter_mut().find(|(n, _)| n == "type").unwrap().1 = "rdm.mesh.concern".into();
             let reserved = rdm_transport::wire::encode(&(attrs.clone(), vec![255u8])).unwrap();

@@ -213,7 +213,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         // A delta of mesh1 under the primary's epoch whose base is not what mesh1.admin.2 holds.
         let (_, held) = admin.topology_view.held_source_version("mesh1").expect("mesh1.admin.2 holds mesh1");
         let (gap_base, gap_version) = (held + 5, held + 6);
-        let delta = Frame::MembersDelta {
+        let delta = Frame::MeshTopologyDelta {
             mesh: "mesh1".into(),
             source_publisher: root_publisher.clone(),
             base_version: gap_base,
@@ -222,7 +222,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
             changed: vec![],
             removed: vec![],
             in_flight: vec![],
-            departed: vec![],
+            deleted: vec![],
         };
         channel.forward(&delta).await.expect("the cell puts the delta on mesh1's channel");
         let base_s = gap_base.to_string();

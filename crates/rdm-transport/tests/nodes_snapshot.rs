@@ -3,7 +3,7 @@
 //! cell leaves `result.json` (its direct observations) and `spans.json` (every span the cell's
 //! own threads emitted, captured by its `EvidenceCapture`) there.
 //!
-//! CONTRACT: a receiving admin installs a chunked `Members` snapshot only once it holds EVERY
+//! CONTRACT: a receiving admin installs a chunked `MeshTopology` snapshot only once it holds EVERY
 //! chunk of it, and only then advances the held source version; chunks interleaved, duplicated
 //! or missed never produce a partial install, a version move or a delta. The source Mesh's
 //! `topology_version` bumps on a material change of the normalized projection (a birth, an
@@ -14,7 +14,7 @@
 //! heartbeat-only Mesh produces no delta, and a seat change publishes a full first. A delta
 //! applies only at exactly its base; a copy already applied is a no-op; any other desynchronizes
 //! that source alone. The same holds through real gossip between three endpoints: the source
-//! primary's backbone aggregate, the forwarding primary, and an ordinary member of its Mesh.
+//! primary's backbone mesh topology, the forwarding primary, and an ordinary member of its Mesh.
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
@@ -97,9 +97,9 @@ fn publisher(node: &str) -> PublisherId {
     PublisherId { node: node.into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }
 }
 
-/// The chunks of `full` as the source primary's backbone `Members`.
-fn members_chunks(full: &Full, p: &PublisherId, version: u64, snapshot_id: u64, forwarded_by: Option<&str>) -> Vec<Frame> {
-    chunks_of(full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+/// The chunks of `full` as the source primary's backbone `MeshTopology`.
+fn mesh_topology_chunks(full: &Full, p: &PublisherId, version: u64, snapshot_id: u64, forwarded_by: Option<&str>) -> Vec<Frame> {
+    chunks_of(full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
         mesh: "mesh2".into(),
         publisher: p.clone(),
         forwarded_by: forwarded_by.map(String::from),
@@ -110,32 +110,32 @@ fn members_chunks(full: &Full, p: &PublisherId, version: u64, snapshot_id: u64, 
         chunk_count,
         digests,
         in_flight,
-        departed,
+        deleted,
     }.authored(&crate::gossip_wire::author(), 0, 1))
 }
 
 fn chunk_of(f: &Frame) -> Chunk {
     match f.clone().into_data() {
-        Frame::Members { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } => {
+        Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted: departed, .. } => {
             Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed }
         }
-        other => panic!("not a Members chunk: {other:?}"),
+        other => panic!("not a MeshTopology chunk: {other:?}"),
     }
 }
 
 fn delta_of(f: &Frame) -> (String, PublisherId, u64, u64, Delta) {
     match f.clone().into_data() {
-        Frame::MembersDelta { mesh, source_publisher, base_version, topology_version, changed, removed, in_flight, departed, .. } => {
+        Frame::MeshTopologyDelta { mesh, source_publisher, base_version, topology_version, changed, removed, in_flight, deleted: departed, .. } => {
             (mesh, source_publisher, base_version, topology_version, Delta { changed, removed, in_flight, departed })
         }
-        other => panic!("not a MembersDelta: {other:?}"),
+        other => panic!("not a MeshTopologyDelta: {other:?}"),
     }
 }
 
 /// A top-up baseline as a topology read delivers it: the chunks of one snapshot.
 fn read_baseline(rx: &mut SnapshotReceiver, s: &SourceSnapshot) -> Taken {
     let mut last = None;
-    for f in members_chunks(&s.full(), &s.publisher, s.topology_version, 0, Some("topology-read")) {
+    for f in mesh_topology_chunks(&s.full(), &s.publisher, s.topology_version, 0, Some("topology-read")) {
         last = Some(rx.take_read_chunk(chunk_of(&f)));
     }
     last.expect("a snapshot has at least one chunk")
@@ -228,12 +228,12 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let sixty_overlays = overlays_of(&sixty);
         let sixty_full = Full::new(sixty.digests(3), sixty_overlays.clone(), sixty_overlays.iter().take(5).cloned().collect());
         let p = publisher("mesh2.admin.1");
-        let sixty_chunks = members_chunks(&sixty_full, &p, 5, 9, None);
+        let sixty_chunks = mesh_topology_chunks(&sixty_full, &p, 5, 9, None);
         assert!(sixty_chunks.len() > 1, "sixty members with overlays do not fit one message: {} chunks", sixty_chunks.len());
         for c in &sixty_chunks {
             assert!(c.encode().len() <= MAX_FRAME, "a chunk fits one gossip message");
         }
-        let empty = members_chunks(&Full::default(), &p, 1, 1, None);
+        let empty = mesh_topology_chunks(&Full::default(), &p, 1, 1, None);
         assert_eq!(empty.len(), 1, "an empty Mesh is one empty chunk, a complete snapshot");
         result.insert("chunks_of_sixty_members".into(), json!({ "chunks": sixty_chunks.len(), "largest_chunk_bytes": sixty_chunks.iter().map(|c| c.encode().len()).max(), "max_frame": MAX_FRAME }));
 
@@ -241,7 +241,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let big = Mesh::new("mesh2", BIG);
         let with_overlays = overlays_of(&big);
         let big_full = Full::new(big.digests(3), with_overlays.clone(), with_overlays.iter().take(5).cloned().collect());
-        let chunks = members_chunks(&big_full, &p, 5, 9, None);
+        let chunks = mesh_topology_chunks(&big_full, &p, 5, 9, None);
         assert!(chunks.len() > 2, "{BIG} members with overlays span more than two messages: {} chunks", chunks.len());
         for c in &chunks {
             assert!(c.encode().len() <= MAX_FRAME, "a chunk fits one gossip message");
@@ -274,8 +274,8 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert!(rx.desynced().is_empty());
 
         // Interleaved snapshots of one source: the newer one wins, the stale partial never installs.
-        let newer = members_chunks(&Full::new(big.digests(5), vec![], vec![]), &p, 7, 11, None);
-        let older = members_chunks(&Full::new(big.digests(4), vec![], vec![]), &p, 6, 10, None);
+        let newer = mesh_topology_chunks(&Full::new(big.digests(5), vec![], vec![]), &p, 7, 11, None);
+        let older = mesh_topology_chunks(&Full::new(big.digests(4), vec![], vec![]), &p, 6, 10, None);
         assert!(older.len() > 1 && newer.len() > 1);
         assert!(matches!(rx.take_chunk(chunk_of(&older[0])), Taken::Waiting { .. }));
         assert!(matches!(rx.take_chunk(chunk_of(&newer[0])), Taken::Waiting { .. }), "a newer snapshot drops the stale partial");
@@ -295,7 +295,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         // A new snapshot publication at the held material version is fresh hearing evidence.
         // Its heartbeat sequence may advance without a topology change; only its exact repeat is
         // a duplicate. An equal version with different material content remains inconsistent.
-        let again = members_chunks(&Full::new(big.digests(6), vec![], vec![]), &p, 7, 13, None);
+        let again = mesh_topology_chunks(&Full::new(big.digests(6), vec![], vec![]), &p, 7, 13, None);
         let mut refreshed = None;
         for c in &again {
             if let Taken::Installed(i) = rx.take_chunk(chunk_of(c)) { refreshed = Some(*i); }
@@ -343,7 +343,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         // A new source primary is a new revision: its delta before its full is a gap, its full resumes.
         let successor = publisher("mesh2.admin.2");
         assert!(matches!(rx.take_delta("mesh2", &successor, 1, 2, &d78), Moved::Desynced { gap: Gap::OtherRevision { .. }, .. }));
-        let first_of_successor = members_chunks(&f8, &successor, 1, 1, None);
+        let first_of_successor = mesh_topology_chunks(&f8, &successor, 1, 1, None);
         let mut revision = None;
         for c in &first_of_successor {
             if let Taken::Installed(i) = rx.take_chunk(chunk_of(c)) {
@@ -356,7 +356,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
 
         // A chunk lost for good: the incomplete snapshot is never applied, and the top-up from the
         // Mesh's own primary completes the picture; the straggler chunks that follow install nothing.
-        let lossy = members_chunks(&Full::new(big.digests(8), vec![], vec![]), &successor, 8, 14, None);
+        let lossy = mesh_topology_chunks(&Full::new(big.digests(8), vec![], vec![]), &successor, 8, 14, None);
         assert!(lossy.len() > 2);
         for (k, c) in lossy.iter().enumerate() {
             if k != 1 {
@@ -372,9 +372,9 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert!(matches!(late, Taken::Waiting { .. } | Taken::Refused(_)), "the straggler installs nothing: {late:?}");
         assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 8)));
         // A newer snapshot supersedes an incomplete one.
-        let lossy2 = members_chunks(&Full::new(big.digests(9), vec![], vec![]), &successor, 9, 15, None);
+        let lossy2 = mesh_topology_chunks(&Full::new(big.digests(9), vec![], vec![]), &successor, 9, 15, None);
         assert!(matches!(rx.take_chunk(chunk_of(&lossy2[0])), Taken::Waiting { .. }));
-        let newest = members_chunks(&Full::new(big.digests(10), vec![], vec![]), &successor, 10, 16, None);
+        let newest = mesh_topology_chunks(&Full::new(big.digests(10), vec![], vec![]), &successor, 10, 16, None);
         let mut done = None;
         for c in &newest {
             if let Taken::Installed(i) = rx.take_chunk(chunk_of(c)) {
@@ -397,7 +397,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         fwd.set_author(crate::gossip_wire::author());
         let first = fwd.source("mesh1.admin.1", "mesh2", &src, 41, &f41, 1);
         let Forward::Full(first_frames) = first else { panic!("the first publication of a source is a full") };
-        let carried_loads = first_frames.iter().any(|f| matches!(f, Frame::Members { digests, .. } if digests.iter().any(|d| d.in_flight.is_some())));
+        let carried_loads = first_frames.iter().any(|f| matches!(f, Frame::MeshTopology { digests, .. } if digests.iter().any(|d| d.in_flight.is_some())));
         assert!(!carried_loads, "a forwarded full omits loads");
         // The forwarder never held 42; it holds 43. One delta from what it last published.
         let Forward::Delta(delta) = fwd.source("mesh1.admin.1", "mesh2", &src, 43, &f43, 2) else { panic!("a moved source is a delta") };

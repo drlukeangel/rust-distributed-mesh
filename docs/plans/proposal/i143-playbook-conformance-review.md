@@ -175,7 +175,7 @@ not mention (C below).
 ### 1.8 node.stop, node.connections.delete, node.mesh.leave, node.restart: one sequence on the command path, two paths around it (A, B)
 
 The sequence is one function, `rdm-node/src/node_self.rs::stop_steps` (1162): `node.connections.delete { All }`
-(the primitive `delete_connections_asked` at 462, called at 1199), the tasks parked, the Leaving aggregate
+(the primitive `delete_connections_asked` at 462, called at 1199), the tasks parked, the Leaving mesh topology
 (1230..1255), the transport cut `leave_mesh` (979, called at 1264), the owed Stopped (1277). Every commanded
 stop reaches it: the mesh-primary's `StopNode` on an rpc node (`node.rs:1358`) and on an admin
 (`status_rpc.rs:1593`), the primary as its own subject in process (`status_rpc.rs:1031`), the restart's stop
@@ -187,7 +187,7 @@ Two paths do not:
 | path | where | what it skips |
 |---|---|---|
 | **a node-admin's own signal (B)** | `entry.rs:120..131` → `admin/boot.rs:134` `leave` / `:143` `leave_after_stop` → `:148` `leave_with`: aborts the executor, hierarchy, anti-entropy and publisher tasks, settles open calls, shuts the router down; its doc says "Nothing is announced" | no `node.connections.delete { All }`, no `RDM_CONNECTIONS_DELETE_DEADLINE_MS` bound, no `leave_mesh`, no owed Stopped: the admin kind has a copy of "stop on a signal" that is not the stop. node_self.rs's own words (`StopBy::Signal`, i146 Q55): "One workflow serves both" |
-| **a commanded start that fails after its hook re-parks the birth (A)** | `node_self.rs:1400..1412`: `delete_connections_asked(All)`, `park_tasks`, `leave_mesh`, called one by one | no `StopConnectionsDeleted`, no owed Stopped, no Leaving aggregate: the stop's primitives re-sequenced by hand, as the comment says ("through the stop's own primitives") |
+| **a commanded start that fails after its hook re-parks the birth (A)** | `node_self.rs:1400..1412`: `delete_connections_asked(All)`, `park_tasks`, `leave_mesh`, called one by one | no `StopConnectionsDeleted`, no owed Stopped, no Leaving mesh topology: the stop's primitives re-sequenced by hand, as the comment says ("through the stop's own primitives") |
 
 Two more copies of the channel leave, read: `admin/session.rs:539..550` `AdminLeave::run` parks membership
 and backbone inline instead of `leave_channels`; `node_self.rs:997..1021`, the `session = None` arm of
@@ -198,10 +198,10 @@ not read by the lead, a dead-code candidate to confirm at landing.
 Change: a node-admin's signal runs `stop_steps(StopBy::Signal)` as the rpc node's does, then `leave_with`
 (the task abort and the router shutdown are the process end after the stop, not the stop); the failed
 start's re-park calls `stop_steps` with a `StopBy` naming the failed command, so the receipt, the owed
-Stopped and the aggregate are the stop's; `AdminLeave::run` and the `None` arm call `leave_channels`.
+Stopped and the mesh topology are the stop's; `AdminLeave::run` and the `None` arm call `leave_channels`.
 Cells: the signal cell on an admin (today's `the_provider_sends_no_signal_but_the_stop_ladder_and_the_terminate`
 is the provider side; a RED cell for an admin SIGTERM asserting the connections-delete receipt, the Leaving
-aggregate and the owed Stopped), and the commanded-start-failed cell asserting the stop's frames.
+mesh topology and the owed Stopped), and the commanded-start-failed cell asserting the stop's frames.
 
 ### 1.9 node.mesh.join, node.start, node.status, node.topology.get: one start, one join, and member status written in twenty places (A, B)
 
@@ -241,7 +241,7 @@ grepped in the code; every link and anchor was resolved.
 | node-create.md lines 5 to 6 | "composes the whole node.start workflow with start_kind = FirstStart"; the pipeline launches the process and waits (WaitForBind, WaitForMeshJoin, WaitForNodeReady), and the process's first start runs node.start | OLD "creates a logical node and composes the whole [node.start] workflow with `start_kind = FirstStart`" NEW "creates a logical node, launches its process and waits for the [node.start] workflow its first start runs with `start_kind = FirstStart`" |
 | mesh-create.md line 37 | "at the mesh's acceptance the fabric-primary mints `mesh2`'s issuing cert"; the code mints it in the first admin's node.create step (`admin/runner.rs:292..296`, from `:481`) | OLD "at the mesh's acceptance" NEW "in the node.create of the mesh's first node-admin" |
 | mesh-create.md line 45 | "within 20 s of the launch"; the 20 s runs from the first Ping (`admin/runner.rs:1202`) | OLD "within 20 s of the launch" NEW "within 20 s of its first Ping" |
-| node-stop.md line 43 | "The node gossips nothing for this step"; the stop publishes its Leaving aggregate before the cut (`node_self.rs:1230..1255`, rdm-code-conformance.md §2 item 21, gossip.md "the last aggregate carries itself Leaving") | OLD "The node gossips nothing for this step." NEW "A mesh-primary publishes its last aggregate, carrying itself Leaving, before the cut; the node gossips nothing after it." |
+| node-stop.md line 43 | "The node gossips nothing for this step"; the stop publishes its Leaving mesh topology before the cut (`node_self.rs:1230..1255`, rdm-code-conformance.md §2 item 21, gossip.md "the last mesh topology carries itself Leaving") | OLD "The node gossips nothing for this step." NEW "A mesh-primary publishes its last mesh topology, carrying itself Leaving, before the cut; the node gossips nothing after it." |
 | node-mesh-leave.md lines 79 to 81 | "`node.mesh.left` is the frame before `node.stopped`"; `NodeCommandReply` has no such variant (`rdm-core/src/node_command.rs:112..195`: CommandAccepted … StopConnectionsDeleted, NodeStopped, NodeJoined, NodeStarted, Failed) | OLD "`node.mesh.left` is the frame before `node.stopped`" NEW "the leave's completion is carried by `node.stopped`; no frame of its own is sent inside a stop" (or dev adds the frame; Luke's call) |
 | node-connections-delete.md lines 122, 181 | "the mesh-primary sets connections-deleted"; `MemberStatus` has `ConnectionsDeleting` only (`rdm-core/src/digest.rs:40`); the primary stores the receipt (`status_rpc.rs:1236..1244`) | OLD "sets connections-deleted" NEW "records the `node.connections.deleted` receipt; the member status stays `connections-deleting` until the stop or start that follows" |
 | node-stop.md, node-connections-delete.md, node-restart.md | no span table; the code emits `rdm.node_admin.node.connections.delete.via-stop`, `via-stop-quiesce`, `via-leaving-aggregate`, `via-stop-transport-cut`, `rdm.node_admin.status.update.via-stop-node`, `rdm.node_rpc.status.update.via-owed-on-stop`, `via-owed-on-signal`, `via-connections-deleting`, `via-delete-connections`, `rdm.node_admin.connection.delete.via-connections-delete`, `via-refused-drop`, `via-restart-resumed`, `rdm.mesh.node.delete.via-signal` | add the span table to each page from the code's names |

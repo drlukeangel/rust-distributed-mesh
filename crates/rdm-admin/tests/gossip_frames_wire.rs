@@ -94,7 +94,7 @@ fn frames() -> Vec<Frame> {
         Frame::Digest { digest: heartbeat(1, None, false) },
         Frame::Digest { digest: heartbeat(2, Some(process_runtime()), true) },
         Frame::Digest { digest: heartbeat(3, Some(container_runtime()), true) },
-        Frame::Members {
+        Frame::MeshTopology {
             mesh: "mesh2".into(),
             publisher: p.clone(),
             forwarded_by: Some("mesh1.admin.1".into()),
@@ -105,9 +105,9 @@ fn frames() -> Vec<Frame> {
             chunk_count: 3,
             digests: vec![digest(1, None, false), digest(2, Some(process_runtime()), true)],
             in_flight: vec![op("node.delete:mesh2.rpc.2")],
-            departed: vec![op("node.delete:mesh2.rpc.3")],
+            deleted: vec![op("node.delete:mesh2.rpc.3")],
         },
-        Frame::Members {
+        Frame::MeshTopology {
             mesh: "mesh2".into(),
             publisher: p.clone(),
             forwarded_by: None,
@@ -118,9 +118,9 @@ fn frames() -> Vec<Frame> {
             chunk_count: 1,
             digests: vec![],
             in_flight: vec![],
-            departed: vec![],
+            deleted: vec![],
         },
-        Frame::MembersDelta {
+        Frame::MeshTopologyDelta {
             mesh: "mesh2".into(),
             source_publisher: p.clone(),
             base_version: 8,
@@ -129,7 +129,7 @@ fn frames() -> Vec<Frame> {
             changed: vec![digest(4, Some(container_runtime()), true)],
             removed: vec!["mesh2.rpc.9".into()],
             in_flight: vec![op("node.stop:mesh2.rpc.4")],
-            departed: vec![],
+            deleted: vec![],
         },
         Frame::NodeDeleting { op: op("node.delete:mesh2.rpc.2"), forwarded_by: None, publisher: p.clone(), topology_version: 10 },
         Frame::NodeDeleted { op: op("node.delete:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()) },
@@ -377,7 +377,7 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     let overlays: Vec<LifecycleOp> = (0..12).map(|_| op("node.delete:mesh1.rpc.1")).collect();
     let full = Full::new(members.clone(), overlays.clone(), overlays.iter().take(5).cloned().collect());
     let p = publisher();
-    let chunks = chunks_of(&full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+    let chunks = chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
         mesh: "mesh1".into(),
         publisher: p.clone(),
         forwarded_by: None,
@@ -388,15 +388,15 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
         chunk_count,
         digests,
         in_flight,
-        departed,
+        deleted,
     }.authored(&crate::gossip_wire::author(), 0, 1));
     assert!(chunks.len() > 2);
     let mut heard = 0;
     for c in &chunks {
         let bytes = c.encode();
-        assert!(bytes.len() <= MAX_MESSAGE_BYTES, "a Members chunk of {} bytes fits the ceiling", bytes.len());
+        assert!(bytes.len() <= MAX_MESSAGE_BYTES, "a MeshTopology chunk of {} bytes fits the ceiling", bytes.len());
         match Frame::decode(&bytes).unwrap().into_data() {
-            Frame::Members { digests, .. } => heard += digests.len(),
+            Frame::MeshTopology { digests, .. } => heard += digests.len(),
             other => panic!("{other:?}"),
         }
     }

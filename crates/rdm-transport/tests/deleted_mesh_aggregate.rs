@@ -1,7 +1,7 @@
-//! `e12.s72` — a deleted mesh's last admin publishes its final aggregate with `status = Leaving`
+//! `e12.s72` — a deleted mesh's last admin publishes its final mesh topology with `status = Leaving`
 //! and `in_flight: [node.delete:<last_admin>]`; receivers apply it, emit `via-node-deleting` and
 //! `via-member-state` (`Leaving, routable=false`), and hold the last admin departed for
-//! `DEPARTED_RETENTION` while keeping the final aggregate in `SnapshotReceiver` and `Forwarder`.
+//! `DEPARTED_RETENTION` while keeping the final mesh topology in `SnapshotReceiver` and `Forwarder`.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rdm_transport::topology::Frame;
@@ -68,7 +68,7 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
     };
     let taken = rx.take_chunk(chunk);
     assert!(matches!(taken, rdm_transport::snapshot::Taken::Installed(_)));
-    let _ = Frame::Members {
+    let _ = Frame::MeshTopology {
         mesh: "mesh3".into(),
         publisher: pub_id,
         forwarded_by: None,
@@ -79,6 +79,6 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
         chunk_count: 1,
         digests: vec![m3_a1],
         in_flight: vec![final_del],
-        departed: vec![],
+        deleted: vec![],
     };
 }

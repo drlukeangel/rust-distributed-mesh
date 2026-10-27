@@ -5,7 +5,7 @@
 //!
 //! CONTRACT: on a real fabric, an observer that joined the backbone and a mesh channel before a
 //! status change decodes the frames the fabric puts there. A quiet fabric carries heartbeats and
-//! aggregates and no status frame at all. A new mesh is pending, then ready-for-traffic: two status
+//! mesh topologies and no status frame at all. A new mesh is pending, then ready-for-traffic: two status
 //! facts, each one message (one `changed_at_rafka_ms`). Its primary sends the pending fact at once and
 //! stops when ready-for-traffic supersedes it, and sends ready-for-traffic five times, one per second,
 //! as the SAME message, and then nothing: the five
@@ -155,9 +155,9 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
 
     // The first observer joins before the change.
     let early = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
-    until_arrival("the early observer hears the backbone's aggregate and mesh1's heartbeat", Duration::from_secs(30), &early.arrivals, || {
+    until_arrival("the early observer hears the backbone's mesh topology and mesh1's heartbeat", Duration::from_secs(30), &early.arrivals, || {
         let all = early.all();
-        let members = all.iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::Members { .. }));
+        let members = all.iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { .. }));
         let digest = all.iter().any(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::Digest { .. }));
         (members && digest).then_some(())
     })
@@ -206,7 +206,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     assert_eq!(joiner_encoded, early_encoded, "the member that joined mid-window holds the very ready-for-traffic message the early observer holds");
 
     // The quiet window: nothing changes, the fabric primary stays the same, and no status frame
-    // crosses either channel while the heartbeat and the aggregate keep going.
+    // crosses either channel while the heartbeat and the mesh topology keep going.
     let primary_before = estate.fabric_view().await.fabric_primary;
     let window_start = Instant::now();
     let before = early.all().len();
@@ -216,16 +216,16 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     assert_eq!(primary_before, primary_after, "no seat moved during the quiet window");
     let status_in_window: Vec<&Seen> = window.iter().filter(|x| is_status(&x.frame)).collect();
     assert!(status_in_window.is_empty(), "a quiet fabric carries no status frame: {:#?}", status_in_window.iter().map(|x| row(&early, x)).collect::<Vec<_>>());
-    let members_in_window = window.iter().filter(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::Members { .. })).count();
+    let mesh_topology_in_window = window.iter().filter(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { .. })).count();
     let digests_in_window = window.iter().filter(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::Digest { .. })).count();
-    assert!(members_in_window > 0 && digests_in_window > 0, "the aggregate ({members_in_window}) and the heartbeat ({digests_in_window}) keep going");
+    assert!(mesh_topology_in_window > 0 && digests_in_window > 0, "the mesh topology ({mesh_topology_in_window}) and the heartbeat ({digests_in_window}) keep going");
     assert!(early.all().len() > before);
-    // No Members frame carries a status: the frame has no such field.
-    for x in early.all().iter().filter(|x| matches!(x.frame.data(), Frame::Members { .. })) {
+    // No MeshTopology frame carries a status: the frame has no such field.
+    for x in early.all().iter().filter(|x| matches!(x.frame.data(), Frame::MeshTopology { .. })) {
         // The frame's own fields, not its wire bytes (postcard, R-W1).
-        let v: Value = serde_json::to_value(x.frame.data()).unwrap()["Members"].clone();
-        assert!(v.is_object(), "a Members frame: {v}");
-        assert!(v.get("status").is_none() && v.get("mesh_status").is_none() && v.get("fabric_status").is_none(), "Members carries no status: {v}");
+        let v: Value = serde_json::to_value(x.frame.data()).unwrap()["MeshTopology"].clone();
+        assert!(v.is_object(), "a MeshTopology frame: {v}");
+        assert!(v.get("status").is_none() && v.get("mesh_status").is_none() && v.get("fabric_status").is_none(), "MeshTopology carries no status: {v}");
     }
 
     // The late member joins now, with everything already said and the five sends long over.
@@ -313,7 +313,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
         "quiet_window": {
             "seconds": 10,
             "status_frames": status_in_window.len(),
-            "backbone_members_frames": members_in_window,
+            "backbone_mesh_topology_frames": mesh_topology_in_window,
             "mesh_channel_digest_frames": digests_in_window,
             "fabric_primary": primary_after,
         },

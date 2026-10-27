@@ -90,7 +90,7 @@ pub enum CutSpec {
     /// step 4, and has not made it: its start waits there, the node stays Pending and takes no traffic,
     /// until the release. The joiner arms it from `<root>/faults/<name>.boot.json` before its first line.
     TopologyRead,
-    /// The admin withholds `announcement`, one of its final aggregates or leadership announcements
+    /// The admin withholds `announcement`, one of its final mesh topologies or leadership announcements
     /// (`rdm_transport::topology::Withhold`: `stopping-aggregate`, `primary-updated`,
     /// `aggregate-in-flight`), from `channel` (`mesh`, `backbone` or `any`) while the cut is armed:
     /// each such send is skipped, so the frame is never offered to the channel. It models the
@@ -195,7 +195,7 @@ pub enum Probe {
         /// The channel it is published on.
         channel: &'static str,
     },
-    /// A final aggregate or leadership announcement about to be sent on a channel.
+    /// A final mesh topology or leadership announcement about to be sent on a channel.
     Announcement {
         /// The announcing node.
         node: String,

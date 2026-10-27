@@ -33,7 +33,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 ```text
 TOPOLOGY GOSSIP
     says what the Fabric looks like now
-    topology channels, Members aggregates, lifecycle events
+    topology channels, mesh topologies, lifecycle events
 
 BUILD / ATTEMPT / CLAIM / STEP
     assigns durable work and records its outcome

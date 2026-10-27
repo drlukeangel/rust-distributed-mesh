@@ -165,7 +165,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 /// The chunks of `mesh`'s snapshot in `topology` as a topology read delivers them.
 fn read_chunks(topology: &[rdm_transport::snapshot::SourceSnapshot], mesh: &str) -> Vec<Chunk> {
     let s = topology.iter().find(|s| s.mesh == mesh).expect("the read holds the mesh");
-    chunks_of(&s.full(), |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+    chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
         mesh: s.mesh.clone(),
         publisher: s.publisher.clone(),
         forwarded_by: None,
@@ -176,17 +176,17 @@ fn read_chunks(topology: &[rdm_transport::snapshot::SourceSnapshot], mesh: &str)
         chunk_count,
         digests,
         in_flight,
-        departed,
+        deleted,
     }.authored(&crate::gossip_wire::author(), 0, 1))
     .into_iter()
     .map(|f| match f.into_data() {
-        Frame::Members { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } => Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed },
-        _ => unreachable!("chunks_of shapes Members"),
+        Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted: departed, .. } => Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed },
+        _ => unreachable!("chunks_of shapes MeshTopology"),
     })
     .collect()
 }
 
-/// CONTRACT (gossip.md §3.1 `Members` / `MembersDelta`: "Own-mesh members receive authoritative
+/// CONTRACT (gossip.md §3.1 `MeshTopology` / `MeshTopologyDelta`: "Own-mesh members receive authoritative
 /// statuses through the primary's versioned member projection ... For an own-mesh birth, liveness,
 /// endpoints with freshness and the runtime fact come from its Digest and status from the
 /// projection; NodeStopped and NodeDeleting stay immediate events"): through real

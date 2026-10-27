@@ -5727,7 +5727,7 @@ async fn control_run(cell: &str, shape: Shape) {
         for (_, fr) in &seen {
             match fr {
                 Frame::Digest { digest } => digests.entry((digest.node.name.to_string(), digest.node.incarnation.to_string())).or_default().push(digest.digest_seq),
-                Frame::Members { publisher, topology_version, .. } => members_versions.entry(format!("{publisher:?}")).or_default().push(*topology_version),
+                Frame::MeshTopology { publisher, topology_version, .. } => members_versions.entry(format!("{publisher:?}")).or_default().push(*topology_version),
                 Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => status_frames += 1,
                 _ => {}
             }
@@ -5767,7 +5767,7 @@ fn odd_status_messages(spans: &[Value], sends: &[&Value], seats: &BTreeSet<Strin
     let mut last: BTreeMap<(String, String, String), u64> = BTreeMap::new();
     for sp in sends {
         let (node, scope, changed_at) = (s(&sp["attributes"]["node"]), s(&sp["attributes"]["scope"]), s(&sp["attributes"]["changed_at_rafka_ms"]));
-        // A publisher term is the aggregate publisher's start for a mesh scope and, for every scope, the
+        // A publisher term is the mesh topology publisher's start for a mesh scope and, for every scope, the
         // revision the send was committed under: a sender that takes its role back re-sends under a new one.
         let t = term(&node, &scope, start_ns(sp));
         let key = (node, scope, format!("{changed_at}#{t}.{}", s(&sp["attributes"]["committed_revision"])));
@@ -6223,7 +6223,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let final_seats: BTreeSet<String> = st2.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
     let (mate_n, mate_id, wm) = (s(&mate["name"]), s(&mate["node_id"]), window_ms);
     let (f0, vn2, vmeshes) = (formation.clone(), vnames.clone(), victims.iter().map(|v| (s(&v["name"]), s(&v["mesh"]))).collect::<Vec<_>>());
-    // The cut primary's mesh: its aggregate is the backbone receipt every peer-mesh admin's coverage of that
+    // The cut primary's mesh: its mesh topology is the backbone receipt every peer-mesh admin's coverage of that
     // mesh's admins comes from (gossip.md section 6), so their coverage of its mesh-mates lapses with it.
     let pv_mesh = s(&primary_victim["mesh"]);
     let renewed_c = renewed.clone();
@@ -6241,7 +6241,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
         }
         // Repair is bounded (one attempt per pair per window) and aimed at the cut: every attempt names a victim,
         // or a member of the cut primary's mesh, whose coverage at a peer-mesh admin came from that primary's
-        // aggregate (gossip.md section 6: "A peer mesh the primary cannot hear goes stale in every node-admin of
+        // mesh topology (gossip.md section 6: "A peer mesh the primary cannot hear goes stale in every node-admin of
         // the mesh, and each one re-feeds it").
         let att = refeeds(spans, cut_at);
         let mut per_pair: BTreeMap<(String, String), u64> = BTreeMap::new();

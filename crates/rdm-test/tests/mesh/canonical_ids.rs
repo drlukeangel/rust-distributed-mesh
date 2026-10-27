@@ -116,7 +116,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");
     // What mesh1.admin.1, a node-admin of the peer mesh, holds of the restarted birth: its own view,
-    // from the newest version of mesh2's projection it installed (gossip.md §3.1, `Members`:
+    // from the newest version of mesh2's projection it installed (gossip.md §3.1, `MeshTopology`:
     // "Receivers install the complete snapshot atomically"). The Digest it holds names the node and
     // the incarnation the views show, as Crockford ids.
     let held = estate
@@ -194,10 +194,10 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
 
     // The second restart's return reached the peer mesh's admin. mesh2's primary authored the
     // birth's ReadyForTraffic (`from-node-started`), and its next publication bumped mesh2's
-    // topology_version (gossip.md §3.1, `Members`: "at once on a material change"). mesh1.admin.1
+    // topology_version (gossip.md §3.1, `MeshTopology`: "at once on a material change"). mesh1.admin.1
     // installed that version of mesh2's projection or a later one: a receiver holds the newest
     // version it installed, and a snapshot overtaken by a later one is ignored in the gossip receive
-    // path (gossip.md receiver rules: `Members` order by `published_at_rafka_ms`, then
+    // path (gossip.md receiver rules: `MeshTopology` order by `published_at_rafka_ms`, then
     // `topology_version`). So the peer is owed the restart's return, never each state between.
     // The publisher is matched too: the recreated mesh2's primary starts its versions again.
     let returned_at = named(&spans, "rdm.mesh.topology.update.from-node-started")

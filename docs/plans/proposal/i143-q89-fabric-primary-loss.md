@@ -99,7 +99,7 @@ Cells, RED first, each written to the page before the code moves:
 
 - `a_fabric_primary_held_past_the_floor_is_superseded_by_its_meshs_standby_and_gets_its_seats_back`:
   mesh1.admin.1 (both seats) SIGSTOPped; within a floor and a tick mesh1.admin.2 holds both seats by one row
-  and mesh1's aggregate is published again; on continue admin.1 commands nobody (its view cut off, then
+  and mesh1's topology is published again; on continue admin.1 commands nobody (its view cut off, then
   healing), re-enters through node.mesh.join (hook, cert, rafka-time); one floor after it is Ready the
   hand-back row moves both seats back; no terminate and no new birth within the hung hold. Must NOT happen:
   the held node commanding a member, two seat rows at one revision, the fabric seat on a node that is not

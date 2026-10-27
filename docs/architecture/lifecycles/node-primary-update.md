@@ -59,7 +59,7 @@ and recording it are separate for every type.
    then answers its commander's command. For the `node-admin` type NA2 is the mesh's writer from this
    moment.
 5. The mesh-primary records the change it hears: `is_primary` (and `is_fabric_primary`) at the next
-   revision on the successor's row, and its next `Members` projection carries it, its normal publication.
+   revision on the successor's row, and its next `MeshTopology` projection carries it, its normal publication.
    For the `node-admin` type that is NA2 recording its own row; for every other type the mesh-primary
    records the successor's row from the successor's digest, the way it records every member fact it
    hears. The write records the role; it does not grant it. No frame of its own announces a primary
@@ -192,10 +192,10 @@ successor                 becomes primary: installs the election's result in its
   ← node.primary.updated { revisions }   (PrimaryUpdated)
 commander's Build continues under the successor
 successor → mesh channel  its next Digest carries is_primary (its normal announcement)
-mesh-primary              records is_primary at the next revision on the successor's row from what it hears (NA2 its own row); its next Members projection carries it
+mesh-primary              records is_primary at the next revision on the successor's row from what it hears (NA2 its own row); its next MeshTopology projection carries it
 ```
 
-No gossip frame announces a primary change: the successor's `Digest` and the mesh-primary's `Members`
+No gossip frame announces a primary change: the successor's `Digest` and the mesh-primary's `MeshTopology`
 projection are the normal announcement and publication, best-effort dissemination a stop does not wait
 for (R-NS2). The election's result is the fact, and the row records it.
 
@@ -215,7 +215,7 @@ sequenceDiagram
     NA2-->>NA1: node.primary.updated { revisions }
     Note over FP,NA2: the Build continues; NA2 commands NA1's destructive step
     NA2->>G: Digest (is_primary, next revision)
-    Note over NA2: records is_primary on its own row; Members projection carries it
+    Note over NA2: records is_primary on its own row; MeshTopology projection carries it
 ```
 
 ## Observability contract

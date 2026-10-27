@@ -1,7 +1,7 @@
 //! The fabric-primary's view of a deleted mesh, as its publication of that mesh reads it
 //! (mesh-delete.md "Command, completion and gossip messages" and step 7: "A separate node.delete
 //! deletes the mesh-primary. The fabric-primary is its executor ... from that admin's stop on it
-//! publishes the deleted mesh's aggregate"; gossip.md "Mesh delete": "From the stop on the
+//! publishes the deleted mesh's topology"; gossip.md "Mesh delete": "From the stop on the
 //! fabric-primary is that mesh's publisher of record ... the stopped admin in `in_flight` as
 //! NodeStopped"). The fabric-primary takes the mesh as deleted at its own mesh.deleted receipt
 //! (`admin::mesh_delete::record_mesh_deleted`: `Records::hold_mesh_deleted`, then the view installed
@@ -67,10 +67,10 @@ fn start_ns(sp: &Value) -> u64 {
 /// mesh1 live, and the backbone holds that view's meshes. The stop's status event follows at once,
 /// with no workflow of the admin's hierarchy in between. The view holds mesh1 deleted, the backbone
 /// takes it deleted from that install, and the stop makes the fabric-primary mesh1's publisher of
-/// record: the status event is stamped as the deleted mesh's publisher and mesh1's aggregate leaves
+/// record: the status event is stamped as the deleted mesh's publisher and mesh1's topology leaves
 /// on the backbone, no digests, the stopped admin in `in_flight`. Must NOT happen: the backbone
 /// still holding mesh1 live from the view before the receipt, so the stop is published as a plain
-/// executor's and the stopped-stage aggregate never leaves (s23 part 9's
+/// executor's and the stopped-stage mesh topology never leaves (s23 part 9's
 /// mesh_lifecycle__fabric_primary_handover: receipt at -439.6 ms, the stop's status event at
 /// +7.4 ms in trace c1ea5c0096b1230d0370d6c8dc484a7d, the view moved at the next workflow, +54.9 ms).
 #[test]
@@ -132,7 +132,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
     assert_eq!(after_receipt, Some(ScopeStatus::Dead), "the view installed at the receipt holds mesh1 deleted");
     let event = mine("rdm.mesh.topology.update.via-status-event").into_iter().find(|s| attr(s, "subject") == LAST && attr(s, "frame") == "node-stopped");
     let event = event.unwrap_or_else(|| panic!("the stop of {LAST} was published as a status event in the cell's trace {trace_id}"));
-    assert_eq!(attr(&event, "role"), "executor", "the fabric-primary stops the deleted mesh's last admin as executor and never stamps a deleted-mesh aggregate: {event}");
+    assert_eq!(attr(&event, "role"), "executor", "the fabric-primary stops the deleted mesh's last admin as executor and never stamps a deleted mesh's topology: {event}");
     let published: Vec<Value> = mine("rdm.mesh.backbone.update.via-deleted-mesh");
-    assert!(published.is_empty(), "the fabric-primary never publishes a deleted mesh's aggregate: {published:?}");
+    assert!(published.is_empty(), "the fabric-primary never publishes a deleted mesh's topology: {published:?}");
 }

@@ -4,7 +4,7 @@
 //! its receipt:
 //!
 //! 1. **Block**, `mesh.block:<mesh>`, run by each mesh's mesh-primary: it waits until its in-flight
-//!    commands complete, replies `blocked` and gossips a current aggregate of its mesh; from there it
+//!    commands complete, replies `blocked` and gossips a current mesh topology of its mesh; from there it
 //!    issues no new command until it is unblocked.
 //! 2. **Copy** and 3. **Switch**, `storage.switch:<change_id>`, run by the fabric-primary once every
 //!    mesh-primary replied `blocked`: the copy ([`rdm_node::storage_copy::copy`]), then the `commit`
@@ -239,7 +239,7 @@ pub struct StorageChanges {
     pub fabric_id: crate::model::FabricId,
     /// The admin's node id.
     pub node_id: NodeId,
-    /// Publishes this admin's current aggregate of its mesh, once it holds its backbone.
+    /// Publishes this admin's current mesh topology of its mesh, once it holds its backbone.
     pub aggregate: OnceLock<Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>>,
     running: std::sync::Mutex<Option<Running>>,
 }
@@ -280,7 +280,7 @@ impl StorageChanges {
     }
 
     /// Step 1, `mesh.block` of `mesh`, run by its mesh-primary: it waits until its in-flight commands
-    /// complete, replies `blocked` (its receipt) and gossips a current aggregate of its mesh; it issues no
+    /// complete, replies `blocked` (its receipt) and gossips a current mesh topology of its mesh; it issues no
     /// new command until it is unblocked.
     #[allow(clippy::too_many_arguments)]
     pub async fn block_mesh(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>) -> Result<(), crate::executor::RunEnd> {
@@ -291,7 +291,7 @@ impl StorageChanges {
             aggregate().await;
         }
         span.record("in_flight", in_flight as u64).record("outcome", "blocked");
-        span.in_scope(|| tracing::info!("mesh.block: every command in flight completed; this mesh-primary replies blocked, gossips its mesh's aggregate and issues no new command until it is unblocked"));
+        span.in_scope(|| tracing::info!("mesh.block: every command in flight completed; this mesh-primary replies blocked, gossips its mesh's topology and issues no new command until it is unblocked"));
         receipt(builds, build_id, attempt, block_operation(&change.change_id, mesh)).await
     }
 

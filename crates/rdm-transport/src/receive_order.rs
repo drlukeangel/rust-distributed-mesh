@@ -15,7 +15,7 @@
 //!
 //! [`ReceiveOrder`] holds the remaining keyed families' ordering state, shared by all channels
 //! and topology-read installs:
-//! - Members and MembersDelta: the actual installed publisher/version floor orders that source,
+//! - MeshTopology and MeshTopologyDelta: the actual installed publisher/version floor orders that source,
 //!   regardless of publication timestamp. The existing cross-publisher publication check remains.
 //!   SnapshotReceiver compares complete normalized projection content, chunk identity and delta
 //!   content under its installation lock: duplicates install nothing; conflicts are inconsistent.
@@ -333,11 +333,11 @@ fn orders_of(f: &Frame) -> (&'static str, Vec<(Source, Key)>) {
 /// The frame's name in spans, its source and its order key; `None` for a frame with no order key.
 fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
     match f.data() {
-        Frame::Members { mesh, topology_version, published_at_rafka_ms, .. } => {
-            Some(("members", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
+        Frame::MeshTopology { mesh, topology_version, published_at_rafka_ms, .. } => {
+            Some(("mesh-topology", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
         }
-        Frame::MembersDelta { mesh, topology_version, published_at_rafka_ms, .. } => {
-            Some(("members-delta", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
+        Frame::MeshTopologyDelta { mesh, topology_version, published_at_rafka_ms, .. } => {
+            Some(("mesh-topology-delta", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
         }
         Frame::NodeDeleting { op, publisher, topology_version, .. } => Some(("node-deleting", Source::Lifecycle { publisher: publisher.clone(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
         Frame::NodeStopped { op, publisher, topology_version, .. } => Some(("node-stopped", Source::Lifecycle { publisher: publisher.clone(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
@@ -380,11 +380,11 @@ struct InstalledSource {
     snapshot_id: Option<u64>,
 }
 
-/// The publisher a `Members` or `MembersDelta` names and its `topology_version`.
+/// The publisher a `MeshTopology` or `MeshTopologyDelta` names and its `topology_version`.
 fn publication_of(f: &Frame) -> Option<(&str, &PublisherId, u64)> {
     match f.data() {
-        Frame::Members { mesh, publisher, topology_version, .. } => Some((mesh, publisher, *topology_version)),
-        Frame::MembersDelta { mesh, source_publisher, topology_version, .. } => Some((mesh, source_publisher, *topology_version)),
+        Frame::MeshTopology { mesh, publisher, topology_version, .. } => Some((mesh, publisher, *topology_version)),
+        Frame::MeshTopologyDelta { mesh, source_publisher, topology_version, .. } => Some((mesh, source_publisher, *topology_version)),
         _ => None,
     }
 }
@@ -405,7 +405,7 @@ impl ReceiveOrder {
     }
 
     /// Whether `f` is taken: `Err` names the frame ignored, its source and both keys. A taken frame's
-    /// key is held when it is newer than the held one, except a `Members` or `MembersDelta` key, held
+    /// key is held when it is newer than the held one, except a `MeshTopology` or `MeshTopologyDelta` key, held
     /// when its snapshot installs or its delta applies ([`Self::installed`]).
     pub(crate) fn admit(&mut self, f: &Frame) -> Result<(), Earlier> {
         let (frame, keys) = orders_of(f);
@@ -521,7 +521,7 @@ mod tests {
         let mut order = ReceiveOrder::default();
         order.installed_projection("mesh1", &publisher, 10, None, &crate::snapshot::Full::default(), None);
         let renamed = PublisherId { node: "mesh1.admin.2".into(), ..publisher };
-        let old = Frame::Members { mesh: "mesh1".into(), publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], departed: vec![] };
+        let old = Frame::MeshTopology { mesh: "mesh1".into(), publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
         assert!(order.admit(&old).is_err());
         let operation = rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 1 };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), renamed.clone(), 20)).is_ok());
@@ -580,12 +580,12 @@ mod tests {
         }
     }
 
-    fn members(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, topology_version: u64, chunk_index: u32) -> Frame {
-        Frame::Members { mesh: mesh.into(), publisher: publisher.clone(), forwarded_by: None, topology_version, published_at_rafka_ms, snapshot_id: published_at_rafka_ms, chunk_index, chunk_count: 2, digests: vec![], in_flight: vec![], departed: vec![] }
+    fn mesh_topology(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, topology_version: u64, chunk_index: u32) -> Frame {
+        Frame::MeshTopology { mesh: mesh.into(), publisher: publisher.clone(), forwarded_by: None, topology_version, published_at_rafka_ms, snapshot_id: published_at_rafka_ms, chunk_index, chunk_count: 2, digests: vec![], in_flight: vec![], deleted: vec![] }
     }
 
     fn delta(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, base_version: u64, topology_version: u64) -> Frame {
-        Frame::MembersDelta { mesh: mesh.into(), source_publisher: publisher.clone(), base_version, topology_version, published_at_rafka_ms, changed: vec![], removed: vec![], in_flight: vec![], departed: vec![] }
+        Frame::MeshTopologyDelta { mesh: mesh.into(), source_publisher: publisher.clone(), base_version, topology_version, published_at_rafka_ms, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] }
     }
 
     fn publisher(path: &str) -> PublisherId {
@@ -596,7 +596,7 @@ mod tests {
         LifecycleOp { build_id: "3qcfk1kq47m9".into(), attempt: 1, operation: format!("{operation}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
     }
 
-    /// CONTRACT (R-RX3: Members and MembersDelta order by `published_at_rafka_ms` then
+    /// CONTRACT (R-RX3: MeshTopology and MeshTopologyDelta order by `published_at_rafka_ms` then
     /// `topology_version`, per mesh; R-RX2: no cross-publisher rule; gossip.md §3.1: a snapshot install
     /// and a delta move the held source version): both chunks of one publication are taken (they share
     /// its key), and its key is held once it installed; a chunk of the installed publication reaches its content classifier
@@ -609,20 +609,20 @@ mod tests {
     fn a_publication_stamped_before_the_newest_held_of_its_mesh_is_ignored_and_one_publications_chunks_are_all_taken() {
         let mut order = ReceiveOrder::default();
         let (p1, p2) = (publisher("mesh1.admin.1"), publisher("mesh1.admin.2"));
-        assert_eq!(order.admit(&members("mesh1", &p1, 100, 7, 0)), Ok(()));
-        assert_eq!(order.admit(&members("mesh1", &p1, 100, 7, 1)), Ok(()), "the second chunk of the same publication is taken");
+        assert_eq!(order.admit(&mesh_topology("mesh1", &p1, 100, 7, 0)), Ok(()));
+        assert_eq!(order.admit(&mesh_topology("mesh1", &p1, 100, 7, 1)), Ok(()), "the second chunk of the same publication is taken");
         order.installed("mesh1", &p1, 7, Some(100));
-        assert_eq!(order.admit(&members("mesh1", &p1, 100, 7, 0)), Ok(()), "a chunk of the installed publication is taken: the handler absorbs it");
-        assert_eq!(order.admit(&members("mesh1", &p2, 150, 1, 0)), Ok(()), "a later publication is taken whatever its version and publisher");
+        assert_eq!(order.admit(&mesh_topology("mesh1", &p1, 100, 7, 0)), Ok(()), "a chunk of the installed publication is taken: the handler absorbs it");
+        assert_eq!(order.admit(&mesh_topology("mesh1", &p2, 150, 1, 0)), Ok(()), "a later publication is taken whatever its version and publisher");
         order.installed("mesh1", &p2, 1, Some(150));
         assert_eq!(order.admit(&delta("mesh1", &p2, 160, 1, 2)), Ok(()));
         order.installed("mesh1", &p2, 2, Some(160));
-        let ignored_full = order.admit(&members("mesh1", &p1, 120, 9, 0)).unwrap_err();
-        assert_eq!(ignored_full, Earlier { frame: "members", source: "mesh1".into(), held: "published_at_rafka_ms=160 topology_version=2".into(), offered: "published_at_rafka_ms=120 topology_version=9".into() });
+        let ignored_full = order.admit(&mesh_topology("mesh1", &p1, 120, 9, 0)).unwrap_err();
+        assert_eq!(ignored_full, Earlier { frame: "mesh-topology", source: "mesh1".into(), held: "published_at_rafka_ms=160 topology_version=2".into(), offered: "published_at_rafka_ms=120 topology_version=9".into() });
         let ignored_delta = order.admit(&delta("mesh1", &p1, 110, 7, 8)).unwrap_err();
-        assert_eq!((ignored_delta.frame, ignored_delta.offered.as_str()), ("members-delta", "published_at_rafka_ms=110 topology_version=8"));
+        assert_eq!((ignored_delta.frame, ignored_delta.offered.as_str()), ("mesh-topology-delta", "published_at_rafka_ms=110 topology_version=8"));
         assert_eq!(order.admit(&delta("mesh1", &p2, 160, 1, 3)), Ok(()), "the same stamp at a later version is newer");
-        assert_eq!(order.admit(&members("mesh2", &p1, 1, 1, 0)), Ok(()), "another mesh is another source");
+        assert_eq!(order.admit(&mesh_topology("mesh2", &p1, 1, 1, 0)), Ok(()), "another mesh is another source");
     }
 
     /// CONTRACT (Luke 2026-10-13: "Snapshot state advances atomically once every chunk has arrived";
@@ -639,17 +639,17 @@ mod tests {
     fn a_mesh_version_moves_when_its_snapshot_installs_and_a_read_installed_version_orders_its_publishers_lower_versions() {
         let mut order = ReceiveOrder::default();
         let (p, other) = (publisher("mesh1.admin.1"), publisher("mesh1.admin.2"));
-        assert_eq!(order.admit(&members("mesh1", &p, 200, 8, 0)), Ok(()), "chunk 0 of v8: its snapshot never completes");
-        assert_eq!(order.admit(&members("mesh1", &p, 150, 7, 1)), Ok(()), "v7's chunk is taken: nothing installed is newer");
+        assert_eq!(order.admit(&mesh_topology("mesh1", &p, 200, 8, 0)), Ok(()), "chunk 0 of v8: its snapshot never completes");
+        assert_eq!(order.admit(&mesh_topology("mesh1", &p, 150, 7, 1)), Ok(()), "v7's chunk is taken: nothing installed is newer");
         order.installed("mesh1", &p, 7, Some(150));
         order.installed("mesh1", &p, 9, None);
         let held = format!("publisher={p} topology_version=9");
-        assert_eq!(order.admit(&members("mesh1", &p, 240, 8, 0)), Err(Earlier { frame: "members", source: "mesh1".into(), held: held.clone(), offered: "published_at_rafka_ms=240 topology_version=8".into() }));
-        assert_eq!(order.admit(&delta("mesh1", &p, 245, 7, 8)).map_err(|e| (e.frame, e.held)), Err(("members-delta", held.clone())));
+        assert_eq!(order.admit(&mesh_topology("mesh1", &p, 240, 8, 0)), Err(Earlier { frame: "mesh-topology", source: "mesh1".into(), held: held.clone(), offered: "published_at_rafka_ms=240 topology_version=8".into() }));
+        assert_eq!(order.admit(&delta("mesh1", &p, 245, 7, 8)).map_err(|e| (e.frame, e.held)), Err(("mesh-topology-delta", held.clone())));
         assert_eq!(order.admit_read("mesh1", &p, 8), Err(Earlier { frame: "topology-read", source: "mesh1".into(), held, offered: "topology_version=8".into() }));
         assert_eq!(order.admit_read("mesh1", &p, 9), Ok(()), "a read of the installed version is taken");
-        assert_eq!(order.admit(&members("mesh1", &p, 250, 9, 0)), Ok(()), "the publisher's full at the installed version is taken");
-        assert_eq!(order.admit(&members("mesh1", &other, 260, 1, 0)), Ok(()), "another publisher is not ordered against that revision");
+        assert_eq!(order.admit(&mesh_topology("mesh1", &p, 250, 9, 0)), Ok(()), "the publisher's full at the installed version is taken");
+        assert_eq!(order.admit(&mesh_topology("mesh1", &other, 260, 1, 0)), Ok(()), "another publisher is not ordered against that revision");
         assert_eq!(order.admit_read("mesh2", &p, 1), Ok(()), "another mesh is another source");
     }
 

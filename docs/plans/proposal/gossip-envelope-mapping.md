@@ -84,7 +84,7 @@ its canonical typed representation. P(n) is the padded 20-digit sequence represe
   need not be that birth for a command intent.
 
 Proposed ids use `type + '/' + escaped identity tuple components`, with canonical decimal
-integers and no transport or forwarding fields. Digest identity is (birth, digest_seq); Members
+integers and no transport or forwarding fields. Digest identity is (birth, digest_seq); MeshTopology
 is (source projection, topology_version, snapshot_id, chunk_index); delta is (source projection,
 base_version, topology_version); a lifecycle fact is (kind, build_id, attempt, operation, node_id,
 incarnation); a round hook additionally includes fabric_id. Identity suppression for operations
@@ -102,8 +102,8 @@ O and M are the unresolved operation/composite mappings described after the tabl
 | Position | Current kind | Proposed literal type | Source / subject / sequence |
 |---|---|---|---|
 | 1 | Digest | `rdm.mesh.digest` | birth / birth / D |
-| 2 | Members | `rdm.mesh.members` | source primary / projection / V; publication and chunk identity remain distinct from V |
-| 3 | MembersDelta | `rdm.mesh.members.delta` | source primary / projection / V; base_version stays an explicit dependency |
+| 2 | MeshTopology | `rdm.mesh.members` | source primary / projection / V; publication and chunk identity remain distinct from V |
+| 3 | MeshTopologyDelta | `rdm.mesh.members.delta` | source primary / projection / V; base_version stays an explicit dependency |
 | 4 | NodeDeleting | `rdm.node.deleting` | executor / lifecycle operation / O, plus the carried projection's V |
 | 5 | NodeDeleted | `rdm.node.deleted` | executor / lifecycle operation / O, terminal |
 | 6 | NodeRestarting | `rdm.node.restarting` | executor / lifecycle operation / O, plus carried projection V |

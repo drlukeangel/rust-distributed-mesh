@@ -2,7 +2,7 @@
 //!
 //! Direction: peer read, any node to any node. The call is read-only: it mutates nothing at the
 //! target. The reply is a server stream of the snapshots the target holds, one per mesh, chunked
-//! by the one method gossip's `Members` snapshots use:
+//! by the one method gossip's `MeshTopology` snapshots use:
 //!
 //! ```text
 //! Started  (Snapshot* | Unchanged* | Stored*) Primaries* RafkaTime  End { meshes }   a stream
@@ -13,7 +13,7 @@
 //! `Stored`: the stored map, which carries no version. It names births to reach and is never the
 //! mesh's current topology: a caller installs none of it.
 //!
-//! A mesh is named by its NAME on the wire, as the gossip `Members` frame names it. A caller
+//! A mesh is named by its NAME on the wire, as the gossip `MeshTopology` frame names it. A caller
 //! installs a mesh atomically, and only once every chunk of one `(snapshot_id, publisher,
 //! topology_version)` is present. The family is not forwardable: it is a stream.
 

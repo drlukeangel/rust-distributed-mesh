@@ -1165,7 +1165,7 @@ pub struct Primary {
 
 `mesh=None` asks for every held or eligible stored mesh; Some(m) asks for one mesh.
 A matching held source version answers Unchanged. Accepted reads stream Started, then
-Snapshot, Unchanged or Stored frames, then End. Snapshot uses gossip Members' shape and
+Snapshot, Unchanged or Stored frames, then End. Snapshot uses gossip MeshTopology's shape and
 chunking; a mesh is installed atomically only after every chunk of the same snapshot_id,
 publisher and topology_version is present. End.meshes counts each answered mesh once.
 A mesh with no published snapshot is absent unless an eligible stored map supplies it.

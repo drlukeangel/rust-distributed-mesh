@@ -587,7 +587,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // members' lifecycle, sets each member's status from what it reports (its node.started, its ConnectionsDeleting and
     // Leaving), and publishes its
     // member projection on its own mesh channel at each publication and at once on a material change
-    // (gossip.md §3.1 `Members`, the admin's publication). Its members take every status
+    // (gossip.md §3.1 `MeshTopology`, the admin's publication). Its members take every status
     // from that projection.
     let digest_cell = Arc::new(std::sync::Mutex::new(admin_digest.clone()));
     let (publications, publisher) = if primary {

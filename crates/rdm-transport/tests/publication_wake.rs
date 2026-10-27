@@ -1,5 +1,5 @@
-//! i143.e12.s40 functional: a mesh primary publishes its Mesh's aggregate "on its anti-entropy timer
-//! and at once on a material change" (gossip.md, the `Members` row). A stop overlay that stops a
+//! i143.e12.s40 functional: a mesh primary publishes its Mesh's topology "on its anti-entropy timer
+//! and at once on a material change" (gossip.md, the `MeshTopology` row). A stop overlay that stops a
 //! member is such a change ("an in_flight overlay added or cleared" bumps `topology_version`), so the
 //! publication that publishes it is woken by the change itself, not by the next anti-entropy tick.
 

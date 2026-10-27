@@ -55,15 +55,15 @@ the final-primary Exited (S2 if the step is renamed in the same commit) · no go
 ### 2 · behaviour · `lead_leave` in `crates/rafka-node-admin-core/src/admin/leave.rs` (step 2) / admin.rs `GossipLifecycle::mesh_leaving`
 Code: `self.lifecycle_events.mesh_leaving(&event).await;` -> `Frame::MeshLeaving { .., publisher: self.me }` published
 by the fabric-primary "on the backbone and this mesh's channel" (admin.rs).
-Doc: ops-naming-proposal.md mesh.delete entry: the mesh-primary's aggregate carries the mesh Leaving, "replaces the
+Doc: ops-naming-proposal.md mesh.delete entry: the mesh-primary's mesh topology carries the mesh Leaving, "replaces the
 fabric-primary's old mesh-leaving gossip (backbone + own mesh)"; gossip.md "Mesh delete": "at mesh.deleting the
-mesh-primary publishes its mesh's state, Leaving, in its own aggregate; peers learn it only there".
+mesh-primary publishes its mesh's state, Leaving, in its own mesh topology; peers learn it only there".
 Proposal: delete the `mesh_leaving` hook call, `LifecycleEvents::mesh_leaving`, `GossipLifecycle::mesh_leaving`,
 `NoLifecycleEvents`/testkit stubs, and the peer handler `Frame::MeshLeaving` (membership.rs; its own comment
 already says it marks nothing). The Leaving row + MeshStatus send in `admit_leave` is already the doc's mechanism.
 Landing: B + S4 (a gossip Frame variant; removing it moves postcard variant 14 and the byte fixture
 lifecycle_frames_wire.rs) · gossip change: NEEDS LUKE'S YES (CLAUDE.md rule 1) and a Jaeger flame of the live mesh
-showing peers learn the mesh Leaving from the aggregate alone · durable format moved.
+showing peers learn the mesh Leaving from the mesh topology alone · durable format moved.
 
 ### 3 · behaviour · `shutdown_one` in `crates/rafka-node-admin-core/src/admin/leave.rs` + `shutdown_member` in `deployment/pipeline.rs`
 Code: `shutdown_member` = `drain_steps` + `stop_steps` only (`begin(.., member_operation(outer, path))`); no
@@ -102,16 +102,16 @@ Code: the final primary is stopped in-workflow (item 1) and `Frame::MeshLeft` th
 own mesh and there is no "publish for a mesh I am acting primary of" path (grep for acting/primaryless in
 membership.rs and admin.rs: none).
 Doc: gossip.md "Mesh delete": "After mesh.deleted the mesh's last node-admin, still its primary, keeps publishing its
-aggregate on the backbone with itself as the only member and the mesh status Dead ... From the stop on the
+mesh topology on the backbone with itself as the only member and the mesh status Dead ... From the stop on the
 fabric-primary is that mesh's publisher of record ... `digests` empty, the stopped admin in `in_flight` as NodeStopped
 ... until a start hands publishing back or a delete moves the birth to `departed` as NodeDeleted";
 "After departed retention the mesh is empty". R-NS1 items 1-3.
-Proposal: (a) the mesh-primary keeps its aggregate publisher running after the handoff until stopped/deleted (no
-shutdown of the Members publisher at mesh.deleted); (b) add to the Members publisher path "publish for a mesh I am
+Proposal: (a) the mesh-primary keeps its mesh topology publisher running after the handoff until stopped/deleted (no
+shutdown of the MeshTopology publisher at mesh.deleted); (b) add to the MeshTopology publisher path "publish for a mesh I am
 acting primary of", gated on that mesh having no primary and the fabric-primary holding the stop receipt / exit proof
 for the birth it lists (`overlays_of` unchanged); (c) the receive side keeps the Dead mesh with its one member until
 `departed` retention ends.
-Landing: B · e12.s40 #3067 (R-NS1 story; its red) · gossip.md already describes it, but a Members publisher change is a
+Landing: B · e12.s40 #3067 (R-NS1 story; its red) · gossip.md already describes it, but a MeshTopology publisher change is a
 mesh/gossip change -> NEEDS LUKE'S YES + flame (CLAUDE.md) · no frame variant added.
 
 ### 6 · behaviour · `Frame::MeshLeft` in `crates/rafka-mesh-transport/src/membership.rs`, DigestBook::mesh_left, handler 
@@ -387,8 +387,8 @@ Behaviour changes, largest first
     (item 3; s41 + s49).
  2. mesh.delete ends at mesh.deleted: remove the in-workflow final-primary stop, `FinalExited`, MeshLeft-after-exit;
     the final primary's end is a separate node.delete by the fabric-primary (item 1; s49).
- 3. Dead mesh persists with its last admin publishing; fabric-primary publishes the primaryless mesh's aggregate
-    after its stop (items 5; s40; Members publisher = Luke's yes + flame).
+ 3. Dead mesh persists with its last admin publishing; fabric-primary publishes the primaryless mesh's topology
+    after its stop (items 5; s40; MeshTopology publisher = Luke's yes + flame).
  4. Mesh-primary writes mesh row Dead before the handoff; fabric-primary ensure-Dead as the AlreadyApplied/acting-primary
     path (item 4; s40/s41).
  5. Remove fabric-primary `MeshLeaving` gossip, `MeshLeave` and `MeshLeft` frames (items 2, 6, 7; S4; Luke).
@@ -427,7 +427,7 @@ Paths below are relative to `crates/` unless a leading `docs/` or a bare doc nam
 Code: `create-node:{node}`, `replace-node:`, `restart-node:`, `drain-node:`, `stop-node:`, `start-node:`, `recover-node:`, `retire-node:`, `shutdown-mesh:{mesh_id}`, `create-mesh:{mesh}`.
 Doc: ops-naming-proposal.md "How an op works on node-RPC": "the Build step key: `node.create:<path.name>`"; fabric-mesh-node-lifecycles.md "Terminology firewall" lists `node.create/stop/start/restart/delete/drain:<path.name>`; mesh-delete.md "`mesh.delete:<mesh_id>`; each member's step is its own `node.delete:<path.name>`".
 Proposal: `create-node:`→`node.create:`; `restart-node:`→`node.restart:`; `drain-node:`→`node.drain:`; `stop-node:`→`node.stop:`; `start-node:`→`node.start:`; `retire-node:`→`node.delete:`; `shutdown-mesh:`→`mesh.delete:`. `replace-node:` and `recover-node:` have no mechanical name (findings 8, 9). `create-mesh:` is a mesh-area key; envelope node-create.md#mesh-absent says "There is no mesh create call", so it belongs to the mesh audit, not renamed here.
-Landing: rollout step 2 · durable format moved (keys live in accepted Builds, receipts, `Members.in_flight` `LifecycleOp.operation`, `BuildStepReceipt.operation`) · no wire-schema change · GOSSIP CONTENT CHANGE, needs Luke's yes: `LifecycleOp.operation` rides inside NodeDeleting/NodeDeleted/NodeRestarting/NodeStopped/NodeDraining/NodeLeaving/NodeDrained and every receiver parses it (`LifecycleOp::is_stop/is_restart`, `stopped` in `membership.rs`, `parked_unheard`); frame names stay (step 4) but the bytes differ (see Q7).
+Landing: rollout step 2 · durable format moved (keys live in accepted Builds, receipts, `MeshTopology.in_flight` `LifecycleOp.operation`, `BuildStepReceipt.operation`) · no wire-schema change · GOSSIP CONTENT CHANGE, needs Luke's yes: `LifecycleOp.operation` rides inside NodeDeleting/NodeDeleted/NodeRestarting/NodeStopped/NodeDraining/NodeLeaving/NodeDrained and every receiver parses it (`LifecycleOp::is_stop/is_restart`, `stopped` in `membership.rs`, `parked_unheard`); frame names stay (step 4) but the bytes differ (see Q7).
 
 ### 2 · rename · rafka-node-admin-core/src/deployment/pipeline.rs (Run operation strings: 1103 doc, 1235, 1638, 1713, 1742, 2091, 2190)
 Code: `create_steps`: `let op = if req.restart_of.is_some() { "restart-node" } else { "create-node" }`; `restart`: `format!("restart-node:{name}")`; `retire_steps`: `format!("retire-node:{name}")`; line 1742 `operation: format!("restart-node:{name}")`; `replace_steps`: `replace-node:`; `recover_steps`: `recover-node:`; `drain`/`stop`/`start`: `drain-node:`/`stop-node:`/`start-node:` (1575-1620).
@@ -1182,9 +1182,9 @@ Landing: with finding 1.
 ### 43 · test · testkit/tests/{retire_pipeline.rs, retire_admission.rs, recover_pipeline.rs, mesh_leave_member.rs} — see findings 11 and 12; `recover_pipeline.rs` records `NodeRestarting` for a replace, and states `mesh_leaving/mesh_leave/mesh_left` "not recorded" — drop the three mesh arms with the trait methods; the assertion "A recovery publishes no stop, drain, leaving or mesh-leave event" -> recovery is the mesh-primary's tickle -> provider proof -> one recovery Build (node-recovery.md), keep.
 
 ### 44 · test/comment · mesh-transport/src/membership.rs (CONTRACT of `a_node_joining_after_the_leaving_meshs_members_said_connections_deleting_and_leaving_installs_their_own_states_and_routes_none_of_them`)
-Code: "lifecycles/mesh-leave.md 'Every stopping member publishes its own Leaving … carries that same Leaving digest in its final `Members` aggregate'" — a quote of text that no longer exists.
-Doc: gossip.md "`NodeLeft` … reserved position; never published … a stopping node gossips nothing and its mesh-primary publishes NodeStopped"; mesh-delete.md step 2 and states.md "one routing rule" (no mesh-level hold; a peer learns a deleting mesh only from the mesh-primary's own aggregate, `gossip.md#mesh-delete`).
-Proposal: re-derive the test's premise: a member says Draining/Leaving only where it stays published by its mesh-primary's aggregate, not as its own final `Members` frame. Repoint cite to `gossip.md#mesh-delete` + `lifecycles/states.md#routing-stop`. (mesh-transport is outside this area; flagged because the cited text is gone.)
+Code: "lifecycles/mesh-leave.md 'Every stopping member publishes its own Leaving … carries that same Leaving digest in its final `MeshTopology`'" — a quote of text that no longer exists.
+Doc: gossip.md "`NodeLeft` … reserved position; never published … a stopping node gossips nothing and its mesh-primary publishes NodeStopped"; mesh-delete.md step 2 and states.md "one routing rule" (no mesh-level hold; a peer learns a deleting mesh only from the mesh-primary's own mesh topology, `gossip.md#mesh-delete`).
+Proposal: re-derive the test's premise: a member says Draining/Leaving only where it stays published by its mesh-primary's mesh topology, not as its own final `MeshTopology` frame. Repoint cite to `gossip.md#mesh-delete` + `lifecycles/states.md#routing-stop`. (mesh-transport is outside this area; flagged because the cited text is gone.)
 Landing: test/behaviour check, e12.s45 (#3073 one routing rule) is the closest story.
 
 ### 5 · Citation sweep across ALL of RDM (crates, demo, tools, CLAUDE.md)

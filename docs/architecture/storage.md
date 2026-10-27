@@ -99,7 +99,7 @@ commands carry it, and a node refuses by name a command of an older one (`reject
 It is four steps:
 
 1. **Block.** The fabric-primary sends `mesh.block` to every mesh-primary. Each mesh-primary waits
-   until its in-flight commands complete, then replies `blocked` and gossips a current aggregate of
+   until its in-flight commands complete, then replies `blocked` and gossips the current topology of
    its mesh. A mesh-primary that has replied `blocked` issues no new command until it is unblocked.
 2. **Copy.** Once every mesh-primary has replied `blocked`, the fabric-primary appends every line of
    every store on the old provider to the new one in source order, every name claim and in-flight row

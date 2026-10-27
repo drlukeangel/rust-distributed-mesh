@@ -57,7 +57,7 @@ fn skews(spans: &[Value], node: &str) -> Vec<(u64, i64)> {
 /// a node whose rafka-time stands 1.5 s ahead is told by a whole window of its mesh primary's
 /// stamps that it is ahead, sheds the excess at the maximum slew rate (its rafka-time minus the
 /// host clock falls, never rises), and does not step back; a mesh primary of the other mesh
-/// decides on its fabric-primary's aggregate; and a node on an OS clock an hour ahead is moved by
+/// decides on its fabric-primary's mesh topology; and a node on an OS clock an hour ahead is moved by
 /// none of it. Every one of these is a span of the node it happened to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_off_its_authoritys_time_is_brought_back_by_the_heartbeats() {
@@ -117,16 +117,16 @@ async fn a_node_off_its_authoritys_time_is_brought_back_by_the_heartbeats() {
     let lowest = slow.iter().map(|(_, k)| *k).min().unwrap();
     assert!(lowest > -300, "a clock 2 % slow would stand 800 ms behind after 40 s; the lowest offset to the host clock is {lowest} ms");
 
-    // A mesh primary of the other mesh decided on its fabric-primary's Members aggregate; the
+    // A mesh primary of the other mesh decided on its fabric-primary's mesh topology; the
     // fabric-primary decided nothing from any follower.
     let decisions = |node: &str| -> Vec<&Value> { named(&spans, "rdm.mesh.entry.update.via-rafka-time-observed").into_iter().filter(|sp| attr(sp, "node") == node).collect() };
     let by_primary = decisions(&mesh2_primary);
     if mesh2_primary != fabric_primary {
-        assert!(!by_primary.is_empty() && by_primary.iter().all(|sp| attr(sp, "source") == "fabric-primary-members"), "{mesh2_primary} observed its fabric-primary's aggregate: {by_primary:?}");
+        assert!(!by_primary.is_empty() && by_primary.iter().all(|sp| attr(sp, "source") == "fabric-primary-mesh-topology"), "{mesh2_primary} observed its fabric-primary's mesh topology: {by_primary:?}");
     }
     assert!(decisions(&fabric_primary).is_empty(), "the fabric-primary observed no follower");
     for sp in named(&spans, "rdm.mesh.entry.update.via-rafka-time-observed") {
-        assert!(["mesh-primary-digest", "fabric-primary-members"].contains(&attr(sp, "source").as_str()), "{sp}");
+        assert!(["mesh-primary-digest", "fabric-primary-mesh-topology"].contains(&attr(sp, "source").as_str()), "{sp}");
     }
 
     // The node on the OS clock an hour ahead: its rafka-time never read it.

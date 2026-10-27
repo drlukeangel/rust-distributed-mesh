@@ -23,7 +23,7 @@ pub struct Running {
     /// This process's one Node RPC client and live resolver: every Node RPC
     /// caller in the process takes it by clone.
     pub node_rpc: crate::node_rpc::ProcessNodeRpc,
-    /// This admin's place on the backbone: while it leaves, its aggregate publication carries its
+    /// This admin's place on the backbone: while it leaves, its mesh topology publication carries its
     /// own `Leaving` out of its mesh ([`Running::leave`]).
     pub(crate) backbone: Backbone,
     pub(crate) router: IrohRouter,
@@ -34,7 +34,7 @@ pub struct Running {
     pub(crate) publisher: tokio::task::JoinHandle<()>,
     pub(crate) executor: tokio::task::JoinHandle<()>,
     pub(crate) hierarchy: tokio::task::JoinHandle<()>,
-    /// The Members anti-entropy: this admin's mesh aggregate on the backbone, on its own timer.
+    /// The mesh topology anti-entropy: this admin's mesh topology on the backbone, on its own timer.
     pub(crate) anti_entropy: tokio::task::JoinHandle<()>,
     pub(crate) tasks: Vec<tokio::task::JoinHandle<()>>,
     /// The tasks node.start's steps after the hook started (the own-mesh sweep of a launched admin).
@@ -90,7 +90,7 @@ impl Running {
         &self.gate
     }
 
-    /// Whether this admin publishes its mesh's aggregate on the backbone: the role its hierarchy
+    /// Whether this admin publishes its mesh's topology on the backbone: the role its hierarchy
     /// last decided (its mesh's primary, its view authorizing).
     pub fn publishes_its_mesh(&self) -> bool {
         self.backbone.is_mesh_primary()
@@ -134,7 +134,7 @@ impl Running {
     /// one stop sequence an rpc node's signal runs ([`crate::node_self::NodeSelf::stop_on_signal`]). The
     /// Build executor stops first (an attempt it was running is continued by the Build's next attempt).
     /// Then the whole `node.connections.delete { All }` under the birth's bound, its connections-deleting
-    /// owed to its mesh-primary; its tasks held; its last aggregate before the cut carrying itself
+    /// owed to its mesh-primary; its tasks held; its last mesh topology before the cut carrying itself
     /// Leaving when it is its mesh's primary; `node.mesh.leave`, its own mesh and the backbone left and
     /// its Node RPC pool cut; its `Stopped` owed to its mesh-primary (node-rpc.md §43), waited on by
     /// nothing. Then the process end ([`Self::leave_with`]): every task aborted, each call this node
@@ -2790,7 +2790,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
 
                                     let hierarchy;
                                     let anti_entropy;
-                                    // What the hierarchy hands the Members anti-entropy: a role it took is held for
+                                    // What the hierarchy hands the mesh topology anti-entropy: a role it took is held for
                                     // writing until its seat is announced (`roles`), the anti-entropy is told once it
                                     // is (`roles_moved`).
                                     let roles = Arc::new(tokio::sync::RwLock::new(()));
@@ -2799,7 +2799,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // meshes onto its mesh channel; the fabric primary publishes the fabric's status and
                                     // changes the fabric states. It joins the backbone through every admin it knows and
                                     // its mesh channel through every member of its mesh it knows. It publishes no
-                                    // Members aggregate: that is the anti-entropy's timer, below.
+                                    // mesh topology: that is the anti-entropy's timer, below.
                                     {
                                         let (roles, roles_moved) = (roles.clone(), roles_moved.clone());
                                         let (backbone, topology_view, topology, me, mesh) = (backbone.clone(), topology_view.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone());
@@ -2869,7 +2869,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     })
                                                     .await;
                                                 // The accepted Build is the authority on which meshes the fabric has: the view
-                                                // takes no old aggregate of a mesh it does not name, and a mesh it does not name
+                                                // takes no old mesh topology of a mesh it does not name, and a mesh it does not name
                                                 // that has no member left keeps no recorded id (a name added again is a new mesh).
                                                 if let Some(Some(b)) = current {
                                                     topology_view.digest_view.set_accepted_meshes(b.topology.meshes.keys().cloned().collect());
@@ -2887,7 +2887,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 writes_tx.send_if_modified(|held| std::mem::replace(held, written.clone()) != written);
                                                 let fabric_primary = t.is_fabric_primary(&seat_node_id);
                                                 // A role taken or given up this turn is held from the anti-entropy until its
-                                                // seat is announced below: a role's first aggregate follows its seat record.
+                                                // seat is announced below: a role's first mesh topology follows its seat record.
                                                 let announcing = if (mesh_primary, fabric_primary) != (was_mesh_primary, was_fabric_primary) { Some(roles.write().await) } else { None };
                                                 // The declarations held before this admin wrote rows (Q59 = x) are its first write
                                                 // after it takes a seat that writes them.
@@ -3002,7 +3002,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         });
                                     }
-                                    // The Members anti-entropy (gossip.md §3.2, "PERPETUAL TIMERS … Members anti-entropy —
+                                    // The mesh topology anti-entropy (gossip.md §3.2, "PERPETUAL TIMERS … mesh topology anti-entropy —
                                     // the mesh primary on the backbone; also sent at once on a material change"): its own
                                     // timer, never a step of the hierarchy's turn. It reads the view and the roles the
                                     // hierarchy decided, nothing else, so no store read or write of the turn (the
@@ -3014,7 +3014,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // primary it publishes each deleted mesh whose last admin it stopped or deleted
                                     // (mesh-delete.md step 7). Held at its own wait while the admin is stopped.
                                     {
-                                        // `mesh.block`'s current aggregate of this admin's mesh (storage.md §2 step 1).
+                                        // `mesh.block`'s current mesh topology of this admin's mesh (storage.md §2 step 1).
                                         let (backbone, topology_view) = (backbone.clone(), topology_view.clone());
                                         let _ = storage_changes.aggregate.set(Arc::new(move || {
                                             let (backbone, topology_view) = (backbone.clone(), topology_view.clone());

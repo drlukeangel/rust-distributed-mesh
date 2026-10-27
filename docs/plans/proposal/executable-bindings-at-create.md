@@ -236,7 +236,7 @@ is a request naming that path's executable, the ordinary replacement.
 
 The node's row is the source. `node.get` returns each node's executable beside its status, config and
 tags (`NodeView.executable`); `fabric.nodes.get` is the mesh selector's answer over every mesh, from
-the rows. The digest, the `Members` projection and `node.topology.get` carry no executable.
+the rows. The digest, the `MeshTopology` projection and `node.topology.get` carry no executable.
 
 ## 6. Refusals, by name
 

@@ -2,7 +2,7 @@
 //!
 //! Every node serves it: it reads what the node holds (its topology view and the snapshot
 //! receiver's held sources, each with the publisher and `topology_version` it holds them at) and
-//! streams one snapshot per mesh, chunked by the one method gossip's `Members` snapshots use
+//! streams one snapshot per mesh, chunked by the one method gossip's `MeshTopology` snapshots use
 //! ([`rdm_transport::snapshot::chunks_of`]). It mutates nothing at the target.
 //!
 //! The caller ([`get_topology`]) installs a mesh only once every chunk of one snapshot is held,

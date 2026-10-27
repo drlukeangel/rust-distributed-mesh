@@ -97,7 +97,7 @@ pub struct AdminRunner {
 }
 
 /// The lifecycle events of an operation this admin executes, on its own mesh channel only. The
-/// backbone carries them as the open overlays and retained departures of this mesh's aggregate,
+/// backbone carries them as the open overlays and retained departures of this mesh's topology,
 /// which its mesh primary publishes; a peer mesh's primary forwards them onto its own channel.
 pub struct GossipLifecycle {
     /// This admin's mesh channel.

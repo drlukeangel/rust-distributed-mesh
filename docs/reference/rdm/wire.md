@@ -2656,7 +2656,7 @@ The node a resolve probe names.
 
 `crates/rdm-core/src/wire.rs` · struct · 2 fields · rdm-core
 
-One member of a mesh-primary's member projection as it travels (gossip.md §3.1 `Members`,
+One member of a mesh-primary's member projection as it travels (gossip.md §3.1 `MeshTopology`,
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|

@@ -75,7 +75,7 @@ StaticResolver remains test-only. Production callers do not construct a one-node
 The running process state sees both the topology view and Node RPC and wires them together without making the sibling crates depend on each other.
 
 ~~~text
-topology Members/current births + retained deleted identities
+topology MeshTopology/current births + retained deleted identities
     -> process composition adapter
     -> LiveNodeResolver
 
@@ -150,7 +150,7 @@ A connections-deleting, connections-deleted, stopping or stopped current birth m
 
 A known deletion comes only from canonical deletion facts. A stopped status, silence, a failed RPC or dial, or a peer mesh that goes unheard does not produce Gone.
 
-A deletion arrives as a `NodeDeleted` event and is retained in `Members.deleted`; when a deletion exists and how long it is held are [gossip.md §6.1](gossip.md#61-deletions-an-event-for-promptness-members-for-retention). The resolver reads no lifecycle overlay, so a lifecycle op still reaches the node it is deleting. Gone is resolver knowledge, never a current node row.
+A deletion arrives as a `NodeDeleted` event and is retained in `MeshTopology.deleted`; when a deletion exists and how long it is held are [gossip.md §6.1](gossip.md#61-deletions-an-event-for-promptness-meshtopology-for-retention). The resolver reads no lifecycle overlay, so a lifecycle op still reaches the node it is deleting. Gone is resolver knowledge, never a current node row.
 
 The resolver exposes a change signal. A slot/freshness move while a dial/call is being prepared invalidates that pinned target before dispatch.
 

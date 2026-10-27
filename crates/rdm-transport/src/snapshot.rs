@@ -1,5 +1,5 @@
 //! Versioned cross-Mesh topology (rafka gossip.md §3.1 and §3.3): the `topology_version` a source
-//! Mesh's primary puts on its backbone aggregate, the chunked snapshot a receiver installs
+//! Mesh's primary puts on its backbone mesh topology, the chunked snapshot a receiver installs
 //! atomically, the delta a forwarding primary derives between two fulls it holds, and the
 //! baseline an entry top-up hands a node.
 //!
@@ -7,10 +7,10 @@
 //! gossip wiring in [`crate::topology`] feeds it frames and sends what it returns.
 //!
 //! ```text
-//! SOURCE PRIMARY   Full -> SourceVersion::observe -> version -> chunks_of -> Members on the backbone
-//! RECEIVER         Members chunks -> SnapshotReceiver -> installed only once EVERY chunk is held
-//! FORWARDER        held source Full, last-published Full -> Forwarder -> MembersDelta | forwarded full
-//! RECEIVER         MembersDelta -> applied only at exactly base_version, else the source desyncs
+//! SOURCE PRIMARY   Full -> SourceVersion::observe -> version -> chunks_of -> MeshTopology on the backbone
+//! RECEIVER         MeshTopology chunks -> SnapshotReceiver -> installed only once EVERY chunk is held
+//! FORWARDER        held source Full, last-published Full -> Forwarder -> MeshTopologyDelta | forwarded full
+//! RECEIVER         MeshTopologyDelta -> applied only at exactly base_version, else the source desyncs
 //! ```
 
 use crate::topology::{Frame, MAX_FRAME};
@@ -154,7 +154,7 @@ impl Full {
         }
     }
 
-    /// This full moved by `delta` (gossip.md §3.1, `MembersDelta` carries "overlay and departed
+    /// This full moved by `delta` (gossip.md §3.1, `MeshTopologyDelta` carries "overlay and departed
     /// changes"). A `changed` entry of a birth clears that exact birth's stop overlay
     /// (`NodeStopped`, `node.stop:`): the source lists the birth again once its primary's
     /// `node.joined` ended the stop. A departure ends every overlay of its exact birth, its stop
@@ -322,7 +322,7 @@ impl SourceSnapshot {
     }
 }
 
-/// One chunk of a snapshot, as a receiver reads it from a `Members` frame.
+/// One chunk of a snapshot, as a receiver reads it from a `MeshTopology` frame.
 #[derive(Debug, Clone)]
 pub struct Chunk {
     /// The source mesh's name.
@@ -590,16 +590,16 @@ impl SnapshotReceiver {
         }
         let identity = format!("{} {} topology_version={} snapshot_id={} chunk_index={}", c.mesh, c.publisher, c.topology_version, c.snapshot_id, c.chunk_index);
         let conflict = || {
-            publication_inconsistent("members", &c.mesh, &c.publisher, c.topology_version);
+            publication_inconsistent("mesh-topology", &c.mesh, &c.publisher, c.topology_version);
             Taken::Refused(Refusal::Inconsistent)
         };
         let duplicate = || {
-            publication_duplicate("members", &identity);
+            publication_duplicate("mesh-topology", &identity);
             Taken::Refused(Refusal::Duplicate)
         };
         if let Some(h) = self.held.get(&c.mesh).filter(|h| h.publisher == c.publisher) {
             if c.topology_version < h.version {
-                publication_stale("members", &c.mesh, &c.publisher, h.version, c.topology_version);
+                publication_stale("mesh-topology", &c.mesh, &c.publisher, h.version, c.topology_version);
                 return Taken::Refused(Refusal::OlderThanHeld { held_version: h.version, offered_version: c.topology_version });
             }
             if !from_read && c.topology_version == h.version {
@@ -615,7 +615,7 @@ impl SnapshotReceiver {
         if let Some(p) = self.pending.get(&key) {
             let same = p.version == c.topology_version && p.snapshot_id == c.snapshot_id;
             if !same && (c.topology_version, c.snapshot_id) < (p.version, p.snapshot_id) {
-                publication_stale("members", &c.mesh, &c.publisher, p.version, c.topology_version);
+                publication_stale("mesh-topology", &c.mesh, &c.publisher, p.version, c.topology_version);
                 return Taken::Refused(Refusal::OlderThanPending { pending_version: p.version, pending_snapshot: p.snapshot_id, offered_version: c.topology_version, offered_snapshot: c.snapshot_id });
             }
             if !same { self.pending.remove(&key); }
@@ -702,7 +702,7 @@ impl SnapshotReceiver {
         // A copy of the delta held: gossip can deliver one delta twice, and a top-up may have brought
         // this node to it. Neither is a gap. An earlier one never reaches here (R-RX3, the receive path).
         if topology_version < h.version {
-            crate::receive_order::publication_stale("members-delta", mesh, source, h.version, topology_version);
+            crate::receive_order::publication_stale("mesh-topology-delta", mesh, source, h.version, topology_version);
             return Moved::Stale;
         }
         if h.version == topology_version {
@@ -711,10 +711,10 @@ impl SnapshotReceiver {
                 None => { let mut candidate = h.full.clone(); candidate.apply(delta); h.full.same_topology(&candidate) },
             };
             if !same {
-                crate::receive_order::publication_inconsistent("members-delta", mesh, source, topology_version);
+                crate::receive_order::publication_inconsistent("mesh-topology-delta", mesh, source, topology_version);
                 return Moved::Inconsistent;
             }
-            crate::receive_order::publication_duplicate("members-delta", &format!("{mesh} {source} base_version={base_version} topology_version={topology_version}"));
+            crate::receive_order::publication_duplicate("mesh-topology-delta", &format!("{mesh} {source} base_version={base_version} topology_version={topology_version}"));
             return Moved::Duplicate { held_version: h.version };
         }
         if h.desynced.is_some() {
@@ -862,7 +862,7 @@ impl Forwarder {
     fn full_frames(&mut self, me: &str, mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) -> Vec<Frame> {
         let snapshot_id = self.snapshots.fetch_add(1, Ordering::Relaxed) + 1;
         let author = self.author.as_ref().expect("forwarder requires its supplied author birth");
-        chunks_of(full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+        chunks_of(full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
             mesh: mesh.to_string(),
             publisher: publisher.clone(),
             forwarded_by: Some(me.to_string()),
@@ -873,7 +873,7 @@ impl Forwarder {
             chunk_count,
             digests,
             in_flight,
-            departed,
+            deleted,
         }.authored(author, 0, now_ms))
     }
 
@@ -901,7 +901,7 @@ impl Forwarder {
             self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version: basis.version, full: stripped });
             return Forward::Nothing("the move changes nothing a member of this Mesh holds");
         }
-        let frame = Frame::MembersDelta {
+        let frame = Frame::MeshTopologyDelta {
             mesh: mesh.to_string(),
             source_publisher: publisher.clone(),
             base_version: basis.version,
@@ -910,7 +910,7 @@ impl Forwarder {
             changed: delta.changed,
             removed: delta.removed,
             in_flight: delta.in_flight,
-            departed: delta.departed,
+            deleted: delta.departed,
         }.authored(self.author.as_ref().expect("forwarder requires its supplied author birth"), 0, now_ms);
         self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version, full: stripped.clone() });
         // A delta is an optimization: one too large for a message is the full instead.

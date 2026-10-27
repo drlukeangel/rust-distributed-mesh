@@ -20,7 +20,7 @@ a fresh Node RPC dial for its rename, stop, start or delete.
 | Keeps | Its endpoint bound, node.id, incarnation, path and name, port, bin, data dir |
 | Progress | `leaving` from the command until the mesh is left (and the backbone, a node-admin); the node publishes nothing in that state and nothing after it (R-ON1) |
 | Completion | `node.mesh.left` on the commanding stream; the stop's `Stopped { receipt }` or the delete's next step follows it |
-| Gossip | None from the node. Its mesh-primary publishes NodeStopped from the stop's matching stopped frame, or NodeDeleted after node.delete's receipt; a mesh's last admin after mesh.deleted has its final aggregate instead ([mesh.delete](mesh-delete.md) step 7), and the fabric-primary publishes nothing for it. The reserved `NodeLeaving` / `NodeLeft` frame positions stay reserved and unpublished |
+| Gossip | None from the node. Its mesh-primary publishes NodeStopped from the stop's matching stopped frame, or NodeDeleted after node.delete's receipt; a mesh's last admin after mesh.deleted has its final mesh topology instead ([mesh.delete](mesh-delete.md) step 7), and the fabric-primary publishes nothing for it. The reserved `NodeLeaving` / `NodeLeft` frame positions stay reserved and unpublished |
 | Wire | `LeaveMesh { node_id, incarnation, build_id, attempt, operation }` on 0x1B, answered `MeshLeft { node_id, incarnation, left }`; an appended variant pair, `durable format moved`. Inside a stop the command is the stop's own and this frame is not sent |
 | Spans | `rdm.node.mesh.update.via-leaving` at the command, `via-left` once per mesh left, each naming mesh, MeshId and which (`own` or `backbone`) |
 

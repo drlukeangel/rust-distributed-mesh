@@ -1,8 +1,8 @@
 //! The topology a mesh-primary serves a read of its own mesh (node-rpc-envelope.md, Topology op
-//! `0x1E`: "Snapshot uses gossip Members' shape"; "A matching held source version answers
+//! `0x1E`: "Snapshot uses gossip MeshTopology's shape"; "A matching held source version answers
 //! Unchanged"; "Read-only: the target changes no state because of the read").
 //!
-//! gossip.md §3.1, `Members`: "the version bumps on a material change of the normalized projection
+//! gossip.md §3.1, `MeshTopology`: "the version bumps on a material change of the normalized projection
 //! below and not on an unchanged republish"; the receiver rule: "A frame equal in revision to the
 //! held one but different in content is an inconsistency, refused by name". A (publisher,
 //! `topology_version`) names one content: the one its publication put into the mesh.
@@ -64,7 +64,7 @@ fn of(served: Vec<SourceSnapshot>, mesh: &str) -> SourceSnapshot {
 
 /// The chunks of `s` as one topology read delivers them, under the door's `snapshot_id`.
 fn read_chunks(s: &SourceSnapshot, snapshot_id: u64) -> Vec<Chunk> {
-    chunks_of(&s.full(), |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+    chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
         mesh: s.mesh.clone(),
         publisher: s.publisher.clone(),
         forwarded_by: None,
@@ -75,14 +75,14 @@ fn read_chunks(s: &SourceSnapshot, snapshot_id: u64) -> Vec<Chunk> {
         chunk_count,
         digests,
         in_flight,
-        departed,
+        deleted,
     }.authored(&crate::gossip_wire::author(), 0, 1))
     .into_iter()
     .map(|f| match f.into_data() {
-        Frame::Members { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } => {
+        Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted: departed, .. } => {
             Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed }
         }
-        other => panic!("not a Members chunk: {other:?}"),
+        other => panic!("not a MeshTopology chunk: {other:?}"),
     })
     .collect()
 }
@@ -93,7 +93,7 @@ fn take_read(reader: &TopologyView, s: &SourceSnapshot, snapshot_id: u64) -> Tak
     read_chunks(s, snapshot_id).into_iter().map(|c| reader.take_read_chunk(c, "mesh1")).last().expect("a snapshot has at least one chunk")
 }
 
-/// CONTRACT (gossip.md §3.1 `Members` and its receiver rule; node-rpc-envelope.md Topology `0x1E`):
+/// CONTRACT (gossip.md §3.1 `MeshTopology` and its receiver rule; node-rpc-envelope.md Topology `0x1E`):
 /// the mesh-primary's publication publishes its own mesh at version N. A birth then joins its view: a
 /// material change of the projection that no publication has published yet. A topology read in that
 /// window serves the own mesh as published, the version-N publication itself at version N, and a

@@ -70,7 +70,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let mut serial=0;
         for d in [&own,&restarted,&started,&deleted,&holder] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial,&author).await;}
         let old_full=vec![own.clone(),restarted.clone(),deleted.clone(),holder.clone()].into_iter().map(|mut d|{d.digest_seq=1;d}).collect();
-        serial+=1;send(&sender,&receiver,Frame::Members{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:10,published_at_rafka_ms:10,snapshot_id:1,chunk_index:0,chunk_count:1,digests:old_full,in_flight:vec![stop.clone(),delete.clone()],departed:vec![]},serial,&author).await;
+        serial+=1;send(&sender,&receiver,Frame::MeshTopology{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:10,published_at_rafka_ms:10,snapshot_id:1,chunk_index:0,chunk_count:1,digests:old_full,in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},serial,&author).await;
         serial+=1;send(&sender,&receiver,Frame::MeshStatus{mesh:"mesh1".into(),status:"ready-for-traffic".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         serial+=1;send(&sender,&receiver,Frame::FabricStatus{fabric:fabric.clone(),status:"ready-for-traffic".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         let resolver=Arc::new(StaticResolver::new());resolver.insert(ResolvedNode{node_id:own.node.node_id.clone(),name:own.node.name.clone(),endpoint_id:server_ep.id(),transport_addr:server_addr,incarnation:own.node.incarnation.clone()});
@@ -93,8 +93,8 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
             Frame::Digest{digest:stale.clone()},
             Frame::MeshStatus{mesh:"mesh1".into(),status:"deleting".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:99},
             Frame::FabricStatus{fabric:fabric.clone(),status:"deleting".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:99},
-            Frame::Members{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:99,published_at_rafka_ms:200,snapshot_id:2,chunk_index:0,chunk_count:1,digests:vec![stale.clone(),deleted.clone()],in_flight:vec![stop.clone(),delete.clone()],departed:vec![]},
-            Frame::MembersDelta{mesh:"mesh1".into(),source_publisher:publisher.clone(),base_version:98,topology_version:99,published_at_rafka_ms:200,changed:vec![stale],removed:vec![holder.node.node_id.to_string()],in_flight:vec![stop.clone(),delete.clone()],departed:vec![]},
+            Frame::MeshTopology{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:99,published_at_rafka_ms:200,snapshot_id:2,chunk_index:0,chunk_count:1,digests:vec![stale.clone(),deleted.clone()],in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},
+            Frame::MeshTopologyDelta{mesh:"mesh1".into(),source_publisher:publisher.clone(),base_version:98,topology_version:99,published_at_rafka_ms:200,changed:vec![stale],removed:vec![holder.node.node_id.to_string()],in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},
             StatusEvent::Stopped.frame(stop,publisher.clone(),10),StatusEvent::Deleting.frame(delete.clone(),publisher.clone(),10),
             Frame::NodeDeleted{op:delete.clone(),forwarded_by:None},
             Frame::Concern{seat:Seat::FabricPrimary,node_id:own.node.node_id.clone(),incarnation:own.node.incarnation.clone(),observer:"mesh2.admin.1".into()},
@@ -119,7 +119,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
     assert!(!spans.iter().any(|s| s["name"]=="rdm.mesh.topology.reject.via-undecodable-frame"), "every category reaches its receive rule on a valid envelope");
     for s in &spans {if s["name"].as_str().is_some_and(|n|n.starts_with("rdm.mesh.topology.")||n.contains("topology")){println!("{}",serde_json::to_string(s).unwrap());}}
     assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.update.via-snapshot-installed"&&s["attributes"]["node"]=="mesh1.rpc.9"&&s["attributes"]["channel"]=="topology-read"&&s["attributes"]["topology_version"]=="100"));
-    for frame in ["digest","mesh-status","fabric-status","members","members-delta"] {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.reject.via-stale"&&s["attributes"]["frame"]==frame),"{frame} names its stale refusal after the read");}
+    for frame in ["digest","mesh-status","fabric-status","mesh-topology","mesh-topology-delta"] {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.reject.via-stale"&&s["attributes"]["frame"]==frame),"{frame} names its stale refusal after the read");}
     assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.update.via-duplicate"&&s["attributes"]["frame"]=="node-deleted"));
     for position in 10..=15 {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.reject.via-reserved"&&s["attributes"]["position"]==position.to_string()));}
 }

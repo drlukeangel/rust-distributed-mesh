@@ -5,9 +5,9 @@
 //!
 //! - A member (any node that is not its mesh's primary) observes the digest of its CURRENT mesh
 //!   primary: the exact birth (node id and incarnation) its seat record for its own mesh names.
-//! - A mesh primary observes the Members aggregate its CURRENT fabric-primary published on the
+//! - A mesh primary observes the mesh topology its CURRENT fabric-primary published on the
 //!   backbone: the publisher's incarnation is the one the fabric seat record names, and the
-//!   publisher's own digest in that aggregate is the authority's status.
+//!   publisher's own digest in that mesh topology is the authority's status.
 //! - The fabric-primary observes nothing; no other node's stamp is ever offered.
 //!
 //! A stamp is offered only when the authority is `ReadyForTraffic` ("No node is ready-for-traffic
@@ -17,7 +17,7 @@
 //!
 //! The stamps are publication time: `MeshDigest::emitted_at_rafka_ms` is read from the composed
 //! clock inside [`crate::topology::TopologyView::publish`] as the frame is built, and
-//! `Frame::Members::published_at_rafka_ms` is read from the same clock at the start of
+//! `Frame::MeshTopology::published_at_rafka_ms` is read from the same clock at the start of
 //! `Backbone::publish`, before the chunks are built and sent.
 
 use crate::clock::{Ignored, Observed, SharedClock};
@@ -57,7 +57,7 @@ pub(crate) fn from_mesh_primary_digest(mesh: &str, me: &str, i_am_mesh_primary: 
     Verdict::Sample { authority, stamp_ms: d.emitted_at_rafka_ms }
 }
 
-/// A mesh primary's view of one backbone Members aggregate that installed.
+/// A mesh primary's view of one backbone mesh topology that installed.
 pub(crate) fn from_fabric_primary_members(me: &str, i_am_mesh_primary: bool, seats: &PrimaryView, publisher: &PublisherId, publisher_digest: Option<&MeshDigest>, published_at_rafka_ms: u64) -> Verdict {
     if !i_am_mesh_primary || publisher.node == me {
         return Verdict::NotTheAuthority;
@@ -218,8 +218,8 @@ mod tests {
         PublisherId { node: name.into(), incarnation: inc.clone(), node_id: id.clone() }
     }
 
-    /// CONTRACT: a mesh primary takes the stamp of the aggregate its fabric-primary published,
-    /// when the aggregate lists that exact birth ready-for-traffic.
+    /// CONTRACT: a mesh primary takes the stamp of the mesh topology its fabric-primary published,
+    /// when the mesh topology lists that exact birth ready-for-traffic.
     #[test]
     fn a_mesh_primary_takes_the_fabric_primarys_aggregate_stamp() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
@@ -227,14 +227,14 @@ mod tests {
         let auth = digest("mesh2.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 1);
         let p = publisher("mesh2.admin.1", &id, &inc);
         assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&auth), 12_000), Verdict::Sample { authority: "mesh2.admin.1".into(), stamp_ms: 12_000 });
-        // Pre-adoption fabric-primary: still pending in its own aggregate.
+        // Pre-adoption fabric-primary: still pending in its own mesh topology.
         let pending = digest("mesh2.admin.1", &id, &inc, MemberStatus::Pending, 1);
         assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&pending), 12_000), Verdict::Refused { authority: "mesh2.admin.1".into(), reason: "authority-not-ready-for-traffic" });
         assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, None, 12_000), Verdict::Refused { authority: "mesh2.admin.1".into(), reason: "authority-not-in-its-aggregate" });
     }
 
     /// CONTRACT: the fabric-primary never adjusts from a follower, and a mesh primary takes no
-    /// aggregate but the one its fabric seat record names; a non-primary takes none.
+    /// mesh topology but the one its fabric seat record names; a non-primary takes none.
     #[test]
     fn only_the_current_fabric_primary_is_observed_and_only_by_a_mesh_primary() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
@@ -243,13 +243,13 @@ mod tests {
         let other_inc = IncarnationId::mint();
         let other = publisher("mesh3.admin.1", &NodeId::mint(), &other_inc);
         let other_digest = digest("mesh3.admin.1", &NodeId::mint(), &other_inc, MemberStatus::ReadyForTraffic, 1);
-        // A follower mesh primary's aggregate.
+        // A follower mesh primary's mesh topology.
         assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &other, Some(&other_digest), 5), Verdict::NotTheAuthority);
         // The fabric-primary itself, and a node that is not a mesh primary.
         let p = publisher("mesh2.admin.1", &id, &inc);
         assert_eq!(from_fabric_primary_members("mesh2.admin.1", true, &seats, &p, Some(&auth), 5), Verdict::NotTheAuthority);
         assert_eq!(from_fabric_primary_members("mesh1.admin.2", false, &seats, &p, Some(&auth), 5), Verdict::NotTheAuthority);
-        // A superseded fabric-primary's aggregate once the seat moved.
+        // A superseded fabric-primary's mesh topology once the seat moved.
         let (id2, inc2) = (NodeId::mint(), IncarnationId::mint());
         seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh3".into(), node_id: id2, incarnation: inc2, revision: 4 });
         assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&auth), 5), Verdict::NotTheAuthority);

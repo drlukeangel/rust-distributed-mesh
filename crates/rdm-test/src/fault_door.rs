@@ -142,7 +142,7 @@ pub enum Hit {
         /// The admin the read goes to: the one that answered the join.
         reads_from: String,
     },
-    /// A final aggregate or leadership announcement about to be sent on a channel.
+    /// A final mesh topology or leadership announcement about to be sent on a channel.
     Announcement {
         /// The announcing node.
         node: String,

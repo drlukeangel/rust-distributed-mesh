@@ -217,7 +217,7 @@ It does not know whether its mesh is the first or the 101st, and it does not car
 Its day zero does NOT read `ops.nodes`. At Day 0 the bootstrap admin, as mesh1's primary, claims its
 own name and writes its own row through the create path, the first write of its create. That write is a row write only: it is never permission to originate a rename of its own row. Every later
 node-admin's row is written by its mesh's primary. From there the topology grows by two inputs: the
-backbone aggregate of each peer mesh, and node.create calls for its own mesh.
+backbone mesh topology of each peer mesh, and node.create calls for its own mesh.
 
 Mesh-local gossip is not a third input: it carries liveness for members this admin already knows,
 which are there because one of those two put them there.
@@ -393,7 +393,7 @@ One topic per mesh; its frames, their authors, dedup and retention are
 
 Who joins the backbone and who publishes on it are
 [gossip.md §3](gossip.md#3-hierarchical-topology); a cross-mesh deletion is
-[gossip.md §6.1](gossip.md#61-deletions-an-event-for-promptness-members-for-retention).
+[gossip.md §6.1](gossip.md#61-deletions-an-event-for-promptness-meshtopology-for-retention).
 
 ### 3.3 Non-wire adjuncts
 
@@ -529,7 +529,7 @@ All removal from the view is the topology view's (`rdm-transport/src/topology.rs
 unheard past the staleness floor is held, not current (`rdm.mesh.topology.update.via-member-stale`);
 a stopped birth leaves the view at `NodeStopped` (`rdm.mesh.topology.remove.via-node-stopped`); a
 deleted birth leaves at `NodeDeleted` and its id is held deleted for the retention
-([gossip.md §6.1](gossip.md#61-deletions-an-event-for-promptness-members-for-retention)). A member
+([gossip.md §6.1](gossip.md#61-deletions-an-event-for-promptness-meshtopology-for-retention)). A member
 whose silence a lifecycle event the view applied explains is expected silence, neither stale nor
 counted ([gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours), Q58).
 
@@ -540,7 +540,7 @@ counted ([gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-
 | **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after exact provider proof | on receipt |
 | **Re-born** | the same `path.name` under a new node.id ([node recovery](lifecycles/node-recovery.md)): the predecessor is deleted by the recovery Build, so the projection holds one entry per `path.name` | on receipt |
 
-The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license destructive Build recovery. A retained Gone deletion is produced only by canonical exact deletion proof, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `Members.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
+The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license destructive Build recovery. A retained Gone deletion is produced only by canonical exact deletion proof, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `MeshTopology.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
 
 A removal by [node.delete](lifecycles/node-delete.md), [mesh.delete](lifecycles/mesh-delete.md)
 or [fabric.delete](lifecycles/fabric-delete.md) is its workflow's.
@@ -569,7 +569,7 @@ selects candidates and submits ordinary Builds.
 | Selection | Every node stopped longer than the ttl, except a birth an open Build still references (a replace mid-transfer keeps its rollback point) |
 | Action | One ordinary node.delete Build per selected node, one at a time: one topology Build runs at a time, so the other candidates wait for the next sweep; a `BuildInProgress` refusal loses nothing, the candidate is seen again. The sweep itself deletes nothing |
 | Recheck | The stopped and open-Build checks run again at the delete Build's admission, serialized with it: a node started or referenced by a new Build after the scan is refused there, never deleted from a stale decision |
-| Effect | The delete's own: row deleted, name released, NodeDeleted in the aggregate, deleted retention, Gone |
+| Effect | The delete's own: row deleted, name released, NodeDeleted in the mesh topology, deleted retention, Gone |
 | Wire | Nothing. No frame gains a field; the age lives in the receipt |
 | Span | `rdm.node_admin.node.delete.via-stopped-ttl` with node, stopped_at, ttl, build_id |
 
@@ -610,7 +610,7 @@ defines.
 - **The shape is the accepted Build's.** A mesh may run N node-admins for HA; scaling up never
   implies a paired deletion.
 - **Every mesh always has a LISTENING node-admin**: ready-for-traffic and holding a live backbone
-  aggregate it RECEIVED from every other mesh. No delete, stop or
+  mesh topology it RECEIVED from every other mesh. No delete, stop or
   replace leaves a mesh without one; the separate node.delete of a mesh's last node-admin after
   mesh.deleted is the one exception ([mesh delete](lifecycles/mesh-delete.md)).
 - **A node-admin executable replacement replaces a non-primary admin first**, so the mesh keeps another listening

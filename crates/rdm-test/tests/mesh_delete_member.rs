@@ -2,8 +2,8 @@
 //! (mesh-delete.md step 3), which composes node.drain and the whole node.stop, so the deleting mesh's
 //! primary publishes `NodeStopped` from the member's matching `stopped` reply (node-stop.md step 5,
 //! gossip.md "Node-stopped lifecycle overlay") and then `NodeDeleted` from the provider's exact exit
-//! proof (gossip.md §6.1). Those are what its aggregate carries in backbone `Members.in_flight` and
-//! `Members.departed` to every peer mesh.
+//! proof (gossip.md §6.1). Those are what its mesh topology carries in backbone `MeshTopology.in_flight` and
+//! `MeshTopology.deleted` to every peer mesh.
 
 use crate::common;
 

@@ -942,7 +942,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
 }
 
 /// CONTRACT: mesh-delete.md draws each member's end at the mesh-primary as "member row deleted;
-/// node.deleted", then "aggregate: NodeDeleted in Members.deleted", and its resume keeps a member's
+/// node.deleted", then "mesh topology: NodeDeleted in MeshTopology.deleted", and its resume keeps a member's
 /// finished delete ("Resume after the primary's loss" step 3: "Completed member receipts stand").
 /// Attempt 1, under the final primary `mesh2.admin.1`: `mesh2.rpc.2`'s whole delete runs to
 /// `Complete` and the lost primary publishes its NodeDeleted, which no other admin hears (the

@@ -8,7 +8,7 @@
 //! settled through a Build. An observer joins the backbone and mesh1's channel and decodes the
 //! real frames.
 //!
-//! CONTRACT: one change in mesh2 (an rpc node held, then released) is one `MembersDelta` on mesh1's
+//! CONTRACT: one change in mesh2 (an rpc node held, then released) is one `MeshTopologyDelta` on mesh1's
 //! channel, from the version mesh1's primary last published, and the ordinary member of mesh1
 //! applies it at exactly that base. A member cut off from every peer while mesh2 changes hears
 //! the stripped full mesh1's primary replays when it is heard again, and holds the version the
@@ -17,7 +17,7 @@
 //! member pulls the current fabric topology from mesh1's own primary by a topology read (Node RPC op 0x1E),
 //! installs it atomically at the version that primary last published into mesh1, and the next real
 //! delta applies at that baseline. mesh2's primary is never asked: no topology read of mesh2 answers
-//! the member. The frames the member hears omit loads while the backbone aggregate carries them.
+//! the member. The frames the member hears omit loads while the backbone mesh topology carries them.
 
 use bytes::Bytes;
 use futures_lite::StreamExt as _;
@@ -143,7 +143,7 @@ impl Observer {
             .into_iter()
             .filter(|x| x.channel == "mesh1")
             .filter_map(|x| match x.frame.data() {
-                Frame::MembersDelta { mesh: m, base_version, topology_version, changed, removed, .. } if m == mesh => Some((x.heard_at_ns, *base_version, *topology_version, changed.len(), removed.len())),
+                Frame::MeshTopologyDelta { mesh: m, base_version, topology_version, changed, removed, .. } if m == mesh => Some((x.heard_at_ns, *base_version, *topology_version, changed.len(), removed.len())),
                 _ => None,
             })
             .collect()
@@ -151,7 +151,7 @@ impl Observer {
 
     /// The forwarded full chunks for `mesh` on mesh1's channel.
     fn forwarded_fulls_of(&self, mesh: &str) -> Vec<Seen> {
-        self.all().into_iter().filter(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::Members { mesh: m, forwarded_by: Some(_), .. } if m == mesh)).collect()
+        self.all().into_iter().filter(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::MeshTopology { mesh: m, forwarded_by: Some(_), .. } if m == mesh)).collect()
     }
 
     async fn broadcast(&self, f: &Frame) {
@@ -213,8 +213,8 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
 
     // Joined: the observer is a new neighbour of mesh1's primary, which puts the stripped full of
     // every source it has published into the Mesh.
-    until_arrival("the observer hears mesh2's forwarded full on mesh1's channel and the backbone aggregate", Duration::from_secs(60), &observer.arrivals, || {
-        let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::Members { mesh, .. } if mesh == "mesh2"));
+    until_arrival("the observer hears mesh2's forwarded full on mesh1's channel and the backbone mesh topology", Duration::from_secs(60), &observer.arrivals, || {
+        let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { mesh, .. } if mesh == "mesh2"));
         (!observer.forwarded_fulls_of("mesh2").is_empty() && backbone).then_some(())
     })
     .await;
@@ -222,28 +222,28 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let join_full = observer.forwarded_fulls_of("mesh2");
     let first_full_at = join_full.iter().map(|x| x.heard_at_ns).min().unwrap();
     assert!(observer.deltas_of("mesh2").iter().all(|d| d.0 > first_full_at), "a delta of mesh2 never precedes its full inside the Mesh");
-    // A forwarded full omits loads; the backbone aggregate carries them.
-    let loads_forwarded = join_full.iter().any(|x| matches!(x.frame.data(), Frame::Members { digests, .. } if digests.iter().any(|d| d.in_flight.is_some())));
-    let loads_on_backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::Members { mesh, digests, .. } if mesh == "mesh2" && digests.iter().any(|d| d.in_flight.is_some())));
+    // A forwarded full omits loads; the backbone mesh topology carries them.
+    let loads_forwarded = join_full.iter().any(|x| matches!(x.frame.data(), Frame::MeshTopology { digests, .. } if digests.iter().any(|d| d.in_flight.is_some())));
+    let loads_on_backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { mesh, digests, .. } if mesh == "mesh2" && digests.iter().any(|d| d.in_flight.is_some())));
     assert!(!loads_forwarded, "the forwarded cross-Mesh projection carries no loads");
-    assert!(loads_on_backbone, "the backbone aggregate carries loads");
+    assert!(loads_on_backbone, "the backbone mesh topology carries loads");
     let publisher = join_full
         .iter()
         .find_map(|x| match x.frame.data() {
-            Frame::Members { publisher, .. } => Some(publisher.clone()),
+            Frame::MeshTopology { publisher, .. } => Some(publisher.clone()),
             _ => None,
         })
         .unwrap();
     assert_eq!(publisher.node, "mesh2.admin.1", "the version belongs to the source Mesh's primary");
     let stripped_full_bytes: usize = {
         // The chunks of the newest forwarded full of mesh2 (one snapshot).
-        let newest = join_full.iter().filter_map(|x| match x.frame.data() { Frame::Members { snapshot_id, .. } => Some(*snapshot_id), _ => None }).max().unwrap();
-        join_full.iter().filter(|x| matches!(x.frame.data(), Frame::Members { snapshot_id, .. } if *snapshot_id == newest)).map(|x| x.bytes).sum()
+        let newest = join_full.iter().filter_map(|x| match x.frame.data() { Frame::MeshTopology { snapshot_id, .. } => Some(*snapshot_id), _ => None }).max().unwrap();
+        join_full.iter().filter(|x| matches!(x.frame.data(), Frame::MeshTopology { snapshot_id, .. } if *snapshot_id == newest)).map(|x| x.bytes).sum()
     };
     let backbone_full_bytes: usize = {
         let all = observer.all();
-        let newest = all.iter().filter_map(|x| match x.frame.data() { Frame::Members { mesh, snapshot_id, forwarded_by: None, publisher: p, .. } if mesh == "mesh2" && *p == publisher && x.channel == "backbone" => Some(*snapshot_id), _ => None }).max().unwrap();
-        all.iter().filter(|x| matches!(x.frame.data(), Frame::Members { mesh, snapshot_id, forwarded_by: None, .. } if mesh == "mesh2" && *snapshot_id == newest && x.channel == "backbone")).map(|x| x.bytes).sum()
+        let newest = all.iter().filter_map(|x| match x.frame.data() { Frame::MeshTopology { mesh, snapshot_id, forwarded_by: None, publisher: p, .. } if mesh == "mesh2" && *p == publisher && x.channel == "backbone" => Some(*snapshot_id), _ => None }).max().unwrap();
+        all.iter().filter(|x| matches!(x.frame.data(), Frame::MeshTopology { mesh, snapshot_id, forwarded_by: None, .. } if mesh == "mesh2" && *snapshot_id == newest && x.channel == "backbone")).map(|x| x.bytes).sum()
     };
     // The member holds mesh2 before anything changes.
     let member_installed: Vec<Value> = wait_for("the member holds mesh2's projection", Duration::from_secs(60), || async {
@@ -282,13 +282,13 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         .forwarded_fulls_of("mesh2")
         .iter()
         .find_map(|x| match x.frame.data() {
-            Frame::Members { digests, .. } => digests.iter().find(|d| d.node.name.to_string() == "mesh2.rpc.1").cloned(),
+            Frame::MeshTopology { digests, .. } => digests.iter().find(|d| d.node.name.to_string() == "mesh2.rpc.1").cloned(),
             _ => None,
         })
         .expect("mesh2.rpc.1 is in the forwarded full");
     let mut forged = real_digest.clone();
     forged.status = MemberStatus::ConnectionsDeleting;
-    let gap_frame = Frame::MembersDelta {
+    let gap_frame = Frame::MeshTopologyDelta {
         mesh: "mesh2".into(),
         source_publisher: publisher.clone(),
         base_version: latest + 1,
@@ -297,7 +297,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         changed: vec![forged],
         removed: vec![],
         in_flight: vec![],
-        departed: vec![],
+        deleted: vec![],
     };
     let t_gap = now_ns();
     observer.broadcast(&gap_frame).await;
@@ -425,7 +425,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // forwarder emits one delta from the version it last published to the one it holds (gossip.md
     // invariant 31): the deltas chain with no hole and end at the version the member installed, and the
     // three changes apart in time are three deltas at least (Pending and ReadyForTraffic may share one
-    // aggregate checklist, one version).
+    // mesh topology checklist, one version).
     let mut chain: Vec<(u64, u64)> = deltas_forwarded.iter().map(|sp| (num(sp, "base_version"), num(sp, "topology_version"))).collect();
     chain.sort();
     assert!(chain.len() >= 3, "held, released and held again are three deltas at least from the forwarding primary: {chain:?}");

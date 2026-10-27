@@ -266,7 +266,7 @@ evidence, not a reattachment`.
 build-deployment.md §5, the paragraph → `The node's row is the source. nodes.get returns every node
 row that matches its pairs, each with its executable beside its status, config and tags
 (NodeView.executable): one node by id, a mesh's nodes by mesh, the fabric's by no pair. The digest,
-the Members projection and node.topology.get carry no executable.`
+the MeshTopology projection and node.topology.get carry no executable.`
 
 consumer-guide.md: line 31 → `The read calls follow one rule: one read per entity; the filter is a
 list of (property, values) pairs, AND across pairs, any-of within, a repeated property AND; a

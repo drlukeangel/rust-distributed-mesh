@@ -242,7 +242,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
             .unwrap()
             .values()
             .any(|(name, _, _)| name == "rdm.mesh.topology.reject.via-inconsistent"),
-        "GetTopology and Frame::Members carry the same held_hash at the same (publisher, topology_version)"
+        "GetTopology and Frame::MeshTopology carry the same held_hash at the same (publisher, topology_version)"
     );
 }
 

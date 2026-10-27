@@ -1,13 +1,13 @@
 ## Q130: a forwarded full is sent only when the mesh-primary takes the role, never every `FULL_EVERY` rounds
 
 ### 1. Spec
-`gossip.md` :155 (frame catalog): "`Members` forwarded full `{ …, snapshot_id, chunk_index, chunk_count }` | the
+`gossip.md` :155 (frame catalog): "`MeshTopology` forwarded full `{ …, snapshot_id, chunk_index, chunk_count }` | the
 forwarding primary's own mesh channel | the local mesh primary: every `FULL_EVERY` rounds as passive anti-entropy".
 :596-603 §3.3: "A receiver applies a delta only when it holds exactly `base_version` of that source and publisher.
 On a mismatch it marks that source's projection desynced, stops applying its deltas, and pulls the current full
 fabric topology from its own current mesh-primary [...] installs it atomically, records the publisher and version
 baseline, and resumes. Nothing is held for later and nothing is requested over gossip." :610-612: "`FULL_EVERY` is a
-bounded, configurable number of aggregate rounds. With the top-up, it bounds only how long a node that noticed
+bounded, configurable number of mesh topology rounds. With the top-up, it bounds only how long a node that noticed
 nothing wrong holds a stale projection, so it is passive anti-entropy." Owner: the mesh-primary (forwarder).
 Sequence: delta → gap → top-up from the mesh-primary → resume; a stale projection the node did not notice is
 bounded by the next forwarded full, every `FULL_EVERY` rounds.
@@ -51,6 +51,6 @@ Spec says the forwarding mesh-primary sends a forwarded full every `FULL_EVERY` 
 
 ### 6. Arms
 Every arm assumes the §3.3 receive rule stays: a delta on a base the node does not hold is dropped and the node tops up.
-- A: the forwarder sends the forwarded full of every source every `FULL_EVERY` aggregate rounds, a setting with a measured default — changes publisher (`membership.rs` round loop sets `full_due` every `FULL_EVERY` rounds) and timer (none new: the aggregate round).
+- A: the forwarder sends the forwarded full of every source every `FULL_EVERY` mesh topology rounds, a setting with a measured default — changes publisher (`membership.rs` round loop sets `full_due` every `FULL_EVERY` rounds) and timer (none new: the mesh topology round).
 - B: no code: the page drops the periodic full; a node holding a stale projection it did not notice stays stale until the source's next change — changes the page (`gossip.md` :155, :610-612).
 - x: the delta itself is the fix — changes publisher.

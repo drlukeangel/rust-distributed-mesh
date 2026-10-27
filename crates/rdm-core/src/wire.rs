@@ -7,7 +7,7 @@
 //!
 //! A heartbeat is the digest alone: liveness (`node_state`), endpoints and the runtime fact, and no
 //! status (gossip.md §3.1 `Digest`: "it carries no status: a member's status comes only from its
-//! mesh-primary"). A mesh-primary's member projection (`Members`, `MembersDelta`, the topology
+//! mesh-primary"). A mesh-primary's member projection (`MeshTopology`, `MeshTopologyDelta`, the topology
 //! read) carries each member as a [`ProjectionEntry`]: its digest, then the status the primary holds.
 
 use crate::runtime::{RuntimeFact, RuntimeLocator, RuntimeProvider};
@@ -145,8 +145,8 @@ impl From<WireDigest> for MeshDigest {
     }
 }
 
-/// One member of a mesh-primary's member projection as it travels (gossip.md §3.1 `Members`,
-/// `MembersDelta`; the topology read): its digest (liveness, endpoints, runtime), then its status,
+/// One member of a mesh-primary's member projection as it travels (gossip.md §3.1 `MeshTopology`,
+/// `MeshTopologyDelta`; the topology read): its digest (liveness, endpoints, runtime), then its status,
 /// which the primary sets. Postcard-positional: `digest` at position 0, `status` at 1.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ProjectionEntry {

@@ -31,8 +31,8 @@ pub trait LeaveSeam: Send + Sync {
     fn withholds(&self, node: &str, announcement: u32, channel: &'static str) -> bool;
 }
 
-/// Whether an executable that IS a node-admin withholds one of its final aggregates or leadership
-/// announcements from a channel (R-NS2: "Final aggregates and leadership announcements are best-effort
+/// Whether an executable that IS a node-admin withholds one of its final mesh topologies or leadership
+/// announcements from a channel (R-NS2: "Final mesh topologies and leadership announcements are best-effort
 /// dissemination. A stop does not wait for their delivery"): its backbone asks it before each send of
 /// an announcement `rdm_transport::topology::Withhold` names, on each channel (`"backbone"` or
 /// `"mesh"`); a `true` answer skips that one send and nothing else: the frame, the topic and the
@@ -165,7 +165,7 @@ pub struct Wiring {
     pub fabric_hooks: FabricHooks,
     /// Asked by the leave before each announcement publish.
     pub leave_seam: Option<Arc<dyn LeaveSeam>>,
-    /// Asked by the backbone before each final aggregate or leadership announcement it sends.
+    /// Asked by the backbone before each final mesh topology or leadership announcement it sends.
     pub announcement_seam: Option<Arc<dyn AnnouncementSeam>>,
     /// Asked by a joining admin's start before it makes its topology read.
     pub read_seam: Option<Arc<dyn ReadSeam>>,

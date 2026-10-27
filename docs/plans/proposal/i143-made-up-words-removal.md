@@ -53,7 +53,7 @@ line that would need one is listed in §6 as his call.
 | committed (seat, row, transfer, takeover) | written; one writer writes the row | Q109 A: one writer per row, the storage decides nothing |
 | takeover, take seats, `TakeSeats` | take over | Luke's verb ("taken over fabric-primary", 2026-10-20); 26 page lines already use it |
 | seat revision | the primary's `revision` | `revision` is the vocabulary (CLAUDE.md: "revision, never epoch") |
-| `Seated` frame, and the `primary updating` / `primary updated` frames | nothing: no frame announces a primary change; the successor's `Digest` carries `is_primary` and the mesh-primary's `Members` projection carries the recorded change (gossip.md, "A primary change on gossip"); `node.primary.updated` stays only as the direct reply of the operation |
+| `Seated` frame, and the `primary updating` / `primary updated` frames | nothing: no frame announces a primary change; the successor's `Digest` carries `is_primary` and the mesh-primary's `MeshTopology` projection carries the recorded change (gossip.md, "A primary change on gossip"); `node.primary.updated` stays only as the direct reply of the operation |
 | seat watch, `seat_watch.rs` | the staleness-floor rule of every primary: a primary unheard past the floor is superseded by the lowest ReadyForTraffic node of its type in its mesh | Q107 (1); `fabric-node-lifecycle-elections.md` §4.3 for the fabric-primary; named by the operation it leads to, `node.primary.update` or `node.fabric-primary.update` |
 | `LeadershipView`, resolver | the leadership election and its result | Luke, Q107: "leadership election"; `fabric-node-lifecycle-elections.md` §1 |
 | lane, `LaneId`, `rev-<R>/<seq>` | the Build journal's records at their own keys | `build.md:413` "the Build journal"; Q109 items 12-13: one row at build_id, one at (build_id, mesh, attempt), one claim at (build_id, mesh, attempt) |
@@ -203,7 +203,7 @@ These have no life apart from seat. Recommendation: they go with it, in the same
 - **holder** (133 page lines): "the primary".
 - **`LeadershipView`, resolver** (35 code uses): "the leadership election" and its result, Luke's phrase.
 - **`Seated`, `primary updating`, `primary updated`**: three frames for one operation that needs none.
-  Recommendation: all three go; the normal `Digest` and `Members` publication carry the change, and
+  Recommendation: all three go; the normal `Digest` and `MeshTopology` publication carry the change, and
   `node.primary.updated` is kept only as the direct reply of the operation.
 - **sticky** (3 lines, "the sticky holder"): elections §3's sentence "a primary stays until it is proven
   unable" says it without the word.

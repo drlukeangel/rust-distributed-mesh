@@ -6,7 +6,7 @@
 //! CONTRACT: a status change is sent at once and then once per second, five sends in all, every
 //! send carrying the one instant of the change; a status that did not change sends nothing; only
 //! the node holding the primary role authors a status frame; a forwarding primary keeps the
-//! original publisher; and no status travels inside `Members`.
+//! original publisher; and no status travels inside `MeshTopology`.
 
 use rdm_core::{FabricId, IncarnationId, MeshId};
 use rdm_transport::snapshot::PublisherId;
@@ -167,8 +167,8 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         assert_eq!(status_view.mesh("mesh1").unwrap().publisher, peer);
         assert!(!status_view.take(&republish(peer), &fabric), "the same publisher with the same changed_at is a repeat");
 
-        // Nothing rides inside Members: its fields are digests and overlays only.
-        let members = Frame::Members {
+        // Nothing rides inside MeshTopology: its fields are digests and overlays only.
+        let members = Frame::MeshTopology {
             mesh: "mesh1".into(),
             publisher: PublisherId { node: me.into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
             forwarded_by: None,
@@ -179,12 +179,12 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
             chunk_count: 1,
             digests: vec![],
             in_flight: vec![],
-            departed: vec![],
+            deleted: vec![],
         };
         // The frame is positional postcard: this pattern names every field the frame carries, and
         // none of them is a status.
-        let Ok(Frame::Members { mesh: _, publisher: _, forwarded_by: _, topology_version: _, published_at_rafka_ms: _, snapshot_id: _, chunk_index: _, chunk_count: _, digests: _, in_flight: _, departed: _ }) = Frame::decode(&crate::gossip_wire::authored(&members).encode()).map(Frame::into_data) else {
-            panic!("Members round-trips as Members, carrying no status field");
+        let Ok(Frame::MeshTopology { mesh: _, publisher: _, forwarded_by: _, topology_version: _, published_at_rafka_ms: _, snapshot_id: _, chunk_index: _, chunk_count: _, digests: _, in_flight: _, deleted: _ }) = Frame::decode(&crate::gossip_wire::authored(&members).encode()).map(Frame::into_data) else {
+            panic!("MeshTopology round-trips as MeshTopology, carrying no status field");
         };
 
         // The real Backbone: the publisher role is the span `via-status-publisher`, and a status the

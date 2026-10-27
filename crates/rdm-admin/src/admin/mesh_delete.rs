@@ -503,7 +503,7 @@ impl AdminRunner {
             return Ok(());
         }
         // An admin node investigation reaches is not lost (Q111): silent in this view only for a moment (the
-        // lost primary published the mesh's aggregate), it is the surviving admin the election names
+        // lost primary published the mesh's topology), it is the surviving admin the election names
         // (mesh-delete.md "Resume after the primary's loss" step 2), and the next attempt hands it the
         // workflow. Nothing is deleted or created for the mesh.
         let held = self.topology.read().await.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
@@ -580,7 +580,7 @@ impl AdminRunner {
         let inspected = std::sync::Mutex::new(None);
         let manifest = crate::mesh_delete::await_mesh_deleted(key, &named, handoff, self.records.subscribe_view(), || self.final_primary_unheard(key, primary, &admitted, &inspected), crate::mesh_delete::MESH_DELETED_WAIT).await?;
         // Step 5: mesh.deleted ends the mesh.delete. The final primary is not deleted inside its own
-        // mesh.delete: it keeps publishing its aggregate until a separate node.delete (step 7).
+        // mesh.delete: it keeps publishing its mesh topology until a separate node.delete (step 7).
         self.record_mesh_deleted(key, manifest).await.map_err(RunEnd::failed)
     }
 

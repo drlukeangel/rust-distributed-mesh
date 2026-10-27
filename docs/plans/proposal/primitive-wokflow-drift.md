@@ -92,10 +92,10 @@ itself declares only three states in its life: `Draining` when it drains (`node.
 state it can report, only the `Stopped { receipt }` reply to `StopNode`; `connections-deleted` and `stopping` exist
 nowhere in code. Every place the MP holds `pending` or `stopped` for a node, it put it there itself (P7, §5).
 Fix: one `NodeState` with the six names on the wire and in the code, declared by the node at each transition it makes;
-a durable format move on 0x1B and on the Members projection (a gossip change: Luke's permission and a flame).
+a durable format move on 0x1B and on the MeshTopology projection (a gossip change: Luke's permission and a flame).
 
 **P6. `stopped` carried as an in-flight overlay, not as the member's status (D3), a design question.** gossip.md:153,
-:156, :207, :261, :274-279 carry `NodeStopped` in the Members `in_flight` overlay beside `NodeRestarting` and
+:156, :207, :261, :274-279 carry `NodeStopped` in the MeshTopology `in_flight` overlay beside `NodeRestarting` and
 `NodeDeleting`, "derived from Build facts each round", and node.start "clears it at node.joined". states.md:119 says
 "status `stopped`, overlay". Under the contract `stopped` is a state the node reports, so it belongs in the member's
 status like `connections-deleting` does (gossip.md:230-231 already says so for the other three), and it is replaced only
@@ -258,20 +258,20 @@ mesh-create.md:164 | D1 | "F->>A: ApplyMeshState(ReadyForTraffic)" | the mesh-pr
 mesh-create.md:188 | D2 | "Mesh Pending | fabric-primary | the Ping, then `ApplyMeshState(Pending)`'s call span" | the evidence is the node-admin's reported Pending, not the Ping or the call span
 mesh-create.md:190 | D1 | "Mesh ReadyForTraffic | fabric-primary, node-admin | `ApplyMeshState(ReadyForTraffic)`" | the reporting actor is the mesh-primary; the fabric-primary only records
 mesh-delete.md:19 | D3 | "Mesh state | `mesh.deleting`: the mesh-primary publishes its mesh's status, deleting" | mesh.deleting is a step/event name and deleting is a workflow-intent overlay, not a mesh state
-mesh-delete.md:25 | D3 | "its final aggregate, the mesh deleted and itself deleting, is its last gossip" | deleting is an overlay; the aggregate carries the admin's reported state plus the intent overlay
+mesh-delete.md:25 | D3 | "its final mesh topology, the mesh deleted and itself deleting, is its last gossip" | deleting is an overlay; the mesh topology carries the admin's reported state plus the intent overlay
 mesh-delete.md:26 | D5 | "A mesh's deleted and a node's deleted release names as [States](states.md) states" | a node's deleted is the durable row from the provider's exit proof, an observation, not a node state
 mesh-delete.md:38 | D3 | "`mesh.deleting`: the mesh-primary publishes its mesh's status, deleting, as its MeshStatus frame." | deleting is a workflow-intent overlay, not a published mesh status
-mesh-delete.md:53 | D3 | "its final aggregate, the mesh deleted and itself deleting, is its last gossip: the node.delete's NodeDeleting in aggregate form" | NodeDeleting is an event and deleting an overlay; neither is the member's state
+mesh-delete.md:53 | D3 | "its final mesh topology, the mesh deleted and itself deleting, is its last gossip: the node.delete's NodeDeleting in mesh topology form" | NodeDeleting is an event and deleting an overlay; neither is the member's state
 mesh-delete.md:55 | D5 | "fabric-primary stops it, proves its exit and writes its row deleted" | it records the provider's exit proof and writes the deleted row from that proof
-mesh-delete.md:88 | D3 | "← mesh.deleting the mesh-primary's aggregate carries the mesh deleting" | the aggregate carries the deleting intent overlay, not a mesh state
-mesh-delete.md:93 | D3 | "← the final aggregate from the mesh-primary: the mesh deleted, itself deleting" | "itself deleting" is an overlay, not the admin's lifecycle state
+mesh-delete.md:88 | D3 | "← mesh.deleting the mesh-primary's mesh topology carries the mesh deleting" | the mesh topology carries the deleting intent overlay, not a mesh state
+mesh-delete.md:93 | D3 | "← the final mesh topology from the mesh-primary: the mesh deleted, itself deleting" | "itself deleting" is an overlay, not the admin's lifecycle state
 mesh-delete.md:122 | D3 | "the mesh-primary then publishes `MeshStatus` deleting" | deleting is a workflow-intent overlay, not a MeshStatus value
 mesh-delete.md:160 | D3 | "\"status\": \"deleting\"," | a MeshStatus frame should not carry the deleting overlay as a status
 mesh-delete.md:183 | D3 | "`mesh2.admin.1` deleting under `operation` `node.delete:mesh2.admin.1`" | the member digest carries its reported state; deleting is the overlay
-mesh-delete.md:210 | D3 | "M->>B: aggregate: mesh deleting (mesh.deleting)" | the event name and the overlay are drawn as the mesh's status
+mesh-delete.md:210 | D3 | "M->>B: mesh topology: mesh deleting (mesh.deleting)" | the event name and the overlay are drawn as the mesh's status
 mesh-delete.md:211 | D3 | "B-->>R: hold the mesh deleting and each member's own state" | peers hold the deleting overlay, not a mesh state (the second half is correct)
-mesh-delete.md:215 | D4 | "M->>B: aggregate: NodeStopped" | gossip NodeStopped only after the member's node.stopped reply, which the diagram leaves out (compare 230-231)
-mesh-delete.md:229 | D3 | "M->>B: final aggregate: mesh deleted, itself deleting (its last gossip)" | "itself deleting" is an overlay, not a state
+mesh-delete.md:215 | D4 | "M->>B: mesh topology: NodeStopped" | gossip NodeStopped only after the member's node.stopped reply, which the diagram leaves out (compare 230-231)
+mesh-delete.md:229 | D3 | "M->>B: final mesh topology: mesh deleted, itself deleting (its last gossip)" | "itself deleting" is an overlay, not a state
 mesh-investigation.md:59 | D5 | "both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded (R-DG1)" | degraded is the fabric-primary's own observation, published as an observation, never as mesh-x's MeshStatus
 mesh-investigation.md:68 | D5 | "The fabric-primary never authors mesh-x's MeshStatus outside the investigation arms (R-DG1)." | it never authors mesh-x's MeshStatus at all (contradicts the anchor at line 18)
 mesh-investigation.md:86 | D5 | "MeshStatus and FabricStatus degraded (both arms, R-DG1)" | a degraded health observation, not a MeshStatus/FabricStatus transition
@@ -386,7 +386,7 @@ The anchors are the pages' own statement of the contract. The repair is to make 
 
 1. **states.md's table**, rewritten under the three-way split (the lead's draft of 2026-10-15: the node's six reported states; `starting`, `restarting`, `deleting` as overlays; `deleted`, `PendingReconnect`, `Dead` and the provider facts as the MP's observations; the six sentences of §1 above the table). R-HB1's "authors and publishes" becomes "records and publishes" in the same landing.
 2. **`stopped` as the member's status or as an in-flight overlay** (P6). The contract says state; gossip.md carries it as an overlay derived from Build facts. One answer, then gossip.md, states.md:119, node-stop.md:20 and node-restart.md agree.
-3. **One state vocabulary** (P5): the six names on the wire and in code, declared by the node at each transition, replacing `Draining`/`Leaving`/`ConnectionsDeleting`/`Stopped` across `NodeState`, `MemberStatus`, `NodeStatus` and the Members projection. A durable format move and a gossip change: permission and a flame.
+3. **One state vocabulary** (P5): the six names on the wire and in code, declared by the node at each transition, replacing `Draining`/`Leaving`/`ConnectionsDeleting`/`Stopped` across `NodeState`, `MemberStatus`, `NodeStatus` and the MeshTopology projection. A durable format move and a gossip change: permission and a flame.
 4. **`ApplyNodeState` and `RejectedInvalidNodeTransition`** (P4): remove from the contract, keep the 0x1B positions reserved. Same for `CurrentParked` (P8).
 5. **Does the rule apply one level up** (P9): mesh and fabric states only from their authority's check-in; the rounds' `-ing` frames stay intent overlays.
 6. **The restart's stopped** (node-restart.md:16, :27): gossiped as `stopped` with the overlay beside it, or kept as today. Falls out of question 2.

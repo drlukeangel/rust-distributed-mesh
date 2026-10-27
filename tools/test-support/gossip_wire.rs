@@ -48,11 +48,11 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
             source = format!("rdm://{}/{}/{}", d.fabric_id, d.node.node_id, d.node.incarnation); ms = d.emitted_at_rafka_ms; seq = Some(format!("{:020}", d.digest_seq));
             (format!("birth/{}/{}/{}", d.fabric_id, d.node.node_id, d.node.incarnation), vec![d.fabric_id.to_string(), d.node.node_id.to_string(), d.node.incarnation.to_string(), d.digest_seq.to_string()])
         }
-        Frame::Members { mesh, publisher: p, topology_version: v, published_at_rafka_ms: t, snapshot_id: s, chunk_index: c, .. } => {
+        Frame::MeshTopology { mesh, publisher: p, topology_version: v, published_at_rafka_ms: t, snapshot_id: s, chunk_index: c, .. } => {
             source = format!("rdm://{}/{}/{}", a.fabric, p.node_id, p.incarnation); ms = *t; seq = Some(format!("{v:020}"));
             (format!("mesh/{}/publisher/{}/{}/{}", esc(mesh), a.fabric, p.node_id, p.incarnation), vec![mesh.clone(), a.fabric.to_string(), p.node_id.to_string(), p.incarnation.to_string(), v.to_string(), a.fabric.to_string(), a.node.to_string(), a.incarnation.to_string(), s.to_string(), c.to_string()])
         }
-        Frame::MembersDelta { mesh, source_publisher: p, base_version: b, topology_version: v, published_at_rafka_ms: t, .. } => {
+        Frame::MeshTopologyDelta { mesh, source_publisher: p, base_version: b, topology_version: v, published_at_rafka_ms: t, .. } => {
             source = format!("rdm://{}/{}/{}", a.fabric, p.node_id, p.incarnation); ms = *t; seq = Some(format!("{v:020}"));
             (format!("mesh/{}/publisher/{}/{}/{}", esc(mesh), a.fabric, p.node_id, p.incarnation), vec![mesh.clone(), a.fabric.to_string(), p.node_id.to_string(), p.incarnation.to_string(), b.to_string(), v.to_string()])
         }
@@ -78,9 +78,9 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
     if let Some(p) = parent { attrs.push(("traceparent", p.into())); }
     if let Some(s) = state { attrs.push(("tracestate", s.into())); }
     let mut body = old[1..].to_vec();
-    if let Frame::Members { mesh, publisher, topology_version, published_at_rafka_ms, snapshot_id, .. } = f.data() {
+    if let Frame::MeshTopology { mesh, publisher, topology_version, published_at_rafka_ms, snapshot_id, .. } = f.data() {
         let mut prefix = Vec::new(); text(mesh, &mut prefix); text(&publisher.node, &mut prefix); text(publisher.incarnation.as_str(), &mut prefix); text(publisher.node_id.as_str(), &mut prefix);
-        if let Frame::Members { forwarded_by, .. } = f.data() { match forwarded_by { None => prefix.push(0), Some(by) => { prefix.push(1); text(by, &mut prefix); } } }
+        if let Frame::MeshTopology { forwarded_by, .. } = f.data() { match forwarded_by { None => prefix.push(0), Some(by) => { prefix.push(1); text(by, &mut prefix); } } }
         number(*topology_version, &mut prefix); number(*published_at_rafka_ms, &mut prefix);
         assert!(body.starts_with(&prefix)); let start = prefix.len(); number(*snapshot_id, &mut prefix); let end = prefix.len();
         let mut expanded = body[..start].to_vec(); text(a.fabric.as_str(), &mut expanded); text(a.node.as_str(), &mut expanded); text(a.incarnation.as_str(), &mut expanded); expanded.extend(&body[start..end]); expanded.extend(&body[end..]); body = expanded;

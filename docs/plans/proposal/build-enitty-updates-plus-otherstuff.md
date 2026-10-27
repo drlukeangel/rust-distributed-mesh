@@ -174,7 +174,7 @@ Replace with: "BuildId, DeploymentId and IncarnationId are minted like every oth
 - `rafka-mesh-entity/src/ids.rs:178-204` `opaque_id!` minters (`IncarnationId`, and `EndpointId` when RDM mints one) → the same; the `EndpointId` iroh issues is iroh's and untouched.
 - `rafka-node-admin-client/src/lib.rs:39` `BuildId` parses the same way.
 - A stored `bld-` id is refused by name: the landing commit carries `durable format moved`.
-- `IncarnationId` is on the wire: it rides every gossip Digest and Members frame and the Node RPC birth fields, so its format change is a gossip and wire format change. R-BI5 is the permission; the landing still carries its Jaeger flame from a live mesh (CLAUDE.md gossip rule) as well as `durable format moved`.
+- `IncarnationId` is on the wire: it rides every gossip Digest and MeshTopology frame and the Node RPC birth fields, so its format change is a gossip and wire format change. R-BI5 is the permission; the landing still carries its Jaeger flame from a live mesh (CLAUDE.md gossip rule) as well as `durable format moved`.
 - Done when: `grep -rn "hex::encode" crates/*/src` returns no id minter, every id cell asserts `id_format="crockford60"`, and the landing's row carries the flame link.
 
 ### B2. R-BI3 landing (s58 part 6) — already on `i143-s58-part6 @ 023b96ca`

@@ -2,7 +2,7 @@
 //! node gossips nothing for its stop; R-ON1; stop_gate.rs: a turn already past its wait point runs
 //! to the end of that turn). The stop holds the admin's gate, so no turn begins, and waits until no
 //! gated turn is in progress; only then are its connections cut. A turn that ran on past the cut
-//! would publish (the hierarchy's aggregate, its statuses) and call out (the executor, the
+//! would publish (the hierarchy's mesh topology, its statuses) and call out (the executor, the
 //! declarer) from a stopped node.
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`) at the gate's cadence
@@ -87,8 +87,8 @@ impl Capture {
 /// it; the cell lets the lock go only once the stop has stopped the gate. The stop is answered
 /// `Stopped`; its quiesce step (in the stop's own trace) names the executor among the turns it
 /// waited for, and the stop's connection cut begins only after the quiesce ended: the cut finds no
-/// turn in progress, and no aggregate of the admin's mesh is published once the cut began. The stop
-/// gossips nothing of its own (node-stop.md step 4, R-ON1, Q95): no stopping aggregate. Nothing of
+/// turn in progress, and no mesh topology of the admin's mesh is published once the cut began. The stop
+/// gossips nothing of its own (node-stop.md step 4, R-ON1, Q95): no stopping mesh topology. Nothing of
 /// the admin's Build drive (its
 /// claim, its dispatch, the run it called, the facts it broadcast) runs on past the cut: a drive
 /// whose turn was in progress at the stop ended it before the cut, and one that would begin after
@@ -191,16 +191,16 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
     assert!(waited_for.split(',').any(|t| t.split(':').next() == Some("executor")), "the quiesce waited for the executor's held turn (stop trace {stop_trace}): {quiesce}");
     assert!(quiesce["end_ns"].as_u64().unwrap() <= cut_began, "the cut began before the quiesce ended: {quiesce}");
     assert!(all[0]["end_ns"].as_u64().unwrap() <= quiesce["start_ns"].as_u64().unwrap(), "the hold began before the All ended: {}", all[0]);
-    // A stop gossips nothing of its own (Q95): the one final aggregate is R-NS1 item 2's, a deleted
+    // A stop gossips nothing of its own (Q95): the one final mesh topology is R-NS1 item 2's, a deleted
     // mesh's last admin's on its node.delete.
     let leaving = named("rdm.node_admin.node.update.via-leaving-aggregate");
-    assert!(leaving.is_empty(), "a stop publishes no stopping aggregate (stop trace {stop_trace}): {leaving:?}");
+    assert!(leaving.is_empty(), "a stop publishes no stopping mesh topology (stop trace {stop_trace}): {leaving:?}");
     let cut_report = named("rdm.node_admin.node.update.via-stop-transport-cut");
     assert_eq!(cut_report.len(), 1, "{cut_report:?}");
     assert_eq!(cut_report[0]["attributes"]["turns_in_progress"], "0", "the cut found a turn in progress (stop trace {stop_trace}): {}", cut_report[0]);
-    // Nothing of a turn follows the cut: no aggregate of the admin's mesh is published after it began.
+    // Nothing of a turn follows the cut: no mesh topology of the admin's mesh is published after it began.
     let late: Vec<&Value> = named("rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|s| s["start_ns"].as_u64().unwrap() >= cut_began).collect();
-    assert!(late.is_empty(), "the stopped admin published its mesh's aggregate after its cut began: {late:?}");
+    assert!(late.is_empty(), "the stopped admin published its mesh's topology after its cut began: {late:?}");
     // Nothing of the Build drive runs on past the cut: every span of a drive's trace, and of a run
     // it called (its own trace), ended before the cut began. The one exception is the span of a
     // drive held at the gate's wait point (begun after the stop, so it ran no pass): it ends when
