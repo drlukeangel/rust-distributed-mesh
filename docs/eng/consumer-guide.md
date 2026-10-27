@@ -29,6 +29,15 @@ the linked page before asking: every answer here was already on one.
 
 ## Reading by property
 
+Every read is a query by property, answered in one of two places ([query.md](../architecture/query.md)):
+
+- **The fabric-primary** answers `fabrics.get`, `meshes.get` and `nodes.get` from its atlas, with no
+  store read: any property of the row, `config.<key>` and `tags` included; `connections.get` is the
+  exact birth's own ([query.md §1](../architecture/query.md#1-external-a-query-to-the-fabric-primary)).
+- **The node itself** answers `topology_view.nodes_get(filter)` from the topology it holds, locally,
+  with no call: what gossip carries for every node it hears; a row-only property is refused naming
+  `nodes.get` ([query.md §2](../architecture/query.md#2-internal-the-node-itself)).
+
 The read calls follow one rule (Q167): one read per entity; the filter is a list of (property,
 values) pairs, AND across pairs, any-of within, a repeated property AND; a property is any field of
 the row by its page name, config entries as `config.<key>`; a list in a stable order, empty when
@@ -53,6 +62,14 @@ nodes.get  [["id", ["<node id>"]]]                                 "one node"
 nodes.get  []                                                      the fabric's topology
 meshes.get [["name", ["mesh1"]]]
 connections.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
+```
+
+The same pair list, side by side, from both places:
+
+```text
+nodes.get                   [["kind", ["broker"]], ["status", ["ready-for-traffic"]]]   the fabric-primary's atlas: the rows
+topology_view.nodes_get     [["kind", ["broker"]], ["status", ["ready-for-traffic"]]]   my own topology: the digests I hear
+topology_view.nodes_get     [["config.zone", ["eu-1"]]]                                  refused: config is the row's, read it with nodes.get
 ```
 
 A pair naming a property the row has not (`zone` without `config.`), a value the field cannot take
