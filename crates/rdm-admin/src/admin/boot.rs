@@ -1230,6 +1230,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         if let Err(held) = claim_fabric_name(&*fabric_storage, &fabric_identity, &node_id).await? {
                                             return Err(format!("refusing to start: this admin is configured for Fabric {}: {held}", cfg.fabric_id));
                                         }
+                                        // At Day 0 the fabric-primary is its mesh's primary too and creates its own mesh's
+                                        // row as that mesh's primary (node-identity-and-state.md §2.7): the claim of the
+                                        // mesh's name is the mesh's first durable write, so nothing of the mesh (its states
+                                        // included) is written before it wins.
+                                        match claim_mesh_name(&*mesh_storage, &caches, &name.to_string(), &cfg.mesh, &mesh_id).await {
+                                            Ok(Ok(_)) => {}
+                                            Ok(Err(refused)) => return Err(format!("refusing to start: this admin's mesh {} (mesh {mesh_id}) cannot claim its name: {refused}", cfg.mesh)),
+                                            Err(e) => return Err(format!("refusing to start: {e}")),
+                                        }
                                         // The fabric's provider, fixed by Day 0's MESH_SPAWN_TYPE, is the Fabric record's: an
                                         // adoption launch takes it from there (Q156).
                                         let provider = FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?.provider;
