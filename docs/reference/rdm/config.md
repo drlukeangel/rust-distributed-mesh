@@ -21,8 +21,8 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rdm-core/src/cadence.rs` | 37 | fn `Cadences::from_env` | argument to `ms` |
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rdm-test/src/estate.rs` | 231 | fn `spawn_admin_in_container_within` | literal |
 | `RDM_BACKBONE_INTERVAL_MS` | `tools/test-runner/src/lib.rs` | 41 | const `CADENCE` | literal |
-| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/boot.rs` | 1544 | fn `start_booted` | argument to `.insert` |
-| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/records.rs` | 137 | fn `AdminConfig::from_env` | argument to `get` |
+| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/boot.rs` | 1594 | fn `start_booted` | argument to `.insert` |
+| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/records.rs` | 147 | fn `AdminConfig::from_env` | argument to `get` |
 | `RDM_BIN_DIR` | `crates/rdm-admin/src/deployment/container.rs` | 273 | fn `launch_disk` | argument to `.get` |
 | `RDM_BIN_DIR` | `crates/rdm-test/src/estate.rs` | 48 | fn `bin_dir` | argument to `std::env::var` |
 | `RDM_BIN_DIR` | `crates/rdm-test/src/estate.rs` | 479 | fn `ExternalLaunch::env` | in `vec!` |
@@ -47,14 +47,14 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_CA_SECRET` | `crates/rdm-test/src/test_certs.rs` | 48 | fn `custody_of` | in `vec!` |
 | `RDM_CERT_RENEW_AT` | `crates/rdm-core/src/certs.rs` | 416 | const `ENV_CERT_RENEW_AT` | literal |
 | `RDM_CERT_RENEW_AT` | `crates/rdm-core/src/certs.rs` | 456 | fn `CertPolicy::from_env` | `ENV_CERT_RENEW_AT`, argument to `present` |
-| `RDM_CONNECTIONS_DELETE_DEADLINE_MS` | `crates/rdm-admin/src/admin/records.rs` | 169 | fn `AdminConfig::from_env` | `ENV_CONNECTIONS_DELETE_DEADLINE`, argument to `get` |
+| `RDM_CONNECTIONS_DELETE_DEADLINE_MS` | `crates/rdm-admin/src/admin/records.rs` | 179 | fn `AdminConfig::from_env` | `ENV_CONNECTIONS_DELETE_DEADLINE`, argument to `get` |
 | `RDM_CONNECTIONS_DELETE_DEADLINE_MS` | `crates/rdm-core/src/launch.rs` | 91 | const `ENV_CONNECTIONS_DELETE_DEADLINE` | literal |
 | `RDM_CONNECTIONS_DELETE_DEADLINE_MS` | `crates/rdm-core/src/launch.rs` | 420 | fn `Launch::to_env` | `ENV_CONNECTIONS_DELETE_DEADLINE`, argument to `.insert` |
 | `RDM_CONNECTIONS_DELETE_DEADLINE_MS` | `crates/rdm-core/src/launch.rs` | 445 | fn `Launch::from_env` | `ENV_CONNECTIONS_DELETE_DEADLINE`, argument to `get` |
 | `RDM_CONTAINER_SUBNET_POOL` | `crates/rdm-admin/src/admin/records.rs` | 31 | const `PASSTHROUGH` | literal |
 | `RDM_CONTAINER_SUBNET_POOL` | `crates/rdm-admin/src/deployment/container.rs` | 357 | fn `subnet_pool_from_env` | argument to `std::env::var` |
 | `RDM_CPU_BUDGET_MILLICORES` | `crates/rdm-transport/src/load.rs` | 33 | fn `LoadSampler::for_this_process` | argument to `env` |
-| `RDM_DATA_DIR` | `crates/rdm-admin/src/admin/records.rs` | 128 | fn `AdminConfig::from_env` | argument to `get` |
+| `RDM_DATA_DIR` | `crates/rdm-admin/src/admin/records.rs` | 138 | fn `AdminConfig::from_env` | argument to `get` |
 | `RDM_DATA_DIR` | `crates/rdm-core/src/launch.rs` | 34 | const `ENV_DATA_DIR` | literal |
 | `RDM_DATA_DIR` | `crates/rdm-core/src/launch.rs` | 402 | fn `Launch::to_env` | `ENV_DATA_DIR`, argument to `.insert` |
 | `RDM_DATA_DIR` | `crates/rdm-core/src/launch.rs` | 439 | fn `Launch::from_env` | `ENV_DATA_DIR`, argument to `req` |
@@ -82,16 +82,16 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_EVIDENCE_DIR` | `crates/rdm-test/src/estate.rs` | 1059 | fn `Estate::admin_launch` | in `vec!` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-test/src/estate.rs` | 1308 | fn `ProbeHandle::command` | argument to `.env` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 218 | fn `build_resource_with` | literal |
-| `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 628 | fn `init_evidence` | argument to `std::env::var_os` |
-| `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 633 | fn `init_evidence` | argument to `std::env::var` |
+| `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 640 | fn `init_evidence` | argument to `std::env::var_os` |
+| `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 645 | fn `init_evidence` | argument to `std::env::var` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/transport_diag.rs` | 91 | fn `header` | argument to `env` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/transport_diag.rs` | 111 | fn `start` | argument to `env` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/watchdog.rs` | 193 | fn `spawn` | argument to `std::env::var` |
 | `RDM_EVIDENCE_DIR` | `tools/test-runner/src/lib.rs` | 52 | const `SCRUBBED` | literal |
-| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/boot.rs` | 1548 | fn `start_booted` | `ENV_EXECUTABLE_DIRS`, argument to `.insert` |
-| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 144 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, argument to `get` |
-| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 146 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, in `format!` |
-| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/control_plane.rs` | 1192 | fn `named_executable_refusal` | `ENV_EXECUTABLE_DIRS`, in `format!` |
+| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/boot.rs` | 1598 | fn `start_booted` | `ENV_EXECUTABLE_DIRS`, argument to `.insert` |
+| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 154 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, argument to `get` |
+| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 156 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, in `format!` |
+| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/control_plane.rs` | 1215 | fn `named_executable_refusal` | `ENV_EXECUTABLE_DIRS`, in `format!` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 283 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, argument to `.get` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 285 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, in `format!` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 286 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, in `format!` |
@@ -99,7 +99,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-test/src/estate.rs` | 498 | fn `executable_dirs_env` | literal |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-test/src/estate.rs` | 725 | fn `Estate::born` | argument to `.find` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-test/src/estate.rs` | 1076 | fn `Estate::admin_launch` | argument to `.any` |
-| `RDM_FABRIC` | `crates/rdm-admin/src/admin/records.rs` | 111 | fn `AdminConfig::from_env` | argument to `get` |
+| `RDM_FABRIC` | `crates/rdm-admin/src/admin/records.rs` | 117 | fn `AdminConfig::from_env` | argument to `get` |
 | `RDM_FABRIC` | `crates/rdm-core/src/launch.rs` | 13 | const `ENV_FABRIC` | literal |
 | `RDM_FABRIC` | `crates/rdm-core/src/launch.rs` | 388 | fn `Launch::to_env` | `ENV_FABRIC`, argument to `.insert` |
 | `RDM_FABRIC` | `crates/rdm-core/src/launch.rs` | 429 | fn `Launch::from_env` | `ENV_FABRIC`, argument to `req` |
@@ -113,11 +113,11 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-core/src/launch.rs` | 412 | fn `Launch::to_env` | `ENV_FABRIC_CA_KEY`, argument to `.insert` |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-core/src/launch.rs` | 443 | fn `Launch::from_env` | `ENV_FABRIC_CA_KEY`, argument to `get` |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-test/src/test_certs.rs` | 48 | fn `custody_of` | in `vec!` |
-| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/boot.rs` | 420 | fn `start_booted` | `ENV_FABRIC_ID`, in `format!` |
-| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 116 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
-| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 117 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, in `format!` |
-| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 192 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
-| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 230 | fn `adoption_from_env` | `ENV_FABRIC_ID`, argument to `given` |
+| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/boot.rs` | 468 | fn `start_booted` | `ENV_FABRIC_ID`, in `format!` |
+| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 122 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
+| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 123 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, in `format!` |
+| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 206 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
+| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 244 | fn `adoption_from_env` | `ENV_FABRIC_ID`, argument to `given` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/session.rs` | 25 | fn `refuse_contradictory_start` | `ENV_FABRIC_ID`, in `format!` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/session.rs` | 46 | fn `refuse_contradictory_start` | `ENV_FABRIC_ID`, argument to `.push` |
 | `RDM_FABRIC_ID` | `crates/rdm-core/src/launch.rs` | 15 | const `ENV_FABRIC_ID` | literal |
@@ -125,10 +125,10 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_FABRIC_ID` | `crates/rdm-core/src/launch.rs` | 430 | fn `Launch::from_env` | `ENV_FABRIC_ID`, argument to `req` |
 | `RDM_FABRIC_ID` | `crates/rdm-test/src/estate.rs` | 227 | fn `spawn_admin_in_container_within` | argument to `.push` |
 | `RDM_FABRIC_ID` | `crates/rdm-transport/src/transport_diag.rs` | 93 | fn `header` | argument to `env` |
-| `RDM_FABRIC_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 156 | fn `AdminConfig::from_env` | `ENV_FABRIC_PRIMARY`, argument to `get` |
-| `RDM_FABRIC_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 156 | fn `AdminConfig::from_env` | `ENV_FABRIC_PRIMARY`, argument to `rdm_core::launch::decode_flag` |
-| `RDM_FABRIC_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 162 | fn `AdminConfig::from_env` | `ENV_FABRIC_PRIMARY`, in `format!` |
-| `RDM_FABRIC_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 238 | fn `adoption_from_env` | `ENV_FABRIC_PRIMARY` |
+| `RDM_FABRIC_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 166 | fn `AdminConfig::from_env` | `ENV_FABRIC_PRIMARY`, argument to `get` |
+| `RDM_FABRIC_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 166 | fn `AdminConfig::from_env` | `ENV_FABRIC_PRIMARY`, argument to `rdm_core::launch::decode_flag` |
+| `RDM_FABRIC_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 172 | fn `AdminConfig::from_env` | `ENV_FABRIC_PRIMARY`, in `format!` |
+| `RDM_FABRIC_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 252 | fn `adoption_from_env` | `ENV_FABRIC_PRIMARY` |
 | `RDM_FABRIC_PRIMARY` | `crates/rdm-core/src/launch.rs` | 88 | const `ENV_FABRIC_PRIMARY` | literal |
 | `RDM_GOSSIP_INTERVAL_MS` | `crates/rdm-admin/src/admin/records.rs` | 31 | const `PASSTHROUGH` | literal |
 | `RDM_GOSSIP_INTERVAL_MS` | `crates/rdm-core/src/cadence.rs` | 36 | fn `Cadences::from_env` | argument to `ms` |
@@ -156,7 +156,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_ISSUING_KEY` | `crates/rdm-core/src/launch.rs` | 409 | fn `Launch::to_env` | `ENV_ISSUING_KEY`, argument to `.insert` |
 | `RDM_ISSUING_KEY` | `crates/rdm-core/src/launch.rs` | 443 | fn `Launch::from_env` | `ENV_ISSUING_KEY`, argument to `get` |
 | `RDM_ISSUING_KEY` | `crates/rdm-test/src/test_certs.rs` | 48 | fn `custody_of` | in `vec!` |
-| `RDM_LAUNCHER` | `crates/rdm-admin/src/admin/records.rs` | 223 | fn `adoption_from_env` | `ENV_LAUNCHER`, argument to `given` |
+| `RDM_LAUNCHER` | `crates/rdm-admin/src/admin/records.rs` | 237 | fn `adoption_from_env` | `ENV_LAUNCHER`, argument to `given` |
 | `RDM_LAUNCHER` | `crates/rdm-core/src/launch.rs` | 32 | const `ENV_LAUNCHER` | literal |
 | `RDM_LAUNCHER` | `crates/rdm-core/src/launch.rs` | 398 | fn `Launch::to_env` | `ENV_LAUNCHER`, argument to `.insert` |
 | `RDM_LAUNCHER` | `crates/rdm-core/src/launch.rs` | 437 | fn `Launch::from_env` | `ENV_LAUNCHER`, argument to `get` |
@@ -165,41 +165,41 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_LISTENERS` | `crates/rdm-core/src/launch.rs` | 436 | fn `Launch::from_env` | `ENV_LISTENERS`, argument to `get` |
 | `RDM_MEMBER_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 410 | const `ENV_MEMBER_CERT_TTL_SECS` | literal |
 | `RDM_MEMBER_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 464 | fn `CertPolicy::from_env` | `ENV_MEMBER_CERT_TTL_SECS`, argument to `secs` |
-| `RDM_MESH` | `crates/rdm-admin/src/admin/records.rs` | 121 | fn `AdminConfig::from_env` | argument to `get` |
-| `RDM_MESH` | `crates/rdm-admin/src/admin/records.rs` | 233 | fn `adoption_from_env` | argument to `given` |
+| `RDM_MESH` | `crates/rdm-admin/src/admin/records.rs` | 131 | fn `AdminConfig::from_env` | argument to `get` |
+| `RDM_MESH` | `crates/rdm-admin/src/admin/records.rs` | 247 | fn `adoption_from_env` | argument to `given` |
 | `RDM_MESH` | `crates/rdm-test/src/estate.rs` | 701 | fn `Estate::born` | in `vec!` |
 | `RDM_MESH` | `crates/rdm-transport/src/transport_diag.rs` | 87 | fn `header` | argument to `std::env::var` |
-| `RDM_MESH_ID` | `crates/rdm-admin/src/admin/records.rs` | 199 | fn `AdminConfig::from_env` | argument to `get` |
-| `RDM_MESH_ID` | `crates/rdm-admin/src/admin/runner.rs` | 311 | fn `AdminRunner::template_launching` | `ENV_MESH_ID`, argument to `.insert` |
+| `RDM_MESH_ID` | `crates/rdm-admin/src/admin/records.rs` | 213 | fn `AdminConfig::from_env` | argument to `get` |
+| `RDM_MESH_ID` | `crates/rdm-admin/src/admin/runner.rs` | 326 | fn `AdminRunner::template_launching` | `ENV_MESH_ID`, argument to `.insert` |
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/session.rs` | 43 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, argument to `.push` |
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/session.rs` | 57 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, in `format!` |
 | `RDM_MESH_ID` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1757 | fn `DeploymentPipeline<'_>::create_to_ready_claimed_body` | `ENV_MESH_ID`, argument to `.get` |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 51 | const `ENV_MESH_ID` | literal |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 406 | fn `Launch::to_env` | `ENV_MESH_ID`, argument to `.insert` |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 442 | fn `Launch::from_env` | `ENV_MESH_ID`, argument to `get` |
-| `RDM_MESH_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 155 | fn `AdminConfig::from_env` | `ENV_MESH_PRIMARY`, argument to `get` |
-| `RDM_MESH_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 155 | fn `AdminConfig::from_env` | `ENV_MESH_PRIMARY`, argument to `rdm_core::launch::decode_flag` |
-| `RDM_MESH_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 163 | fn `AdminConfig::from_env` | `ENV_MESH_PRIMARY`, in `format!` |
-| `RDM_MESH_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 238 | fn `adoption_from_env` | `ENV_MESH_PRIMARY` |
+| `RDM_MESH_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 165 | fn `AdminConfig::from_env` | `ENV_MESH_PRIMARY`, argument to `get` |
+| `RDM_MESH_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 165 | fn `AdminConfig::from_env` | `ENV_MESH_PRIMARY`, argument to `rdm_core::launch::decode_flag` |
+| `RDM_MESH_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 173 | fn `AdminConfig::from_env` | `ENV_MESH_PRIMARY`, in `format!` |
+| `RDM_MESH_PRIMARY` | `crates/rdm-admin/src/admin/records.rs` | 252 | fn `adoption_from_env` | `ENV_MESH_PRIMARY` |
 | `RDM_MESH_PRIMARY` | `crates/rdm-core/src/launch.rs` | 86 | const `ENV_MESH_PRIMARY` | literal |
 | `RDM_NODE_ADMIN_API_BASE` | `tools/test-runner/src/lib.rs` | 50 | const `SCRUBBED` | literal |
-| `RDM_NODE_ADMIN_API_BIND` | `crates/rdm-admin/src/admin/records.rs` | 140 | fn `AdminConfig::from_env` | argument to `get` |
+| `RDM_NODE_ADMIN_API_BIND` | `crates/rdm-admin/src/admin/records.rs` | 150 | fn `AdminConfig::from_env` | argument to `get` |
 | `RDM_NODE_ADMIN_API_BIND` | `crates/rdm-test/src/estate.rs` | 228 | fn `spawn_admin_in_container_within` | argument to `.push` |
 | `RDM_NODE_ADMIN_API_BIND` | `tools/test-runner/src/lib.rs` | 51 | const `SCRUBBED` | literal |
-| `RDM_NODE_ID` | `crates/rdm-admin/src/admin/records.rs` | 106 | fn `AdminConfig::from_env` | `ENV_NODE_ID`, argument to `get` |
+| `RDM_NODE_ID` | `crates/rdm-admin/src/admin/records.rs` | 112 | fn `AdminConfig::from_env` | `ENV_NODE_ID`, argument to `get` |
 | `RDM_NODE_ID` | `crates/rdm-core/src/launch.rs` | 19 | const `ENV_NODE_ID` | literal |
 | `RDM_NODE_ID` | `crates/rdm-core/src/launch.rs` | 391 | fn `Launch::to_env` | `ENV_NODE_ID`, argument to `.insert` |
 | `RDM_NODE_ID` | `crates/rdm-core/src/launch.rs` | 432 | fn `Launch::from_env` | `ENV_NODE_ID`, argument to `req` |
 | `RDM_NODE_ID` | `crates/rdm-transport/src/transport_diag.rs` | 94 | fn `header` | argument to `env` |
-| `RDM_NODE_NAME` | `crates/rdm-admin/src/admin/records.rs` | 221 | fn `adoption_from_env` | `ENV_NODE_NAME`, argument to `given` |
+| `RDM_NODE_NAME` | `crates/rdm-admin/src/admin/records.rs` | 235 | fn `adoption_from_env` | `ENV_NODE_NAME`, argument to `given` |
 | `RDM_NODE_NAME` | `crates/rdm-admin/src/admin/session.rs` | 27 | fn `refuse_contradictory_start` | `ENV_NODE_NAME`, in `format!` |
 | `RDM_NODE_NAME` | `crates/rdm-core/src/launch.rs` | 17 | const `ENV_NODE_NAME` | literal |
 | `RDM_NODE_NAME` | `crates/rdm-core/src/launch.rs` | 390 | fn `Launch::to_env` | `ENV_NODE_NAME`, argument to `.insert` |
 | `RDM_NODE_NAME` | `crates/rdm-core/src/launch.rs` | 431 | fn `Launch::from_env` | `ENV_NODE_NAME`, argument to `req` |
 | `RDM_NODE_NAME` | `crates/rdm-transport/src/telemetry.rs` | 218 | fn `build_resource_with` | literal |
 | `RDM_NODE_NAME` | `crates/rdm-transport/src/transport_diag.rs` | 84 | fn `header` | argument to `std::env::var` |
-| `RDM_OTEL_DEBUG` | `crates/rdm-transport/src/telemetry.rs` | 731 | fn `span_export_filter` | argument to `std::env::var` |
-| `RDM_OTLP_LOG_LEVEL` | `crates/rdm-transport/src/telemetry.rs` | 745 | fn `otlp_log_export_level` | argument to `std::env::var` |
+| `RDM_OTEL_DEBUG` | `crates/rdm-transport/src/telemetry.rs` | 743 | fn `span_export_filter` | argument to `std::env::var` |
+| `RDM_OTLP_LOG_LEVEL` | `crates/rdm-transport/src/telemetry.rs` | 757 | fn `otlp_log_export_level` | argument to `std::env::var` |
 | `RDM_PROBE_BIND` | `crates/rdm-test/src/bin/rdm_rpc_probe.rs` | 466 | fn `probe_bind` | argument to `std::env::var` |
 | `RDM_PROBE_BIND` | `crates/rdm-test/src/estate.rs` | 1309 | fn `ProbeHandle::command` | argument to `.env` |
 | `RDM_RAM_BUDGET_BYTES` | `crates/rdm-transport/src/load.rs` | 34 | fn `LoadSampler::for_this_process` | argument to `env` |
@@ -212,7 +212,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_RSHAPE_CONSUMER_BIN_DIR` | `crates/rdm-test/src/estate.rs` | 440 | fn `refuse_built_ins_in_consumer_mode` | `ENV_CONSUMER_BIN_DIR`, argument to `std::env::var` |
 | `RDM_RSHAPE_CONSUMER_BIN_DIR` | `tools/test-runner/src/lib.rs` | 60 | const `SCRUBBED` | literal |
 | `RDM_RSHAPE_CONSUMER_BIN_DIR` | `tools/test-runner/src/lib.rs` | 1203 | fn `run_job_inner` | argument to `.find` |
-| `RDM_SEEDS` | `crates/rdm-admin/src/admin/records.rs` | 190 | fn `AdminConfig::from_env` | `ENV_SEEDS`, argument to `get` |
+| `RDM_SEEDS` | `crates/rdm-admin/src/admin/records.rs` | 204 | fn `AdminConfig::from_env` | `ENV_SEEDS`, argument to `get` |
 | `RDM_SEEDS` | `crates/rdm-admin/src/admin/session.rs` | 49 | fn `refuse_contradictory_start` | `ENV_SEEDS`, argument to `.push` |
 | `RDM_SEEDS` | `crates/rdm-admin/src/admin/session.rs` | 57 | fn `refuse_contradictory_start` | `ENV_SEEDS`, in `format!` |
 | `RDM_SEEDS` | `crates/rdm-core/src/launch.rs` | 30 | const `ENV_SEEDS` | literal |
@@ -224,10 +224,10 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_STALENESS_MS` | `tools/test-runner/src/lib.rs` | 39 | const `CADENCE` | literal |
 | `RDM_STALL_PERF` | `crates/rdm-transport/src/watchdog.rs` | 193 | fn `spawn` | argument to `std::env::var` |
 | `RDM_STOPPED_NODE_TTL` | `crates/rdm-admin/src/admin/records.rs` | 31 | const `PASSTHROUGH` | `ENV` |
-| `RDM_STOPPED_NODE_TTL` | `crates/rdm-admin/src/admin/records.rs` | 166 | fn `AdminConfig::from_env` | `ENV`, argument to `get` |
+| `RDM_STOPPED_NODE_TTL` | `crates/rdm-admin/src/admin/records.rs` | 176 | fn `AdminConfig::from_env` | `ENV`, argument to `get` |
 | `RDM_STOPPED_NODE_TTL` | `crates/rdm-admin/src/stopped_gc.rs` | 20 | const `ENV` | literal |
-| `RDM_STORE_DIR` | `crates/rdm-admin/src/admin/records.rs` | 133 | fn `AdminConfig::from_env` | `ENV_STORE_DIR`, argument to `get` |
-| `RDM_STORE_DIR` | `crates/rdm-admin/src/admin/records.rs` | 134 | fn `AdminConfig::from_env` | `ENV_STORE_DIR`, in `format!` |
+| `RDM_STORE_DIR` | `crates/rdm-admin/src/admin/records.rs` | 143 | fn `AdminConfig::from_env` | `ENV_STORE_DIR`, argument to `get` |
+| `RDM_STORE_DIR` | `crates/rdm-admin/src/admin/records.rs` | 144 | fn `AdminConfig::from_env` | `ENV_STORE_DIR`, in `format!` |
 | `RDM_STORE_DIR` | `crates/rdm-admin/src/deployment/container.rs` | 250 | fn `launch_disk` | `ENV_STORE_DIR`, argument to `.get` |
 | `RDM_STORE_DIR` | `crates/rdm-core/src/launch.rs` | 37 | const `ENV_STORE_DIR` | literal |
 | `RDM_STORE_DIR` | `crates/rdm-core/src/launch.rs` | 403 | fn `Launch::to_env` | `ENV_STORE_DIR`, argument to `.insert` |
@@ -245,9 +245,9 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_TESTS_PARALLEL` | `tools/test-runner/src/lib.rs` | 1418 | fn `router` | argument to `std::env::var` |
 | `RDM_TESTS_TREE` | `tools/test-runner/src/lib.rs` | 1417 | fn `router` | argument to `std::env::var` |
 | `RDM_TEST_RUNNER_BIND_ADDR` | `tools/test-runner/src/main.rs` | 8 | fn `main` | argument to `std::env::var` |
-| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/boot.rs` | 1554 | fn `start_booted` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.insert` |
-| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/records.rs` | 177 | fn `AdminConfig::from_env` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `get` |
-| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/runner.rs` | 301 | fn `AdminRunner::template_launching` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.insert` |
+| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/boot.rs` | 1604 | fn `start_booted` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.insert` |
+| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/records.rs` | 190 | fn `AdminConfig::from_env` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `get` |
+| `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/admin/runner.rs` | 316 | fn `AdminRunner::template_launching` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.insert` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1744 | fn `DeploymentPipeline<'_>::create_to_ready_claimed_body` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, argument to `.get` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-admin/src/storage_backend.rs` | 246 | fn `TopologyStorageProviders::named` | `ENV_TOPOLOGY_STORAGE_PROVIDER`, in `format!` |
 | `RDM_TOPOLOGY_STORAGE_PROVIDER` | `crates/rdm-core/src/launch.rs` | 47 | const `ENV_TOPOLOGY_STORAGE_PROVIDER` | literal |
