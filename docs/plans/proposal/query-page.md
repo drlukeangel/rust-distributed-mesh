@@ -172,3 +172,62 @@ Every read is a query by property, answered in one of two places
   ([query.md §2](../architecture/query.md#2-internal-the-node-itself)).
 
 The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/node-rpc-envelope.md#node-properties).
+
+---
+
+## Open question for the architects: Q237, where a node reads another node's row at runtime
+
+### 1. Spec
+
+- Q227 (Luke): no node reads anything from the store on create, start or rejoin. Every node pulls
+  from its mesh-primary or the fabric-primary.
+- Q203 (Luke): "never pull it from the nodes storage": a node read never reads the node store.
+- Q224: only a primary keeps an Atlas. A node such as `gw1` keeps none: it holds its gossiped
+  topology and, under Q234, its own row.
+- The draft above, §1: a node's read of rows goes to its mesh-primary's Atlas, and is carried to the
+  fabric-primary for another mesh.
+
+### 2. Issue
+
+`gw1` needs `mesh1.broker.1`'s config at runtime. Asking a primary costs a hop. Asking `broker1`
+itself fails when `broker1` cannot be reached. Luke, 2026-10-27: the nodes storage is the source of
+truth, so reading it is better, and this use case is worth it. Q227 rules only start, join and create.
+
+### 3. Flame
+
+None: a contract question.
+
+### 4. Observations
+
+- [code] The topology storage is a pluggable backend (`RDM_TOPOLOGY_STORAGE_PROVIDER`; the file
+  store, Rafka's topics). A node reading it needs that backend's client and access.
+- [code] The file backend has a point read by `path.name` (`node_at`, used by `rdm-admin/src/join.rs:353`)
+  and the tags index. Any other property filter is a scan of the store.
+- [code] A store read racing a writer meets a line still being written. That is #3222: `read_whole`'s
+  refusal after 40 ms. Its fix is built on `i143-3222-store-reader`, which is not landed.
+- [code] The mesh-primary writes the row and its Atlas in the same step, so the store is never
+  fresher than the mesh-primary's Atlas, and is current for a node that cannot be reached.
+
+### 5. Delta
+
+Q203 keeps every node read off the nodes storage. The use case wants a node to read another node's
+row from the store at runtime, where Q227 says nothing.
+
+### 6. Arms
+
+Every arm assumes no node reads the store at create, start or rejoin (Q227).
+
+- **A: a node reads another node's row from the nodes storage at runtime.** It opens the store
+  lazily on its first read, never at its start. Point reads are by `id` or `path.name`; a filter on
+  any other property is a scan. Q203 narrows to the primaries' answers. #3222's fix lands first.
+  Changes: a store handle on every node, the query page's §1 for a node, the store's read path.
+- **B: a node asks its mesh-primary** (the draft as written). The mesh-primary answers from its Atlas
+  for its own mesh and carries the read up for the rest. Changes: nothing beyond the draft.
+- **C: a node asks the other node itself, then its mesh-primary when that node cannot be reached.**
+  Changes: a node-served row read, and two remote paths.
+- **X: something else.**
+
+dev recommendation: B. It keeps the store as persistence only, and keeps every node off a pluggable
+backend's client. It also keeps the file store's whole-file reads and #3222's race away from every
+gateway. A is Luke's lean and works with #3222's fix landed. A filter beyond `id` and `path.name` is a
+scan on the file backend.
