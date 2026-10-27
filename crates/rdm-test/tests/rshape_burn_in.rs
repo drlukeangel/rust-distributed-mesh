@@ -2804,7 +2804,9 @@ async fn recovery_run(cell: &str, shape: Shape) {
     // The broker's exact runtime is held before the restart is asked, so the restart's own stop is in flight
     // when the executor dies: its stop-node gets no answer from a held runtime until its send bound, and the
     // kill lands inside that bound (STOP_NODE_SEND_BOUND). No call is aimed at the held broker meanwhile: each
-    // would wait out its own budget.
+    // would wait out its own budget. The stop in flight is the Build's attempt running under the executor: a held
+    // runtime admits no stop-node, and "only this admission makes the mesh-primary record stopping. A never-sent
+    // command writes no state" (node-stop.md step 1, Q183), so the broker's status says nothing of it.
     let broker_rt = exact_runtime(&f, &broker).await;
     let (mut broker_held, hold_ack) = Held::hold(&broker, &broker_rt);
     progress(&format!("R3: {broker} held for its restart's stop: {hold_ack}"));
@@ -2815,12 +2817,10 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let (held, killed_at_attempt) = loop {
         let b = a.build(&mut f, &bid).await.unwrap_or(Value::Null);
         a.observe_build(&b);
-        let nodes_now = a.nodes_now(&f).await;
-        let left_service = nodes_now.iter().find(|n| n["name"] == broker.as_str()).is_some_and(|n| n["status"] != "ready-for-traffic");
-        if b["state"] == "running" && b["executor"] == executor_name.as_str() && b["attempt"].as_u64() == Some(restart_attempt) && left_service {
+        if b["state"] == "running" && b["executor"] == executor_name.as_str() && b["attempt"].as_u64() == Some(restart_attempt) {
             break (b, restart_attempt);
         }
-        assert!(started.elapsed() < STOP_NODE_SEND_BOUND, "R3: the restart's attempt {restart_attempt} was never seen in flight under {executor_name} with {broker} held and out of service within its stop's send bound; build {b:#}");
+        assert!(started.elapsed() < STOP_NODE_SEND_BOUND, "R3: the restart's attempt {restart_attempt} was never seen in flight under {executor_name} with {broker} held within its stop's send bound; build {b:#}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     let kill = kill_admin(&mut f, &mut a, &st, &executor_name).await;
