@@ -228,6 +228,42 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
 }
 
 // @feature: node-lifecycle
+/// CONTRACT (gates e6s8 c82f213e2 and e6s7 19f396938: `mesh1.admin.2`'s first start read its
+/// launcher's topology, served at `topology_version = 0` before the launcher's first publication;
+/// that publication, `topology_version = 1`, arrived on the backbone first and the read's chunk was
+/// refused `OlderThanHeld { held_version: 1, offered_version: 0 }`, so the read reported no mesh
+/// installed and the admin took itself for its mesh's first admin, never Ready): a read whose
+/// snapshot of a mesh is older than the complete one the caller already installed of the same
+/// source leaves that newer snapshot installed (node-start.md step 4, "Install only complete
+/// source snapshots"), and the read reports it, at the version and with the members the caller
+/// holds, as the mesh the read leaves installed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_of_a_snapshot_older_than_the_held_one_reports_the_snapshot_the_caller_holds() {
+    let fabric = FabricId::mint();
+    let (server, caller) = (node(&fabric, "mesh1", "mesh1.admin.1", |b| b).await, node(&fabric, "mesh1", "mesh1.admin.2", |b| b).await);
+    open(&server, &fabric);
+    let own_pub = publisher("mesh1.admin.1");
+    let first = member_of(&fabric, "mesh1", "admin", 1);
+    let second = member_of(&fabric, "mesh1", "admin", 2);
+    // The target serves the version before the one the caller already holds of the same source.
+    hold(&server.topology_view, &snap("mesh1", &own_pub, 1, vec![first.clone()]));
+    hold(&caller.topology_view, &snap("mesh1", &own_pub, 2, vec![first.clone(), second.clone()]));
+    let t = target_of(&caller, &server);
+
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
+    assert_eq!(caller.topology_view.held_source_version("mesh1"), Some((own_pub.clone(), 2)), "the held projection stands");
+    let m = read.installed.iter().find(|m| m.mesh == "mesh1").expect("the read reports the mesh it leaves installed: the newer snapshot the caller holds");
+    assert_eq!((&m.publisher, m.topology_version), (&own_pub, 2), "at the version the caller holds, never the one served");
+    let mut ids: Vec<String> = m.members.iter().map(|d| d.node.node_id.to_string()).collect();
+    ids.sort();
+    let mut want = vec![first.node.node_id.to_string(), second.node.node_id.to_string()];
+    want.sort();
+    assert_eq!(ids, want, "with the members of the snapshot the caller holds");
+    server.ep.close().await;
+    caller.ep.close().await;
+}
+
+// @feature: node-lifecycle
 /// CONTRACT: a topology larger than one message is chunked by the one packing gossip uses, every
 /// chunk under the reply ceiling and the gossip message bound, and the caller installs the mesh
 /// whole: every member, once.
