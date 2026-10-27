@@ -2075,6 +2075,67 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
     dest.shutdown().await;
 }
 
+/// CONTRACT (connections.md §10: "A stream Proxy (i148, a tunnel) outlives its retirement ...
+/// `node.connections.get` lists it by its row id with `route: retired`, and `node.connections.delete
+/// { All | [ids] }` closes it by that id like any other. Its end writes no second row; it is spanned
+/// `rdm.node.connections.delete.via-tunnel-ended`"): a tunnel opened through the carrier, its route
+/// then retired by a Direct Connected (`Disconnected(direct-restored)` held), is closed by
+/// `node.connections.delete { [its id] }`: its end is one `via-tunnel-ended` span naming the entry,
+/// the source, the carrier, the destination and the alpn, and the log holds the one Proxy
+/// Disconnected the retirement wrote. Must NOT happen: the end unspanned, spanned twice, or a second
+/// Proxy Disconnected row.
+#[test]
+fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span_and_writes_no_second_row() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-tunnel-ended").expect("the cell's evidence file can be created");
+    let (tunnel_id, names, proxy_disconnects) = capture.run(4, async {
+        let alpns = [gateway_alpn(ALPN_A)];
+        let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+        let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+        let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+        source.know(&carrier);
+        carrier.know(&dest);
+        seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+        let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+        let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+        let accept = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+        let tunnel = dialer_s.open(&dest.birth).await.unwrap();
+        let _far = accept.await.unwrap();
+        assert_eq!(tunnel.kind(), ConnectionKind::Proxy { via: carrier.birth.clone() });
+        // The route is retired: a Direct Connected beside the Proxy owes its Disconnected(direct-restored).
+        source.sink.record(NodeConnection {
+            id: ConnectionId::mint(),
+            source: source.birth.to_end(),
+            destination: dest.birth.to_end(),
+            kind: CoreConnectionKind::Direct,
+            alpn: ALPN_A.to_vec(),
+            state: ConnectionState::Connected,
+            carrier: None,
+            recovery: None,
+            reason: None,
+            logged_at_ms: 100,
+        });
+        assert_eq!(source.registry.held_open_tunnels().iter().map(|r| (r.id.clone(), r.reason.clone())).collect::<Vec<_>>(), vec![(tunnel.id().clone(), Some("route: retired".to_string()))], "the open tunnel is listed by its id, its route retired");
+        let deleted = source.registry.delete_connections(&ConnectionScope::Connections(vec![tunnel.id().clone()])).await;
+        assert_eq!(deleted, vec![tunnel.id().clone()]);
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), tunnel.closed()).await.unwrap(), Closed::ConnectionsDeleted);
+        let proxy_disconnects: Vec<Option<String>> = source.sink.history().into_iter().filter(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Disconnected).map(|r| r.reason).collect();
+        let names = (source.birth.name.to_string(), carrier.birth.name.to_string(), dest.birth.name.to_string());
+        let id = tunnel.id().to_string();
+        source.shutdown().await;
+        carrier.shutdown().await;
+        dest.shutdown().await;
+        (id, names, proxy_disconnects)
+    });
+    assert_eq!(proxy_disconnects, vec![Some("direct-restored".to_string())], "the retirement's row is the only Proxy Disconnected: the tunnel's end writes none");
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let ended: Vec<Vec<String>> = spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.node.connections.delete.via-tunnel-ended")
+        .map(|s| ["entry", "source", "carrier", "destination", "alpn"].iter().map(|k| s["attributes"][*k].as_str().unwrap_or_default().to_string()).collect())
+        .collect();
+    assert_eq!(ended, vec![vec![tunnel_id, names.0, names.1, names.2, String::from_utf8_lossy(ALPN_A).to_string()]], "the tunnel's end is one span naming it");
+}
+
 #[tokio::test]
 async fn a_non_forwardable_alpn_never_takes_a_proxy_even_when_one_is_held() {
     let alpns = [non_forwardable_alpn(ALPN_A)];

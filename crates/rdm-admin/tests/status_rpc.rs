@@ -1180,6 +1180,8 @@ enum Script {
     /// `CommandAccepted`, then `ConnectionsDeleting` for `All`, then `end`: the completion, or, when
     /// `None`, nothing more: the stream stays open until the member goes away.
     Accept { end: Option<rdm_core::node_command::NodeCommandReply> },
+    /// As `Accept`, each command ending on the next of these completions in turn.
+    AcceptEach(Arc<Mutex<std::collections::VecDeque<rdm_core::node_command::NodeCommandReply>>>),
 }
 
 /// A member birth serving only the node command op 0x22, answering as `script` says.
@@ -1192,6 +1194,14 @@ async fn scripted_member(b: &Birth, script: Script) -> (ResolvedNode, Router) {
                 let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req else { panic!("expected DeleteConnections") };
                 match script {
                     Script::Refuse(refusal) => Ok(refusal),
+                    Script::AcceptEach(ends) => {
+                        let end = ends.lock().unwrap().pop_front().expect("the script holds a completion for each command");
+                        let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                        if matches!(scope, rdm_core::status::ConnectionScope::All) {
+                            sink.data(N::ConnectionsDeleting { node_id, incarnation }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                        }
+                        Ok(end)
+                    }
                     Script::Accept { end } => {
                         let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
                         if matches!(scope, rdm_core::status::ConnectionScope::All) {
@@ -1298,4 +1308,50 @@ async fn carried_connections_delete_ends(capture: &Capture) {
     assert_eq!((recorded(&members[2]), completed(&members[2])), (1, None), "the report stands, no completion");
     assert_eq!((recorded(&members[3]), recorded(&members[4])), (0, 0), "a refused or unsent command records nothing");
     drop(routers);
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (node-connections-delete.md step 4: "The node's mesh-primary sets connections-deleted from
+/// that completion. Graceful success is never reported after interrupting work"; step 5: "At
+/// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` an `All` that has not reached zero returns incomplete closure
+/// ... The node stays connections-deleting. A new `node.connections.delete` attempt, or node.stop,
+/// leaves that state"; states.md "Who sets each state"): the mesh-primary carries `node.connections.delete
+/// { All }` to a member twice. The first ends `Deadline`: the member's row says connections-deleting
+/// and never connections-deleted. The second, a new attempt, ends `Established`: the row says
+/// connections-deleted. Must NOT happen: connections-deleted on the row from a `Deadline`, or the
+/// second attempt's `Established` left unrecorded.
+#[test]
+fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_established_sets_connections_deleted() {
+    let capture = capture("a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_established_sets_connections_deleted");
+    capture.run(async {
+        use rdm_admin::status_rpc::CarryEnd;
+        use rdm_core::node_command::NodeCommandReply as N;
+        use rdm_core::status::{ConnectionScope, ConnectionsReceipt};
+        let mp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+        let member = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
+        let deadline = ConnectionsReceipt::Deadline { last_in_flight: 1, closed: vec![], held: vec![] };
+        let established = ConnectionsReceipt::Established { in_flight: 0, closed: vec![] };
+        let deleted = |r: &ConnectionsReceipt| N::ConnectionsDeleted { closed: vec![], not_open: vec![], held: vec![], receipt: Some(r.clone()) };
+        let ends = Arc::new(Mutex::new(std::collections::VecDeque::from([deleted(&deadline), deleted(&established)])));
+        let (resolved, router) = scripted_member(&member, Script::AcceptEach(ends)).await;
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(resolved);
+        let rig = rig(mp, &[&member], BTreeMap::new()).await;
+        let client = NodeRpcClient::new(rig.me.endpoint().await, resolver.clone()).with_caller_system("rdm");
+        let _ = rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Default::default(), Arc::new(rdm_admin::node_rows::WrittenRows::default()))));
+        rig.authority.nodes_storage.put_node(&rdm_admin::storage::NodeRow::new(member.node.name.clone(), member.node.node_id.clone(), NodeStatus::ReadyForTraffic)).await.unwrap();
+        let (node_id, incarnation) = (member.node.node_id.clone(), member.node.incarnation_id.clone().unwrap());
+        let status = || async { rig.authority.nodes_storage.node(&node_id).await.unwrap().expect("the member's row").status };
+
+        let first = rig.authority.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await;
+        assert!(matches!(&first, CarryEnd::Deleted { receipt: Some(r), .. } if *r == deadline), "{first:?}");
+        assert_eq!(status().await, NodeStatus::ConnectionsDeleting, "a Deadline leaves the row connections-deleting");
+
+        let second = rig.authority.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await;
+        assert!(matches!(&second, CarryEnd::Deleted { receipt: Some(r), .. } if *r == established), "{second:?}");
+        assert_eq!(status().await, NodeStatus::ConnectionsDeleted, "the new attempt's Established sets connections-deleted");
+        drop(router);
+    });
+    let rows: Vec<String> = capture.spans().iter().filter(|sp| sp["name"] == "rdm.node_admin.node.update.via-row-status" && sp["attributes"]["subject"] == "mesh1.rpc.1").map(|sp| format!("{}:{}", sp["attributes"]["status"].as_str().unwrap_or_default(), sp["attributes"]["outcome"].as_str().unwrap_or_default())).collect();
+    assert_eq!(rows, ["ConnectionsDeleting:written", "ConnectionsDeleting:unchanged", "ConnectionsDeleted:written"], "the mesh-primary's row writes, in order: connections-deleted only from the Established completion");
 }
