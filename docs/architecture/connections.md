@@ -779,7 +779,7 @@ policy; Rafka's, and where its copies lived before i148, are Rafka's pages.
 13. Reconnect is an internal durable reconciler, not a normal platform Job entity.
 14. The latest Direct Failed row is sufficient to reconstruct retry round, ordinal and next due time.
 15. Restart never resets reconnect exponential backoff.
-16. Any Direct Connected event, including an accepted inbound connection, creates the proxy-retirement obligation.
+16. Only the source's own Direct Connected creates the proxy-retirement obligation; an accepted inbound connection from the destination is a recovery trigger (§13 G).
 17. Failed proxy-retirement writes are retried; routing safely remains on Proxy until retirement lands.
 18. Destination and carrier process incarnations make stale route evidence refusable by name.
 19. A failed direct attempt is source-local reachability evidence, not global node-death proof.
