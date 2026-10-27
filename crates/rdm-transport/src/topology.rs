@@ -7727,6 +7727,42 @@ mod tests {
         assert!(spans.named("rdm.mesh.topology.reject.via-stale").is_empty(), "no frame was ignored as earlier");
     }
 
+    /// CONTRACT (gossip.md receive rules, `MeshTopology`: "`P(topology_version)` against the installed
+    /// floor, including a topology read"; #3211 red 2, gate 19d4afbee release,
+    /// `mock_control_loss_recovers_without_status_heartbeat`: 485.567 mesh2.admin.2, mesh2's primary,
+    /// published mesh2 v28; 485.811 it installed a topology read of its own v25 served by
+    /// mesh2.admin.1, `via-snapshot-installed` + `via-read-install`, and broker.3 went Pending
+    /// fleet-wide): a primary's own publications are its floor for its own source, so a topology
+    /// read naming its own exact birth below the version it published is refused `OlderThanHeld`
+    /// naming that version, and a read of the version it published is not refused for its order.
+    /// Must NOT happen: a primary installing an older image of its own mesh over what it publishes.
+    #[tokio::test]
+    async fn a_primary_refuses_a_read_of_its_own_source_below_the_version_it_published() {
+        use iroh::protocol::Router;
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let (admin, rpc1, rpc2, rpc3) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.rpc.1", 1), birth_at("mesh1.rpc.2", 1), birth_at("mesh1.rpc.3", 1));
+        let p = publisher_of(&admin);
+        let transport = iroh::endpoint::QuicTransportConfig::builder().build();
+        let ep = crate::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let _router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", crate::clock::os_clock(), vec![], &[]).await.unwrap();
+        let bb = Backbone::join(&gossip, &ep, &m, "mesh1", p.clone(), vec![]).await.unwrap();
+        bb.set_mesh_primary(true);
+        assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone()]).await);
+        assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone(), rpc2.clone()]).await);
+        assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone(), rpc2.clone(), rpc3.clone()]).await);
+        let published = bb.own.lock().unwrap().as_ref().map(|(v, _)| *v).expect("published");
+        assert!(published >= 3, "three material changes bump the version three times: {published}");
+        let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("topology-read".into()), topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone()], in_flight: vec![], departed: vec![] };
+        let taken = m.take_read_chunk(read(1), "mesh1");
+        assert!(
+            matches!(taken, Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version, offered_version: 1 }) if held_version == published),
+            "a read of its own v1 below its published v{published} is refused: {taken:?}"
+        );
+        assert!(m.installed_snapshot("mesh1").is_none_or(|(_, v, _)| v != 1), "its own older image is not installed");
+    }
+
     /// CONTRACT (gate 7965f026, `admin_top_up`: `mesh1.admin.2` called `GetTopology` on `mesh1.admin.1`
     /// while `mesh1.admin.1` served `topology_version = 0` before its first `anti_entropy` publication;
     /// `Frame::MeshTopology(mesh1, topology_version = 1)` arrived on `mesh-channel` and `backbone` 600 µs
