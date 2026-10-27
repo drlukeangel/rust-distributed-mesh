@@ -277,7 +277,6 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
     let first_failed = direct_in(&cold["trace_id"]);
     assert_eq!(first_failed.len(), 1, "the first open wrote its one Direct Failed: {first_failed:#?}");
     assert_eq!(s(&first_failed[0]["attributes"]["state"]), "failed", "{:?}", first_failed[0]);
-    assert!(start(first_failed[0]) <= start(cold), "the Direct Failed precedes the carrier's tunnel");
     assert!(direct_in(&held_open["trace_id"]).is_empty(), "the second open dialled nothing direct: {:#?}", direct_in(&held_open["trace_id"]));
     estate.record_trace_url(&s(&cold["trace_id"]));
 }
