@@ -403,7 +403,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.fabric.delete.via-lone-birth` | `crates/rdm-admin/src/admin/boot.rs` | 377 |
 | `rdm.node_admin.fabric.reject.via-over-bound` | `crates/rdm-admin/src/views.rs` | 419 |
 | `rdm.node_admin.fabric.resolve.via-atlas-call` | `crates/rdm-core/src/names.rs` | 155 |
-| `rdm.node_admin.fabric.resolve.via-atlas-row` | `crates/rdm-admin/src/fabric_atlas.rs` | 759 |
+| `rdm.node_admin.fabric.resolve.via-atlas-row` | `crates/rdm-admin/src/fabric_atlas.rs` | 762 |
 | `rdm.node_admin.fabric.resolve.via-call` | `crates/rdm-core/src/names.rs` | 152 |
 | `rdm.node_admin.fabric.resolve.via-meshes-call` | `crates/rdm-core/src/names.rs` | 154 |
 | `rdm.node_admin.fabric.resolve.via-nodes-call` | `crates/rdm-core/src/names.rs` | 153 |
@@ -414,7 +414,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.fabric.update.via-atlas-births-read` | `crates/rdm-admin/src/admin/boot.rs` | 2993 |
 | `rdm.node_admin.fabric.update.via-atlas-filled` | `crates/rdm-admin/src/admin/boot.rs` | 2983 |
 | `rdm.node_admin.fabric.update.via-atlas-filled` | `crates/rdm-admin/src/admin/reconcile.rs` | 121 |
-| `rdm.node_admin.fabric.update.via-atlas-receipt` | `crates/rdm-admin/src/fabric_atlas.rs` | 727 |
+| `rdm.node_admin.fabric.update.via-atlas-receipt` | `crates/rdm-admin/src/fabric_atlas.rs` | 730 |
 | `rdm.node_admin.fabric.update.via-blocked` | `crates/rdm-admin/src/fabric_status.rs` | 351 |
 | `rdm.node_admin.fabric.update.via-change` | `crates/rdm-admin/src/fabric_status.rs` | 406 |
 | `rdm.node_admin.fabric.update.via-checklist-complete` | `crates/rdm-admin/src/fabric_status.rs` | 582 |
