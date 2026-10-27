@@ -612,6 +612,10 @@ impl StoreLog {
         let door = read_door::take(&self.0.path, caller);
         let inner = self.0.clone();
         blocking_io(move || {
+            #[cfg(feature = "testkit-store")]
+            if let Some(door) = &door {
+                door.admit_wait();
+            }
             let _one = match inner.reading.try_lock() {
                 Ok(one) => one,
                 Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
@@ -1137,8 +1141,8 @@ impl NameMutex {
 
 /// The testkit's door on a store file's tail read (feature `testkit-store`, for rdm-test; absent from
 /// production builds): armed for a file and the span a read is called under, it holds the first such
-/// read inside the read itself, on its blocking call, until the cell releases it. Every other read of
-/// the file passes.
+/// read on its blocking call, before the file's read until the cell admits it, then inside the read
+/// itself until the cell releases it. Every other read of the file passes.
 #[cfg(feature = "testkit-store")]
 pub mod read_door {
     use std::path::{Path, PathBuf};
@@ -1148,9 +1152,18 @@ pub mod read_door {
     pub struct Door {
         file: PathBuf,
         under: &'static str,
-        released: Mutex<bool>,
-        opened: Condvar,
+        at: Mutex<Opened>,
+        changed: Condvar,
         entered: tokio::sync::watch::Sender<bool>,
+    }
+
+    /// How far the cell has opened a door.
+    #[derive(Default)]
+    struct Opened {
+        /// The held read may take the file's read ([`Door::admit`]).
+        admitted: bool,
+        /// The held read may end ([`Door::release`]).
+        released: bool,
     }
 
     fn armed() -> &'static Mutex<Vec<Arc<Door>>> {
@@ -1159,9 +1172,10 @@ pub mod read_door {
     }
 
     /// Hold the first tail read of a file whose path ends with `file` that is called under a span
-    /// named `under`, inside the read, until [`Door::release`].
+    /// named `under`: before it takes the file's read until [`Door::admit`], so no other read of the
+    /// file waits behind it until then, then inside the read until [`Door::release`].
     pub fn arm(file: &Path, under: &'static str) -> Arc<Door> {
-        let door = Arc::new(Door { file: file.to_path_buf(), under, released: Mutex::new(false), opened: Condvar::new(), entered: tokio::sync::watch::Sender::new(false) });
+        let door = Arc::new(Door { file: file.to_path_buf(), under, at: Mutex::new(Opened::default()), changed: Condvar::new(), entered: tokio::sync::watch::Sender::new(false) });
         armed().lock().unwrap().push(door.clone());
         door
     }
@@ -1174,14 +1188,26 @@ pub mod read_door {
     }
 
     impl Door {
-        /// On the read's blocking call: say it entered, then wait for the release.
+        /// On the read's blocking call, before it takes the file's read: wait for the admission.
+        pub(crate) fn admit_wait(&self) {
+            let mut at = self.at.lock().unwrap();
+            if !at.admitted {
+                tracing::info_span!("rdm.testkit.fault.update.via-hold", cut = "store-tail-read-entry", detail = %format!("{} under {}", self.file.display(), self.under))
+                    .in_scope(|| tracing::info!("the testkit holds this tail read before it takes the file's read until the cell admits it"));
+            }
+            while !at.admitted {
+                at = self.changed.wait(at).unwrap();
+            }
+        }
+
+        /// On the read's blocking call, inside the read: say it entered, then wait for the release.
         pub(crate) fn hold(&self) {
             tracing::info_span!("rdm.testkit.fault.update.via-hold", cut = "store-tail-read", detail = %format!("{} under {}", self.file.display(), self.under))
                 .in_scope(|| tracing::info!("the testkit holds this tail read inside the read until the cell releases it"));
             self.entered.send_replace(true);
-            let mut released = self.released.lock().unwrap();
-            while !*released {
-                released = self.opened.wait(released).unwrap();
+            let mut at = self.at.lock().unwrap();
+            while !at.released {
+                at = self.changed.wait(at).unwrap();
             }
         }
 
@@ -1190,10 +1216,17 @@ pub mod read_door {
             let _ = self.entered.subscribe().wait_for(|e| *e).await;
         }
 
-        /// Let the held read go on.
+        /// Let the held read take the file's read, where it is held until [`Door::release`].
+        pub fn admit(&self) {
+            self.at.lock().unwrap().admitted = true;
+            self.changed.notify_all();
+        }
+
+        /// Let the held read go on, admitted if it was not.
         pub fn release(&self) {
-            *self.released.lock().unwrap() = true;
-            self.opened.notify_all();
+            let mut at = self.at.lock().unwrap();
+            (at.admitted, at.released) = (true, true);
+            self.changed.notify_all();
         }
     }
 }

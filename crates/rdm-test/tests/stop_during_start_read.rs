@@ -9,7 +9,10 @@
 //! The admin under test is a real Day-0 admin (`admin::start_with`) in a process of its own (the stop
 //! flag is process-wide). The testkit's store door (`rdm_node::store_log::read_door`, feature
 //! `testkit-store`) holds the start's Build-floor read inside the read itself; nothing waits on a
-//! clock.
+//! clock. The start's own steps read the Build log too (its derivation turn, `derive_on_every_fact`,
+//! awaited before `start_with` returns) and may reach it after the Build-floor read: the door admits
+//! that read into the Build log's read only once the start has returned, so the read it holds is
+//! never one the start's return waits on.
 
 use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_admin::wiring::{FabricHooks, Wiring};
@@ -64,7 +67,15 @@ fn an_admin_stopped_while_its_start_reads_the_build_log_ends_its_stop() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = std::env::temp_dir().join(format!("stop-during-start-read-{}", NodeId::mint()));
         let door = rdm_node::store_log::read_door::arm(std::path::Path::new(rdm_node::store_root::BUILDS_FILE), BUILD_FLOOR);
-        let running = start_with(day0_config(&dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        let running = match tokio::time::timeout(NEVER, start_with(day0_config(&dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() })).await {
+            Ok(running) => running.expect("the Day-0 admin comes up"),
+            Err(_) => {
+                door.release();
+                panic!("the Day-0 admin's start did not return within {NEVER:?}; reads that waited: {:?}", named(&spans, READ_WAITING));
+            }
+        };
+        // The start has returned: the Build-floor read may now take the Build log's read, and is held there.
+        door.admit();
         let gate = running.gate().clone();
         let mut state = gate.state();
 
