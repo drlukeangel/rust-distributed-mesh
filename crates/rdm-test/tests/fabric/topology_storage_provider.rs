@@ -787,6 +787,53 @@ async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
     estate.record_trace_url(&s(&switched["trace_id"]));
 }
 
+/// CONTRACT (storage.md §2 "Changing it" (Q198): step 4, "Each mesh-primary moves its nodes to the new
+/// provider, then replies `unblocked`"; "The previous provider is kept as it was at the switch, ...
+/// written no more"; i149 R19: "A node that will not block or unblock is a lost node (node-investigation.md,
+/// Q182): investigated and re-created at its path.name on the provider of its step; after the switch the
+/// Build completes once every node has unblocked or been re-created"): the role node refuses its move by
+/// name (the testkit's knob has its birth refuse to open `test-target`) and keeps answering and
+/// gossiping. Its mesh-primary hands it to node recovery, which re-creates it at mesh2.rpc.1 under a new
+/// node id launched on `test-target`, and replies `unblocked` only once it is re-created: when the Build
+/// completes the path holds the new birth, ready-for-traffic, writing `test-target`, its records on
+/// `test-target` and none on `file`; the old birth never moves; `file` holds nothing the copy did not
+/// carry to `test-target`. Must NOT happen: `unblocked` with the refusing birth standing, the old birth
+/// left writing `file` after the switch, or the new birth launched on `file`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_that_refuses_its_move_is_recreated_on_the_new_provider() {
+    let test = "a_node_that_refuses_its_move_is_recreated_on_the_new_provider";
+    let (mut estate, _) = two_mesh_estate(test, &[]).await;
+    let (file_root, target_root) = roots(&estate);
+    let old_id = node_id_of(&estate, ROLE).await;
+    let data_root = PathBuf::from(estate.data_dir(ROLE).await).parent().expect("a data dir is under the estate's root").to_path_buf();
+    std::fs::write(rdm_test::node::target_refused_knob(&data_root, &old_id), b"").unwrap();
+    let hold = hold_switch(&estate).await;
+    let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
+    let blocked = blocked_at(&estate, &build_id, "mesh2").await;
+    hold.release("switch").await;
+    let done = tokio::time::timeout(SETTLE, estate.follow(stream)).await.unwrap_or_else(|_| panic!("Build {build_id} did not complete within {SETTLE:?}: mesh2's unblock waits on the refusing birth's re-create"));
+    estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
+    // At the Build's completion, with no wait: the path holds the re-created birth.
+    let at_completion = estate.node_view(ROLE).await;
+    assert_ne!(at_completion.node_id.to_string(), old_id, "mesh2's mesh-primary replied unblocked only once the refusing birth was re-created: {at_completion:?}");
+    let renewed = estate.until_node(ROLE, "the role node re-created at its path.name, ready-for-traffic", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::ReadyForTraffic).cloned()).await;
+    let new_id = renewed.node_id.to_string();
+    assert_eq!(renewed.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET), "the re-created birth is launched on the new provider: {renewed:?}");
+    assert!(!lines_naming(&target_root, &new_id).is_empty() && lines_naming(&file_root, &new_id).is_empty(), "the re-created birth's records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
+    fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
+    estate.stop().await;
+    // Nothing is written to the old provider after the copy: every line it holds was carried.
+    history_carried(&store_lines(&file_root), &store_lines(&target_root));
+    let spans = estate.spans();
+    let old_moves: Vec<&Value> = named(&spans, MOVE).into_iter().filter(|sp| attr(sp, "node_id") == old_id).collect();
+    assert!(!old_moves.is_empty() && old_moves.iter().all(|sp| sp["attributes"]["outcome"] == "refused"), "the old birth refuses its move by name and never moves: {old_moves:#?}");
+    let unblocked = of_build(&spans, UNBLOCK, &build_id, Some("mesh2")).into_iter().find(|sp| sp["attributes"]["outcome"] == "unblocked").expect("mesh2's mesh-primary replied unblocked");
+    assert_eq!(attr(unblocked, "provider"), TOPOLOGY_STORAGE_TARGET, "mesh2's mesh-primary moves its nodes onto {TOPOLOGY_STORAGE_TARGET}: {unblocked}");
+    let new_moved = named(&spans, MOVE).into_iter().find(|sp| attr(sp, "node_id") == new_id && attr(sp, "build_id") == build_id && sp["attributes"]["outcome"] == "moved").unwrap_or_else(|| panic!("the re-created birth {new_id} answered its move under Build {build_id}"));
+    assert!(new_moved["end_unix_nano"].as_u64().unwrap_or(u64::MAX) <= unblocked["end_unix_nano"].as_u64().unwrap_or(0), "the re-created birth moved before its mesh-primary replied unblocked: {new_moved} {unblocked}");
+    estate.record_trace_url(&s(&blocked["trace_id"]));
+}
+
 /// CONTRACT (storage.md §2 "Changing it": "`fabric.delete` alone is admitted, and it interrupts the change
 /// as it interrupts any Build, the records on both providers kept"; "Whoever resumes the change learns the
 /// decision only from that record"; i149 R12: "fabric.delete resolve[s] the current migration before

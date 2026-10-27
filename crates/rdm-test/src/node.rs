@@ -80,13 +80,36 @@ fn node_backend(launch: &Launch) -> rdm_node::storage_backend::NodeStorageProvid
         let target = crate::test_app::topology_storage_dir(&launch.store_dir);
         let _ = std::fs::create_dir_all(&target);
         rdm_node::storage_backend::NodeStorageProviders::file()
-            .register(crate::test_app::TOPOLOGY_STORAGE_TARGET, Arc::new(rdm_node::storage_backend::FileNodeBackend::at(target)))
+            .register(crate::test_app::TOPOLOGY_STORAGE_TARGET, Arc::new(TargetRefusedByKnob(Arc::new(rdm_node::storage_backend::FileNodeBackend::at(target)))))
             .register(MEMORY, Arc::new(rdm_node::storage_backend::MemoryNodeBackend))
     }
     #[cfg(not(feature = "file-backend"))]
     {
         let _ = launch;
         rdm_node::storage_backend::NodeStorageProviders::new().register(MEMORY, Arc::new(rdm_node::storage_backend::MemoryNodeBackend))
+    }
+}
+
+/// The file, under the root that holds an estate's data dirs, that has the birth `node_id` refuse to
+/// open the testkit's [`crate::test_app::TOPOLOGY_STORAGE_TARGET`]: a storage change's move of that
+/// birth onto it is refused by name (storage.md §2 step 4), and the birth writes the provider it wrote.
+/// Keyed on the birth: a birth re-created at the same `path.name` opens it.
+pub fn target_refused_knob(root: &std::path::Path, node_id: &str) -> std::path::PathBuf {
+    root.join(format!("{node_id}.target-refused.knob"))
+}
+
+/// The testkit target's backend, refusing its open by name for a birth [`target_refused_knob`] names.
+#[cfg(feature = "file-backend")]
+struct TargetRefusedByKnob(Arc<dyn rdm_node::storage_backend::NodeStorageBackend>);
+
+#[cfg(feature = "file-backend")]
+#[async_trait::async_trait]
+impl rdm_node::storage_backend::NodeStorageBackend for TargetRefusedByKnob {
+    async fn open(&self, launch: &Launch) -> Result<rdm_node::storage_backend::NodeStorage, String> {
+        if launch.data_dir.parent().is_some_and(|root| target_refused_knob(root, launch.node_id.as_str()).exists()) {
+            return Err(format!("the testkit's knob has the birth {} refuse to open {}", launch.node_id, crate::test_app::TOPOLOGY_STORAGE_TARGET));
+        }
+        self.0.open(launch).await
     }
 }
 
