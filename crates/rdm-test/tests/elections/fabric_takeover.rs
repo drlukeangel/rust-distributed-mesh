@@ -508,11 +508,14 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     assert!(terminated.is_empty(), "the running fabric-primary's runtime was not terminated: {terminated:#?}");
     let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == fp_id && attr(sp, "outcome") == "admitted").collect();
     assert!(opened.is_empty(), "no recovery was opened for the running fabric-primary: {opened:#?}");
-    // The isolated admin's ladder went to the provider through no carrier; the fabric-primary's process runs,
-    // so the provider reads it `running` (the arm's own span, which names the verdict, stays open while it
-    // looks again a floor on).
+    // The isolated admin's ladder went to the provider reached through no carrier: `via-unreached` is the
+    // ladder nobody answered, direct or through a peer. Its `carriers` are the peers it asked (offline.rs
+    // `carriers`: node-tickle.md step 3's eligible live peers, which its view may still hold ready-for-traffic
+    // in the cut's first floor), never ones that reached it. The fabric-primary's process runs, so the
+    // provider reads it `running` (the arm's own span, which names the verdict, stays open while it looks
+    // again a floor on).
     let ladders: Vec<&Value> = named(&spans, "rdm.node.tickle.returns-unknown.via-unreached").into_iter().filter(|sp| at(sp) >= cut_at && attr(sp, "caller") == victim && attr(sp, "node_id") == fp_id && attr(sp, "next") == "inspect").collect();
-    assert!(ladders.iter().all(|sp| attr(sp, "carriers").is_empty()), "{victim}'s ladder on {fp} had no carrier: {ladders:#?}");
+    assert!(!ladders.is_empty(), "{victim}'s ladder on {fp} reached nobody and went to the provider");
     eprintln!("the cut held {held_ms} ms; {victim}'s ladders on {fp}: {}", ladders.len());
     estate.record_trace_url(&s(&ladders[0]["trace_id"]));
 }
