@@ -49,8 +49,9 @@ packet without a section 5 delta is returned, not reviewed. Every question and r
   the plan and the seat's agent type `i143-<issue>`, comments the issue); the Agent tool with
   `subagent_type` = its `SEAT TYPE` line, launched only after the dispatch returns (a `NEW` type after
   Claude Code's new-agent-types notice); `lane-note.sh <lane> <file|->` (the one way an update reaches
-  a seat); `lane-land.sh <lane> <branch> <issue> <close-comment-file>` (lands, closes the issue with
-  `@SHA@` filled). A lane's plan, inbox and seat are under `$HOME/lane-queue/rdm/<n>/`, never in its tree.
+  a seat); `post-land-gate.sh <lane>` (proves the tip in the lane; its GREEN line is the landing's
+  proof); `lane-land.sh <lane> <branch> <issue> <close-comment-file>` (refuses a tip without a standing
+  GREEN, never gates, lands, closes the issue with `@SHA@` filled). A lane's plan, inbox and seat are under `$HOME/lane-queue/rdm/<n>/`, never in its tree.
 - Never export `CARGO_TARGET_DIR`; never `cargo test -p` in a lane (each `-p` shape rebuilds
   admin-core). One stem: `scripts/cells.sh`; the whole suite: `scripts/rdm-gate-at.sh <lane>
   fast|release`; landing: `rebase-gate-land.sh <lane> <branch>` (rebase, name check, gate,

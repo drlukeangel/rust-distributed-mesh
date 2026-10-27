@@ -4,6 +4,7 @@
 LANES_ROOT="${RDM_LANES_ROOT:-$HOME/rdm-lanes}"
 STATE_ROOT="${RDM_LANE_STATE_ROOT:-$HOME/lane-queue/rdm}"
 MAIN="${RDM_MAIN:-$HOME/rust-distributed-mesh}"
+DEPLOY_ROOT="${RDM_DEPLOY:-$HOME/rust-distributed-mesh-deploy}"
 # Seat agent types live in the MAIN checkout's .claude/agents, where the lead's Claude Code session reads them.
 AGENTS_DIR="${RDM_AGENTS_DIR:-$MAIN/.claude/agents}"
 lane_dir() { echo "$LANES_ROOT/$1"; }
