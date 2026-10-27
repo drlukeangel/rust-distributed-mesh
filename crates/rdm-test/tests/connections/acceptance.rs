@@ -283,14 +283,14 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
     estate.record_trace_url(&s(&cold["trace_id"]));
 }
 
-/// CONTRACT (connections.md §13 E: "Generate repeated reconnect failures on gw1. Assert peer nodes'
-/// resident connection projection contains only active Direct routing edges, never gw1's failed/dead
-/// retry history"; §4.1, §4.2; §15.7-9): the source writes a series of Direct Failed facts toward the
-/// destination (six on the control ALPN through the writer's own observer path, one on the app
-/// protocol from a blocked open), all durable in the one log. A peer that then runs a carrier
-/// discovery of its own reads the fleet's latest Direct facts from the store: it holds the active
-/// edges (the carrier's), and none of the source's failed history and none of the source's Proxy.
-/// Must NOT happen: a held entry whose source is the source node, or another node's Proxy held.
+/// CONTRACT (connections.md §13 E: "Generate repeated reconnect failures on gw1. Assert no peer node
+/// holds any of gw1's facts: a node holds its own facts only"; §4.1, §4.2; §15.7-9; Q227): the source
+/// writes a series of Direct Failed facts toward the destination (six on the control ALPN through the
+/// writer's own observer path, one on the app protocol from a blocked open), all durable in the one
+/// log. A peer that then opens toward the source through a carrier takes the carrier from the
+/// topology it holds and reads no fact from the store: everything it holds is its own, none of the
+/// source's failed history, none of the carrier's edges and none of the source's Proxy. Must NOT
+/// happen: a held entry whose source is another node, or another node's Proxy held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_peer_holds_none_of_a_sources_failed_history_or_its_proxy() {
     let cell = "a_peer_holds_none_of_a_sources_failed_history_or_its_proxy";
@@ -317,15 +317,14 @@ async fn a_peer_holds_none_of_a_sources_failed_history_or_its_proxy() {
     })
     .await;
 
-    // 2. The destination, a peer, discovers a carrier toward the source: it reads the fleet's facts.
+    // 2. The destination, a peer, opens toward the source through a carrier its topology holds.
     block_direct(&estate, DEST, SOURCE, true);
     let peer_open = stream(&estate, DEST, SOURCE, "peer-discovery");
-    assert_eq!(peer_open["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "the peer found the carrier's active edge: {peer_open}");
+    assert_eq!(peer_open["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "the peer's carrier carried it on its own edge: {peer_open}");
     let peer = snapshot(&estate, DEST);
     let held: Vec<&Value> = peer["active_directs"].as_array().into_iter().flatten().collect();
-    assert!(held.iter().any(|d| d["source"]["name"] == CARRIER && d["destination"]["name"] == SOURCE), "the peer holds the active edge it used: {peer}");
-    let polluted: Vec<&&Value> = held.iter().filter(|d| d["source"]["name"] == SOURCE && d["destination"]["name"] == DEST).collect();
-    assert!(polluted.is_empty(), "nothing of the source's failing pair ({failed} failed facts) is held by the peer: {polluted:?}");
+    let foreign: Vec<&&Value> = held.iter().filter(|d| d["source"]["name"] != DEST).collect();
+    assert!(foreign.is_empty(), "the peer holds no other node's fact, the carrier's edges and the source's failing pair ({failed} failed facts) included: {foreign:?}");
     assert!(held.iter().all(|d| d["kind"] == "Direct" && d["state"] == "Connected"), "the peer holds active Direct facts only: {held:?}");
     let proxies: Vec<&Value> = peer["own_active_proxies"].as_array().into_iter().flatten().collect();
     assert!(proxies.iter().all(|p| p["source"]["name"] == DEST), "the peer holds its own Proxy and no other node's: {proxies:?}");
