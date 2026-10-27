@@ -1558,6 +1558,81 @@ mod tests {
         }
     }
 
+    /// CONTRACT (fabric-atlas.md R-FA2: "execution progress writes it from each attempt's receipts as
+    /// they stream up `build.attempt.run`, before the caller is answered `Complete`"; R-FA3: "a delayed
+    /// event never moves it backward"; node-start.md "Completion": the mesh-primary's ReadyForTraffic on
+    /// the birth; build.md §4.4: a primary's stop has a successor, read from the fabric-primary's view):
+    /// the fabric-primary took the `Complete` receipt of `node.start:mesh2.admin.2` (attempt 16) into
+    /// its atlas. Its view with the atlas applied holds mesh2.admin.2 ready for traffic, so a stop of
+    /// mesh2's primary mesh2.admin.1 has a successor, both while the backbone projection still holds the
+    /// birth stopped and once mesh2's projection published at the start's `node.joined` (Pending, the
+    /// stop over) reaches it after the start's `Complete`, as #3224's spans show it (v32 installed at
+    /// +14469, the stop refused `last-admin` at +14485, v33 ReadyForTraffic at +14501). An observer's
+    /// liveness mark on the birth after its start (`Dead`) stands. Must NOT happen: the stop refused
+    /// `cannot transfer: no secondary of type node-admin in mesh mesh2` because the projection's
+    /// Pending, published before the start completed, stood over the start's receipt.
+    #[test]
+    fn a_node_admin_whose_start_completed_is_its_primarys_successor_while_the_projection_still_holds_it_pending() {
+        use crate::accepted::{AttemptAction, FabricTopology};
+        use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
+        let t = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            ],
+            nodes: vec![node("mesh1.admin.1", true, true), node("mesh2.admin.1", true, false), node("mesh2.admin.2", false, false)],
+        };
+        let started: PathName = "mesh2.admin.2".parse().unwrap();
+        let primary: PathName = "mesh2.admin.1".parse().unwrap();
+        let from = t.node(&started).unwrap().incarnation_id.clone().unwrap();
+        let build_id = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
+        let start = AttemptAction::Start { path: started.clone(), from_incarnation: from.clone() };
+        let operation = format!("node.start:{started}");
+        let p = BuildProjection {
+            build_id: build_id.clone(),
+            topology: FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
+            submitted_change: None,
+            submitted_at_ms: 0,
+            state: BuildState::Pending,
+            attempt: 16,
+            executor: None,
+            steps: vec![BuildStepReceipt { mesh: None, build_id, attempt: 16, operation: operation.clone(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None }],
+            last_failure: None,
+            reason: AttemptReason::Start,
+            action: Some(start.clone()),
+            attempt_actions: [(16, start)].into_iter().collect(),
+            attempt_executors: Default::default(),
+            opened: 16,
+            failed_at: None,
+            completed_at: None,
+            reported: Default::default(),
+            claimant: None,
+            lanes: Default::default(),
+        };
+        let atlas = crate::fabric_atlas::FabricAtlas::default();
+        assert_eq!(atlas.take_receipt(&p, 16, &operation), crate::fabric_atlas::Taken::Effect(Some("started")), "the start's Complete receipt is the atlas's");
+        let viewed = |status: NodeStatus, stopped: bool| {
+            let mut view = t.clone();
+            for n in view.nodes.iter_mut().filter(|n| n.name == started) {
+                n.status = status;
+                n.stopped = stopped;
+                n.routable = false;
+            }
+            atlas.apply(&mut view);
+            view
+        };
+        for (status, stopped, projection) in [(NodeStatus::Leaving, true, "the projection carrying its stop"), (NodeStatus::Pending, false, "the projection published at its node.joined, the stop over")] {
+            let view = viewed(status, stopped);
+            let n = view.node(&started).unwrap();
+            assert_eq!((n.status, n.stopped), (NodeStatus::ReadyForTraffic, false), "{projection}: the started birth is ready for traffic in the fabric-primary's view with the atlas applied");
+            assert!(last_admin(&primary, "stop", &view).is_none(), "{projection}: the stop of mesh2's primary has its successor: {:?}", last_admin(&primary, "stop", &view));
+        }
+        let view = viewed(NodeStatus::Dead, false);
+        assert_eq!(view.node(&started).unwrap().status, NodeStatus::Dead, "an observer's liveness mark after the start stands");
+        assert!(matches!(last_admin(&primary, "stop", &view), Some(BuildReject::LastAdmin { .. })), "a Dead birth is no successor");
+    }
+
     /// CONTRACT (proposal executable-bindings-at-create.md §2: "the fabric-primary refuses a missing file or a
     /// wrong sha by name at acceptance"; rule 4, the launch hashes again): every executable a complete-topology
     /// request creates a node on, or replaces a node's with, is checked as its launch checks it, before
