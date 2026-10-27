@@ -59,6 +59,8 @@ pub struct Running {
     pub member_cert: Option<Vec<u8>>,
     /// This admin's status authority, once it holds a view.
     pub(crate) authority: crate::status_rpc::AuthoritySlot,
+    /// Told once [`Self::authority`] is set: what [`Self::config_update`] awaits before this admin holds a view.
+    pub(crate) authority_set: Arc<tokio::sync::Notify>,
     /// The app's protocols on this admin's endpoint ([`crate::wiring::Wiring::alpns`]).
     pub(crate) data_connections: rdm_transport::connections::ConnectionsRegistry,
 }
@@ -113,14 +115,18 @@ impl Running {
     /// `admin_api_base`). It answers once the command completed: `ConfigUpdated` once its mesh-primary
     /// wrote the row and this admin holds the map, or the refusal by name. The caller never names the
     /// fabric-primary: an admin that is not it carries the command up to the one its records name
-    /// ([`crate::status_rpc::StatusAuthority::own_config_update`]). `NotReady` by name before this
-    /// admin holds a view.
+    /// ([`crate::status_rpc::StatusAuthority::own_config_update`]). Called before this admin holds a
+    /// view, it waits for the view rather than refusing: the update is owed until answered (D12, D23).
     pub async fn config_update(&self, config: std::collections::BTreeMap<String, String>) -> rdm_core::status::StatusReply {
         let birth = self.birth();
-        match self.status_authority() {
-            Some(status) => status.own_config_update(birth.incarnation, config).await,
-            None => rdm_core::reply::status::not_ready(format!("{} holds no view yet; its node.config.update is refused", birth.name)),
-        }
+        let status = loop {
+            let told = self.authority_set.notified();
+            if let Some(status) = self.status_authority() {
+                break status;
+            }
+            told.await;
+        };
+        status.own_config_update(birth.incarnation, config).await
     }
 
     /// Where this admin's `pre_node_ready` stands; `None` when the app registered no hook.
@@ -744,6 +750,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let node_rpc_resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
     connections.held().lock().unwrap().set_topology_view(node_rpc_resolver.clone());
     let authority: crate::status_rpc::AuthoritySlot = Arc::new(std::sync::OnceLock::new());
+    let authority_set = Arc::new(tokio::sync::Notify::new());
     let claim_slot: crate::build_claim::ClaimSlot = Arc::new(std::sync::OnceLock::new());
     // The births this admin deployed and awaits a `JoinNode` from, and the door that answers it.
     let joins = Arc::new(crate::join::Joins::over(nodes_storage.clone()));
@@ -1503,6 +1510,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     digest_view: Some(digest_view.clone()),
                                     builds: control.builds.clone(),
                                 }));
+                                    authority_set.notify_waiters();
                             }
                             // The Node RPC door: opened by the first view installed that holds this admin's exact birth
                             // once the authority above is filled, whichever task installs it.
@@ -3222,7 +3230,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         }));
                                     }
-                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), pre_node_ready_cancel, pre_node_ready: pre_node_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone(), data_connections: data_connections.clone() });
+                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), pre_node_ready_cancel, pre_node_ready: pre_node_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone(), authority_set: authority_set.clone(), data_connections: data_connections.clone() });
                                     Ok::<_, String>(())
                                 })
                             });
