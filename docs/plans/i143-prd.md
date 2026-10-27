@@ -3262,11 +3262,11 @@ Each open i143 unit, its rafka-v2 issue and where it stands. A unit leaves this 
 | #3215 | build.md §4.4 gates: Q218, Q219, Q220's cell, Q221, Q228 | built in lane 1 (11bb3b90d); RED only on rdm#78's race; lands after #3237 |
 | rdm#78 | the store reader's 40 ms refusal | built on origin/i143-3222-store-reader (33774971b), parked; lands first of the node store reads (Q237); next free lane |
 | #3229 | Q227 X: ordinary nodes read no connections, the carrier from topology | **landed 529b978dd** (connections.md rewritten; `NoActiveRoute` when every carrier refuses) |
-| #3230 | Q230: the data plane speaks proxy (words only, the carrier list stays) | lane 4, seat running |
+| #3230 | Q230: the data plane speaks proxy (words only, the carrier list stays) | **landed 96e30265a** (§8 c42873da5) |
 | rdm#79 | the carrier's via-tunnel span and splice outlive a Proxy deleted by id | open; next free lane |
 | rdm#80 | learning-soak findings: a peer mesh unheard after heal; a wedged admin re-born; a held birth no attempt acted on | routed: heal to #3211 (red 1's mechanism), re-born and held to #3215 (Q218/Q219); read again after #3215 lands |
 | #3233 | a Build after a node.stop loops node.create on the stopped path | lane 2: cause found (accepted.rs:1336 counts only a live birth), REDs queued |
-| #3234 | Q167 reads with the property filter; Q232 local query; Q233 read side | lane 6: wire, client, callers and pages built; a fresh seat finishes the no-store reads, the local nodes_get and Q233's read |
+| #3234 | Q167 reads with the property filter; Q232 local query; Q233 read side | **landed 1b8a8ddd1** (query.md; io_calls=0 on every read) |
 | rdm#81 | Q210's owed point: a signal stop waits for the declaration queue | open; next free lane |
 | rdm#82 | Q235/Q236: a node's own config pushed up; a Build's config supersedes | open; the proposal docs/plans/proposal/q235-node-config-flow.md (P1-P5 decided) |
 | #3237 | Q227/Q234: node-admins read no store at start, join and hydration; OwnRow | lane 3: inventory accepted (item 7 moved to rdm#84), building the race path first |
