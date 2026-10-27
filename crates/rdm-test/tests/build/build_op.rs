@@ -778,7 +778,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     let _ = estate.node_views_at(&path(&caller.survivor_of(&fp))).await;
     estate.enter(&path(&restored)).await;
     estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(90)).await;
-    let mesh2 = Meshes::new(carrier.clone()).get("mesh2").await.expect("mesh2's view at the restored fabric-primary");
+    let mesh2 = rdm_test::typed::one_mesh(&Meshes::new(carrier.clone()), "mesh2").await.expect("mesh2's view at the restored fabric-primary").expect("the restored fabric-primary holds mesh2");
     assert_eq!(mesh2.id.map(|id| id.to_string()), Some(claimed.clone()), "mesh2 is the mesh the lost fabric-primary's claim wrote");
     Lost { build_id, attempt, restored, carrier }
 }

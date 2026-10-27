@@ -19,7 +19,7 @@
 //! no NodeDeleted.
 
 use crate::build_log;
-use rdm_client::{CallEnd, FabricDesired, Frame, LaunchKind as NodeKind, MeshDesired, PathName};
+use rdm_client::{FabricDesired, Frame, LaunchKind as NodeKind, MeshDesired, PathName};
 use rdm_test::typed::BuildSpec;
 use rdm_test::estate::{named, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
