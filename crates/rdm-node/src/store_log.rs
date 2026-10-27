@@ -37,10 +37,14 @@
 //! one included, refuses the open or the tail read by name, naming the file and the byte offset, and
 //! nothing older is answered as current. A complete valid object with no final newline is kept: the
 //! reader appends one newline alone and fsyncs before it answers (another writer's opening newline
-//! may already have ended it; the added newline is then a blank line). The consumed offset is the
-//! fold's own: it moves only over lines the fold has read whole, never to where a write landed, so a
-//! writer's own append does not move it and its next tail read reads every line after it, its own
-//! included.
+//! may already have ended it; the added newline is then a blank line). An unended object that does
+//! not verify is another writer's line still being written, however long it stands: a tail read
+//! answers the lines before it and leaves it unconsumed for its next read, and an open refuses it by
+//! name, naming the file and its offset (R-SR3, "at open ... an incomplete or invalid object is left
+//! untouched and refused"). Once a line stands after it, its write has ended: the object is then a
+//! line that does not verify and refuses every read by name. The consumed offset is the fold's own:
+//! it moves only over lines the fold has read whole, never to where a write landed, so a writer's own
+//! append does not move it and its next tail read reads every line after it, its own included.
 //!
 //! The file backend requires a local filesystem whose `O_APPEND` writes are serialized by the shared
 //! host kernel (R14 item 5, as amended by R-SR3).
@@ -187,7 +191,8 @@ impl std::fmt::Debug for Formats {
 
 /// Every line of the store file at `path`, in file order, its records unchecked, read on the calling
 /// thread and changing nothing: a missing file holds none; a malformed line is refused by name with
-/// its offset, and a valid object with no final newline is read as a line.
+/// its offset; a valid object with no final newline is read as a line, and an unended object that
+/// does not verify (another writer's line still being written) is left out.
 pub fn read_file(path: &Path) -> Result<Vec<Line>, StorageError> {
     let named = |at: u64, why: String| StorageError::Unrecognised { file: path.display().to_string(), reason: format!("the line at byte offset {at} is malformed: {why}") };
     let bytes = match std::fs::read(path) {
@@ -198,8 +203,8 @@ pub fn read_file(path: &Path) -> Result<Vec<Line>, StorageError> {
     let formats = Formats::any();
     let s = scan(&bytes, 0, &formats).map_err(|(at, why)| named(at, why))?;
     let mut lines = s.lines;
-    if let Some((at, tail)) = s.tail {
-        lines.push(verify(&tail, at, &formats).map_err(|why| named(at, why))?);
+    if let Some(line) = s.tail.and_then(|(at, tail)| verify(&tail, at, &formats).ok()) {
+        lines.push(line);
     }
     Ok(lines)
 }
@@ -472,6 +477,15 @@ enum Reconciled {
     Absent,
 }
 
+/// Which read meets the file's unended tail: the open's fold (R-SR3) or a tail read (R-SR4).
+#[derive(Clone, Copy)]
+enum ReadKind {
+    /// The open's fold from byte 0: an unended object that does not verify is refused by name.
+    Open,
+    /// A tail read, or the raw log: an unended object that does not verify stays unconsumed.
+    Tail,
+}
+
 /// One store file: `<store root>/<store>.jsonl`.
 #[derive(Clone)]
 pub struct StoreLog(Arc<Inner>);
@@ -552,7 +566,7 @@ impl StoreLog {
             }
         };
         let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: Mutex::new(()), reading_by: Mutex::new(None), append: Arc::new(tokio::sync::Mutex::new(None)), observer }));
-        match log.advance().await {
+        match log.read(ReadKind::Open, "").await {
             Ok(()) => {
                 let f = log.0.fold.lock().unwrap_or_else(|e| e.into_inner());
                 let writers: Vec<String> = f.ops.iter().map(|((n, i), seq)| format!("{n}/{i}:{seq}")).collect();
@@ -590,8 +604,9 @@ impl StoreLog {
 
     /// Read the file's lines from the fold's consumed offset to its end into the fold (R-SR4): only
     /// lines read whole move the offset. A complete valid object with no final newline is ended with
-    /// one newline alone and fsynced, then read; a line that does not verify refuses the read by name,
-    /// its offset named, and the fold is left as it was.
+    /// one newline alone and fsynced, then read; an unended object that does not verify is another
+    /// writer's line still being written and stays unconsumed for the next read; a line that does not
+    /// verify refuses the read by name, its offset named, and the fold is left as it was.
     ///
     /// The read and its fold are one blocking call, under the store's one-read-at-a-time lock taken
     /// on that call's thread: the caller holds no lock while it awaits it, so a caller held there (a
@@ -606,6 +621,12 @@ impl StoreLog {
     /// waits for, beside their callers' spans, so a wait that never ends names what is still open
     /// even where the caller runs under no span.
     pub async fn advance_for(&self, reader: &'static str) -> Result<(), StorageError> {
+        self.read(ReadKind::Tail, reader).await
+    }
+
+    /// One read of `kind` for `reader` from the fold's consumed offset, one blocking call under the
+    /// store's one-read-at-a-time lock ([`StoreLog::advance_for`]).
+    async fn read(&self, kind: ReadKind, reader: &'static str) -> Result<(), StorageError> {
         let caller = caller_span();
         let parent = tracing::Span::current();
         #[cfg(feature = "testkit-store")]
@@ -629,7 +650,7 @@ impl StoreLog {
             if let Some(door) = door {
                 door.hold();
             }
-            inner.read_tail()
+            inner.read_tail(kind)
         })
         .await
     }
@@ -650,7 +671,7 @@ impl StoreLog {
     /// Every line of the file, in file order, read whole from byte 0 (the raw log).
     pub async fn lines(&self) -> Result<Vec<Line>, StorageError> {
         let inner = self.0.clone();
-        let (lines, _) = blocking_io(move || inner.read_whole(0)).await?;
+        let (lines, _) = blocking_io(move || inner.read_whole(0, ReadKind::Tail)).await?;
         Ok(lines)
     }
 
@@ -760,11 +781,12 @@ impl Inner {
             .in_scope(|| tracing::info!("this tail read waits for the one in progress on the same file"));
     }
 
-    /// One tail read, holding the read lock: the lines from the fold's consumed offset to the end,
-    /// shown to the observer in file order and folded, the offset moved past them.
-    fn read_tail(&self) -> Result<(), StorageError> {
+    /// One read of `kind` (the open's fold or a tail read), holding the read lock: the lines from the
+    /// fold's consumed offset to the end, shown to the observer in file order and folded, the offset
+    /// moved past them.
+    fn read_tail(&self, kind: ReadKind) -> Result<(), StorageError> {
         let from = self.fold.lock().unwrap_or_else(|e| e.into_inner()).consumed;
-        let (lines, consumed) = self.read_whole(from)?;
+        let (lines, consumed) = self.read_whole(from, kind)?;
         if let Some(observe) = &self.observer {
             for l in &lines {
                 observe(l);
@@ -786,10 +808,10 @@ impl Inner {
 
     /// Read the lines from `from` to the end whole: a complete valid object with no final newline is
     /// ended with one newline alone and fsynced, then read again; an unended object that does not
-    /// verify is read again while the file still grows (another writer's write in flight), then
-    /// refused by name. Answers the lines and the offset they were read whole to.
-    fn read_whole(&self, from: u64) -> Result<(Vec<Line>, u64), StorageError> {
-        let mut quiet = 0;
+    /// verify is another writer's line still being written: a tail read leaves it unconsumed and an
+    /// open refuses it by name (R-SR3, R-SR4). Answers the lines and the offset they were read whole
+    /// to.
+    fn read_whole(&self, from: u64, kind: ReadKind) -> Result<(Vec<Line>, u64), StorageError> {
         let mut ended = false;
         loop {
             let bytes = read_from(&self.file, from).map_err(|e| self.io(e))?;
@@ -807,17 +829,10 @@ impl Inner {
                 }
                 Ok(_) => return Err(self.named(at, "the object stays unended after a newline was appended to end it")),
                 Err(why) => {
-                    let len = self.file.metadata().map_err(|e| self.io(e))?.len();
-                    if len > from + bytes.len() as u64 {
-                        quiet = 0;
-                        continue;
-                    }
-                    if quiet < 20 {
-                        quiet += 1;
-                        std::thread::sleep(std::time::Duration::from_millis(2));
-                        continue;
-                    }
-                    return Err(self.named(at, format!("an unended object: {why}")));
+                    return match kind {
+                        ReadKind::Tail => Ok((s.lines, s.consumed)),
+                        ReadKind::Open => Err(self.named(at, format!("an unended object: {why}"))),
+                    };
                 }
             }
         }
