@@ -225,9 +225,9 @@ impl rdm_admin::storage::NodesStorage for Unreadable {
     }
 }
 
-/// The fabric-primary `me`'s Status authority over `view`, its atlas `atlas` and its nodes store
+/// The fabric-primary `me`'s Status door over `view`, its atlas `atlas` and its nodes store
 /// `nodes_storage`; every other store in memory.
-fn authority(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atlas>, nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>) -> rdm_admin::status_rpc::StatusAuthority {
+fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atlas>, nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>) -> rdm_admin::status_rpc::StatusAuthority {
     let slot = Arc::new(std::sync::OnceLock::new());
     let _ = slot.set(atlas);
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
@@ -304,7 +304,7 @@ async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_f
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     atlas.fill(&records, ["mesh1".to_string()]).await.expect("the atlas is filled from the node records, once");
     let store = Arc::new(Unreadable::default());
-    let fp = authority(&admin, view, atlas, store.clone());
+    let fp = fabric_primary_at(&admin, view, atlas, store.clone());
 
     match fp.apply(None, &get(rdm_core::filter::Entity::Nodes, Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold"]))).await {
         StatusReply::Nodes { nodes } => {
