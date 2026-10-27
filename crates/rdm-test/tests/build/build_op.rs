@@ -961,7 +961,9 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
         assert_eq!(closure.len(), 1, "one durable completed step across attempts: {closure:?}");
         let after = estate.node_value(&node.to_string()).await;
         assert_eq!((after["node_id"].clone(), after["incarnation_id"].clone()), (before["node_id"].clone(), before["incarnation_id"].clone()), "the same subject birth executes the reissue");
-        assert_eq!(after["status"], "connections-deleting", "a completed closure leaves connections-deleting");
+        // states.md "Who sets each state": the completion carrying `Established` sets connections-deleted,
+        // and a read answers the row's status as written (Q233).
+        assert_eq!(after["status"], "connections-deleted", "a completed closure leaves its row connections-deleted");
         estate.stop().await;
         let spans = estate.spans();
         let executions: Vec<_> = named(&spans, "rdm.node_admin.connection.delete.via-delete-connections").into_iter().filter(|s| s["attributes"]["node"] == node.to_string()).collect();

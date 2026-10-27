@@ -302,7 +302,7 @@ async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_f
         records.write_record(&row).await.unwrap();
     }
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
-    atlas.fill(&records, ["mesh1".to_string()]).await.expect("the atlas is filled from the node records, once");
+    atlas.scope(&records, ["mesh1".to_string()].into()).await.expect("the fabric-primary takes mesh1: its atlas is filled from the node records, once");
     let store = Arc::new(Unreadable::default());
     let fp = fabric_primary_at(&admin, view, atlas, store.clone());
 
@@ -328,8 +328,10 @@ async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_f
 /// row nowhere"): a stop the mesh-primary admitted and the node has not acknowledged leaves its row
 /// ready-for-traffic, and `nodes.get` answers ready-for-traffic, not stopped, though the admitting
 /// mesh-primary's view already holds the birth leaving; the node's acknowledgement, written on the row
-/// as stopping, answers stopping; the stopped frame, written as stopped, answers stopped. Must NOT
-/// happen: the gossip view's status, or a lifecycle effect laid over it, answered in place of the row's.
+/// as stopping, answers stopping; the stopped frame, written as stopped, answers stopped. Silence is the
+/// observer's: a birth the view holds pending-reconnect reads so, and a silence mark the row still
+/// carries is not answered once the birth is heard. Must NOT happen: the gossip view's lifecycle
+/// status, or a lifecycle effect laid over it, answered in place of the row's.
 #[tokio::test]
 async fn an_unacknowledged_stop_reads_ready_for_traffic_and_the_row_answers_each_state_it_takes() {
     let (admin, mut rpc) = (node("mesh1.admin.1"), node("mesh1.rpc.1"));
@@ -345,7 +347,7 @@ async fn an_unacknowledged_stop_reads_ready_for_traffic_and_the_row_answers_each
     row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.name).declared.insert(rdm_core::status::NodeState::ReadyForTraffic);
     records.write_record(&row).await.unwrap();
     let atlas = rdm_admin::atlas::Atlas::default();
-    atlas.fill(&records, ["mesh1".to_string()]).await.unwrap();
+    atlas.scope(&records, ["mesh1".to_string()].into()).await.unwrap();
     use rdm_core::views::NodeStatus as Read;
     assert_eq!(status_of(&view, &atlas, &rpc.node_id).await, (Read::ReadyForTraffic, false), "a stop the node has not acknowledged moves its row nowhere: ready-for-traffic");
     let ready: Vec<String> = match rdm_admin::views::nodes_answer(&path("mesh1.admin.1"), &view, &(Arc::new(BTreeMap::new) as rdm_admin::views::Loads), &atlas, &Filter::new().eq("status", ["ready-for-traffic"])).await {
@@ -361,6 +363,19 @@ async fn an_unacknowledged_stop_reads_ready_for_traffic_and_the_row_answers_each
     row.status = NodeStatus::Stopped;
     atlas.write_record(&row);
     assert_eq!(status_of(&view, &atlas, &rpc.node_id).await, (Read::Stopped, true), "the stopped frame written on the row: stopped");
+
+    // Silence is the observer's (node-identity-and-state.md §7.3), not a state a command sets: a birth
+    // the view holds pending-reconnect reads it whatever its row says, and a silence mark its row still
+    // carries is not the answer once the view hears the birth.
+    row.status = NodeStatus::ReadyForTraffic;
+    row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.name).silence = Some(NodeStatus::PendingReconnect);
+    atlas.write_record(&row);
+    let mut silent = view.clone();
+    silent.nodes.iter_mut().filter(|n| n.node_id == rpc.node_id).for_each(|n| n.status = NodeStatus::PendingReconnect);
+    assert_eq!(status_of(&silent, &atlas, &rpc.node_id).await, (Read::PendingReconnect, false), "the view holds the birth silent: pending-reconnect");
+    let mut heard = view.clone();
+    heard.nodes.iter_mut().filter(|n| n.node_id == rpc.node_id).for_each(|n| n.status = NodeStatus::ReadyForTraffic);
+    assert_eq!(status_of(&heard, &atlas, &rpc.node_id).await, (Read::ReadyForTraffic, false), "heard again: the row's ready-for-traffic, not the silence mark the row still carries");
 }
 
 /// CONTRACT (query.md §2, Q232: "the same pair list answers the same nodes from both sources on a
