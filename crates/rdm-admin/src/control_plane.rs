@@ -906,7 +906,7 @@ impl ControlPlane {
     /// its exact birth (`observed`'s birth of that node id and incarnation) is asked only when the birth
     /// is neither stopped nor heard live, and its verdict is spanned on `outer`. No investigation held:
     /// no verdict.
-    pub(crate) async fn delete_gate(&self, n: &crate::fabric_atlas::AtlasRow, observed: &crate::topology::Topology, outer: &tracing::Span) -> Option<crate::build::DeleteAdmitted> {
+    pub(crate) async fn delete_gate(&self, n: &crate::atlas::AtlasRow, observed: &crate::topology::Topology, outer: &tracing::Span) -> Option<crate::build::DeleteAdmitted> {
         use crate::model::NodeStatus;
         let heard_dead = n.status == NodeStatus::Dead || n.observed == Some(NodeStatus::Dead);
         if !crate::build::delete_needs_verdict(n.stopped, n.live, heard_dead) {
