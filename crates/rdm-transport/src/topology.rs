@@ -7744,6 +7744,8 @@ mod tests {
     #[tokio::test]
     async fn a_primary_refuses_a_read_of_its_own_source_below_the_version_it_published() {
         use iroh::protocol::Router;
+        let spans = OpenedSpans::default();
+        let _capture = crate::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let (admin, rpc1, rpc2, rpc3) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.rpc.1", 1), birth_at("mesh1.rpc.2", 1), birth_at("mesh1.rpc.3", 1));
         let p = publisher_of(&admin);
@@ -7766,6 +7768,10 @@ mod tests {
             "a read of its own v1 below its published v{published} is refused: {taken:?}"
         );
         assert!(m.installed_snapshot("mesh1").is_none_or(|(_, v, _)| v != 1), "its own older image is not installed");
+        let refused: Vec<_> = spans.named("rdm.mesh.topology.reject.via-stale").into_iter().filter(|f| f.get("frame").map(String::as_str) == Some("topology-read")).collect();
+        assert_eq!(refused.len(), 1, "one refusal, named: {refused:#?}");
+        assert_eq!((refused[0]["node"].as_str(), refused[0]["held_key"].clone(), refused[0]["frame_key"].as_str()), ("mesh1.admin.1", format!("publisher={p} topology_version={published}"), "topology_version=1"));
+        assert!(spans.named("rdm.mesh.topology.update.via-snapshot-installed").iter().all(|f| f.get("channel").map(String::as_str) != Some("topology-read")), "no read installs");
     }
 
     /// CONTRACT (gate 7965f026, `admin_top_up`: `mesh1.admin.2` called `GetTopology` on `mesh1.admin.1`

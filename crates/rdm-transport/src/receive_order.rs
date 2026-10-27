@@ -16,7 +16,8 @@
 //! [`ReceiveOrder`] holds the remaining keyed families' ordering state, shared by all channels
 //! and topology-read installs:
 //! - MeshTopology and MeshTopologyDelta: the actual installed publisher/version floor orders that source,
-//!   regardless of publication timestamp. The existing cross-publisher publication check remains.
+//!   regardless of publication timestamp; a node's own publications are its floor for its own source
+//!   under its exact birth, a topology read included ([`ReceiveOrder::published`]). The existing cross-publisher publication check remains.
 //!   SnapshotReceiver compares complete normalized projection content, chunk identity and delta
 //!   content under its installation lock: duplicates install nothing; conflicts are inconsistent.
 //!   Publication identity includes its owner birth and counter; equal-key unfinished chunks remain admissible. An ahead-base delta requests repair via-gap;
