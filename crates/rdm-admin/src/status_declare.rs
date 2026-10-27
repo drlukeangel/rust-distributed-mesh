@@ -339,14 +339,19 @@ impl Declarer {
         let mut own_held = false;
         let mut due = Vec::new();
         for (own, _, key) in order {
-            if own && own_held {
-                continue;
-            }
             let Some(p) = pending.get_mut(&key) else { continue };
             let target = match &p.to {
                 Authority::FabricPrimary => view.fabric_primary(),
                 Authority::MeshPrimaryOf(mesh) => view.node_type_primary(mesh, NodeKind::NodeAdmin).or_else(|| self.recovery_executor(me_id, view, mesh)),
             };
+            if own && own_held {
+                // Held behind an earlier one: a down op from its mesh-primary still sends it again, once it
+                // is first (the down op itself is taken by this sweep).
+                if target.is_some_and(|t| addressed.contains(&t.node_id)) {
+                    p.sent = None;
+                }
+                continue;
+            }
             let Some(target) = target else {
                 p.last = Some("no authority in view".into());
                 own_held |= own;
@@ -984,6 +989,15 @@ mod tests {
 
         d.record_sent(&ready, &mesh_primary, true);
         assert_eq!(due(&d), vec![deleting.clone()], "the ConnectionsDeleting is sent on the node.started's refusal by name");
+
+        // A down op from the mesh-primary sends again every declaration owed to it, in the order owed: the
+        // one it holds behind the first is sent once the first is answered, the down op taken by then.
+        d.record_sent(&deleting, &mesh_primary, true);
+        let addressed: BTreeSet<NodeId> = [mesh_primary.node_id.clone()].into();
+        let asked: Vec<Key> = d.due(&me_id, &v, &addressed).into_iter().map(|(p, _)| p.key).collect();
+        assert_eq!(asked, vec![ready.clone()], "the down op sends the node.started again, first and alone");
+        d.record_sent(&ready, &mesh_primary, true);
+        assert_eq!(due(&d), vec![deleting.clone()], "the ConnectionsDeleting the down op also asked for is sent on the node.started's answer");
 
         let reowed = Declarer::new();
         reowed.owe_own(&me, &me_id, &IncarnationId::parse(INC).unwrap(), NodeState::Stopped, None);
