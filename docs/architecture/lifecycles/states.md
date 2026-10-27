@@ -22,16 +22,16 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 
 | state | set by | from |
 |---|---|---|
-| node starting | the node's mesh-primary, as the operation's progress: published as a routing-stop fact, never written as the row's status (Q233) | the accepted node.start execution (inside node.create, or on a stopped node) |
+| node starting | the node's mesh-primary | the accepted node.start execution (inside node.create, or on a stopped node) |
 | node pending | the node's mesh-primary | the node's accepted join report, on the start call or a commanded join, once per join ([node-mesh-join.md](node-mesh-join.md) step 10) |
 | node ReadyForTraffic | the node's mesh-primary | the node's node.started report, after every start gate ([`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) among them); the node then calls [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) |
 | node connections-deleting | the node's mesh-primary | the node's `ConnectionsDeleting` report on the command stream of `node.connections.delete { scope: All }`, its block on new application work in force, standalone or as the acknowledgement on node.stop's stream |
 | node connections-deleted | the node's mesh-primary | the node's node.connections.deleted completion carrying `Established`, standalone or `StopConnectionsDeleted` on node.stop's stream; a `Deadline` completion leaves the node connections-deleting |
 | node leaving | the node's mesh-primary | the acknowledgement of node.mesh.leave: `CommandAccepted` on the `LeaveMesh` command stream (0x22), or `Leaving` on node.stop's stream |
 | node left | the node's mesh-primary | node.mesh.leave's completion: `MeshLeft` on the `LeaveMesh` command stream, or `StopMeshLeft` on node.stop's stream |
-| node stopping | the node's mesh-primary, as the operation's progress: published as a routing-stop fact, never written as the row's status (Q233) | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
+| node stopping | the node's mesh-primary | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
 | node stopped | the node's mesh-primary | the matching stopped frame on the stop call's stream |
-| node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary), as the operation's progress: published as NodeDeleting, a routing-stop fact, never written as the row's status (Q233) | node.delete's adopted claim, published as NodeDeleting |
+| node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's adopted claim, published as NodeDeleting |
 | node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's step receipt |
 | mesh Pending | the node-admin that launched the mesh's first admin | one ApplyMeshState(Pending) sent after the launched birth answers Ping, waiting at most 20 s for that reachability (RDM's `apply_mesh_state` in `rdm-admin`) |
 | mesh ReadyForTraffic | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144). The write that first puts it on the record calls [`on_mesh_ready`](../fabric-node-hooks.md#on_mesh_ready) | its mesh-primary's report that every planned birth is ready |
@@ -39,7 +39,7 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete receipts; never an op |
 | fabric ready-for-traffic | the fabric-primary | every mesh the accepted Build names ready-for-traffic, its attempt claimed; the fabric-primary then calls [`on_fabric_ready`](../fabric-node-hooks.md#on_fabric_ready) |
 
-A query answers the row's status: the state the mesh-primary last recorded from the node's own frame, or `deleted` from the delete's receipt (Q233). starting, stopping and deleting are an operation's progress, read on its stream and the Build's receipts and applied by peers as routing stops (below); a command the node has not answered moves the row's status nowhere.
+A command is start, stop or delete; the node's acknowledgement of it sets starting, stopping or deleting, and its completion sets ready, stopped or deleted (Q233, Luke). A query answers the row's status as the node's frames moved it: a command the node has not acknowledged moves the row's status nowhere, and `deleted` for an exited node comes from the delete's receipt.
 
 The internal report and apply that move a node's status are [node status](node-status.md).
 Which frame carries each state to peers, and who publishes it, is the

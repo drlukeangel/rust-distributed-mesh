@@ -164,17 +164,11 @@ dev recommendation: A. The progress is already on the operation's stream and the
 Routing does not need it in status, because the node refuses new work by name while its connections
 are being deleted. A sub-status is a second field that every writer must keep in step with the stream.
 
-**Ruled X (the lead, 2026-10-27, INDEX; arch-1's findings folded in):** a query answers the state the
-mesh-primary last recorded from the node's own frame (pending, ready, connections-deleting,
-connections-deleted, leaving, left, stopped) or from the delete's receipt (deleted: an exited node reports
-nothing; the provider's exit proof and the writer's receipt set it). starting, stopping and deleting, set from
-an admission or a claim, are the operation's progress, read on its stream and the Build's receipts, never
-the row's status. Routing is untouched: the routing stop (states.md:81-84) is applied by a peer on receipt of
-the fact, the gossiped digest and the NodeStopped and NodeDeleting frames, which keep carrying every
-routing-stop state. A would delete states Luke's vocabulary names. Page text owed with the landing, Luke's yes
-on it: states.md's three rows (starting, stopping, deleting) say they are the operation's, published as
-routing-stop facts and never written as the row's status. Cell: a stop admitted leaves the query at `ready`
-and the peers' routing stop in force until the node's frames move the row.
+**Ruled by Luke (2026-10-27, INDEX):** the command is start, stop or delete; the node's acknowledgement of it
+sets starting, stopping or deleting; its completion sets ready, stopped or deleted. A query answers the row's
+status as the node's frames moved it; a command the node has not acknowledged moves it nowhere; `deleted` for
+an exited node comes from the delete's receipt. No sub-status field. states.md's sentence after the table
+states it (landed).
 
 
 ---
