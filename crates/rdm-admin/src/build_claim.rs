@@ -50,8 +50,11 @@ pub fn current_context() -> CallContext {
 }
 
 /// Each attempt's context, keyed `(build_id, lane, attempt)`, on the admin's Build log
-/// ([`LocalBuildLog::put_attempt_context`]). Local to the admin that wrote it: nothing here is
-/// gossiped, journaled as a fact or read by another admin.
+/// ([`LocalBuildLog::put_attempt_context`]): the context an attempt's claim took. The opening
+/// request's context rides the open's own record in the journal ([`AttemptOpened::context`]); no
+/// Build message carries either.
+///
+/// [`AttemptOpened::context`]: crate::build_state::AttemptOpened::context
 pub struct AttemptContexts {
     log: Arc<dyn LocalBuildLog>,
 }

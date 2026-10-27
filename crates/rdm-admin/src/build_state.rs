@@ -122,7 +122,8 @@ pub struct AttemptOpened {
     pub mesh: Option<String>,
     /// The opening request's call context, written with the open in this one record (build.md §4.4:
     /// a refused open writes nothing): the context the attempt's claim takes, so no claim of it ever
-    /// reads a context written after its open. This admin's alone: a Build message never carries it.
+    /// reads a context written after its open. It is written to the journal with the open; a Build
+    /// message never carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<rdm_core::context::CallContext>,
 }
