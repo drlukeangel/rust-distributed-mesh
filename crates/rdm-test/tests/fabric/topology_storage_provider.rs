@@ -212,6 +212,45 @@ async fn an_unsupported_provider_changes_nothing() {
     assert!(named(&spans, "rdm.node_admin.mesh.update.via-block").is_empty(), "no mesh-primary blocked: no step of a change ran");
 }
 
+/// CONTRACT (storage.md §2 "Changing it": "Acceptance refuses by name a provider the fabric-primary's
+/// wiring does not register or cannot open"): `test-target` is registered by every executable of the
+/// testkit, and its place cannot hold the fabric's root (a regular file stands at the root's path); a
+/// request naming it is refused by name, `topology-storage-provider-not-opened`, naming the provider and
+/// why it does not open. Nothing is accepted: the current Build stands, the Fabric row and every node
+/// still name `file`, every node is the same birth, and no mesh-primary blocked. Must NOT happen: the
+/// Build accepted and its copy meeting a provider that does not answer, read again without end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_provider_that_does_not_open_changes_nothing() {
+    let test = "a_provider_that_does_not_open_changes_nothing";
+    let (mut estate, views) = two_mesh_estate(test, &[]).await;
+    let before = births(&views);
+    let current = estate.current().await.based_on;
+    let (_, target_root) = roots(&estate);
+    std::fs::create_dir_all(target_root.parent().expect("the root is under its provider's place")).expect("test-target's place");
+    let _ = std::fs::remove_dir_all(&target_root);
+    std::fs::write(&target_root, b"a regular file where the fabric's root would be").expect("a file at test-target's root");
+    let change = naming_provider(&estate, Some(TOPOLOGY_STORAGE_TARGET)).await;
+    let refused = estate.carrier().await.create(change).await;
+    let (reason, detail) = match refused {
+        Err(CallEnd::Rejected { reason, detail }) => (reason, detail),
+        Err(other) => panic!("the request naming {TOPOLOGY_STORAGE_TARGET} ended otherwise than refused by name: {other}"),
+        Ok(stream) => panic!("the request naming {TOPOLOGY_STORAGE_TARGET}, which does not open, was accepted as Build {}", stream.build_id()),
+    };
+    estate.artifact("refusal.json", &json!({ "reason": reason, "detail": detail }));
+    assert_eq!(reason, "topology-storage-provider-not-opened", "refused by name: {detail}");
+    assert!(detail.contains(TOPOLOGY_STORAGE_TARGET), "the refusal names the provider: {detail}");
+    assert_eq!(estate.current().await.based_on, current, "the current Build is the one before the request");
+    fabric_names(&estate.fabric_view().await, FILE, &[]);
+    let after = estate.node_views().await;
+    assert_eq!(births(&after), before, "every node is the same birth");
+    nodes_write(&after, FILE);
+    estate.stop().await;
+    let spans = estate.spans();
+    let reject = named(&spans, "rdm.node_admin.build.reject.via-topology-storage-provider-not-opened");
+    assert!(reject.iter().any(|sp| s(&sp["attributes"]["detail"]).contains(TOPOLOGY_STORAGE_TARGET)), "the fabric-primary's refusal span names the provider: {reject:#?}");
+    assert!(named(&spans, "rdm.node_admin.mesh.update.via-block").is_empty(), "no mesh-primary blocked: no step of a change ran");
+}
+
 /// CONTRACT (storage.md §2 "The property": Day 0, "the bootstrap admin, on the Fabric row ... its
 /// environment, `RDM_TOPOLOGY_STORAGE_PROVIDER`"; every launch, "the launching admin, into the node's
 /// environment"; a change, "a Build that omits the property leaves it unchanged (Q166)"; i149 R3 and
@@ -566,6 +605,55 @@ async fn topology_storage_state_survives_role_node_restart() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read() {
     role_node_restart("a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read", Ends::Switched).await;
+}
+
+/// One mesh: its node-admin and an rpc node, so the store names a node beside the admin's own birth
+/// and the admin's loss is a fabric recovery, not Q200's Day 0.
+fn one_mesh() -> FabricDesired {
+    FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired { name: "mesh1".into(), node_admin: 1, rpc_node: 1, broker: 0, gateway: 0, compute: 0 }] }
+}
+
+/// CONTRACT (storage.md §2 "The property": "a restart with no launcher (the adoption launch) | the node
+/// itself | its own row in its data dir"): a one-mesh fabric started with no provider named moves to
+/// `test-target` by one Build of its complete topology, which completes; its Day-0 node-admin is lost,
+/// and a person starts a node-admin again on that data dir with no launcher and no
+/// `RDM_TOPOLOGY_STORAGE_PROVIDER` (fabric recovery). The new birth writes `test-target`, the provider
+/// its own row names: its row says so, the Fabric row still names `test-target` with `file` previous,
+/// its records are on `test-target`, and nothing of it is on `file`. Must NOT happen: the start taking
+/// `file` from its environment's default and opening the provider the fabric left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restart_without_a_launcher_writes_the_provider_its_own_row_names() {
+    let test = "a_restart_without_a_launcher_writes_the_provider_its_own_row_names";
+    let names: BTreeSet<String> = [FP, "mesh1.rpc.1"].iter().map(|n| n.to_string()).collect();
+    let mut estate = estate_with(test, &[]).await;
+    estate.reconcile(&one_mesh()).await;
+    estate.settles_to_named(&names, SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let (file_root, target_root) = roots(&estate);
+    let change = match estate.shape_change(&one_mesh()).await {
+        Change::Reconcile { based_on, nodes, .. } => Change::Reconcile { based_on, nodes, topology_storage_provider: Some(TOPOLOGY_STORAGE_TARGET.into()) },
+        other => panic!("the complete-topology request is a Reconcile: {other:?}"),
+    };
+    let stream = estate.carrier().await.create(change).await.unwrap_or_else(|e| panic!("the storage change naming {TOPOLOGY_STORAGE_TARGET} is accepted: {e}"));
+    let frames = terminal(&estate, stream).await;
+    assert!(matches!(frames.last(), Some(BuildFrame::Complete { .. })), "the change completes: {frames:?}");
+    fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
+    let old_id = node_id_of(&estate, FP).await;
+    let data_dir = estate.bootstrap_data_dir("mesh1");
+    estate.kill_bootstrap();
+    let restarted = estate.restart_admin_with(&data_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    assert_eq!(restarted.to_string(), FP, "the start on the data dir is at its own row's path.name");
+    estate.enter(&restarted).await;
+    let views = estate.settles_to_named(&names, SETTLE).await;
+    estate.artifact("views.json", &json!(Estate::values(&views)));
+    let admin = views.iter().find(|v| v.name.to_string() == FP).expect("the restarted node-admin");
+    let new_id = admin.node_id.to_string();
+    assert_ne!(new_id, old_id, "a new birth over the data dir");
+    assert_eq!(admin.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET), "the start with no launcher writes the provider its own row names: {admin:?}");
+    fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
+    assert!(!lines_naming(&target_root, &new_id).is_empty(), "the new birth's records are on {TOPOLOGY_STORAGE_TARGET}");
+    assert!(lines_naming(&file_root, &new_id).is_empty(), "nothing of the new birth {new_id} is on {FILE}, the provider the fabric left: {:#?}", lines_naming(&file_root, &new_id));
+    estate.stop().await;
 }
 
 /// CONTRACT (storage.md §2 "Changing it" (Q198): "A step that fails before the switch fails the Build only
