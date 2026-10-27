@@ -313,7 +313,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert_eq!(
         after_m2_deleted,
         vec![
-            BuildOperation::RetireNode { node: m2_a1.name.clone(), exited: None },
+            BuildOperation::RetireNode { node: m2_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m2_a1) },
             BuildOperation::ShutdownMesh { mesh: "mesh1".into(), mesh_id: id1.clone() },
             BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() },
         ],
@@ -421,7 +421,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert_eq!(fp_delete.attempt, 2);
     let proj2 = builds.read_build(&build_id).await.unwrap();
     let fp_ops = plan_for_build(&proj2, &*observed.read().await).operations;
-    assert_eq!(fp_ops, vec![BuildOperation::RetireNode { node: m1_a1.name.clone(), exited: None }], "attempt 2 plans only the fabric-primary's own node.delete");
+    assert_eq!(fp_ops, vec![BuildOperation::RetireNode { node: m1_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m1_a1) }], "attempt 2 plans only the fabric-primary's own node.delete");
     assert_eq!(seat_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no seat on its separate node.delete");
     assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.name.clone()), "the fabric-primary executes its own final node.delete");
 

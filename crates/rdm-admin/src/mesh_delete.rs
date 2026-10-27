@@ -207,7 +207,7 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], _operation: &str, roster: &[Ros
     let terminate = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
     let mut held = BTreeMap::new();
     for b in roster {
-        let Some(deleted) = b.node.parse::<crate::model::PathName>().ok().map(|node| crate::build::BuildOperation::RetireNode { node, exited: None }.key()) else { continue };
+        let Some(deleted) = b.node.parse::<crate::model::PathName>().ok().map(|node| crate::build::BuildOperation::RetireNode { node, exited: None, birth: None }.key()) else { continue };
         let proof = steps
             .iter()
             .filter(|r| r.operation == deleted && r.step == terminate && r.outcome == StepOutcome::Complete)
@@ -231,7 +231,7 @@ pub(crate) fn finished_delete(steps: &[BuildStepReceipt], executor: &str, b: &Ro
     let path: crate::model::PathName = b.node.parse().map_err(|e| format!("{executor}: the roster birth {named} names no path.name: {e:?}"))?;
     let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("{executor}: the roster birth {named}'s node id {} does not parse: {e}", b.node_id))?;
     let birth = b.birth().map_err(|e| format!("{executor}: the roster birth {named}: {e}"))?;
-    let operation = crate::build::BuildOperation::RetireNode { node: path, exited: None }.key();
+    let operation = crate::build::BuildOperation::RetireNode { node: path, exited: None, birth: None }.key();
     let deleted = crate::deployment::pipeline::RetireStep::NodeDeleted.name();
     let complete = crate::deployment::pipeline::RetireStep::Complete.name();
     Ok(steps

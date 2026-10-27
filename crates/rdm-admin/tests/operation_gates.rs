@@ -61,7 +61,7 @@ impl BuildStateAdapter for Raced {
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         if self.armed.swap(false, Ordering::SeqCst) {
             let path: PathName = "mesh1.rpc.2".parse().unwrap();
-            let racer = AttemptOpened { action: Some(AttemptAction::Stop { path, from_incarnation: IncarnationId::mint() }), opened_by: "the racer".into(), ..opened.clone() };
+            let racer = AttemptOpened { action: Some(AttemptAction::Stop { path, node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() }), opened_by: "the racer".into(), ..opened.clone() };
             self.inner.open_attempt(&racer).await?;
         }
         self.inner.open_attempt(opened).await

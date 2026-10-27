@@ -125,6 +125,8 @@ pub enum BuildOperation {
     DeleteConnections {
         /// The node.
         node: PathName,
+        /// The node id of the birth the gates pinned (build.md §4.4).
+        node_id: NodeId,
         /// The birth whose connections are deleted.
         from_incarnation: IncarnationId,
     },
@@ -133,6 +135,8 @@ pub enum BuildOperation {
     StopNode {
         /// The node to stop.
         node: PathName,
+        /// The node id of the birth the gates pinned (build.md §4.4).
+        node_id: NodeId,
         /// The birth stopped.
         from_incarnation: IncarnationId,
     },
@@ -141,6 +145,8 @@ pub enum BuildOperation {
     StartNode {
         /// The node to start.
         node: PathName,
+        /// The node id of the birth the gates pinned (build.md §4.4).
+        node_id: NodeId,
         /// The birth started.
         from_incarnation: IncarnationId,
     },
@@ -150,6 +156,8 @@ pub enum BuildOperation {
     DeleteNode {
         /// The stopped node's `.old` path.
         node: PathName,
+        /// The node id of the birth the gates pinned (build.md §4.4).
+        node_id: NodeId,
         /// The birth deleted.
         from_incarnation: IncarnationId,
     },
@@ -159,9 +167,13 @@ pub enum BuildOperation {
         node: PathName,
         /// A crashed target (node-delete.md "Crashed target"; node-recovery.md sequence step 3): the
         /// exact exited birth, deleted on its mesh-primary's recorded exit proof. Its stop steps are
-        /// already done, and nothing is sent to it. `None`: the birth the view holds at `node`.
+        /// already done, and nothing is sent to it. `None`: the live or stopped `birth`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exited: Option<ExitedBirth>,
+        /// The live or stopped birth the gates pinned at acceptance (build.md §4.4): the delete acts on
+        /// it alone, never on the birth the view holds at `node`. `None` with `exited`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        birth: Option<PinnedBirth>,
     },
     /// One step of a Build (`BuildChange::Steps`; build.md §1, lifecycles/node-replace.md): its op's
     /// own workflow on the node its path names when it runs, `create-node`, `stop-node`,
@@ -318,7 +330,8 @@ pub fn step_key(step: &rdm_core::build::Step) -> String {
     }
 }
 
-/// The exact birth a step is fenced to: the birth its node was when the Build was accepted.
+/// The exact birth an operation on an existing birth carries (build.md §4.4): the node id and incarnation
+/// the gates pinned at acceptance, which the executing mesh-primary verifies before any effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PinnedBirth {
     /// The node.id.
@@ -338,14 +351,38 @@ impl PinnedBirth {
     /// the birth `view` holds that this pin names, which is the only birth the operation acts on.
     /// `Ok(None)`: the view holds neither this birth nor any birth at `node`.
     pub fn held_in(&self, view: &Topology, operation: &str, node: &PathName) -> Result<Option<crate::model::Node>, BirthReplaced> {
-        // The resolution the runner makes today: the birth by its incarnation alone.
-        if let Some(n) = view.births().find(|n| n.incarnation_id.as_ref() == Some(&self.incarnation)) {
-            return Ok(Some(n.clone()));
+        // The birth by its node id, wherever the view lists it: a birth renamed live is listed at the
+        // name it last published (node-replace.md steps 1-2). The same node id under another
+        // incarnation, or another node id at the path, is another birth.
+        let refused = |n: &crate::model::Node| {
+            let refusal = BirthReplaced { operation: operation.to_string(), node: node.clone(), expected: self.clone(), observed: Self::of(n) };
+            tracing::info_span!(
+                "rdm.node_admin.node.reject.via-birth-replaced",
+                operation = %refusal.operation,
+                node = %refusal.node,
+                node_id = %refusal.expected.node_id,
+                incarnation_id = %refusal.expected.incarnation.as_str(),
+                observed_node_id = %n.node_id,
+                observed_incarnation_id = %n.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or(""),
+            )
+            .in_scope(|| tracing::info!("the birth the operation was pinned to is not the birth this view holds: nothing is done to it"));
+            refusal
+        };
+        if let Some(n) = view.births().find(|n| n.node_id == self.node_id) {
+            return match n.incarnation_id.as_ref() == Some(&self.incarnation) {
+                true => Ok(Some(n.clone())),
+                false => Err(refused(n)),
+            };
         }
         match view.node(node) {
-            Some(n) => Err(BirthReplaced { operation: operation.to_string(), node: node.clone(), expected: self.clone(), observed: Self::of(n) }),
+            Some(n) => Err(refused(n)),
             None => Ok(None),
         }
+    }
+
+    /// Whether `n` is this birth: its node id and its incarnation.
+    pub fn is(&self, n: &crate::model::Node) -> bool {
+        n.node_id == self.node_id && n.incarnation_id.as_ref() == Some(&self.incarnation)
     }
 }
 

@@ -223,7 +223,7 @@ fn birth_of_step(p: &BuildProjection, attempt: u32, path: &PathName, output: Opt
         return Some(op.incarnation);
     }
     match p.attempt_actions.get(&attempt)? {
-        AttemptAction::DeleteConnections { path: at, from_incarnation } | AttemptAction::Stop { path: at, from_incarnation } | AttemptAction::Start { path: at, from_incarnation } | AttemptAction::Delete { path: at, from_incarnation } | AttemptAction::Recover { path: at, from_incarnation, .. } => {
+        AttemptAction::DeleteConnections { path: at, from_incarnation, .. } | AttemptAction::Stop { path: at, from_incarnation, .. } | AttemptAction::Start { path: at, from_incarnation, .. } | AttemptAction::Delete { path: at, from_incarnation, .. } | AttemptAction::Recover { path: at, from_incarnation, .. } => {
             (at == path).then(|| from_incarnation.clone())
         }
         AttemptAction::Steps { pinned, .. } => pinned.iter().find(|(at, _)| at == path).map(|(_, b)| b.incarnation.clone()),
@@ -545,6 +545,8 @@ impl Atlas {
         let node_of = |held: &Held| -> Option<NodeId> {
             let pinned = match p.attempt_actions.get(&attempt) {
                 Some(AttemptAction::Steps { pinned, .. }) => pinned.iter().find(|(at, _)| *at == path).map(|(_, b)| b.node_id.clone()),
+                // The node id the gates pinned (build.md §4.4).
+                Some(AttemptAction::DeleteConnections { path: at, node_id, .. } | AttemptAction::Stop { path: at, node_id, .. } | AttemptAction::Start { path: at, node_id, .. } | AttemptAction::Delete { path: at, node_id, .. }) if *at == path => Some(node_id.clone()),
                 _ => None,
             };
             pinned.or_else(|| held.records.values().find(|r| r.name == path && !matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn)).map(|r| r.node_id.clone()))

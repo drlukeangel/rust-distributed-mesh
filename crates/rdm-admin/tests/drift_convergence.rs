@@ -194,7 +194,7 @@ async fn secondary_rpc(e: &Estate, mesh: &str) -> String {
 async fn estate() -> Estate {
     let world = Arc::new(World::default());
     let fabric_id = FabricId::mint();
-    let topology = FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() };
+    let topology = FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() };
     let mut nodes = Vec::new();
     let digest_view = DigestView::default();
     for m in topology.meshes.values() {
@@ -300,7 +300,7 @@ impl OperationRunner for Runner {
             // node.delete of the exited instance (node-delete.md "Crashed target"): no RPC, no stop
             // frames, no probe; the provider's exit proof is the fence. A runtime that still runs is
             // no proof: refused by name, as the admin's crashed-target delete inspects before it deletes.
-            BuildOperation::RetireNode { node: path, exited: Some(from) } => {
+            BuildOperation::RetireNode { node: path, exited: Some(from), .. } => {
                 self.recovering.lock().unwrap().push(op.key());
                 if let Some(r) = self.world.runtimes.lock().unwrap().values().find(|r| r.node_id == from.node_id.as_str()) {
                     if matches!(r.status, DeploymentStatus::Running) {

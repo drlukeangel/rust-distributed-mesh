@@ -547,7 +547,7 @@ mod tests {
         let claims = crate::storage::MemoryMeshStorage::default();
         let contexts = crate::build_claim::AttemptContexts::in_memory();
         let id = crate::build::BuildId::mint();
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric), submitted_at_ms: 1 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric), submitted_at_ms: 1 }).await.unwrap();
         builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into(), claimant: Some("mesh1.admin.1".into()), mesh: None }).await.unwrap();
         let lost_row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt: 1, claimant: "mesh1.admin.1".into(), claimant_node: None };
         assert_eq!(claims.take_in_flight("mesh1", &lost_row).await.unwrap(), crate::mesh_claims::Taken::Won);

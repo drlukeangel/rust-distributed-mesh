@@ -195,7 +195,7 @@ fn facts() -> Vec<BuildFact> {
     }
     let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Stop, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56, context: None });
     out.push(action(None));
-    out.push(action(Some(AttemptAction::Stop { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
+    out.push(action(Some(AttemptAction::Stop { path: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() })));
     // Steps (build.md §1; lifecycles/node-replace.md): the steps and the births they pinned.
     {
         use rdm_core::build::Step;

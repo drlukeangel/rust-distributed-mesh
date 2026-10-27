@@ -146,7 +146,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
     let key = op.key();
     match op {
         BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { mesh: mesh.clone(), operation: update_operation(Seat::FabricPrimary, build_id.as_str(), run, &key), holder: None }],
-        BuildOperation::RetireNode { node, exited: None }
+        BuildOperation::RetireNode { node, exited: None, .. }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::Step { step: Step::Stop { node } | Step::Delete { node } | Step::DeleteConnections { node }, .. }
@@ -155,7 +155,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
             [Seat::MeshPrimary, Seat::FabricPrimary].into_iter().map(|seat| PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(seat, build_id.as_str(), run, &key), holder: Some(node.clone()) }).collect()
         }
         // Any other node type's primary, commanded by its mesh-primary (node-primary-update.md, "Commander").
-        BuildOperation::RetireNode { node, exited: None }
+        BuildOperation::RetireNode { node, exited: None, .. }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::Step { step: Step::Stop { node } | Step::Delete { node } | Step::DeleteConnections { node }, .. } => {
@@ -1980,7 +1980,7 @@ fn mesh_primary_recovery_admits(p: &BuildProjection, op: &BuildOperation) -> boo
     let Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) = p.action.as_ref() else { return false };
     let birth = |b: &crate::build::ExitedBirth| &b.node_id == node_id && &b.incarnation == from_incarnation;
     match op {
-        BuildOperation::RetireNode { node, exited: Some(b) } | BuildOperation::CreateNode { node, over: Some(b), .. } => node == path && birth(b),
+        BuildOperation::RetireNode { node, exited: Some(b), .. } | BuildOperation::CreateNode { node, over: Some(b), .. } => node == path && birth(b),
         _ => false,
     }
 }

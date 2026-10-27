@@ -107,6 +107,8 @@ pub(crate) struct WireStep {
 struct WireTopology {
     fabric: String,
     meshes: BTreeMap<String, WireMesh>,
+    /// The birth each node the Build deletes held at acceptance (build.md §4.4), appended last.
+    pinned: Vec<(PathName, crate::build::PinnedBirth)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -173,11 +175,11 @@ enum WireAction {
     /// Reserved position: the removed node.restart's action (Q183). Never sent; a fact carrying it is
     /// refused by name ([`fact_from_wire`]). Kept so every later action keeps its position.
     Reserved0 { path: PathName, from_incarnation: IncarnationId },
-    DeleteConnections { path: PathName, from_incarnation: IncarnationId },
-    Stop { path: PathName, from_incarnation: IncarnationId },
-    Start { path: PathName, from_incarnation: IncarnationId },
+    DeleteConnections { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
+    Stop { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
+    Start { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
     Recover { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
-    Delete { path: PathName, from_incarnation: IncarnationId },
+    Delete { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
     Steps { steps: Vec<rdm_core::build::Step>, pinned: Vec<(PathName, crate::build::PinnedBirth)> },
     Terminate { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
     /// Fabric recovery's backbone re-create, a node.create alone (Q142); appended, so every earlier
@@ -238,12 +240,12 @@ impl From<WireChange> for TopologyChange {
 impl From<&AttemptAction> for WireAction {
     fn from(a: &AttemptAction) -> Self {
         match a {
-            AttemptAction::DeleteConnections { path, from_incarnation } => Self::DeleteConnections { path: path.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Stop { path, from_incarnation } => Self::Stop { path: path.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Start { path, from_incarnation } => Self::Start { path: path.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::DeleteConnections { path, node_id, from_incarnation } => Self::DeleteConnections { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Stop { path, node_id, from_incarnation } => Self::Stop { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Start { path, node_id, from_incarnation } => Self::Start { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Recover { path, node_id, from_incarnation, backbone: false } => Self::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Recover { path, node_id, from_incarnation, backbone: true } => Self::RecoverFromBackbone { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Delete { path, from_incarnation } => Self::Delete { path: path.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Delete { path, node_id, from_incarnation } => Self::Delete { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Steps { steps, pinned } => Self::Steps { steps: steps.clone(), pinned: pinned.clone() },
             AttemptAction::Terminate { path, node_id, from_incarnation } => Self::Terminate { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
         }
@@ -256,12 +258,12 @@ impl TryFrom<WireAction> for AttemptAction {
     fn try_from(a: WireAction) -> Result<Self, String> {
         Ok(match a {
             WireAction::Reserved0 { path, .. } => return Err(format!("the attempt's action is node.restart of {path}, a reserved position: node.restart is removed (Q183)")),
-            WireAction::DeleteConnections { path, from_incarnation } => Self::DeleteConnections { path, from_incarnation },
-            WireAction::Stop { path, from_incarnation } => Self::Stop { path, from_incarnation },
-            WireAction::Start { path, from_incarnation } => Self::Start { path, from_incarnation },
+            WireAction::DeleteConnections { path, node_id, from_incarnation } => Self::DeleteConnections { path, node_id, from_incarnation },
+            WireAction::Stop { path, node_id, from_incarnation } => Self::Stop { path, node_id, from_incarnation },
+            WireAction::Start { path, node_id, from_incarnation } => Self::Start { path, node_id, from_incarnation },
             WireAction::Recover { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation, backbone: false },
             WireAction::RecoverFromBackbone { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation, backbone: true },
-            WireAction::Delete { path, from_incarnation } => Self::Delete { path, from_incarnation },
+            WireAction::Delete { path, node_id, from_incarnation } => Self::Delete { path, node_id, from_incarnation },
             WireAction::Steps { steps, pinned } => Self::Steps { steps, pinned },
             WireAction::Terminate { path, node_id, from_incarnation } => Self::Terminate { path, node_id, from_incarnation },
         })
@@ -311,7 +313,7 @@ impl From<&FabricTopology> for WireTopology {
                 (k.clone(), mesh)
             })
             .collect();
-        Self { fabric: t.fabric.clone(), meshes }
+        Self { fabric: t.fabric.clone(), meshes, pinned: t.pinned.clone() }
     }
 }
 impl From<WireTopology> for FabricTopology {
@@ -326,7 +328,7 @@ impl From<WireTopology> for FabricTopology {
             .collect();
         // The Build topic carries no topology_storage_provider: the journal's record of the accepted
         // Build is the one that does.
-        Self { fabric: t.fabric, meshes, topology_storage_provider: None, storage_change: None }
+        Self { fabric: t.fabric, meshes, topology_storage_provider: None, storage_change: None, pinned: t.pinned }
     }
 }
 

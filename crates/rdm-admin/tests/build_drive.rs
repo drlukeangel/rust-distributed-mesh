@@ -2543,8 +2543,8 @@ async fn a_stop_attempt_of_a_build_that_completed_ends_at_its_stop_while_the_fab
     // The fabric is changing again, and a node.stop opens the Build's next attempt.
     gate.ready.store(false, Ordering::SeqCst);
     let path: PathName = "mesh1.rpc.1".parse().unwrap();
-    let from_incarnation = r.env.topology.read().await.node(&path).and_then(|n| n.incarnation_id.clone()).expect("mesh1.rpc.1 has a birth");
-    let action = AttemptAction::Stop { path: path.clone(), from_incarnation };
+    let (node_id, from_incarnation) = r.env.topology.read().await.node(&path).and_then(|n| n.incarnation_id.clone().map(|i| (n.node_id.clone(), i))).expect("mesh1.rpc.1 has a birth");
+    let action = AttemptAction::Stop { path: path.clone(), node_id, from_incarnation };
     r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Stop, action: Some(action), opened_by: "mesh1.admin.1".into(), opened_at_ms: 5, context: None }).await.unwrap();
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(2);

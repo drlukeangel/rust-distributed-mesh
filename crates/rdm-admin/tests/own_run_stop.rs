@@ -151,11 +151,12 @@ async fn executor(calls: &Arc<Calls>, hold: Hold, op: BuildOperation) -> (RunDoo
 /// The three operations of `mesh1.admin.1` on itself whose stop its own run commands.
 fn own_operations() -> Vec<BuildOperation> {
     let node: PathName = "mesh1.admin.1".parse().unwrap();
-    let birth = IncarnationId::mint();
+    let (node_id, birth) = (NodeId::mint(), IncarnationId::mint());
+    let pinned = rdm_admin::build::PinnedBirth { node_id: node_id.clone(), incarnation: birth.clone() };
     vec![
-        BuildOperation::StopNode { node: node.clone(), from_incarnation: birth.clone() },
-        BuildOperation::DeleteConnections { node: node.clone(), from_incarnation: birth },
-        BuildOperation::RetireNode { node, exited: None },
+        BuildOperation::StopNode { node: node.clone(), node_id: node_id.clone(), from_incarnation: birth.clone() },
+        BuildOperation::DeleteConnections { node: node.clone(), node_id, from_incarnation: birth },
+        BuildOperation::RetireNode { node, exited: None, birth: Some(pinned) },
     ]
 }
 
@@ -215,7 +216,7 @@ async fn its_own_runs_stop_connections_delete_or_delete_of_itself_holds_inside_t
 #[tokio::test(start_paused = true)]
 async fn the_hold_every_other_stop_takes_commanded_from_inside_the_run_waits_on_that_run_until_the_bound() {
     let calls = Arc::new(Calls::default());
-    let op = BuildOperation::RetireNode { node: "mesh1.admin.1".parse().unwrap(), exited: None };
+    let op = BuildOperation::RetireNode { node: "mesh1.admin.1".parse().unwrap(), exited: None, birth: Some(rdm_admin::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }) };
     let (door, _gate, plan) = executor(&calls, Hold::EveryTurn, op).await;
     let Attached::Live { mut reader, .. } = door.attempt_run(&build_id(), 1, "mesh1.admin.1", &CallContext::default(), &[], &plan).await else { panic!("the claimed attempt is started") };
     let begun = tokio::time::Instant::now();
@@ -282,7 +283,7 @@ async fn a_stop_of_itself_from_a_signal_waits_for_the_run_in_progress_and_resolv
 #[tokio::test(start_paused = true)]
 async fn a_stop_its_own_run_commands_still_waits_for_every_turn_that_is_not_that_builds() {
     let calls = Arc::new(Calls::default());
-    let op = BuildOperation::RetireNode { node: "mesh1.admin.1".parse().unwrap(), exited: None };
+    let op = BuildOperation::RetireNode { node: "mesh1.admin.1".parse().unwrap(), exited: None, birth: Some(rdm_admin::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }) };
     let (door, gate, plan) = executor(&calls, Hold::CommandedBy, op).await;
     let other = gate.turn("backbone").await;
     let Attached::Live { mut reader, .. } = door.attempt_run(&build_id(), 1, "mesh1.admin.1", &CallContext::default(), &[], &plan).await else { panic!("the claimed attempt is started") };

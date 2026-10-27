@@ -1277,11 +1277,11 @@ fn mesh_deleted_final(s: &BuildStepReceipt) -> Option<(crate::model::NodeId, cra
 /// What an opened attempt carries, for a refusal: its reason, its action and who opened it.
 fn describe_open(o: &AttemptOpened) -> String {
     let action = match &o.action {
-        Some(crate::accepted::AttemptAction::DeleteConnections { path, from_incarnation }) => format!("node.connections.delete of {path} from {from_incarnation}"),
-        Some(crate::accepted::AttemptAction::Stop { path, from_incarnation }) => format!("stop of {path} from {from_incarnation}"),
-        Some(crate::accepted::AttemptAction::Start { path, from_incarnation }) => format!("start of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::DeleteConnections { path, node_id, from_incarnation }) => format!("node.connections.delete of {path} from {node_id} at {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Stop { path, node_id, from_incarnation }) => format!("stop of {path} from {node_id} at {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Start { path, node_id, from_incarnation }) => format!("start of {path} from {node_id} at {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),
-        Some(crate::accepted::AttemptAction::Delete { path, from_incarnation }) => format!("delete of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Delete { path, node_id, from_incarnation }) => format!("delete of {path} from {node_id} at {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Steps { steps, .. }) => format!("{} step(s): {}", steps.len(), steps.iter().map(crate::build::step_key).collect::<Vec<_>>().join(", ")),
         Some(crate::accepted::AttemptAction::Terminate { path, node_id, from_incarnation }) => format!("termination of the deleted birth {node_id} at {from_incarnation} of {path}"),
         None => "no fenced action".to_string(),
@@ -2939,7 +2939,8 @@ mod tests {
         m.publish_accepted(&intent("b1")).await.unwrap();
         m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         let (inc, other) = (crate::model::IncarnationId::mint(), crate::model::IncarnationId::mint());
-        let act = |path: &str, from: &crate::model::IncarnationId| Some(AttemptAction::Stop { path: path.parse().unwrap(), from_incarnation: from.clone() });
+        let node_id = crate::model::NodeId::mint();
+        let act = |path: &str, from: &crate::model::IncarnationId| Some(AttemptAction::Stop { path: path.parse().unwrap(), node_id: node_id.clone(), from_incarnation: from.clone() });
         let mut first = opened("b1", 2, AttemptReason::ProvenDrift);
         first.action = act("mesh1.rpc.2", &inc);
         m.open_attempt(&first).await.unwrap();
@@ -2948,7 +2949,7 @@ mod tests {
         same.opened_by = "mesh2.admin.1".into();
         m.open_attempt(&same).await.expect("the same action asked again is the same attempt");
         let mut other_node = opened("b1", 2, AttemptReason::Stop);
-        other_node.action = Some(AttemptAction::Stop { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: other.clone() });
+        other_node.action = Some(AttemptAction::Stop { path: "mesh2.rpc.1".parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: other.clone() });
         let err = m.open_attempt(&other_node).await.expect_err("another action asked for the held number");
         match &err {
             BuildStateError::AttemptTaken { build_id, attempt, held, wanted } => {

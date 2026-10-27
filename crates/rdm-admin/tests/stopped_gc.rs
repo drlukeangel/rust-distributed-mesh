@@ -131,9 +131,9 @@ async fn period(cp: &ControlPlane, builds: &MemoryBuildStateAdapter, (path, node
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     let (action, reason, operation) = if stop {
-        (AttemptAction::Stop { path: path.clone(), from_incarnation: incarnation.clone() }, AttemptReason::Stop, format!("node.stop:{path}"))
+        (AttemptAction::Stop { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }, AttemptReason::Stop, format!("node.stop:{path}"))
     } else {
-        (AttemptAction::Start { path: path.clone(), from_incarnation: incarnation.clone() }, AttemptReason::Start, format!("node.start:{path}"))
+        (AttemptAction::Start { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }, AttemptReason::Start, format!("node.start:{path}"))
     };
     let op = LifecycleOp { build_id: b0.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: at_ms };
     builds.absorb(&[
@@ -408,12 +408,12 @@ async fn a_stopped_node_whose_stop_receipt_cannot_be_read_is_skipped_by_its_own_
     let (spans, _g) = capture("i143-3072-unreadable-receipt");
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = view("mesh1.admin.1");
-    let (path, _, incarnation) = birth(&t, STOPPED);
+    let (path, node_id, incarnation) = birth(&t, STOPPED);
     let cp = plane(builds.clone(), t, "mesh1.admin.1").await;
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Stop, action: Some(AttemptAction::Stop { path: path.clone(), from_incarnation: incarnation }), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, context: None }),
+        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Stop, action: Some(AttemptAction::Stop { path: path.clone(), node_id, from_incarnation: incarnation }), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, context: None }),
         BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
         BuildFact::Step(BuildStepReceipt { mesh: None, build_id: b0.clone(), attempt, operation: format!("node.stop:{path}"), step: "Complete".into(), outcome: StepOutcome::Complete, output: Some(serde_json::json!("not a lifecycle op")), executor: Some("mesh1.admin.1".into()) }),
         BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Converged }),

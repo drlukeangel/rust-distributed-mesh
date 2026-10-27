@@ -541,6 +541,17 @@ impl ControlPlane {
                     return Err(Refusal::Reject(reject));
                 }
             }
+            // Every node this Build deletes is pinned to the exact birth the view holds at its path now
+            // (build.md §4.4): its node.delete carries that birth, and the executing mesh-primary
+            // refuses another `birth-replaced`. A birth with no incarnation cannot be pinned.
+            let mut pinned = Vec::new();
+            for n in crate::accepted::surplus_births(&topology, &observed) {
+                match crate::build::PinnedBirth::of(n) {
+                    Some(birth) => pinned.push((n.name.clone(), birth)),
+                    None => return Err(not_live(&outer, route, &n.name, n.status, "the node holds no incarnation id to pin its delete to")),
+                }
+            }
+            topology.pinned = pinned;
             let operations = crate::accepted::plan(&topology, &observed, None).operations;
             // A Build whose plan holds the fabric delete, the whole plan, is exempt from the
             // build-in-progress refusal, R-BI7 and R-PC1: it interrupts the Build in progress, and its own
@@ -771,7 +782,7 @@ impl ControlPlane {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
-            let from_incarnation = {
+            let (node_id, from_incarnation) = {
                 // A stopped birth at a `.old` path is admitted from the view, which reads a renamed
                 // birth by its node id through the node-row id index (R12).
                 let mut t = match self.view_now.get() {
@@ -832,17 +843,19 @@ impl ControlPlane {
                         return Err(Refusal::Reject(reject));
                     }
                 }
+                // The exact birth the gates pinned (build.md §4.4): its node id and incarnation, which the
+                // executing mesh-primary verifies before any effect.
                 match n.incarnation.clone() {
-                    Some(incarnation) => incarnation,
-                    None => return Err(not_live(&outer, route, &path, n.status, "the node holds no incarnation id to fence the attempt to")),
+                    Some(incarnation) => (n.node_id.clone(), incarnation),
+                    None => return Err(not_live(&outer, route, &path, n.status, "the node holds no incarnation id to pin the attempt to")),
                 }
             };
             let node_name = path.to_string();
             let action = match kind {
-                ActionKind::DeleteConnections => AttemptAction::DeleteConnections { path, from_incarnation },
-                ActionKind::Stop => AttemptAction::Stop { path, from_incarnation },
-                ActionKind::Start => AttemptAction::Start { path, from_incarnation },
-                ActionKind::Delete => AttemptAction::Delete { path, from_incarnation },
+                ActionKind::DeleteConnections => AttemptAction::DeleteConnections { path, node_id, from_incarnation },
+                ActionKind::Stop => AttemptAction::Stop { path, node_id, from_incarnation },
+                ActionKind::Start => AttemptAction::Start { path, node_id, from_incarnation },
+                ActionKind::Delete => AttemptAction::Delete { path, node_id, from_incarnation },
             };
             self.open_with(&current, None, reason, action, route, &outer, &node_name, span.clone()).await
         }
@@ -1465,7 +1478,7 @@ mod tests {
             ],
             nodes: vec![node("mesh1.admin.1", true, true), node("mesh1.rpc.1", true, false), node("mesh1.rpc.2", false, false), node("mesh2.admin.1", true, false), node("mesh2.rpc.1", true, false)],
         };
-        let stop = |path: &str| crate::build::BuildOperation::StopNode { node: path.parse().unwrap(), from_incarnation: t.node(&path.parse().unwrap()).unwrap().incarnation_id.clone().unwrap() };
+        let stop = |path: &str| crate::build::BuildOperation::StopNode { node: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: t.node(&path.parse().unwrap()).unwrap().incarnation_id.clone().unwrap() };
         let holder = stop("mesh1.rpc.1");
         assert_eq!(crate::executor::seat_move(&holder, &t).map(|m| m.holder.name.to_string()), Some("mesh1.rpc.1".to_string()), "the rpc seat moves before its holder's stop");
         assert_eq!(crate::executor::executor_for(&holder, &t), None, "no admin executes the holder's stop until its seat moved");
@@ -1479,7 +1492,7 @@ mod tests {
                 None => panic!("{action} of mesh2's sole rpc node is refused by name"),
             }
         }
-        let retire_sole = crate::build::BuildOperation::RetireNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None };
+        let retire_sole = crate::build::BuildOperation::RetireNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None, birth: None };
         assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "retire", &t).is_none(), "retiring the sole member of a non-admin cohort skips node.primary.update");
         assert_eq!(crate::executor::seat_move(&retire_sole, &t), None, "retiring the sole member of a non-admin cohort moves no seat");
         // R5 (Luke 2026-10-24, arm (a); node-primary-update.md "No-successor cases": "the delete of a
@@ -1518,8 +1531,8 @@ mod tests {
             other => panic!("{action} of {path} is refused last-admin: {other:?}"),
         };
         assert_eq!(refusal("mesh1.admin.1", "stop"), "cannot transfer: no secondary of type node-admin in mesh mesh1");
-        assert!(crate::executor::seat_move(&crate::build::BuildOperation::StopNode { node: only.clone(), from_incarnation: crate::model::IncarnationId::mint() }, &t).is_some_and(|m| m.mesh_seat), "stop of mesh1's only node never skips the seat move");
-        assert_eq!(crate::executor::seat_move(&crate::build::BuildOperation::RetireNode { node: only, exited: None }, &t), None, "the delete of mesh1's only node skips the seat move");
+        assert!(crate::executor::seat_move(&crate::build::BuildOperation::StopNode { node: only.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t).is_some_and(|m| m.mesh_seat), "stop of mesh1's only node never skips the seat move");
+        assert_eq!(crate::executor::seat_move(&crate::build::BuildOperation::RetireNode { node: only, exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the seat move");
         assert_eq!(refusal("mesh2.admin.1", "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
     }
 
@@ -1651,7 +1664,7 @@ mod tests {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             rdm_core::binding::Binding { launch_id: id.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
         };
-        let current = crate::accepted::FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
+        let current = crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
         let with = |path: &str, b: rdm_core::binding::Binding| {
             let mut next = current.clone();
             let p: PathName = path.parse().unwrap();
@@ -1707,7 +1720,7 @@ mod tests {
             rdm_core::binding::Binding { launch_id: "rpc_node".into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: image.map(str::to_string) }
         };
         let image = Some(crate::deployment::container::RUNTIME_IMAGE);
-        let current = crate::accepted::FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 0)])))].into() };
+        let current = crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 0)])))].into() };
         let with = |b: rdm_core::binding::Binding| {
             let mut next = current.clone();
             let p: PathName = "mesh1.rpc.1".parse().unwrap();
@@ -1747,7 +1760,7 @@ mod tests {
     /// Must NOT happen: a create accepted with nothing naming what it runs.
     #[test]
     fn a_path_created_naming_no_executable_is_refused_by_name_whatever_the_change() {
-        let current = crate::accepted::FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
+        let current = crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
         let observed = crate::topology::Topology { fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![] };
         let grown = crate::accepted::compile(&current, &crate::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, &observed).unwrap();
         assert_eq!(created_without_executable(&current, &grown), Some(BuildReject::ExecutableMissing { node: "mesh1.rpc.2".into() }));
