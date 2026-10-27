@@ -39,7 +39,7 @@ mod gossip_stats;
 mod heartbeat_spans;
 mod lifecycle_frames_wire;
 mod digest_frames_wire;
-mod seat_frames_wire;
+mod primary_frames_wire;
 mod publication_wake;
 mod forward_role;
 mod no_acting_publication;

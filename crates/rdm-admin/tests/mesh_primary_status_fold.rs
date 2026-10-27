@@ -126,7 +126,7 @@ fn a_new_mesh_primary_folds_the_mesh_status_rows_and_a_secondary_folds_none() {
         let trace_id = crate::mesh_delete_resume::trace_id(&root_span);
         tracing::Instrument::instrument(taken_over_one_root(trace_id), root_span).await
     });
-    println!("status_seat_fold trace_id={}", t.trace_id);
+    println!("mesh_primary_status_fold trace_id={}", t.trace_id);
     assert_eq!(t.before.node(&t.rpc.0, &t.rpc.1), None, "a non-holder folds none of the primary's rows: {:#?}", t.before);
     assert!(t.before.meshes.is_empty(), "a non-holder folds no Mesh status row: {:#?}", t.before);
     assert_eq!(t.before.fabric.get(&t.fabric_id), Some(&vec!["b-own".to_string()]), "a non-holder holds only the events it applied: {:#?}", t.before);
@@ -284,7 +284,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
         )
         .await
     });
-    println!("status_seat_fold adopt trace_id={trace_id}");
+    println!("mesh_primary_status_fold adopt trace_id={trace_id}");
     assert_eq!(after_take, Some(MemberStatus::ReadyForTraffic), "the seat taker's view adopts the folded ReadyForTraffic of the birth it held Pending");
     assert_eq!(rpc2_heard, Some(MemberStatus::ReadyForTraffic), "a birth whose row was folded before its heartbeat arrived is held at the adopted status");
     assert_eq!(projected, vec![("mesh1.rpc.1".to_string(), MemberStatus::ReadyForTraffic), ("mesh1.rpc.2".to_string(), MemberStatus::ReadyForTraffic)], "the successor's member projection carries the adopted statuses");

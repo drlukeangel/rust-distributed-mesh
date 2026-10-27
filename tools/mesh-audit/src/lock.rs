@@ -259,7 +259,7 @@ pub const JOIN_SOURCE: &str = "crates/rdm-admin/src/join.rs";
 pub const JOIN_CELLS: &str = "crates/rdm-admin/tests/join_wire.rs";
 /// The topology read (`GetTopology`, 0x1E): its serve and install sites, and the cell that proves its postcard shape.
 pub const TOPOLOGY_SOURCE: &str = "crates/rdm-node/src/topology_read.rs";
-pub const SEAT_FRAME_CELLS: &str = "crates/rdm-transport/tests/seat_frames_wire.rs";
+pub const SEAT_FRAME_CELLS: &str = "crates/rdm-transport/tests/primary_frames_wire.rs";
 pub const TOPOLOGY_CELLS: &str = "crates/rdm-core/tests/topology_wire.rs";
 /// The Build-facts read (`FetchBuildFacts`, 0x1F): its serve and absorb sites, and the cell that proves its postcard shape.
 pub const BUILD_FACTS_SOURCE: &str = "crates/rdm-admin/src/build_facts_read.rs";

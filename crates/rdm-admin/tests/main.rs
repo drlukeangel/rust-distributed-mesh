@@ -158,11 +158,11 @@ mod reconcile_variants;
 mod receipt_refusal;
 mod recovery_admission;
 mod start_join_order;
-mod pipeline_moves_no_seat;
+mod pipeline_moves_no_primary;
 mod pipeline_step_io;
 mod status_declarations;
 #[cfg(feature = "file-backend")]
-mod status_seat_fold;
+mod mesh_primary_status_fold;
 mod stopped_delete;
 mod stopped_gc;
 #[cfg(feature = "file-backend")]

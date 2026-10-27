@@ -64,16 +64,16 @@ const SCRUBBED: &[&str] = &[
 /// Scenario stems the fast gate runs (`SCENARIOS` of `rdm-gate-at.sh`).
 const GATE_SCENARIOS: &[&str] = &[
     "node_delete", "node_connections_delete", "node_stop", "node_replace", "node_restart", "routing", "status",
-    "shape_reconcile", "live_resize", "role_build", "role_cohort", "restart_target",
-    "role_routing", "role_context", "role_wedge", "provider_state", "late_authority", "node_primary_update",
-    "mesh_create", "fabric_primary_handover", "canonical_ids", "cohort_election", "fabric_primary", "rpc_proof_store",
-    "accepted_topology", "build_op", "cohort_recovery", "rpc_certainty", "peer_mesh_investigation", "joiner_build_facts", "rafka_time_discipline", "issuance", "fabric_states",
+    "shape_reconcile", "live_resize", "role_build", "role_election", "restart_target",
+    "role_routing", "role_context", "role_wedge", "provider_state", "late_lower_node_id_admin", "node_primary_update",
+    "mesh_create", "fabric_primary_handover", "canonical_ids", "node_type_election", "fabric_primary", "rpc_proof_store",
+    "accepted_topology", "build_op", "node_admin_loss_recovery", "rpc_certainty", "peer_mesh_investigation", "joiner_build_facts", "rafka_time_discipline", "issuance", "fabric_states",
     "mesh_delete_resume", "mesh_delete_no_survivor",
     "apply_cuts", "scheduler_replay", "shared_dial", "topology_storage_provider",
 ];
 /// Gate stems that only the release gate runs (`RELEASE_ONLY`).
 const GATE_RELEASE_ONLY: &[&str] = &[
-    "cohort_election", "cohort_recovery", "peer_mesh_investigation", "restart_canary_seed", "failpoint_explorer",
+    "node_type_election", "node_admin_loss_recovery", "peer_mesh_investigation", "restart_canary_seed", "failpoint_explorer",
     "mesh_delete_resume", "mesh_delete_no_survivor", "topology_storage_provider",
 ];
 /// Crates whose every executable the fast gate runs.
@@ -89,7 +89,7 @@ const E11: &[(&str, &str)] = &[
     ("rdm-test", "role_context"),
     ("rdm-test", "role_wedge"),
     ("rdm-test", "role_build"),
-    ("rdm-test", "role_cohort"),
+    ("rdm-test", "role_election"),
     ("rdm-test", "role_process"),
     ("rdm-node", "leadership"),
     ("rdm-transport", "pool"),

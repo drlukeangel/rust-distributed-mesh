@@ -97,8 +97,8 @@ mod container_fault_backend;
 mod operation_ledger;
 #[path = "fabric/driver_reconcile.rs"]
 mod driver_reconcile;
-#[path = "mesh/cohort_recovery.rs"]
-mod cohort_recovery;
+#[path = "mesh/node_admin_loss_recovery.rs"]
+mod node_admin_loss_recovery;
 #[path = "mesh/peer_mesh_investigation.rs"]
 mod peer_mesh_investigation;
 #[path = "mesh/bootstrap_pending.rs"]
@@ -133,18 +133,18 @@ mod peer_mesh_topology;
 mod joiner_build_facts;
 #[path = "rpc/topology_get.rs"]
 mod topology_get;
-#[path = "elections/cohort_election.rs"]
-mod cohort_election;
+#[path = "elections/node_type_election.rs"]
+mod node_type_election;
 #[path = "elections/fabric_primary.rs"]
 mod fabric_primary;
 #[path = "elections/fabric_takeover.rs"]
 mod fabric_takeover;
 #[path = "elections/fabric_primary_loss.rs"]
 mod fabric_primary_loss;
-#[path = "elections/late_authority.rs"]
-mod late_authority;
-#[path = "elections/role_cohort.rs"]
-mod role_cohort;
+#[path = "elections/late_lower_node_id_admin.rs"]
+mod late_lower_node_id_admin;
+#[path = "elections/role_election.rs"]
+mod role_election;
 #[path = "elections/node_primary_update.rs"]
 mod node_primary_update;
 #[path = "mesh/canonical_ids.rs"]
