@@ -864,15 +864,22 @@ impl NodeSelf {
         }
         let left = match already {
             Some(left) => left,
-            None => self.leave_mesh(spare.as_slice(), None, operation).await.1,
+            None => self.leave_mesh(spare.as_slice(), self.mesh_primary_endpoint(), operation).await.1,
         };
         NodeCommandReply::MeshLeft { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), left }
+    }
+
+    /// The endpoint of this birth's mesh-primary, when that is another node: the pooled connection to it
+    /// its owed declarations ride stays open through a leave's cut (node-mesh-leave.md step 4, Q206).
+    fn mesh_primary_endpoint(&self) -> Option<iroh::PublicKey> {
+        self.topology_view.primaries().mesh(&self.held_name().mesh).filter(|p| p.node_id != self.node_id).and_then(|p| self.client.endpoint_of(&p.node_id))
     }
 
     /// The `node.mesh.leave` primitive (node-mesh-leave.md): shared by standalone `LeaveMesh` and
     /// `node.stop` step 3. Emits `rdm.node.mesh.update.via-leaving`, leaves the mesh channel (and
     /// the backbone for a node-admin, each emitting `rdm.node.mesh.update.via-left`), and cuts the
-    /// Node RPC pool while sparing `spare`, and a stop's pooled connection to `mesh_primary`.
+    /// Node RPC pool while sparing `spare`, and the pooled connection to `mesh_primary` its owed
+    /// declarations ride.
     async fn leave_mesh(&self, spare: &[iroh::PublicKey], mesh_primary: Option<iroh::PublicKey>, operation: &str) -> (CutReport, Vec<WhichMesh>) {
         use tracing::Instrument;
         let leaving_span = tracing::info_span!(
@@ -1194,12 +1201,7 @@ impl NodeSelf {
         let left = match already_left {
             Some(left) => left,
             None => {
-                let mesh_primary = self
-                    .topology_view
-                    .primaries()
-                    .mesh(&self.held_name().mesh)
-                    .filter(|p| p.node_id != self.node_id)
-                    .and_then(|p| self.client.endpoint_of(&p.node_id));
+                let mesh_primary = self.mesh_primary_endpoint();
                 let cut = tracing::info_span!(
                     "rdm.node_admin.node.update.via-stop-transport-cut",
                     node = %self.held_name(), operation = %operation,
