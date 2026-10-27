@@ -284,6 +284,10 @@ pub async fn start_on(mut cfg: AdminConfig, wiring: crate::wiring::Wiring, provi
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step is a child that lives exactly as long as the step, and `via-ready` closes it.
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = tracing::field::Empty, node_id = tracing::field::Empty, incarnation_id = tracing::field::Empty, kind = "node-admin");
+    if let Err(e) = own_row_provider(&mut cfg, &providers).await {
+        boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
+        return Err(e);
+    }
     let started = match lone_birth_storage_deleted(&cfg, &providers, &boot).await {
         Ok(deleted) => {
             if deleted {
@@ -300,6 +304,24 @@ pub async fn start_on(mut cfg: AdminConfig, wiring: crate::wiring::Wiring, provi
         boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
     }
     started
+}
+
+/// The provider a start with no launcher opens (storage.md §2 "The property": "a restart with no launcher
+/// (the adoption launch) | the node itself | its own row in its data dir"): the one its own row in its
+/// data dir names, read before anything opens, whatever its environment names. A data dir holding no
+/// own row, or a row written before the row named its provider, leaves the environment's value
+/// (`RDM_TOPOLOGY_STORAGE_PROVIDER`, `file` when unset): Day 0's. A launched node's is its launch's.
+async fn own_row_provider(cfg: &mut AdminConfig, providers: &crate::storage_backend::TopologyStorageProviders) -> Result<(), String> {
+    if cfg.launch.is_some() {
+        return Ok(());
+    }
+    let storage = providers.named(&cfg.topology_storage_provider).map_err(|e| format!("refusing to start: {e}"))?;
+    let own = storage.own_row(&cfg.data_dir, &IncarnationId::mint()).await.map_err(|e| format!("refusing to start: {}: its own row could not be read: {e}", cfg.data_dir.display()))?;
+    if let Some(provider) = own.and_then(|own| own.topology_storage_provider).filter(|p| *p != cfg.topology_storage_provider) {
+        tracing::info!(data_dir = %cfg.data_dir.display(), environment = %cfg.topology_storage_provider, own_row = %provider, "a start with no launcher opens the topology storage provider its own row names");
+        cfg.topology_storage_provider = provider;
+    }
+    Ok(())
 }
 
 /// Q200 (fabric-recovery.md "Nothing alive": "A store that names no node but the launching admin's own
@@ -1747,8 +1769,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // same logical node in the same Mesh.
                             {
                                 let d = digest.lock().unwrap().clone();
-                                storage
-                                    .put_own_row(&cfg.data_dir, &incarnation, &crate::storage::NodeRecord {
+                                topology_storage
+                                    .put_own_row(crate::storage::NodeRecord {
                                         node_id: node_id.clone(),
                                         fabric_id: cfg.fabric_id.clone(),
                                         name: name.clone(),
@@ -1759,6 +1781,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         listeners: Vec::new(),
                                         is_primary: None,
                                         is_fabric_primary: None,
+                                        // The provider the handle writes now, set by the handle.
+                                        topology_storage_provider: None,
                                     })
                                     .await.map_err(storage_err)?;
                             }

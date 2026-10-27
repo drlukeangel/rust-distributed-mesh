@@ -313,6 +313,7 @@ impl Prepared {
                 listeners: Vec::new(),
                 is_primary: None,
                 is_fabric_primary: None,
+                topology_storage_provider: None,
             };
             rdm_admin::storage::FileNodesStorage::put_own_in(&data_dir, &incarnation, &own).await.unwrap();
             let mut runtime = rdm_core::RuntimeFact::of_this_process(&rdm_admin::model::DeploymentId::mint().to_string()).unwrap();

@@ -163,6 +163,7 @@ pub async fn read(
         listeners: birth.listeners.clone(),
         is_primary: birth.is_primary,
         is_fabric_primary: birth.is_fabric_primary,
+        topology_storage_provider: None,
     };
     let current = match &delete {
         Some(d) => Some(d.clone()),

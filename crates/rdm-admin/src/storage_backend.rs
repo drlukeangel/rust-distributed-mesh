@@ -203,8 +203,8 @@ pub fn file_backend(store_dir: impl Into<PathBuf>) -> Arc<dyn StorageBackend> {
 /// The topology storage providers a node-admin executable registers in its wiring, by name (storage.md
 /// §2): each a backend of the five record stores, its name bound to its place at registration. The
 /// admin opens the one its `topology_storage_provider` names (`RDM_TOPOLOGY_STORAGE_PROVIDER` on Day 0,
-/// its launch's when launched); as the fabric-primary it refuses at acceptance a Build naming one this
-/// registry does not hold.
+/// its launch's when launched, its own row's on a start with no launcher); as the fabric-primary it
+/// refuses at acceptance a Build naming one this registry does not hold or that does not open.
 #[derive(Clone, Default)]
 pub struct TopologyStorageProviders {
     registered: Vec<(String, Arc<dyn StorageBackend>)>,
@@ -291,6 +291,9 @@ pub struct TopologyStorageHandle {
     replacing: tokio::sync::Mutex<()>,
     /// Told the provider the admin writes each time it moves to another.
     provider_written: std::sync::Mutex<Option<Box<dyn Fn(&str) + Send + Sync>>>,
+    /// The admin's own row in its data dir, as it last wrote it ([`Self::put_own_row`]): a move writes
+    /// it again naming the provider it moves onto.
+    own_row: std::sync::Mutex<Option<NodeRecord>>,
 }
 
 impl TopologyStorageHandle {
@@ -306,6 +309,7 @@ impl TopologyStorageHandle {
             derivation: Default::default(),
             replacing: tokio::sync::Mutex::new(()),
             provider_written: Default::default(),
+            own_row: Default::default(),
         }))
     }
 
@@ -376,6 +380,19 @@ impl TopologyStorageHandle {
         self.replace_for(provider, None).await
     }
 
+    /// Keep `record` as the admin's own row in its data dir, naming the provider it writes now (storage.md
+    /// §2: a start with no launcher opens "its own row in its data dir"'s provider), through the
+    /// provider it writes; each later move writes it again naming the provider it moves onto.
+    pub async fn put_own_row(&self, mut record: NodeRecord) -> Result<(), StorageError> {
+        let _one = self.replacing.lock().await;
+        let provider = self.provider();
+        record.topology_storage_provider = Some(provider.clone());
+        let backend = self.providers.named(&provider).map_err(|reason| StorageError::Io { file: "nodes (own row)".into(), reason })?;
+        backend.put_own_row(&self.scope.data_dir, &self.scope.writer, &record).await?;
+        *self.own_row.lock().unwrap_or_else(|e| e.into_inner()) = Some(record);
+        Ok(())
+    }
+
     /// Open the provider this executable registers as `provider` on this admin's scope, and close it
     /// again: what the fabric-primary's acceptance of a storage change asks before anything is accepted
     /// (storage.md §2 "Changing it": "Acceptance refuses by name a provider the fabric-primary's wiring
@@ -416,6 +433,14 @@ impl TopologyStorageHandle {
             let derivation = self.derivation.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(derivation) = derivation {
                 boundaries.builds.derive_on_every_fact(derivation).await;
+            }
+            // The own row in the data dir names the provider moved onto before the move answers, so a
+            // start with no launcher opens it (storage.md §2 "The property").
+            let own = self.own_row.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(mut own) = own {
+                own.topology_storage_provider = Some(provider.to_string());
+                self.providers.named(provider)?.put_own_row(&self.scope.data_dir, &self.scope.writer, &own).await.map_err(|e| format!("the own row in {}: {e}", self.scope.data_dir.display()))?;
+                *self.own_row.lock().unwrap_or_else(|e| e.into_inner()) = Some(own);
             }
             Ok::<_, String>(AdminStores { boundaries, connections: std::sync::Mutex::new(connections) })
         }
@@ -1035,6 +1060,7 @@ mod tests {
             listeners: vec![("control".into(), "127.0.0.1:41002".parse().unwrap())],
             is_primary: None,
             is_fabric_primary: None,
+            topology_storage_provider: None,
         };
         let memory = MemoryBackend;
         memory.put_own_row(Path::new("unused"), &own.incarnation_id, &own).await.unwrap();

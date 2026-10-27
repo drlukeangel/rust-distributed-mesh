@@ -620,6 +620,12 @@ pub struct NodeRecord {
     /// on its own row (node-identity-and-state.md §2.8), as [`Self::is_primary`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_fabric_primary: Option<u64>,
+    /// The `topology_storage_provider` this birth writes (storage.md §2), kept on the own row in its
+    /// data dir and written again at each move: a start with no launcher opens the provider it names
+    /// ("a restart with no launcher (the adoption launch) | the node itself | its own row in its data
+    /// dir"). A row written before it carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology_storage_provider: Option<String>,
 }
 
 impl NodeRecord {
@@ -1564,6 +1570,7 @@ mod tests {
             listeners: vec![],
             is_primary: None,
             is_fabric_primary: None,
+            topology_storage_provider: None,
         }
     }
 

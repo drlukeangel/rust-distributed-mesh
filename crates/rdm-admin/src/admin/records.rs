@@ -172,6 +172,9 @@ impl AdminConfig {
             Some(_) => rdm_core::certs::CertPolicy::default(),
             None => rdm_core::certs::CertPolicy::from_env(&get)?,
         };
+        // A launched node's is its launch's; with no launcher, the environment's (Day 0's, `file` when
+        // unset), which the boot replaces with the provider its own row in its data dir names when one
+        // does (storage.md §2 "The property"; `boot::own_row_provider`).
         let topology_storage_provider = match &launch {
             Some(l) => l.topology_storage_provider.clone(),
             None => rdm_core::launch::decode_topology_storage_provider(get(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER))?,
