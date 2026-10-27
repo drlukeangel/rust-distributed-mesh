@@ -152,3 +152,89 @@ fn a_stopped_births_signal_runs_no_second_stop() {
         let _ = std::fs::remove_dir_all(&base);
     })
 }
+
+/// A span of the cell's JSONL artifact, by name.
+fn exported(dir: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("the cell's artifact dir {} is unreadable: {e}", dir.display()))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .flat_map(|p| std::fs::read_to_string(p).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).collect::<Vec<_>>())
+        .collect()
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (Luke 2026-10-27, i143-3209 inbox 0001: a node stop "should take less than a second", its
+/// declaration delivered, with no `CANCELLED` `caller-gone` tail): a live rpc node's signal stop runs
+/// node-stop.md's steps as its own subject (Q55), owes `ConnectionsDeleting` and then `Stopped` to its
+/// mesh-primary (node-stop.md step 4: "an owed message ... sent whether or not the stop call's stream is
+/// still open"), and ends; each declaration is applied by the mesh-primary and its call answered, the
+/// last within a second of the stop's `node.connections.delete { All }`, and the process ends within a
+/// second of the signal. RED pending a ruling: Q55 has the owed declarations "dropped by the process
+/// exit (§34). No wait on any answer.", and node-rpc.md §34 ends an Owed call "when its owner drops it".
+/// Must NOT happen: a declaration's call ending `CANCELLED` `caller-gone` at the process's end, its
+/// reply's connection cut under it by the stop's own transport cut (Rafka 141, trace
+/// 447b70d402fa6dc7c3f601b684d6d8f4: ConnectionsDeleting applied at 6.4 ms, its reply's write
+/// `Gone("connection lost")`, its call `caller-gone` at 3001 ms; `Stopped`'s dial `Failed("closed")`).
+#[test]
+fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
+    if crate::own_process::delegated(module_path!(), "a_live_births_signal_stop_delivers_its_declarations_within_a_second") {
+        return;
+    }
+    const BOUND: Duration = Duration::from_secs(1);
+    let cap = crate::common::capture("a_live_births_signal_stop_delivers_its_declarations_within_a_second");
+    let (admin_id, stopped_in, held) = cap.run(crate::common::Threads::Workers(4), async move {
+        let base = std::env::temp_dir().join(format!("live-birth-signal-{}", NodeId::mint()));
+        let (root_dir, rpc_dir) = (base.join("admin1"), base.join("rpc1"));
+        std::fs::create_dir_all(&root_dir).unwrap();
+        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        root.stop_reconciling();
+        until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
+
+        let launch = launch_by(&root, "mesh1.rpc.1", &rpc_dir);
+        let _ = root.runner.joins.expect(deployed(&launch));
+        let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
+        let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the rpc node comes up");
+        until_ready("mesh1.rpc.1", || {
+            let mut d = rpc.digest.clone();
+            d.status = *rpc.status.lock().unwrap();
+            d
+        })
+        .await;
+
+        // The signal a role binary takes, on a live birth: node.stop's steps, then its process ends.
+        let began = std::time::Instant::now();
+        tokio::time::timeout(WRONG, rpc.stop()).await.expect("the live node's process ends on its signal");
+        let stopped_in = began.elapsed();
+        let held = root.status_authority().unwrap().declared.lock().unwrap().node(&launch.node_id, &launch.incarnation);
+        let admin_id = root.digest.lock().unwrap().node.node_id.clone();
+        root.leave().await;
+        let _ = std::fs::remove_dir_all(&base);
+        (admin_id, stopped_in, held)
+    });
+    cap.flush().expect("the cell's spans reach its artifact");
+    let spans = exported(&cap.dir);
+    let named = |name: &'static str| spans.iter().filter(move |s| s["name"] == name);
+    let attr = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or_default().to_string();
+    let (start, end) = (|s: &serde_json::Value| s["start_unix_nano"].as_u64().unwrap_or(0), |s: &serde_json::Value| s["end_unix_nano"].as_u64().unwrap_or(0));
+    let all = named("rdm.node_admin.node.connections.delete.via-stop").find(|s| attr(s, "node") == "mesh1.rpc.1").expect("the signal stop's node.connections.delete { All }");
+    let from = start(all);
+    // Each declaration the stop owes, applied by the mesh-primary.
+    for state in ["ConnectionsDeleting", "Stopped"] {
+        let applied = named("rdm.node_admin.status.update.via-declaration").find(|s| attr(s, "sender") == "mesh1.rpc.1" && attr(s, "state") == state && attr(s, "outcome") == "applied");
+        assert!(applied.is_some_and(|s| start(s) >= from), "the mesh-primary applied the stop's {state}");
+    }
+    // Every call the stopping node made to its mesh-primary from the stop on: answered, none cut short
+    // by the process's end, the last answered inside the bound.
+    let target = format!("ExactNode(NodeId({:?}))", admin_id.to_string());
+    let calls: Vec<&serde_json::Value> = named("rdm.node_rpc.request.update.via-call").filter(|s| start(s) >= from && attr(s, "target") == target && attr(s, "op") == "27").collect();
+    assert!(calls.len() >= 2, "the stop's two declarations are calls to the mesh-primary: {calls:#?}");
+    for c in &calls {
+        assert_eq!(attr(c, "code"), "OK", "a declaration's call is answered, never ended by the process's end: {c}");
+    }
+    let last = calls.iter().map(|c| end(c)).max().unwrap_or(from);
+    let took = Duration::from_nanos(last.saturating_sub(from));
+    assert!(took < BOUND, "the stop's declarations are answered {took:?} after its node.connections.delete {{ All }} began, past {BOUND:?}");
+    assert!(stopped_in < BOUND, "the signal stop ended its process {stopped_in:?} after the signal, past {BOUND:?}");
+    assert_eq!(held, Some(NodeState::Stopped), "its mesh-primary holds it Stopped from its declaration");
+}
