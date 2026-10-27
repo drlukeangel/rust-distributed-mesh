@@ -12,6 +12,27 @@ the testkit's: `rdm-test/src/families.rs` (`BrokerData`, a unary op) and
 `rdm-test/src/originate.rs` (`Originate`), and Rafka's one serve today, `Ping`, in
 `rafka-node-base/src/node_rpc.rs`. The code below is shaped like a Rafka op would be.
 
+## Before writing an op: choose its completion contract
+
+Rafka owns the operation's meaning, durable work and result. RDM owns delivery, duplicate-delivery
+suppression, framing, budgets and transport spans. Use the process's existing client and endpoint.
+
+| Need | Shape and budget | What the consumer must decide |
+|---|---|---|
+| Read one value | Unary, `read_only(request) = true`, finite `Overall` budget | What to do with no answer; a new read may observe a different value |
+| Change application state | Unary with a finite owner-chosen budget | Operation identity, recoverable acceptance, and how to discover a committed result after an uncertain answer |
+| Deliver an owed report | Unary with `Budget::Owed` | Who owns the obligation, when it is cancelled or retargeted, and how it is reconstructed |
+| Receive progress or many records | Streaming; finite budget or `Budget::Stream { send }` when the connection is the intended bound | Frame recovery, terminal result, cancellation, and protocol-specific reattachment |
+
+A caller ending its wait is not proof that application work stopped. A mutating handler may have
+committed already; its protocol decides whether accepted work finishes or can be cancelled. An Owed
+call ends on its reply, proven receiver loss, or owner cancellation. A Stream budget binds the
+invocation to its committed connection; a new invocation is not automatic application resumption.
+
+`FORWARDABLE` only makes a unary protocol eligible for Forward 0x1A. It does not select a carrier
+or enable automatic fallback. The owning workflow supplies the route policy; the runtime executes
+it. Streams cannot be carried through Forward. Data-plane Proxy registration is separate.
+
 ## 1. Pick an op code
 
 An op is one family: its request enum's variants are the calls. Take a code no ledger row holds.
@@ -28,7 +49,18 @@ reuse. The current rows are the [op ledger table](../architecture/node-rpc-envel
 
 ## 2. Declare the protocol
 
-A protocol is a type implementing `rdm_core::protocol::NodeProtocol`:
+A protocol is a type implementing `rdm_core::protocol::NodeProtocol`. The snippets here are
+integration sketches, not a standalone executable: Rafka supplies the enums and application storage.
+For complete Rust definitions, imports, classifiers and registration, start with
+[`BrokerData`](../../crates/rdm-test/src/families.rs). For a streaming protocol and both ends of a
+call, see [`Count` and its cells](../../crates/rdm-transport/tests/streaming.rs). These are test
+examples, not a production durable-work implementation.
+
+Keep request/reply definitions and classification together. Derive `Serialize` and `Deserialize`
+for the enums; make every success and named refusal explicit and keep the declared variant counts
+consistent with their wire positions.
+
+A protocol declaration has this shape:
 
 ```rust
 pub struct CgShuffleRecord;
@@ -121,10 +153,6 @@ async fn serve(peer: rdm_transport::PeerContext, request: ShuffleRequest) -> Res
 - **Hand the builder to RDM** where the node starts: `rdm_node::run_with(role, types, node_hooks, serve_app)`,
   where `serve_app: FnOnce(ServerBuilder) -> ServerBuilder` adds your ops before the catalog is built
   (`run_with_alpns` also registers your data-plane protocols).
-- **A streaming op** serves with `serve_stream::<P, _, _>(owner, |peer, request, sink| ...)`: the
-  handler writes each `Data` frame to the `ReplySink` as it has it and returns the terminal reply;
-  the runtime acks the frames the caller recovers (`sink.accepted()` after your record of them) and
-  the caller reads them in order. A streaming op is never forwardable.
 - **The process refuses to start**, naming the cause, on any of:
   - an op of zero, or a duplicate ledger row;
   - a testkit-range row not owned by the testkit, or the reverse;
@@ -137,7 +165,18 @@ async fn serve(peer: rdm_transport::PeerContext, request: ShuffleRequest) -> Res
 
 ## 4. Call it
 
-From any node, through the process's one Node RPC client:
+Use `running.node_rpc.client` on a `RunningNode`. When a handler must itself call another node,
+`rdm_node::node::start_with_client` supplies that same client during registration. Capture an `Arc` of
+Rafka's application service in the registration closure and clone it into each handler future;
+do not create another endpoint or RPC runtime. The higher-level `run_with` example above is suitable
+when registration needs only the builder. Products supplying storage backends use `run_on`.
+
+Choose the target from topology or a row read according to Rafka's operation, then call through
+that client. RDM does not select a broker, replica or replacement for you. `ExactNode(node_id)`
+identifies the node; if the operation requires an exact incarnation, carry and verify that birth
+in its application contract too.
+
+For example, with `client = &running.node_rpc.client`:
 
 ```rust
 let (outcome, _evidence) = client
@@ -146,7 +185,7 @@ let (outcome, _evidence) = client
 ```
 
 - **`target`** is a `NodeTarget`, usually the exact node (`NodeTarget::ExactNode(node_id)`), from the
-  node's topology or a read ([query](../architecture/query.md)).
+  node's topology or a read ([query proposal](../plans/proposal/query-page.md)).
 - **The outcome** is `RpcOutcome<P::Reply>`:
   - `Reply(variant)`: the handler answered, or the receiver's runtime answered one of its four
     refusals (`not_ready`, `busy`, `connections_deleting`, `malformed`);
@@ -163,7 +202,82 @@ let (outcome, _evidence) = client
 - **Trace context** rides the call's `CallContext`; your serve span is the caller's child
   ([telemetry.md §3](../architecture/telemetry.md)).
 
-## 5. Checklist for a new op
+## 5. A mutation that survives an uncertain answer
+
+For a Rafka mutation, put an application operation id in the request and define a way to read its
+result. That id survives a new RPC invocation; the transport's delivery id does not replace it.
+
+1. Validate the request. Look up its operation id in Rafka's durable records. An existing completed
+   operation returns its recorded result; a pending one joins or reports the existing work rather
+   than starting it again. Define a named refusal for reuse of an id with different input.
+2. Record accepted work recoverably, then call `peer.acceptance.accepted()`. Alternatively, finish
+   and record the result before replying. An acknowledgement is never an execution receipt.
+3. Execute using Rafka's recovery mechanism. Record the effect and completion so a crash between
+   the effect and its receipt cannot make recovery apply the effect twice. A pending-work record
+   alone does not solve this: use the application's transaction or idempotent operation mechanism.
+4. Return the recorded result. On restart, reconstruct pending work and finish or reconcile it
+   before claiming success. No transport delivery loop belongs in this recovery code.
+5. If the caller gets `Indeterminate`, it queries the operation result by id. It must not create
+   another mutation merely because the reply was lost. Resubmission of the same operation is safe
+   only when the application contract explicitly supports it.
+
+`record_durably` in the sketch is an application seam, not an RDM API. Its error must be mapped to
+an appropriate named reply or `HandlerFault`; an expected domain refusal is not an internal fault.
+Retain call evidence and record the operation id in application spans so a consumer can connect
+an uncertain call to its eventual result.
+
+## 6. Streaming: producer and consumer
+
+Implement `rdm_core::streaming::StreamingProtocol::frame_kind` for the protocol. Classify every
+reply as `Started`, `Data`, `Terminal` or `Refusal`. The legal order is a single refusal, or
+`Started`, zero or more data frames, then one terminal reply.
+
+On the server, register `serve_stream::<P, _, _>(owner, |peer, request, sink| ...)`:
+
+```rust,ignore
+// Application-specific frame constructors and error mapping are omitted here.
+// Make accepted work recoverable before the first reply frame.
+let mut sink = sink.started(started_reply).await.map_err(map_sink_error)?;
+for frame in data_frames {
+    sink.data(frame).await.map_err(map_sink_error)?;
+}
+Ok(terminal_reply) // return it; the runtime sends the terminal frame
+```
+
+On the caller, use `client.call_stream::<P>(target, request, options)`. Handle an opening failure
+separately from a stream that opens and later fails. Once it opens:
+
+```rust,ignore
+while let Some(item) = stream.next().await {
+    match item {
+        rdm_transport::stream::StreamItem::Frame(kind, reply) => {
+            // Record progress/result with stream.position() (delivery id and sequence).
+            // This is application code, including treatment of Refusal and Terminal.
+            recover_frame(stream.position(), kind, reply).await?;
+            stream.accepted().await;
+        }
+        rdm_transport::stream::StreamItem::Failed(failure) => {
+            // Reconcile recorded progress; do not infer successful completion.
+            return handle_stream_failure(failure);
+        }
+    }
+}
+```
+
+The acknowledgement belongs to the caller's `ReplyStream`, never the server's `ReplySink`.
+`accepted().await` acknowledges all frames handed over so far: call it only once all of those
+frames are recoverable, including the terminal result. For a consumer that records nothing and
+whose recovery boundary is reading the frame, use `stream.read_only()` instead. This consumer
+choice is distinct from the request's `NodeProtocol::read_only` classification.
+
+At most 64 response frames may be unacknowledged; a consumer that does not acknowledge eventually
+holds the producer. Await `sink.data` for backpressure. Dropping the caller stream ends the
+invocation; a producer write can return `SinkError::CallerGone`. That is not proof that already
+accepted application work was undone. Handle cancellation according to the operation's contract;
+map unexpected sink order/size errors deliberately. Connection recovery inside an invocation and
+application resumption after a new invocation are different: define the latter in the protocol.
+
+## 7. Checklist for a new op
 
 1. A code no ledger row holds (§1), and its row in your product's ledger rows.
 2. The protocol: ceilings, variant counts, the six refusals as reply variants, `classify_reply`,
@@ -176,3 +290,20 @@ let (outcome, _evidence) = client
 6. A cell: a call answered, a refusal answered by name, the request over its ceiling refused
    `Malformed(TooLarge)`, and for a mutating handler the request accepted then the process restarted
    with the work still done.
+
+## 8. Consumer tooling to build next
+
+These are proposed RDM improvements, not available APIs or prerequisites for using Node RPC:
+
+- A protocol declaration helper that derives variant counts, classification and reserved-variant
+  plumbing while preserving explicit wire positions and application-owned reply enums.
+- A reusable conformance harness for unary and streaming protocols: named refusals, frame limits,
+  duplicate delivery, ordering, backpressure, cancellation and loss of the reply.
+- Recovery integration helpers with application-provided persistence, making acceptance and
+  response recovery explicit without moving domain transactions into the transport.
+- A standalone, compiled consumer example with an application service, registration, target
+  selection, calls and crash recovery, checked in CI. The sketches in this page do not yet supply it.
+
+The consumer acceptance test is a Rafka developer adding, calling, diagnosing and recovering one
+real operation without reading transport internals. The examples and helpers should be built to
+meet that test, rather than asking every product to rediscover the same integration.
