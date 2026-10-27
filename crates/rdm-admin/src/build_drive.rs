@@ -1071,13 +1071,15 @@ impl DriveEnv {
     }
 
     /// The restore the investigation's recovery verdict authorizes (R-D1; mesh-investigation.md steps
-    /// 5-6): `op` acts on a node-admin of a peer mesh held unheard whose recovery is decided, and the
-    /// Build carried no other admin of that mesh across the fence ([`crossed_admin`]). The
+    /// 5-6; Q221): `op` is the decision step's operation on a node-admin of a peer mesh held unheard, the
+    /// node.create of that node-admin on a decided recovery (carrier-edge-lost) or on the fully crashed
+    /// mesh's exit proof ([`Self::crash_admits`]), and the Build carried no other admin of that mesh
+    /// across the fence ([`crossed_admin`]); no other operation of the mesh is exempt. The
     /// fabric-primary executes it, whatever else the mesh's view holds (an admin held silent
     /// included): it is the mesh's first recovering node-admin.
     fn recovery_admits(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> bool {
         mesh_primary_recovery_admits(p, op)
-            || self.unheard_peer(op).is_some_and(|(node, _, decided)| (decided || self.crash_admits(p, op, &node, crashed)) && node.kind == NodeKind::NodeAdmin && crossed_admin(p, &node.mesh).is_none_or(|crossed| crossed == node))
+            || self.unheard_peer(op).is_some_and(|(node, _, decided)| ((decided && op.created_node() == Some(&node)) || self.crash_admits(p, op, &node, crashed)) && node.kind == NodeKind::NodeAdmin && crossed_admin(p, &node.mesh).is_none_or(|crossed| crossed == node))
     }
 
     /// The node.create of the node-admin a mesh no member of which answers is owed (mesh-investigation.md

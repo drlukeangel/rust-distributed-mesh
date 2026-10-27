@@ -869,7 +869,7 @@ pub fn recovered_at(build: &crate::build_state::BuildProjection, path: &PathName
 /// The births of a kept mesh `observed` holds live or stopped at a path `topology` no longer names: the
 /// nodes a topology Build deletes, each pinned at its acceptance (build.md §4.4).
 pub(crate) fn surplus_births<'a>(topology: &'a FabricTopology, observed: &'a Topology) -> impl Iterator<Item = &'a crate::model::Node> + 'a {
-    observed.members().filter(move |n| (n.status.is_live() || n.stopped) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
+    observed.members().filter(move |n| (n.status.is_live() || n.stopped || topology.pinned.iter().any(|(at, b)| *at == n.name && b.is(n))) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
 }
 
 /// The final primary a mesh.deleted manifest names, as the path and the exact birth its fabric.delete
@@ -911,8 +911,14 @@ pub(crate) fn replacement_operations(topology: &FabricTopology, observed: &Topol
 /// [`replacement_operations`]; build.md §4.4: "The operation carries the exact birth the gates
 /// pinned"), by path, beside the births it deletes (`pinned`): each replaced member's delete acts on
 /// the birth the acceptance saw there.
-pub(crate) fn replacement_pins(_replacements: &[BuildOperation], _pinned: &[(PathName, crate::build::PinnedBirth)]) -> Vec<(PathName, crate::build::PinnedBirth)> {
-    Vec::new()
+pub(crate) fn replacement_pins(replacements: &[BuildOperation], pinned: &[(PathName, crate::build::PinnedBirth)]) -> Vec<(PathName, crate::build::PinnedBirth)> {
+    replacements
+        .iter()
+        .filter_map(|op| match op {
+            BuildOperation::RetireNode { node, exited: None, birth: Some(b) } if !pinned.iter().any(|(at, _)| at == node) => Some((node.clone(), b.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The properties a Reconcile applies in place on the members it neither creates nor replaces (build.md
@@ -1145,10 +1151,13 @@ fn replacements_owed(topology: &FabricTopology, observed: &Topology, recorded: &
                 // stored entry otherwise); a recovery's create is an action attempt's, never counted here.
                 (ReplacementProgress::Created, _) => {}
                 (_, Some(n)) if !on_entry(n) => {
-                    let incarnation = n.incarnation_id.clone().expect("a held birth names its incarnation");
-                    // The delete and the create over it name the one birth the replacement acts on.
-                    ops.push(BuildOperation::RetireNode { node: p.clone(), exited: None, birth: Some(crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation: incarnation.clone() }) });
-                    ops.push(BuildOperation::CreateNode { node: p.clone(), over: Some(crate::build::ExitedBirth { node_id: n.node_id.clone(), incarnation }), executable: Some(binding.clone()) });
+                    // The delete and the create over it name the one birth the replacement acts on: the one
+                    // the Build's acceptance pinned at the path (build.md §4.4; Q228, decided by Q218 and
+                    // Q221), else, for a replacement a later attempt finds, the one the view holds now. A
+                    // birth replaced since its pin is refused `birth-replaced` by the executing mesh-primary.
+                    let pin = topology.pinned.iter().find(|(at, _)| at == p).map(|(_, b)| b.clone()).unwrap_or_else(|| crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().expect("a held birth names its incarnation") });
+                    ops.push(BuildOperation::RetireNode { node: p.clone(), exited: None, birth: Some(pin.clone()) });
+                    ops.push(BuildOperation::CreateNode { node: p.clone(), over: Some(crate::build::ExitedBirth { node_id: pin.node_id, incarnation: pin.incarnation }), executable: Some(binding.clone()) });
                 }
                 _ => {}
             }

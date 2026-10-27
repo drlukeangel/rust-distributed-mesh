@@ -1207,6 +1207,19 @@ impl AdminRunner {
             self.delete_own(build_id, attempt, record.clone(), handle).await?;
             return Ok(Some(record));
         }
+        // A Dead mark alone never skips the stop or the terminate (Q219): node investigation of the
+        // exact pinned birth decides, and only its `exited` verdict deletes it as a crashed target
+        // (node-delete.md), nothing sent to it and its exact runtime terminated.
+        if let Some(n) = seen.as_ref().filter(|n| !n.stopped && n.status == crate::model::NodeStatus::Dead) {
+            let finding = crate::seat_revision::PathProbe::investigate(self, n).await;
+            let admitted = crate::build::delete_admits(false, false, true, Some(&finding));
+            tracing::info!(verdict = finding.name(), detail = %finding.detail(), crashed_target = admitted.is_some(), "node.delete of a birth the view marks Dead: node investigation of its exact birth decides whether its stop is composed");
+            if admitted == Some(crate::build::DeleteAdmitted::Exited) {
+                let exited = crate::build::ExitedBirth { node_id: pin.node_id.clone(), incarnation: pin.incarnation.clone() };
+                self.delete_unreached_as(&*self.builds, build_id, attempt, node, &exited, true).await?;
+                return Ok(Some(record));
+            }
+        }
         self.delete_birth(build_id, attempt, record.clone(), handle).await?;
         Ok(Some(record))
     }

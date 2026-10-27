@@ -1700,6 +1700,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // What the provider holds recorded at a path: the proof of a node the accepted topology names
                             // that no view and no durable runtime row holds a birth of (mesh-investigation.md step 5).
                             records.set_path_probe(runner.clone());
+                            // Gate 5's verdict on a delete of a birth neither stopped nor heard live (Q219).
+                            let _ = control.investigation.set(runner.clone());
                             let _ = mesh_deleter.set(Arc::new(MeshDeleteDoor { runner: runner.clone() }));
                             // The Build family on `0x20`: the executor's door for `build.attempt.run` and the fabric-primary's
                             // drive of every Build. The same admin holds both; which one a call reaches depends on the seat.

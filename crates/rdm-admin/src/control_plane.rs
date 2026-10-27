@@ -486,9 +486,11 @@ impl ControlPlane {
             // gossip view context only): a node-admin a start just made ready is a successor here, whatever
             // the gossip view has heard of it; a birth an op deleted is not in it.
             self.atlas.apply(&mut observed);
-            // node.delete's target (node-delete.md "Operation contract"): a live birth or a stopped one.
-            // An unheard birth is its mesh-primary's to recover on node investigation's verdict
-            // (node-recovery.md step 3): it is refused `node-not-live` by name.
+            // node.delete's target (node-delete.md "Operation contract"; build.md §4.4 gate 5): a live
+            // birth, a stopped one, or one whose exact runtime node investigation reads exited
+            // ([`crate::build::delete_admits`]). A birth the view marks Dead with neither fact is refused
+            // `node-not-live` by name: silence never says the runtime exited (Q219).
+            let mut exited_pin: Option<(PathName, crate::build::PinnedBirth)> = None;
             if let TopologyChange::RemoveNode { node } = &change {
                 // The node's mesh held by its own attempt is the gate before the node's own gates
                 // (build.md §4.4): refused naming the mesh, whatever the node's state.
@@ -499,8 +501,12 @@ impl ControlPlane {
                     });
                     return Err(Refusal::BuildInProgress(held));
                 }
-                if let Some(n) = self.atlas_row(node, &observed).await?.filter(|n| !n.live && !n.stopped) {
-                    return Err(not_live(&outer, route, node, n.status, "a delete needs a live node or a stopped one"));
+                if let Some(n) = self.atlas_row(node, &observed).await? {
+                    match self.delete_gate(&n, &observed, &outer).await {
+                        Some(crate::build::DeleteAdmitted::Exited) => exited_pin = n.incarnation.clone().map(|incarnation| (node.clone(), crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation })),
+                        Some(_) => {}
+                        None => return Err(not_live(&outer, route, node, n.status, "a delete needs a live node, a stopped one, or one whose exit node investigation proved (Q219)")),
+                    }
                 }
             }
             let mut topology = match crate::accepted::compile_against(&current.topology, &change, &observed, &recorded) {
@@ -556,6 +562,12 @@ impl ControlPlane {
                     None => return Err(not_live(&outer, route, &n.name, n.status, "the node holds no incarnation id to pin its delete to")),
                 }
             }
+            // The birth gate 5 admitted on its exited verdict is pinned too, whatever the view marks it.
+            if let Some((at, birth)) = exited_pin.take() {
+                if !pinned.iter().any(|(p, _)| *p == at) {
+                    pinned.push((at, birth));
+                }
+            }
             topology.pinned = pinned;
             let operations = crate::accepted::plan(&topology, &observed, None).operations;
             // A Build whose plan holds the fabric delete, the whole plan, is exempt from the
@@ -586,6 +598,16 @@ impl ControlPlane {
                         .in_scope(|| tracing::info!("a topology operation acts in a mesh its own drift attempt holds: one attempt in flight per mesh"))
                 });
                 return Err(Refusal::BuildInProgress(held));
+            }
+            // Gate 6 (build.md §4.4; Q221): every node the Build acts on is of a mesh the fabric-primary's
+            // view hears, refused by name naming the mesh and how long it has gone unheard (R-D1). Each
+            // operation is checked again before its claim or dispatch (the drive's own check).
+            if let Some(reject) = operations.iter().chain(replacements.iter()).filter_map(|op| op.node()).filter(|n| n.mesh != self.me.mesh).find_map(|n| {
+                let unheard_ms = self.peer_mesh.get().and_then(|f| f(&n.mesh)).and_then(|p| p.unheard_ms)?;
+                Some(BuildReject::UnheardMesh { node: n.to_string(), mesh: n.mesh.clone(), unheard_ms })
+            }) {
+                outer.in_scope(|| reject_span(route, &reject));
+                return Err(Refusal::Reject(reject));
             }
             // A Build whose plan would end a seat holder while no other node of its type in its mesh can
             // take its seat is refused before it exists: node.primary.update has no successor (R-MT1, Q7).
@@ -822,9 +844,15 @@ impl ControlPlane {
                 // A start is the transition out of Leaving, and only for a stopped process; every other action needs a live node.
                 let startable = kind == ActionKind::Start && n.stopped;
                 let live = n.live;
-                // A delete acts on the stopped predecessor, or on one whose exit is already proven, or on
-                // the last admin of a deleted mesh, live or stopped: its node.delete stops it first.
-                let deletable = kind == ActionKind::Delete && (n.stopped || n.status == crate::model::NodeStatus::Dead || deleted_mesh);
+                // Gate 5 for a delete ([`crate::build::delete_admits`]): the stopped predecessor, or one whose
+                // exit node investigation proved, or the last admin of a deleted mesh, live or stopped: its
+                // node.delete stops it first. A Dead mark alone admits nothing (Q219).
+                let deletable = kind == ActionKind::Delete
+                    && match self.delete_gate(&n, &t, &outer).await {
+                        Some(crate::build::DeleteAdmitted::Stopped | crate::build::DeleteAdmitted::Exited) => true,
+                        Some(crate::build::DeleteAdmitted::Live) => deleted_mesh,
+                        None => false,
+                    };
                 let needs_live = !matches!(kind, ActionKind::Start | ActionKind::Delete);
                 if (kind == ActionKind::Start && !startable) || (kind == ActionKind::Delete && !deletable) || (needs_live && !live) {
                     let reason = match kind {
@@ -874,6 +902,35 @@ impl ControlPlane {
 }
 
 impl ControlPlane {
+    /// Gate 5 of a delete of the atlas row `n` ([`crate::build::delete_admits`]): node investigation of
+    /// its exact birth (`observed`'s birth of that node id and incarnation) is asked only when the birth
+    /// is neither stopped nor heard live, and its verdict is spanned on `outer`. No investigation held:
+    /// no verdict.
+    pub(crate) async fn delete_gate(&self, n: &crate::fabric_atlas::AtlasRow, observed: &crate::topology::Topology, outer: &tracing::Span) -> Option<crate::build::DeleteAdmitted> {
+        use crate::model::NodeStatus;
+        let heard_dead = n.status == NodeStatus::Dead || n.observed == Some(NodeStatus::Dead);
+        if !crate::build::delete_needs_verdict(n.stopped, n.live, heard_dead) {
+            return crate::build::delete_admits(n.stopped, n.live, heard_dead, None);
+        }
+        let finding = match (self.investigation.get(), n.incarnation.clone()) {
+            (Some(probe), Some(incarnation)) => {
+                let birth = observed.births().find(|b| b.node_id == n.node_id && b.incarnation_id.as_ref() == Some(&incarnation)).cloned().unwrap_or_else(|| {
+                    let mut b = crate::model::Node::allocated(n.name.clone());
+                    b.node_id = n.node_id.clone();
+                    b.incarnation_id = Some(incarnation.clone());
+                    b
+                });
+                Some(probe.investigate(&birth).await)
+            }
+            _ => None,
+        };
+        let admitted = crate::build::delete_admits(n.stopped, n.live, heard_dead, finding.as_ref());
+        let verdict = finding.as_ref().map(|f| f.name()).unwrap_or("none-held");
+        let detail = finding.as_ref().map(|f| f.detail()).unwrap_or_default();
+        outer.in_scope(|| tracing::info!(node = %n.name, node_id = %n.node_id, verdict, detail = %detail, admitted = admitted.map(|a| a.name()).unwrap_or("none"), "gate 5: the birth is neither stopped nor heard live, so node investigation of its exact birth decides the delete"));
+        admitted
+    }
+
     /// Open the termination of the deleted birth `(node_id, incarnation)` at `path`, heard again and
     /// reported (node-investigation.md: "The node that refused it reports it to the fabric-primary, which
     /// terminates its runtime"; Q110, Q128), as the next attempt of the current Build, executed by this

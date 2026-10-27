@@ -386,14 +386,60 @@ impl PinnedBirth {
     }
 }
 
+/// What gate 5 admits a node.delete of (build.md §4.4; node-delete.md; Q219, Q220).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteAdmitted {
+    /// A completed node.stop of the birth: the delete composes no stop.
+    Stopped,
+    /// Live and heard: its own sequence stops it first (node.delete Live target).
+    Live,
+    /// Node investigation's `exited` verdict on its exact runtime (node-delete.md Crashed target):
+    /// nothing is sent to it, and its runtime is terminated.
+    Exited,
+}
+
+impl DeleteAdmitted {
+    /// The name the gate's spans carry.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::Live => "live",
+            Self::Exited => "exited",
+        }
+    }
+}
+
+/// Whether gate 5 needs node investigation's verdict to decide a delete: the birth is neither stopped
+/// nor heard live (`heard_dead`: the view's Dead mark, which is silence and never says the runtime
+/// exited; node-delete.md Never evidence).
+pub fn delete_needs_verdict(stopped: bool, live: bool, heard_dead: bool) -> bool {
+    !stopped && !(live && !heard_dead)
+}
+
+/// Gate 5 for a node.delete, the one function every path reads (build.md §4.4: "a delete a stopped
+/// one, one whose exit is proven, or a live one, which its own sequence stops first"; Q219, Q220): a
+/// stopped birth, a live one the view does not mark Dead, or one whose exact runtime node investigation
+/// reads exited (`verdict`, asked only when [`delete_needs_verdict`]). A Dead birth with neither fact
+/// is admitted by nothing: `None`, refused `node-not-live`.
+pub fn delete_admits(stopped: bool, live: bool, heard_dead: bool, verdict: Option<&crate::node_investigation::Finding>) -> Option<DeleteAdmitted> {
+    if stopped {
+        return Some(DeleteAdmitted::Stopped);
+    }
+    if live && !heard_dead {
+        return Some(DeleteAdmitted::Live);
+    }
+    matches!(verdict, Some(crate::node_investigation::Finding::Exited { .. })).then_some(DeleteAdmitted::Exited)
+}
+
 /// The operation a Build step's node.delete of `node` runs (node-delete.md), given the pinned `birth`
 /// and the node the executing view holds at the path (`held`, that birth or `None`): the delete of a
-/// stopped birth, which composes no stop, or the delete that stops a live one first. A birth this view
-/// no longer holds (a resumed delete whose NodeDeleting it already heard) is deleted pinned to its exact
+/// stopped birth, which composes no stop, or the delete that stops any other first: a Dead mark alone
+/// never skips the stop (Q219); the delete asks node investigation of a Dead birth and runs as a crashed
+/// target's only on its `exited` verdict. A birth this view no longer holds (a resumed delete whose NodeDeleting it already heard) is deleted pinned to its exact
 /// birth, its runtime read from its row.
 pub fn step_delete(node: &PathName, birth: &PinnedBirth, held: Option<&crate::model::Node>) -> BuildOperation {
     match held.filter(|n| birth.is(n)) {
-        Some(n) if !n.stopped && n.status != crate::model::NodeStatus::Dead => BuildOperation::RetireNode { node: node.clone(), exited: None, birth: Some(birth.clone()) },
+        Some(n) if !n.stopped => BuildOperation::RetireNode { node: node.clone(), exited: None, birth: Some(birth.clone()) },
         _ => BuildOperation::DeleteNode { node: node.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() },
     }
 }
