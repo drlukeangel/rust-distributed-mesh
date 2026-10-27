@@ -1420,7 +1420,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // Every record the writer holds is this admin's FabricAtlas's too (Q203).
                                 written.feeds(control.atlas.clone());
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone(), written.clone());
-                                // A command it sends down that a seat in transit refused waits on the view's next change (D12).
+                                // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).
                                 configs.watch_views(records.subscribe_view());
                                 let _ = configs_slot.set(Arc::new(configs));
                                 {

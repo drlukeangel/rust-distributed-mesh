@@ -80,7 +80,7 @@ impl NodeConfigs {
     }
 
     /// Hold `views`, the tick of this admin's installed view: what a command sent down and refused
-    /// because the mesh's seat is in transit waits on before it is sent again ([`Self::serve`]).
+    /// because the mesh's primary is changing waits on before it is sent again ([`Self::serve`]).
     pub fn watch_views(&self, views: tokio::sync::watch::Receiver<u64>) {
         let _ = self.views.set(views);
     }
@@ -92,10 +92,10 @@ impl NodeConfigs {
     /// ([`Self::update`]); at any other admin refused `ReceiverNotPrimary`, naming the fabric-primary.
     ///
     /// The command sent down is owed until the mesh-primary answers it (node-rpc.md §43; D12): one
-    /// `Budget::Owed` call to the holder this admin's view names, direct first and then through each
-    /// other live node-admin of the mesh on Forward `0x1A`. A holder that answers `RejectedNotPrimary`
-    /// (its seat in transit: a newly elected admin that has not taken it yet) or is proven gone does
-    /// not fail the caller: the owning workflow retargets it to the holder the view names when the
+    /// `Budget::Owed` call to the mesh-primary this admin's view names, direct first and then through each
+    /// other live node-admin of the mesh on Forward `0x1A`. A mesh-primary that answers `RejectedNotPrimary`
+    /// (the primary changing: a newly elected admin that does not hold it yet) or is proven gone does
+    /// not fail the caller: the owning workflow retargets it to the mesh-primary the view names when the
     /// view next changes, or after the resend schedule's next delay, whichever is first. A command the
     /// mesh-primary refused before writing the row puts the atlas's config back.
     #[allow(clippy::too_many_arguments)]
@@ -158,8 +158,8 @@ impl NodeConfigs {
 
     /// The fabric-primary's command `req` about `subject` down to `subject`'s mesh-primary, owed until
     /// it answers ([`Self::serve`]): the mesh-primary's answer, or the view in which this admin holds
-    /// that seat itself (served in process) or no longer holds the birth. Each send is one span event
-    /// naming the holder, the route and the outcome.
+    /// that primary itself (served in process) or no longer holds the birth. Each send is one span event
+    /// naming the mesh-primary, the route and the outcome.
     pub async fn send_down(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, subject: &crate::model::Node, req: &StatusRequest) -> Down {
         let node_id = &subject.node_id;
         let mut views = self.views.get().cloned();
@@ -176,8 +176,8 @@ impl NodeConfigs {
                 tracing::Span::current().record("mesh_primary", me.to_string().as_str());
                 return Down::InProcess(view);
             }
-            let holder = view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map(|p| (p.name.clone(), p.node_id.clone()));
-            let ended = match holder {
+            let primary = view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map(|p| (p.name.clone(), p.node_id.clone()));
+            let ended = match primary {
                 None => format!("{} has no mesh-primary in {me}'s view", subject.mesh),
                 Some((name, mp)) => {
                     tracing::Span::current().record("mesh_primary", name.to_string().as_str());
@@ -203,17 +203,17 @@ impl NodeConfigs {
                             answered => return Down::Answered(answered),
                         },
                         // An Owed call ends without a reply only when its receiver is proven gone, or
-                        // before anything was owed: the command is owed to the holder the view names next.
+                        // before anything was owed: the command is owed to the mesh-primary the view names next.
                         other => format!("the call to {name} ended {} with no reply", other.name()),
                     }
                 }
             };
-            // Retargeting is the owning workflow's (node-rpc.md §43): the holder the view names when it
+            // Retargeting is the owning workflow's (node-rpc.md §43): the mesh-primary the view names when it
             // next changes, or after the resend schedule's next delay.
             waits += 1;
             let delay = self.client.delivery().pacing().after(waits);
             tracing::Span::current().record("detail", ended.as_str());
-            tracing::info!(detail = %ended, wait_ms = delay.as_millis() as u64, "node.config.update stays owed: sent again to the holder the view names next");
+            tracing::info!(detail = %ended, wait_ms = delay.as_millis() as u64, "node.config.update stays owed: sent again to the mesh-primary the view names next");
             match views.as_mut() {
                 Some(rx) => {
                     let _ = tokio::time::timeout(delay, rx.changed()).await;
