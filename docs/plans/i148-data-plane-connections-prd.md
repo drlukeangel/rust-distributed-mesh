@@ -221,7 +221,7 @@ Accept ownership on repeated `connections(alpn)` → `AlreadyTaken` by name, rul
 - **Goal → gap.** `connection_reconnect.rs` to rdm-node, driven by the log: a `Direct Failed` latest
   for a live destination incarnation with no newer `Direct Connected` is an obligation; one scheduler,
   one attempt, durable backoff (§9.3), reconstructed on restart (acceptance C on the page).
-- **Acceptance cells (RED first).** the page's §13 A–D as RDM cells; `a_failed_reconnect_backoff_survives_restart`;
+- **Acceptance cells (RED first).** the page's §13 A–D as RDM cells; `a_failed_reconnect_backoff_survives_restart` (removed by #3229, 529b978dd: Q227 X, a restart holds no connection and begins a fresh series);
   `one_reconnect_attempt_at_a_time_per_node`.
 - **Page.** connections.md §9: "Every node runs the same reconnect mechanism internally in
   `rafka-node-base`" → "in rdm-node"; the target module path → `crates/rdm-node/src/connection_reconnect.rs`
