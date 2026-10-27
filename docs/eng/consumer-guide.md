@@ -91,6 +91,7 @@ count against the config cap.
 | How do I… | Where |
 |---|---|
 | call a node | Node RPC: [node-rpc-envelope.md](../architecture/node-rpc-envelope.md); outcomes and codes on [node-rpc.md](../architecture/node-rpc.md) |
+| add my own Node RPC ops (declare, reserve in the op ledger, serve, call) | [consumer-guide-ops.md](consumer-guide-ops.md) |
 | open a stream on my own app protocol | the node's connections handle for my ALPN; routes, reconnect and proxies on [connections.md](../architecture/connections.md); a node's member cert admits it ([fabric-certs.md](../architecture/fabric-certs.md)) |
 | publish and receive my events | gossip's envelope ([gossip.md §3.4](../architecture/gossip.md#34-the-envelope)) |
 
