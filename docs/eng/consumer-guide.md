@@ -22,6 +22,7 @@ the linked page before asking: every answer here was already on one.
 |---|---|
 | create, resize or reshape meshes and nodes | the Build: [build.md §1–2](../architecture/build.md#1-build-is-the-only-topology-mutation-engine), the wire on [node-rpc-envelope.md, Build op 0x20](../architecture/node-rpc-envelope.md#build-op-0x20-rdm) |
 | name the executable each node runs, and replace it | [build-deployment.md](../architecture/build-deployment.md) |
+| move RDM's records to my own backend, read where they go, return to a previous one | [topology storage provider how-to](../features/topology-storage-provider/how-to.md); the contract on [storage.md §2](../architecture/storage.md#2-topology_storage_provider-where-rdms-records-go) |
 | know when the fabric is usable | [states.md](../architecture/lifecycles/states.md): pending → ready-for-traffic; a Build that changes the fabric is Complete only after its own ready-for-traffic (Q154) |
 | stop, start, restart, delete one node | the lifecycle pages under [lifecycles/](../architecture/fabric-mesh-node-lifecycles.md) (`node-stop.md`, `node-start.md`, `node-restart.md`, `node-delete.md`) |
 | delete the whole fabric | [fabric-delete.md](../architecture/lifecycles/fabric-delete.md): wait for the fabric.delete stream's `Complete` (fabric.deleted), then `node.delete` of the fabric-primary to its `node.deleted`; the process then exits by itself. Kill nothing before that |
@@ -51,6 +52,7 @@ The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/n
 | a node's durable data | under its `RDM_DATA_DIR`; carried across restart and re-birth by its path's storage policy ([node-storage-runbook.md](node-storage-runbook.md)) |
 | my rows and events | my own storage, and my events on gossip ([gossip.md §8](../architecture/gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); RDM orders nothing of mine |
 | RDM's own records on my storage | the storage adapters ([build.md §5](../architecture/build.md#5-buildstateadapter)): persistence only, RDM writes whole records |
+| which backend RDM's records go to (`topology_storage_provider`), and registering mine | [topology storage provider overview](../features/topology-storage-provider/overview.md) |
 
 ## Tags
 
@@ -100,4 +102,5 @@ count against the config cap.
 | no node-admin is alive: bring the fabric-primary back | [fabric-recovery-runbook.md](fabric-recovery-runbook.md) |
 | a node's data dir is gone or broken | [provider-runbook.md](provider-runbook.md) |
 | a stateful node's data across restart, re-birth, replacement, delete | [node-storage-runbook.md](node-storage-runbook.md) |
+| a storage change that stays blocked, fails before its switch, or meets a restart | [topology storage provider runbook](../features/topology-storage-provider/runbook.md) |
 | a refusal | its code and named detail: [node-rpc-envelope.md, Runtime spans](../architecture/node-rpc-envelope.md#runtime-spans); every refusal names its reason |
