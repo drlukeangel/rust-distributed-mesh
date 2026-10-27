@@ -670,7 +670,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.status.remove.via-new-incarnation` | `crates/rdm-admin/src/status_rpc.rs` | 1536 |
 | `rdm.node_admin.status.remove.via-new-node` | `crates/rdm-admin/src/status_rpc.rs` | 1537 |
 | `rdm.node_admin.status.remove.via-node-deleted` | `crates/rdm-admin/src/status_rpc.rs` | 1538 |
-| `rdm.node_admin.status.remove.via-primary-changed` | `crates/rdm-admin/src/status_declare.rs` | 514 |
+| `rdm.node_admin.status.remove.via-primary-changed` | `crates/rdm-admin/src/status_declare.rs` | 519 |
 | `rdm.node_admin.status.resolve.via-successor-fold` | `crates/rdm-admin/src/status_rpc.rs` | 294 |
 | `rdm.node_admin.status.update.via-command` | `crates/rdm-admin/src/status_rpc.rs` | 1069 |
 | `rdm.node_admin.status.update.via-command` | `crates/rdm-admin/src/status_rpc.rs` | 1902 |
@@ -680,8 +680,8 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.status.update.via-cycle-begun` | `crates/rdm-admin/src/status_rpc.rs` | 1431 |
 | `rdm.node_admin.status.update.via-declaration` | `crates/rdm-admin/src/status_rpc.rs` | 1208 |
 | `rdm.node_admin.status.update.via-declaration` | `crates/rdm-admin/src/status_rpc.rs` | 2029 |
-| `rdm.node_admin.status.update.via-declare` | `crates/rdm-admin/src/status_declare.rs` | 467 |
-| `rdm.node_admin.status.update.via-declare-retargeted` | `crates/rdm-admin/src/status_declare.rs` | 405 |
+| `rdm.node_admin.status.update.via-declare` | `crates/rdm-admin/src/status_declare.rs` | 472 |
+| `rdm.node_admin.status.update.via-declare-retargeted` | `crates/rdm-admin/src/status_declare.rs` | 410 |
 | `rdm.node_admin.status.update.via-mesh-join-admitted` | `crates/rdm-admin/src/status_rpc.rs` | 1452 |
 | `rdm.node_admin.status.update.via-probe` | `crates/rdm-admin/src/status_rpc.rs` | 2134 |
 | `rdm.node_admin.status.update.via-probe` | `crates/rdm-admin/src/status_rpc.rs` | 2144 |
@@ -689,7 +689,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.status.update.via-probe` | `crates/rdm-node/src/node.rs` | 1654 |
 | `rdm.node_admin.status.update.via-probe` | `crates/rdm-node/src/node.rs` | 1668 |
 | `rdm.node_admin.status.update.via-start-node` | `crates/rdm-node/src/node_self.rs` | 1297 |
-| `rdm.node_admin.status.update.via-state-completion` | `crates/rdm-admin/src/status_declare.rs` | 539 |
+| `rdm.node_admin.status.update.via-state-completion` | `crates/rdm-admin/src/status_declare.rs` | 544 |
 | `rdm.node_admin.status.update.via-stop-node` | `crates/rdm-node/src/node_self.rs` | 1057 |
 | `rdm.node_admin.status.update.via-successor-fold` | `crates/rdm-admin/src/status_rpc.rs` | 361 |
 | `rdm.node_admin.tag.create.via-call` | `crates/rdm-core/src/names.rs` | 85 |
