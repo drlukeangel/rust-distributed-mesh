@@ -1241,7 +1241,11 @@ impl StatusAuthority {
 impl StatusAuthority {
     /// Keep the declared state `row`, and the operation effect that produced it when one did, on its
     /// birth's node record: the record held, the facts applied, written whole (a birth of another mesh:
-    /// the fabric-primary accepting the join report of a birth of a mesh with no primary, Q97).
+    /// the fabric-primary accepting the join report of a birth of a mesh with no primary, Q97). The
+    /// record's status is the state its newest birth declared (node-identity-and-state.md §4: "its
+    /// **status** — the readiness on its durable row"; states.md "Who sets each state"), written in the
+    /// same put, before the declaration is answered; a `Deleted` or `Withdrawn` record stands, and a
+    /// birth a restart superseded moves no status.
     async fn put_declared(&self, row: &crate::status_rpc::Declaration, operation: Option<&OperationEffect>) -> Result<(), String> {
         let base = crate::storage::NodeRow::new(row.name.clone(), row.node_id.clone(), crate::model::NodeStatus::Pending);
         self.caches.nodes.update(&*self.nodes_storage, &row.node_id, Some(base), |r| {
@@ -1249,6 +1253,11 @@ impl StatusAuthority {
             birth.declared.insert(row.state);
             if let Some(o) = operation {
                 birth.apply_operation(&o.operation, o.state);
+            }
+            let declared = birth.declared_state();
+            let newest = r.newest_birth().is_some_and(|b| b.incarnation_id == row.incarnation_id);
+            if let Some(state) = declared.filter(|_| newest && !matches!(r.status, crate::model::NodeStatus::Deleted | crate::model::NodeStatus::Withdrawn)) {
+                r.status = node_status_of(state);
             }
         }).await.map(|_| ())
     }
@@ -1876,6 +1885,18 @@ pub type Rename = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName) -> std::pin::Pin<B
 
 /// This mesh-primary's view taking a row `node.name.update` moved: `(from, node_id, incarnation, to)`.
 pub type RowMoved = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName, NodeId, rdm_core::IncarnationId, rdm_core::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
+
+/// The status a node's row carries for the state its birth declared: a stopped birth is `Leaving`, the
+/// status a stopped node is held in (`node_state_of` reads it back as `Stopped`).
+pub fn node_status_of(s: NodeState) -> crate::model::NodeStatus {
+    use crate::model::NodeStatus as S;
+    match s {
+        NodeState::Pending => S::Pending,
+        NodeState::ReadyForTraffic => S::ReadyForTraffic,
+        NodeState::ConnectionsDeleting => S::ConnectionsDeleting,
+        NodeState::Stopped => S::Leaving,
+    }
+}
 
 /// What a node is now, in the declaration vocabulary.
 pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {

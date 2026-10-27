@@ -193,6 +193,8 @@ mod node_connections_delete;
 mod node_replace;
 #[path = "node/node_restart.rs"]
 mod node_restart;
+#[path = "node/node_row_status.rs"]
+mod node_row_status;
 #[path = "node/node_stop.rs"]
 mod node_stop;
 #[path = "rpc/apply_cuts.rs"]
