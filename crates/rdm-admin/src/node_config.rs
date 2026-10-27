@@ -163,6 +163,10 @@ impl NodeConfigs {
     pub async fn send_down(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, subject: &crate::model::Node, req: &StatusRequest) -> Down {
         let node_id = &subject.node_id;
         let mut views = self.views.get().cloned();
+        // A clone remembers the version its source last saw: only a view installed from now on wakes a resend.
+        if let Some(rx) = views.as_mut() {
+            rx.borrow_and_update();
+        }
         let mut view = first.clone();
         let mut sends: u32 = 0;
         let mut waits: u32 = 0;

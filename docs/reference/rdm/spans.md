@@ -567,7 +567,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.update.via-command-sent` | `crates/rdm-admin/src/admin/session.rs` | 242 |
 | `rdm.node_admin.node.update.via-command-sent` | `crates/rdm-admin/src/node_commands.rs` | 324 |
 | `rdm.node_admin.node.update.via-completion-awaited` | `crates/rdm-admin/src/node_commands.rs` | 398 |
-| `rdm.node_admin.node.update.via-config` | `crates/rdm-admin/src/node_config.rs` | 241 |
+| `rdm.node_admin.node.update.via-config` | `crates/rdm-admin/src/node_config.rs` | 245 |
 | `rdm.node_admin.node.update.via-connections-deleted` | `crates/rdm-admin/src/status_rpc.rs` | 1725 |
 | `rdm.node_admin.node.update.via-connections-deleting` | `crates/rdm-admin/src/status_rpc.rs` | 1702 |
 | `rdm.node_admin.node.update.via-data-dir-lost` | `crates/rdm-admin/src/admin/recovery.rs` | 160 |
