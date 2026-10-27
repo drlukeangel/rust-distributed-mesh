@@ -1462,6 +1462,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let _ = moved.set(Arc::new(move |_from: PathName, _node_id: NodeId, _incarnation: IncarnationId, _to: PathName| project()));
                                         moved
                                     },
+                                    held_rows: Default::default(),
                                     loads: control.loads.get().cloned(),
                                     digest_view: Some(digest_view.clone()),
                                     builds: control.builds.clone(),

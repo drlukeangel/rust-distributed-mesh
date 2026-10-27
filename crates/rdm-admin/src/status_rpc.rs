@@ -26,6 +26,10 @@ fn operation_row(row: &crate::status_rpc::Declaration, operation: &DeclaredOpera
     crate::status_rpc::OperationEffect { node_id: row.node_id.clone(), incarnation_id: row.incarnation_id.clone(), name: row.name.clone(), state: row.state, operation: operation.clone() }
 }
 
+/// The declared-state rows a blocked mesh-primary holds, each with its operation effect and whether it
+/// moves the row's status: written at its unblock ([`StatusAuthority::unblock`]).
+pub type HeldRows = Arc<Mutex<Vec<(Declaration, Option<OperationEffect>, bool)>>>;
+
 /// One declared state of one birth, as its authority applied it: the fact kept on the birth's node
 /// record (`crate::storage::BirthFacts::declared`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -531,6 +535,10 @@ pub struct StatusAuthority {
     /// This admin's view taking a node's row its `node.name.update` moved (R13): the view is projected
     /// again, reading the moved row. Filled with the view.
     pub row_moved: RowMoved,
+    /// The declared-state rows this admin, a mesh-primary that replied `blocked` to a storage change,
+    /// holds: applied, and written at its unblock on the provider current then (storage.md §2 step 2;
+    /// i149 R8).
+    pub held_rows: HeldRows,
     /// Each member's load and gossip stats, as its latest digest carries them: what `node.get`
     /// answers beside the view. `None` only where no admin owns a digest view; a view read there is
     /// refused `NotReady` by name.
@@ -1252,6 +1260,20 @@ impl StatusAuthority {
     /// ([`crate::storage::NodeRow::set_status`]), with one `rdm.node_admin.node.update.via-row-status`
     /// span.
     async fn put_declared(&self, row: &crate::status_rpc::Declaration, operation: Option<&OperationEffect>, moves: bool) -> Result<(), String> {
+        // Once this admin replied `blocked`, nothing of its mesh writes the old provider: the row is held,
+        // under the row turn, and written at the unblock (storage.md §2 step 2; i149 R8).
+        let (_turn, blocked) = self.commands.row_turn().await;
+        if blocked {
+            self.held_rows.lock().unwrap().push((row.clone(), operation.cloned(), moves));
+            tracing::info_span!("rdm.node_admin.node.update.via-row-status", node = %self.me, subject = %row.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), status = ?node_status_of(row.state), outcome = "held", "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("this mesh-primary replied blocked to a storage change: the node's report is applied and its row held, written at the unblock"));
+            return Ok(());
+        }
+        self.write_declared(row, operation, moves).await
+    }
+
+    /// [`Self::put_declared`]'s write.
+    async fn write_declared(&self, row: &crate::status_rpc::Declaration, operation: Option<&OperationEffect>, moves: bool) -> Result<(), String> {
         let base = crate::storage::NodeRow::new(row.name.clone(), row.node_id.clone(), crate::model::NodeStatus::Pending);
         let status = node_status_of(row.state);
         let written = self.caches.nodes.update(&*self.nodes_storage, &row.node_id, Some(base), |r| {
@@ -1268,8 +1290,22 @@ impl StatusAuthority {
         written.map(|_| ())
     }
 
-    /// `mesh.unblock`'s reply (storage.md §2 step 4): this admin, a mesh-primary, issues commands again.
+    /// `mesh.unblock`'s reply (storage.md §2 step 4): the declared-state rows held while blocked are
+    /// written, in the order they were applied, on the provider current now (each until the store
+    /// acknowledges it, under the one backoff rule), then this admin, a mesh-primary, issues commands
+    /// and writes rows again.
     pub(crate) async fn unblock(&self) {
+        let _turn = self.commands.row_turn().await;
+        let held = std::mem::take(&mut *self.held_rows.lock().unwrap());
+        for (row, operation, moves) in held {
+            let mut backoff = std::time::Duration::from_millis(250);
+            while let Err(e) = self.write_declared(&row, operation.as_ref(), moves).await {
+                tracing::info_span!("rdm.node_admin.node.update.via-row-status", node = %self.me, subject = %row.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), outcome = "owed", error = %e, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("the row held while blocked is not acknowledged: it is owed and written again"));
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(std::time::Duration::from_secs(5));
+            }
+        }
         self.commands.unblock();
     }
 
@@ -2400,6 +2436,7 @@ mod tests {
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            held_rows: Default::default(),
             loads: None,
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
@@ -2466,6 +2503,7 @@ mod tests {
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            held_rows: Default::default(),
             loads: None,
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
@@ -2541,6 +2579,7 @@ mod tests {
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            held_rows: Default::default(),
             loads: None,
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
@@ -2874,6 +2913,7 @@ mod tests {
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            held_rows: Default::default(),
             loads: None,
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
@@ -2950,6 +2990,7 @@ mod tests {
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            held_rows: Default::default(),
             loads: None,
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
@@ -3312,6 +3353,7 @@ mod tests {
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            held_rows: Default::default(),
             loads: None,
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
@@ -3412,6 +3454,7 @@ mod tests {
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            held_rows: Default::default(),
             loads: None,
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
@@ -3507,6 +3550,7 @@ mod tests {
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            held_rows: Default::default(),
             loads: None,
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),

@@ -2955,6 +2955,7 @@ mod tests {
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            held_rows: Default::default(),
             loads: None,
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
