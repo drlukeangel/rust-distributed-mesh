@@ -219,7 +219,7 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
     let named = |name: &'static str| spans.iter().filter(move |s| s["name"] == name);
     let attr = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or_default().to_string();
     let (start, end) = (|s: &serde_json::Value| s["start_unix_nano"].as_u64().unwrap_or(0), |s: &serde_json::Value| s["end_unix_nano"].as_u64().unwrap_or(0));
-    let all = named("rdm.node_admin.node.connections.delete.via-stop").find(|s| attr(s, "node") == "mesh1.rpc.1").expect("the signal stop's node.connections.delete { All }");
+    let all = named("rdm.node_admin.connection.delete.via-stop").find(|s| attr(s, "node") == "mesh1.rpc.1").expect("the signal stop's node.connections.delete { All }");
     let from = start(all);
     // Each declaration the stop owes, applied by the mesh-primary.
     for state in ["ConnectionsDeleting", "Stopped"] {

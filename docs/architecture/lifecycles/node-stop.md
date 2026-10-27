@@ -41,7 +41,8 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
 3. Call [node.mesh.leave](node-mesh-leave.md): its gossip neighbours and its Node RPC pool. Its
    acknowledgement, `Leaving` (Data), and its completion, `StopMeshLeft { left }` (Data), go on the
    stop stream, and the mesh-primary writes leaving, then left, from them. Never unbind the node's
-   own endpoint or close the stop call's stream. A node already connections-deleted (an `All`
+   own endpoint or close the stop call's stream or the connection to its mesh-primary its owed
+   declarations ride. A node already connections-deleted (an `All`
    completed `Established` since its last start) and already left answers each primitive's
    acknowledgement and completion at once, the receipt the `All` established in its
    `StopConnectionsDeleted`, and repeats no work.

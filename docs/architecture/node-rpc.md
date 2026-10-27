@@ -1023,6 +1023,8 @@ original invocation is executing. Before recoverable acceptance, duplicates rema
 ack. After that boundary, duplicates are acked again without invoking the handler again. Retry stops on the ack, on the receiver's re-creation or accepted removal, or on
 explicit cancellation or retargeting by the owning workflow; never on a timer, never on absence from a
 view, never on a newer message of its kind.
+A node's declarations to its mesh-primary are delivered in the order they were owed: one in flight,
+the next sent on the previous one's answer by name, a refusal included.
 The owner of an Owed request chooses its route policy: the one receiver it is owed to and the carriers it
 may travel through (§45). The request's first attempt goes direct; once an attempt sends nothing, each
 resend takes the route the policy answers then, a carried resend keeping the request's delivery id toward

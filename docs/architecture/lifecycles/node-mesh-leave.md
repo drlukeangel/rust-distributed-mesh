@@ -35,8 +35,8 @@ a fresh Node RPC dial for its rename, stop, start or delete.
    standalone or `Leaving` inside a stop, and the mesh-primary writes leaving from it.
 3. The node leaves its mesh: its gossip neighbours on `f(FabricId, MeshId)`. A node-admin then
    leaves the backbone. Each one left emits `via-left`.
-4. The node cuts its Node RPC pool. Its endpoint stays bound and the commanding call's stream
-   stays open.
+4. The node cuts its Node RPC pool. Its endpoint stays bound, and the commanding call's stream and
+   the connection to its mesh-primary its owed declarations ride stay open.
 5. `node.mesh.left`: `MeshLeft { left }` standalone, `StopMeshLeft { left }` inside a stop, and
    the mesh-primary writes left from it. The node publishes nothing. Inside a stop,
    `Stopped { receipt }` follows on the stop's stream and the mesh-primary publishes NodeStopped

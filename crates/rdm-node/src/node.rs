@@ -61,9 +61,9 @@ pub struct RunningNode {
     /// This process's one Node RPC client and live resolver: every Node RPC
     /// caller in the process takes it by clone.
     pub node_rpc: crate::node_rpc::ProcessNodeRpc,
-    /// The state this birth owes the holder of its mesh's primary seat: one owed call per
-    /// declaration (i146 Q52), retargeted when the seat moves (`declare_loop`).
-    pub owed_state: Arc<Mutex<OwedDeclaration>>,
+    /// The declarations this birth owes its mesh-primary, in the order they were owed: one in flight
+    /// at a time (Q210), sent by `declare_loop` and retargeted when the mesh-primary changes.
+    pub owed_state: Arc<OwedDeclarations>,
     /// Cancelled when this birth is retired (stop-node, its process stopping): the
     /// `pre_node_ready` hook and any pull it has in flight end.
     pub cancel: rdm_transport::Retirement,
@@ -726,19 +726,20 @@ async fn start_booted(
                             // published ReadyForTraffic only once the hook has passed ("born full").
                             let cancel = rdm_transport::Retirement::new();
                             let addressed = crate::node_hooks::Addressed::new();
-                            let owed_state: Arc<Mutex<OwedDeclaration>> = Arc::default();
+                            let owed_state: Arc<OwedDeclarations> = Arc::default();
                             let own = {
                                 let (set_digest, set_status_cell, now_status) = (digest.clone(), status.clone(), status.clone());
                                 let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| set_own_status(&set_status_cell, &set_digest, st));
                                 let current: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || *now_status.lock().unwrap());
+                                // A declaration joins this birth's queue at the call, in the order owed (Q210);
+                                // `declare_loop` sends it. Its future ends once its call ended: answered, or its
+                                // receiver proven gone.
                                 let declare: crate::node_self::Declare = {
-                                    let (node, topology_view, client, owed, held) = (digest.node.clone(), topology_view.clone(), client.clone(), owed_state.clone(), connections.held());
+                                    let owed = owed_state.clone();
                                     Arc::new(move |state, operation| {
-                                        let declaration: Declaration = (state, operation);
-                                        owed.lock().unwrap().owe(declaration.clone());
-                                        let (node, topology_view, client, owed, held) = (node.clone(), topology_view.clone(), client.clone(), owed.clone(), held.clone());
+                                        let ended = owed.owe((state, operation));
                                         Box::pin(async move {
-                                            let _ = declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held, Some(&declaration)).await;
+                                            let _ = ended.await;
                                         })
                                     })
                                 };
@@ -794,40 +795,56 @@ async fn start_booted(
                             let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
                             *publisher.lock().unwrap() = Some(spawn_publisher(&topology_view, &digest, &status, &server));
-                            // The owed declaration's owner: whatever state this birth owes is one Owed call to the
-                            // holder of its mesh's primary seat (i146 Q52), which ends on the holder's answer or
-                            // proven exit; nothing here sends it again on a cadence. When the mesh's primary seat
-                            // moves to another birth, the call in flight is dropped and the state is owed to the new
-                            // primary (R-S2: a declaration is owed again when the authority is another node or a new
-                            // incarnation of the same node): that declaration is how the new primary learns this birth
-                            // addresses it, and sends again a down op this birth refused while it still named the old holder.
+                            // The owed declarations' one sender (Q210): whatever this birth owes its mesh-primary is
+                            // sent in the order it was owed, one Owed call in flight (i146 Q52), the next sent on the
+                            // previous one's answer by name, a refusal included (node-rpc.md §43). A call ends on the
+                            // mesh-primary's answer or its proven exit; nothing here sends again on a cadence. A call
+                            // that ended unanswered keeps its declaration first in the queue until the mesh-primary
+                            // changes or another declaration is owed. When the mesh-primary changes, the call in flight
+                            // is dropped and the queue, in order, is owed to the new one; with nothing queued, the
+                            // birth's state is owed to it again (R-S2: a declaration is owed again when the receiver is
+                            // another node or a new incarnation of the same node): that declaration is how the new
+                            // mesh-primary learns this birth addresses it, and sends again a down op this birth refused
+                            // while it still named the old one.
                             let declare_loop = {
                                 let (node, topology_view, client, owed, status, held) = (digest.node.clone(), topology_view.clone(), node_rpc.client.clone(), owed_state.clone(), status.clone(), connections.held());
                                 tokio::spawn(async move {
-                                    let mut seats = topology_view.primaries().subscribe();
+                                    let mut primaries = topology_view.primaries().subscribe();
                                     let mut told: Option<(NodeId, IncarnationId)> = None;
                                     loop {
-                                        seats.borrow_and_update();
-                                        let holder = topology_view.primaries().mesh(&node.name.mesh);
-                                        if mesh_primary_moved(told.as_ref(), holder.as_ref()) && owed.lock().unwrap().owed.is_none() {
+                                        primaries.borrow_and_update();
+                                        let mut primary = topology_view.primaries().mesh(&node.name.mesh);
+                                        if mesh_primary_moved(told.as_ref(), primary.as_ref()) && owed.is_empty() {
                                             let state = node_state_of(*status.lock().unwrap());
-                                            tracing::info_span!("rdm.node_rpc.status.update.via-mesh-primary-moved", node = %topology_view.held_name(&node.name), state = ?state, to = %holder.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
-                                                .in_scope(|| tracing::info!("the mesh's primary seat moved to another birth: this birth's state is owed to it"));
-                                            owed.lock().unwrap().owe_again(state);
+                                            tracing::info_span!("rdm.node_rpc.status.update.via-mesh-primary-moved", node = %topology_view.held_name(&node.name), state = ?state, to = %primary.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
+                                                .in_scope(|| tracing::info!("the mesh's primary moved to another birth: this birth's state is owed to it"));
+                                            drop(owed.owe_again(state));
                                         }
-                                        // The seat moving is the one retargeting (i146 Q39): a call still in flight
-                                        // to the old holder is cancelled, and the next pass declares to the holder
-                                        // the seat names now.
-                                        if owed.lock().unwrap().owed.is_some() && declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held, None).await == Declared::FabricPrimaryMoved {
-                                            continue;
+                                        while let Some((at, declaration)) = owed.first() {
+                                            match declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held, at, &declaration).await {
+                                                Declared::Answered => {}
+                                                // The mesh-primary changing is the one retargeting (i146 Q39): the call
+                                                // in flight to the old one was cancelled, and the queue goes to the one
+                                                // the topology names now.
+                                                Declared::MeshPrimaryMoved => {
+                                                    primaries.borrow_and_update();
+                                                    primary = topology_view.primaries().mesh(&node.name.mesh);
+                                                }
+                                                Declared::Unanswered => {
+                                                    owed.unanswered();
+                                                    break;
+                                                }
+                                            }
                                         }
-                                        if owed.lock().unwrap().owed.is_none() {
-                                            told = holder.map(|h| (h.node_id, h.incarnation));
+                                        if owed.is_empty() {
+                                            told = primary.map(|h| (h.node_id, h.incarnation));
                                         }
-                                        // A declaration still owed after its call ended (its holder answered that it is
-                                        // not the authority, or was proven gone) waits for the seat to name a holder.
-                                        if seats.changed().await.is_err() {
-                                            return;
+                                        // Woken by the mesh-primary changing, or by a declaration owed.
+                                        tokio::select! {
+                                            changed = primaries.changed() => if changed.is_err() {
+                                                return;
+                                            },
+                                            () = owed.wake.notified() => {}
                                         }
                                     }
                                 })
@@ -845,8 +862,6 @@ async fn start_booted(
                                 digest: digest.clone(),
                                 status: status.clone(),
                                 owed: owed_state.clone(),
-                                client: node_rpc.client.clone(),
-                                held: connections.held(),
                                 operation: None,
                                 progress: None,
                             };
@@ -936,7 +951,7 @@ struct NodeSession {
     status: Arc<Mutex<MemberStatus>>,
     /// This node's connections projection: the owed declaration's carriers ([`declaration_route`]).
     held: Arc<Mutex<rdm_core::connections::ConnectionsHeld>>,
-    owed: Arc<Mutex<OwedDeclaration>>,
+    owed: Arc<OwedDeclarations>,
     /// The app protocols this birth opens connections on: what the member cert each join answers is
     /// installed on.
     data_connections: rdm_transport::connections::ConnectionsRegistry,
@@ -980,7 +995,7 @@ impl crate::node_self::Session for NodeSession {
         // rides it, never the birth's frozen name (R-JN1).
         // The stopped cycle's declaration ends with it: the start begins the next cycle, whose states
         // this birth declares from here (its ReadyForTraffic names the start).
-        self.owed.lock().unwrap().owed = None;
+        self.owed.clear();
         let held = self.topology_view.reported(&self.digest);
         let name = held.node.name.to_string();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
@@ -1115,8 +1130,6 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             digest: s.digest.clone(),
             status: s.status.clone(),
             owed: s.owed.clone(),
-            client: s.client.clone(),
-            held: s.held.clone(),
             operation: Some(self.operation.clone()),
             progress: self.progress.clone(),
         };
@@ -1222,7 +1235,7 @@ impl crate::workflows::node_start::AfterHook for RpcAfterHook {
 
 
 /// What turns a Pending node whose hook passed into a ReadyForTraffic one: `via-ready` closes the
-/// boot trace, the status moves, the digest is published at once and the owed declaration is sent.
+/// boot trace, the status moves, its declaration is owed and the digest is published at once.
 struct Becoming {
     boot: tracing::Span,
     name: String,
@@ -1235,10 +1248,7 @@ struct Becoming {
     topology_view: TopologyView,
     digest: MeshDigest,
     status: Arc<Mutex<MemberStatus>>,
-    owed: Arc<Mutex<OwedDeclaration>>,
-    client: Arc<rdm_transport::NodeRpcClient>,
-    /// This node's connections projection: the owed declaration's carriers ([`declaration_route`]).
-    held: Arc<Mutex<rdm_core::connections::ConnectionsHeld>>,
+    owed: Arc<OwedDeclarations>,
     /// The operation that makes this birth ready: the start's, or `None` at its first boot, a state
     /// the birth measured itself (i146 Q36).
     operation: Option<rdm_core::status::DeclaredOperation>,
@@ -1273,19 +1283,14 @@ impl Becoming {
         .in_scope(|| tracing::info!("ready for traffic"));
         let d = set_own_status(&self.status, &self.digest, MemberStatus::ReadyForTraffic);
         let ready: Declaration = (rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone());
-        let owed_ready = if self.progress.is_none() {
-            self.owed.lock().unwrap().owe(ready.clone());
-            Some(ready)
+        // Owed before anything that follows it can be (Q210): a stop's declarations queue behind it.
+        if self.progress.is_none() {
+            drop(self.owed.owe(ready));
         } else {
-            // The open start stream reports readiness; keep the declaration for a future seat move.
-            self.owed.lock().unwrap().last = Some(ready);
-            None
-        };
+            // The open start stream reports readiness; keep the declaration for the next mesh-primary.
+            self.owed.keep_last(ready);
+        }
         let _ = self.topology_view.publish(&d).await;
-        let (node, topology_view, client, owed, held) = (self.digest.node.clone(), self.topology_view.clone(), self.client.clone(), self.owed.clone(), self.held.clone());
-        tokio::spawn(async move {
-            declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held, owed_ready.as_ref()).await;
-        });
     }
 }
 
@@ -1302,44 +1307,113 @@ fn mesh_primary_moved(told: Option<&(NodeId, IncarnationId)>, holder: Option<&rd
 /// A declaration: the state and the operation that produced it, when one did (i146 Q36).
 pub(crate) type Declaration = (rdm_core::status::NodeState, Option<rdm_core::status::DeclaredOperation>);
 
-/// What this birth owes its mesh-primary: the declaration still to be answered by name, and the last
-/// one it made, owed again with its operation when the mesh's primary seat moves to another birth.
+/// What this birth owes its mesh-primary (Q210): its declarations still to be answered by name, in the
+/// order they were owed, the first the one in flight; and the last one it made, owed again with its
+/// operation when the mesh-primary changes.
 #[derive(Debug, Default)]
-pub(crate) struct OwedDeclaration {
-    pub(crate) owed: Option<Declaration>,
+pub struct OwedDeclarations {
+    queue: Mutex<Queued>,
+    /// Wakes `declare_loop`: a declaration was owed.
+    wake: tokio::sync::Notify,
+}
+
+#[derive(Debug, Default)]
+struct Queued {
+    owed: std::collections::VecDeque<OwedOne>,
     last: Option<Declaration>,
+    /// The position the next declaration owed takes.
+    next: u64,
 }
 
-impl OwedDeclaration {
-    /// Owe `declaration` from now on, until it is answered by name.
-    pub(crate) fn owe(&mut self, declaration: Declaration) {
-        self.last = Some(declaration.clone());
-        self.owed = Some(declaration);
+/// One declaration owed: its position in the order owed, and who waits for its call to end.
+#[derive(Debug)]
+struct OwedOne {
+    at: u64,
+    declaration: Declaration,
+    ended: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl OwedDeclarations {
+    /// Owe `declaration` after every one owed before it, until it is answered by name. The receiver
+    /// resolves once its call ended (answered, or its receiver proven gone), or errs once the
+    /// declaration is no longer owed without one (a start's new cycle, the node's end).
+    pub(crate) fn owe(&self, declaration: Declaration) -> tokio::sync::oneshot::Receiver<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut q = self.queue.lock().unwrap();
+            q.last = Some(declaration.clone());
+            let at = q.next;
+            q.next += 1;
+            q.owed.push_back(OwedOne { at, declaration, ended: Some(tx) });
+        }
+        self.wake.notify_one();
+        rx
     }
 
-    /// Owe `state` again to a new authority: with the operation of the last declaration when that
+    /// Keep `declaration` as the last one made without owing it (a start's stream reported it).
+    fn keep_last(&self, declaration: Declaration) {
+        self.queue.lock().unwrap().last = Some(declaration);
+    }
+
+    /// Owe `state` again to a new mesh-primary: with the operation of the last declaration when that
     /// declared the same state, else as a state the birth measured itself.
-    fn owe_again(&mut self, state: rdm_core::status::NodeState) {
-        let operation = self.last.clone().filter(|(s, _)| *s == state).and_then(|(_, op)| op);
-        self.owe((state, operation));
+    fn owe_again(&self, state: rdm_core::status::NodeState) -> tokio::sync::oneshot::Receiver<()> {
+        let operation = self.queue.lock().unwrap().last.clone().filter(|(s, _)| *s == state).and_then(|(_, op)| op);
+        self.owe((state, operation))
+    }
+
+    /// The stopped cycle's declarations end with it: a start begins the next cycle.
+    fn clear(&self) {
+        self.queue.lock().unwrap().owed.clear();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queue.lock().unwrap().owed.is_empty()
+    }
+
+    /// The first declaration still owed, the one sent next.
+    fn first(&self) -> Option<(u64, Declaration)> {
+        self.queue.lock().unwrap().owed.front().map(|o| (o.at, o.declaration.clone()))
+    }
+
+    /// The declaration at `at` was answered by name: it is owed no more, and the next is sent.
+    fn answered(&self, at: u64) {
+        let mut q = self.queue.lock().unwrap();
+        if q.owed.front().is_some_and(|o| o.at == at) {
+            if let Some(tx) = q.owed.pop_front().and_then(|o| o.ended) {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    /// The first declaration's call ended without an answer by name (its receiver proven gone, or
+    /// not the mesh-primary, or none held): every declaration queued behind it is owed to the same
+    /// receiver, so each one's call has ended as well. All stay owed, in order.
+    fn unanswered(&self) {
+        for o in self.queue.lock().unwrap().owed.iter_mut() {
+            if let Some(tx) = o.ended.take() {
+                let _ = tx.send(());
+            }
+        }
     }
 }
 
-/// How [`declare_until_seat_moves`] ended.
+/// How [`declare_until_mesh_primary_moves`] ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Declared {
-    /// The attempt ran to its end (answered, refused, or not delivered: still owed).
-    Attempted,
-    /// The mesh's primary seat moved while the attempt was in flight: its call was cancelled.
-    FabricPrimaryMoved,
+    /// The mesh-primary answered by name, a refusal included: the declaration is owed no more.
+    Answered,
+    /// The call ended without an answer by name: the declaration stays owed.
+    Unanswered,
+    /// The mesh's primary moved while the call was in flight: its call was cancelled.
+    MeshPrimaryMoved,
 }
 
-/// [`declare_once`] until this birth's mesh's primary seat moves (i146 Q39): the seat moving is the one
-/// retargeting, so a call still in flight to the old holder is cancelled, and the declaration stays
-/// owed to the holder the seat names next. A seat record of another mesh changes nothing here.
-/// `spawned_for` is the declaration this task was spawned to send ([`declare_once`]); `None` sends
-/// whatever is owed.
-async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, spawned_for: Option<&Declaration>) -> Declared {
+/// [`declare_once`] of the declaration at `at` until this birth's mesh's primary moves (i146 Q39): the
+/// mesh-primary changing is the one retargeting, so a call still in flight to the old one is
+/// cancelled, and the declaration stays owed, first in the queue, to the one the topology names next.
+/// A primary record of another mesh changes nothing here.
+async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &OwedDeclarations, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, at: u64, declaration: &Declaration) -> Declared {
     let birth = |h: Option<rdm_core::Primary>| h.map(|h| (h.node_id, h.incarnation));
     let mut seats = topology_view.primaries().subscribe();
     seats.borrow_and_update();
@@ -1355,11 +1429,11 @@ async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &Topolog
         }
     };
     tokio::select! {
-        _ = declare_once(me, topology_view, client, owed, held, spawned_for) => Declared::Attempted,
+        answered = declare_once(me, topology_view, client, owed, held, at, declaration) => if answered { Declared::Answered } else { Declared::Unanswered },
         () = moved => {
             tracing::info_span!("rdm.node_rpc.status.remove.via-primary-changed", node = %topology_view.held_name(&me.name), from = %from.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default())
                 .in_scope(|| tracing::info!("the mesh's primary seat moved while the declaration was in flight: its call to the old holder is cancelled"));
-            Declared::FabricPrimaryMoved
+            Declared::MeshPrimaryMoved
         }
     }
 }
@@ -1396,32 +1470,26 @@ fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topol
     }
 }
 
-/// The owed declaration (node-rpc.md §34, §43; i146 Q39, Q52): one `Budget::Owed` call to the holder of
-/// this birth's mesh's primary seat, resolved from the seat this birth holds (its LeadershipView), never
-/// to an admin it merely hears. The call goes direct first; once an attempt sends nothing, its resends
-/// take the route [`declaration_route`] answers, a live peer of the mesh on Forward. It ends on the
-/// holder's answer or on its proven exit, or when the seat moves ([`declare_until_seat_moves`] drops
-/// it); no deadline or carrier failure ends it. A definitive answer clears the debt; a holder that is not
-/// the authority, or a call that ended without an answer, leaves it owed until the seat moves. With no
-/// holder held nothing is sent. Nothing here gates gossip: the digest already says the state.
-/// Whatever this birth owes is one Owed call: a task spawned for one declaration (`spawned_for`) that
-/// finds a later one owed sends nothing, the later one's own task sending it.
-async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, spawned_for: Option<&Declaration>) -> Option<String> {
+/// One owed declaration (node-rpc.md §34, §43; i146 Q39, Q52; Q210): one `Budget::Owed` call to this
+/// birth's mesh-primary, resolved from the primary record this birth holds, never to an admin it
+/// merely hears. The call goes direct first; once an attempt sends nothing, its resends take the route
+/// [`declaration_route`] answers, a live peer of the mesh on Forward. It ends on the mesh-primary's
+/// answer or on its proven exit, or when the mesh-primary changes ([`declare_until_mesh_primary_moves`]
+/// drops it); no deadline or carrier failure ends it. An answer by name, a refusal included, ends the
+/// declaration's debt and the next one is sent; a receiver that answers it is not the mesh-primary, or
+/// a call that ended without an answer, leaves it owed. With no mesh-primary held nothing is sent.
+/// Nothing here gates gossip: the digest already says the state. True when it was answered by name.
+async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &OwedDeclarations, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, at: u64, declaration: &Declaration) -> bool {
     use rdm_core::outcome::RpcOutcome;
     use rdm_core::status::{Status, StatusReply, StatusRequest};
-    let Some((state, operation)) = owed.lock().unwrap().owed.clone() else { return None };
+    let (state, operation) = declaration.clone();
     let node = topology_view.held_name(&me.name);
-    if let Some((mine, mine_op)) = spawned_for.filter(|d| **d != (state, operation.clone())) {
-        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?mine, operation = %mine_op.as_ref().map(|o| o.operation.as_str()).unwrap_or(""), owed = ?state, to = "", route = "none", outcome = "superseded", definitive = false)
-            .in_scope(|| tracing::info!("a later declaration is owed before this one was sent: its own call sends it, and this one sends nothing"));
-        return Some("superseded".into());
-    }
     let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state, operation: operation.clone() };
     let op_name = operation.as_ref().map(|o| o.operation.clone()).unwrap_or_default();
     let Some(holder) = topology_view.primaries().mesh(&me.name.mesh) else {
         tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = "", route = "none", outcome = "no-holder: this birth holds no primary seat for its mesh", definitive = false)
             .in_scope(|| tracing::info!("no primary seat is held for this birth's mesh: the declaration stays owed"));
-        return Some("no-holder".into());
+        return false;
     };
     let to = topology_view.digest_view.current(topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == holder.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| holder.node_id.to_string());
     let policy = {
@@ -1440,12 +1508,9 @@ async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_
     tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = %to, route = "owed", outcome = %outcome, definitive)
         .in_scope(|| tracing::info!("declared own state to the holder of the mesh's primary seat"));
     if definitive {
-        let mut o = owed.lock().unwrap();
-        if o.owed.as_ref() == Some(&(state, operation.clone())) {
-            o.owed = None;
-        }
+        owed.answered(at);
     }
-    Some(outcome)
+    definitive
 }
 
 

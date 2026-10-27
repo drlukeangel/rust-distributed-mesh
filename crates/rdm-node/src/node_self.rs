@@ -185,8 +185,9 @@ pub trait Session: Send + Sync {
     async fn leave_channels(&self);
 }
 
-/// Declares a state this birth entered to its authority, with the operation that produced it when
-/// one did (i146 Q36).
+/// Declares a state this birth entered to its mesh-primary, with the operation that produced it when
+/// one did (i146 Q36). An rpc node owes it when this is called, in that order (Q210), and the future
+/// ends once its call ended.
 pub type Declare = Arc<dyn Fn(NodeState, Option<rdm_core::status::DeclaredOperation>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 /// The operation a stop by this process's own signal names on its leave step's spans.
@@ -1228,8 +1229,10 @@ impl NodeSelf {
     }
 
     /// Owe `state` to the mesh-primary without waiting for its answer (node-rpc.md §43: an owed message's
-    /// delivery is the runtime's): one owed call, handed back for a signal's process end to wait on
-    /// (Q206). A command's stop names its operation; a signal's names none (i146 Q55).
+    /// delivery is the runtime's): owed at this call, after every declaration owed before it, and sent
+    /// once each of those is answered (Q210). What is handed back ends once its call ended, for a
+    /// signal's process end to wait on (Q206). A command's stop names its operation; a signal's names
+    /// none (i146 Q55).
     fn owe(&self, state: NodeState, operation: Option<rdm_core::status::DeclaredOperation>) -> Option<tokio::task::JoinHandle<()>> {
         let declare = self.declare.clone()?;
         match &operation {
