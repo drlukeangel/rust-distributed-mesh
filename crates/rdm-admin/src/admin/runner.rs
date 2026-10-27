@@ -1560,8 +1560,10 @@ impl AdminRunner {
             S::Delete { node } => {
                 // node.delete runs no stop steps for a stopped or proven-exited birth and stops a live
                 // one first (node-delete.md): the birth's state decides, never its name. A birth this
-                // view no longer holds (a resumed delete whose NodeDeleting it already heard) is
-                // deleted fenced to its exact birth, its runtime read from its row.
+                // view no longer holds (a resumed delete whose NodeDeleting it already heard, or one
+                // this executor never heard) is deleted as its exact birth, its runtime the one its
+                // view holds a digest of, else rebuilt from the Build action and the data-root runtime
+                // record (`delete_stopped`; node-admin-lifecycle.md §6.1).
                 let held = self.topology.read().await.node(node).filter(|n| n.incarnation_id.as_ref() == Some(&from_incarnation)).cloned();
                 let op = match held {
                     Some(n) if !n.stopped && n.status != crate::model::NodeStatus::Dead => BuildOperation::RetireNode { node: node.clone(), exited: None },

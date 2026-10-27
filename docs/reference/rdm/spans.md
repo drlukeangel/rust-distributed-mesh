@@ -392,7 +392,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.deployment.reject.via-build-unreadable` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1232 |
 | `rdm.node_admin.deployment.reject.via-lost-executor` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1500 |
 | `rdm.node_admin.deployment.reject.via-receipt-refused` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1382 |
-| `rdm.node_admin.deployment.resolve.via-executable-hash` | `crates/rdm-admin/src/admin/runner.rs` | 1764 |
+| `rdm.node_admin.deployment.resolve.via-executable-hash` | `crates/rdm-admin/src/admin/runner.rs` | 1766 |
 | `rdm.node_admin.deployment.returns-unknown.via-proc-unreadable` | `crates/rdm-admin/src/deployment/process.rs` | 591 |
 | `rdm.node_admin.deployment.update.via-pipeline` | `crates/rdm-admin/src/deployment/pipeline.rs` | 354 |
 | `rdm.node_admin.deployment.update.via-pipeline` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1247 |
@@ -488,8 +488,8 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.mesh.update.via-mesh-deleted-receipt` | `crates/rdm-admin/src/mesh_delete.rs` | 297 |
 | `rdm.node_admin.mesh.update.via-mesh-left-receipt` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 714 |
 | `rdm.node_admin.mesh.update.via-on-mesh-ready` | `crates/rdm-admin/src/fabric_status.rs` | 603 |
-| `rdm.node_admin.mesh.update.via-pending-handoff` | `crates/rdm-admin/src/admin/runner.rs` | 1722 |
-| `rdm.node_admin.mesh.update.via-pending-reachability` | `crates/rdm-admin/src/admin/runner.rs` | 1690 |
+| `rdm.node_admin.mesh.update.via-pending-handoff` | `crates/rdm-admin/src/admin/runner.rs` | 1724 |
+| `rdm.node_admin.mesh.update.via-pending-reachability` | `crates/rdm-admin/src/admin/runner.rs` | 1692 |
 | `rdm.node_admin.mesh.update.via-probe` | `crates/rdm-admin/src/investigate.rs` | 591 |
 | `rdm.node_admin.mesh.update.via-probe-verdict` | `crates/rdm-admin/src/investigate.rs` | 679 |
 | `rdm.node_admin.mesh.update.via-probe-verdict` | `crates/rdm-admin/src/investigate.rs` | 687 |
@@ -497,7 +497,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.mesh.update.via-roster-amended` | `crates/rdm-admin/src/mesh_delete.rs` | 428 |
 | `rdm.node_admin.mesh.update.via-shutdown` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 82 |
 | `rdm.node_admin.mesh.update.via-state-down` | `crates/rdm-admin/src/fabric_status.rs` | 628 |
-| `rdm.node_admin.mesh.update.via-state-handoff` | `crates/rdm-admin/src/admin/runner.rs` | 1738 |
+| `rdm.node_admin.mesh.update.via-state-handoff` | `crates/rdm-admin/src/admin/runner.rs` | 1740 |
 | `rdm.node_admin.mesh.update.via-unblock` | `crates/rdm-admin/src/storage_change.rs` | 405 |
 | `rdm.node_admin.mesh.update.via-unheard` | `crates/rdm-admin/src/investigate.rs` | 653 |
 | `rdm.node_admin.mesh.update.via-unheard` | `crates/rdm-admin/src/investigate.rs` | 657 |
@@ -567,7 +567,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.resolve.via-data-dir-repaired` | `crates/rdm-admin/src/admin/recovery.rs` | 374 |
 | `rdm.node_admin.node.resolve.via-provider-inspection` | `crates/rdm-admin/src/admin/recovery.rs` | 306 |
 | `rdm.node_admin.node.resolve.via-provider-inspection` | `crates/rdm-admin/src/deployment/pipeline.rs` | 2587 |
-| `rdm.node_admin.node.resolve.via-receipted-exit` | `crates/rdm-admin/src/admin/runner.rs` | 1832 |
+| `rdm.node_admin.node.resolve.via-receipted-exit` | `crates/rdm-admin/src/admin/runner.rs` | 1834 |
 | `rdm.node_admin.node.serve.via-connections-get` | `crates/rdm-node/src/node_self.rs` | 1563 |
 | `rdm.node_admin.node.serve.via-get` | `crates/rdm-admin/src/views.rs` | 266 |
 | `rdm.node_admin.node.serve.via-view-holds-birth` | `crates/rdm-admin/src/admin/records.rs` | 436 |
@@ -580,7 +580,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.update.via-build` | `crates/rdm-admin/src/admin/runner.rs` | 1369 |
 | `rdm.node_admin.node.update.via-build` | `crates/rdm-admin/src/admin/runner.rs` | 1389 |
 | `rdm.node_admin.node.update.via-build` | `crates/rdm-admin/src/admin/runner.rs` | 1542 |
-| `rdm.node_admin.node.update.via-build` | `crates/rdm-admin/src/admin/runner.rs` | 1574 |
+| `rdm.node_admin.node.update.via-build` | `crates/rdm-admin/src/admin/runner.rs` | 1576 |
 | `rdm.node_admin.node.update.via-claim-kept` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1470 |
 | `rdm.node_admin.node.update.via-command-frame` | `crates/rdm-admin/src/status_rpc.rs` | 952 |
 | `rdm.node_admin.node.update.via-command-frame` | `crates/rdm-admin/src/status_rpc.rs` | 1702 |

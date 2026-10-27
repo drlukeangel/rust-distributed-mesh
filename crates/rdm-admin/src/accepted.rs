@@ -1093,8 +1093,8 @@ fn replacements_owed(topology: &FabricTopology, observed: &Topology, recorded: &
                 }
                 // The predecessor's delete began and its row still names it: the delete of that exact
                 // birth is finished, from the stop when the view holds it live or stopped, else targeted at
-                // its incarnation with its runtime read from its row (as a resumed delete whose birth the
-                // view no longer holds is), then the create over it.
+                // its incarnation, a birth absent from the executor's view rebuilt from its record and its
+                // data-root runtime record (as a resumed delete's is), then the create over it.
                 (ReplacementProgress::Deleting(birth), held) if held.is_none_or(|n| n.node_id == birth.node_id) => {
                     ops.push(match held {
                         Some(_) => BuildOperation::RetireNode { node: p.clone(), exited: None },
