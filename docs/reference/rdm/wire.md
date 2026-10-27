@@ -160,8 +160,8 @@ A carrier's answer to a Forward call.
 | `NAME` | `"status"` |
 | `FORWARDABLE` | `true` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `33` |
-| `REPLY_VARIANTS` | `56` |
+| `REQUEST_VARIANTS` | `34` |
+| `REPLY_VARIANTS` | `58` |
 | `MAX_REQUEST_FRAME_BYTES` | `MAX_STATUS_REQUEST_BYTES` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
@@ -169,7 +169,7 @@ A carrier's answer to a Forward call.
 
 ### `StatusRequest`
 
-`crates/rdm-core/src/status.rs` · enum · 33 variants · rdm-core
+`crates/rdm-core/src/status.rs` · enum · 34 variants · rdm-core
 
 A Status call.
 
@@ -291,10 +291,10 @@ A Status call.
 | 21.2 | `scope` | `ConnectionScope` → [`ConnectionScope`](#t-rdm_core-status-ConnectionScope) |  |  | Which connections. |
 | 22 | **`GetNodes`** |  |  |  | The node reads (node-rpc-envelope.md "Typed objects mapped to wire and execution owners", |
 | 22.0 | `select` | `NodeSelect` → [`NodeSelect`](#t-rdm_core-status-NodeSelect) |  |  | Which nodes. |
-| 23 | **`GetMeshes`** |  |  | `op() = "mesh.get"`<br>`op() = "fabric.meshes.get"` | `mesh.get { name }` (`Some`): a caller asks a node-admin for one mesh its view holds, by the |
+| 23 | **`GetMeshes`** |  |  | `op() = "meshes.get"` | `mesh.get { name }` (`Some`): a caller asks a node-admin for one mesh its view holds, by the |
 | 23.0 | `mesh` | `Option<String>` |  |  | The mesh's minted id or name; `None` for every mesh of the fabric. |
-| 24 | **`GetFabric`** |  |  | `op() = "fabric.get"` | `fabric.get`: a caller asks a node-admin for the fabric as its view holds it, answered |
-| 25 | **`GetConnections`** |  |  | `op() = "node.connections.get"` | `node.connections.get` (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held |
+| 24 | **`GetFabric`** |  |  | `op() = "fabrics.get"` | `fabric.get`: a caller asks a node-admin for the fabric as its view holds it, answered |
+| 25 | **`GetConnections`** |  |  | `op() = "connections.get"` | `node.connections.get` (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held |
 | 25.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth asked. |
 | 25.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 26 | **`CreateTags`** |  |  | `op() = "node.tags.create"` | `node.tags.create` (node-rpc-envelope.md node.tags; R-TG1): a caller asks the exact birth's |
@@ -327,12 +327,16 @@ A Status call.
 | 31.2 | `key` | `IssuingKeyHex` → [`IssuingKeyHex`](#t-rdm_core-status-IssuingKeyHex) |  |  | The issuing key's secret, as hex. |
 | 31.3 | `cert` | `String` |  |  | The root-signed issuing cert, as hex (`rdm_core::certs::encode_issuing_cert`). |
 | 32 | **`GetAtlas`** |  |  | `op() = "fabrics.atlas.get"` | `fabrics.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): a caller asks the |
+| 33 | **`Get`** |  |  |  | The reads (Q167, R-RD1 to R-RD3): one read per entity, plural, `fabrics.get`, `meshes.get`, |
+| 33.0 | `entity` | `crate::filter::Entity` → [`Entity`](#t-rdm_core-filter-Entity) |  |  | The entity read. |
+| 33.1 | `node` | `Option<(NodeId, IncarnationId)>` → [`NodeId`](#t-rdm_core-ids-NodeId), [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The exact birth a `connections.get` reads; `None` for every other entity. |
+| 33.2 | `filter` | `crate::filter::Filter` → [`Filter`](#t-rdm_core-filter-Filter) |  |  | The pairs every answered row matches. |
 
 <a id="t-rdm_core-status-StatusReply"></a>
 
 ### `StatusReply`
 
-`crates/rdm-core/src/status.rs` · enum · 56 variants · rdm-core
+`crates/rdm-core/src/status.rs` · enum · 58 variants · rdm-core
 
 The typed result of a Status call.
 
@@ -493,6 +497,10 @@ The typed result of a Status call.
 | 54.0 | `reason` | `String` |  |  | Why, by name; within `MAX_REFUSAL_REASON_BYTES`. |
 | 55 | **`Atlas`** |  |  | `name() = "atlas"` | The answer to a `GetAtlas`: the fabric-primary's atlas. Appended last: no variant |
 | 55.0 | `atlas` | `crate::views::AtlasView` → [`AtlasView`](#t-rdm_core-views-AtlasView) |  |  | The atlas. |
+| 56 | **`Fabrics`** |  |  | `name() = "fabrics"` | The answer to a `fabrics.get` (`StatusRequest::Get` of `Fabrics`): the fabric the answering |
+| 56.0 | `fabrics` | `Vec<FabricView>` → [`FabricView`](#t-rdm_core-views-FabricView) |  |  | The fabrics. |
+| 57 | **`RejectedFilter`** |  |  | `name() = "rejected-filter"` | A read's filter the entity's schema refuses (Q167 R-RD2): an unknown property, a value the |
+| 57.0 | `reason` | `String` |  |  | Why, by name, naming the pair; within `MAX_REFUSAL_REASON_BYTES`. |
 
 ## 0x1C `build-claim`
 
@@ -2097,6 +2105,21 @@ serde: `transparent`
 |---|---|---|---|---|
 | 0 | `0` | `String` |  |  |
 
+<a id="t-rdm_core-filter-Entity"></a>
+
+### `Entity`
+
+`crates/rdm-core/src/filter.rs` · enum · 4 variants · rdm-core
+
+The entity a read reads (R-RD1). Positional order is part of the wire schema.
+
+| # | variant · field | type | serde | labels | doc |
+|---|---|---|---|---|---|
+| 0 | **`Fabrics`** |  |  | `read() = "fabrics.get"`<br>`row() = "fabric"` | `fabrics.get`: the fabric the answering admin holds. |
+| 1 | **`Meshes`** |  |  | `read() = "meshes.get"`<br>`row() = "mesh"` | `meshes.get`: the meshes the answering admin holds. |
+| 2 | **`Nodes`** |  |  | `read() = "nodes.get"`<br>`row() = "node"` | `nodes.get`: the node rows the answering admin holds. |
+| 3 | **`Connections`** |  |  | `read() = "connections.get"`<br>`row() = "connection"` | `connections.get { node }`: the exact birth's own connections. |
+
 <a id="t-rdm_core-status-FabricEvent"></a>
 
 ### `FabricEvent`
@@ -2154,6 +2177,18 @@ Every cut of one admin and the consequence counters.
 | 0 | `node` | `String` |  | The admin's `path.name`. |
 | 1 | `cuts` | `BTreeMap<String, CutRow>` → [`CutRow`](#t-rdm_test-fault_door-CutRow) |  | Every cut, by id. |
 | 2 | `receipts_seen` | `u64` |  | Every Build step receipt the Build decorator saw. |
+
+<a id="t-rdm_core-filter-Filter"></a>
+
+### `Filter`
+
+`crates/rdm-core/src/filter.rs` · struct · 1 fields · rdm-core
+
+A read's filter (R-RD2): `(property, values)` pairs, AND across pairs, any-of within. Empty is no
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `pairs` | `Vec<(String, Vec<String>)>` |  | The pairs, in the caller's order. |
 
 <a id="t-rdm_core-digest-GossipStats"></a>
 
