@@ -69,12 +69,12 @@ const GATE_SCENARIOS: &[&str] = &[
     "mesh_create", "fabric_primary_handover", "canonical_ids", "cohort_election", "fabric_primary", "rpc_proof_store",
     "accepted_topology", "build_op", "cohort_recovery", "rpc_certainty", "peer_mesh_investigation", "joiner_build_facts", "rafka_time_discipline", "issuance", "fabric_states",
     "mesh_delete_resume", "mesh_delete_no_survivor",
-    "apply_cuts", "scheduler_replay", "shared_dial",
+    "apply_cuts", "scheduler_replay", "shared_dial", "topology_storage_provider",
 ];
 /// Gate stems that only the release gate runs (`RELEASE_ONLY`).
 const GATE_RELEASE_ONLY: &[&str] = &[
     "cohort_election", "cohort_recovery", "peer_mesh_investigation", "restart_canary_seed", "failpoint_explorer",
-    "mesh_delete_resume", "mesh_delete_no_survivor",
+    "mesh_delete_resume", "mesh_delete_no_survivor", "topology_storage_provider",
 ];
 /// Crates whose every executable the fast gate runs.
 const GATE_CRATES: &[&str] = &[

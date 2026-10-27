@@ -55,7 +55,7 @@ O=$DEPLOY/gates-$(basename $(pwd))-$SHA${GATE/fast/}.log; : > $O; : > $O.detail
 echo "[gate] head=$(git rev-parse HEAD) dirty=$(git status --porcelain | wc -l | tr -d ' ')" | tee -a $O
 D=$O.d; rm -rf $D; mkdir -p $D
 export I143_PREBUILT_ARTIFACTS="$D/artifacts.json"
-SCENARIOS="node_delete node_connections_delete node_replace node_restart routing status shape_reconcile live_resize role_build role_cohort restart_target role_routing role_context role_wedge provider_state late_authority node_primary_update mesh_create fabric_primary_handover canonical_ids cohort_election fabric_primary fabric_takeover rpc_proof_store accepted_topology cohort_recovery rpc_certainty peer_mesh_investigation joiner_build_facts boot_trace restored_faults admin_restart rafka_time_discipline issuance fabric_states node_stop build_op mesh_delete_resume mesh_delete_no_survivor apply_cuts scheduler_replay shared_dial digest_sequence backbone successor_adoption admins_lost_mid_build"
+SCENARIOS="node_delete node_connections_delete node_replace node_restart routing status shape_reconcile live_resize role_build role_cohort restart_target role_routing role_context role_wedge provider_state late_authority node_primary_update mesh_create fabric_primary_handover canonical_ids cohort_election fabric_primary fabric_takeover rpc_proof_store accepted_topology cohort_recovery rpc_certainty peer_mesh_investigation joiner_build_facts boot_trace restored_faults admin_restart rafka_time_discipline issuance fabric_states node_stop build_op mesh_delete_resume mesh_delete_no_survivor apply_cuts scheduler_replay shared_dial digest_sequence backbone successor_adoption admins_lost_mid_build topology_storage_provider"
 t0=$(date +%s)
 
 # 1. Build once: check, every bin, every test binary. Nothing compiles after this.
@@ -289,6 +289,12 @@ for t in $SCENARIOS; do
     fi
     if [ -n "$e" ]; then echo "$t $e${FP_KILL_SKIP_ARGS:+ $FP_KILL_SKIP_ARGS}" >> $D/jobs; else echo "FAIL $t 0s" | tee -a $O; echo "FAIL scenario stem $t missing from $SCENARIO_PKG" >> $O.detail; fi
 done
+# The storage change's fast cell (i149 R15): the release suite runs the whole topology_storage_provider
+# stem; the fast gate runs this one cell of it, the serving births through a change (~10 s).
+if [ "$GATE" = fast ]; then
+    m=$(exe $SCENARIO_PKG main)
+    if [ -n "$m" ]; then echo "topology_storage_provider_fast $m --exact topology_storage_provider::every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change" >> $D/jobs; else echo "FAIL topology_storage_provider_fast 0s" | tee -a $O; fi
+fi
 SCENARIO_SKIP=$(for s in $SCENARIOS build_log estate_handover estate_teardown await_attempt seeded operation_ledger driver_reconcile proof_holder_lifecycle manifest_replay restart_canary_seed action_generator failpoint_explorer wedge_detector process_fault_backend container_fault_backend bootstrap_pending primary_loss_takeover supplied_clock delta_gap_recovery held_status_join partition_rejoin proxy_hydration_cutback restarted_member_rejoin stopped_last_admin peer_mesh_topology topology_get container_kill node_connections_delete poc_chaos_kit rshape_burn_in; do printf " --skip %s::" "$s"; done)
 # One job per test executable (2026-10-12): a crate's lib, bin and main executables run in parallel, each its tests in
 # parallel threads. Chained in one job they summed: admin-core lib 39.7 s + main 30.4 s ran as one 116 s job under load.
@@ -381,7 +387,7 @@ echo "i143-2784-chaos-container sh:scripts/i143-acceptance-gate.sh i143-2784-cha
 echo "doctests cargo:--doc $PKGS" >> $D/jobs
 echo "workspace-check sh:cargo check --workspace --tests --no-default-features" >> $D/jobs
 # Container jobs require the Docker host; absence is a refusal, never a skip.
-echo "container-proof sh:export RDM_REQUIRE_CONTAINER=1 RAFKA_REQUIRE_CONTAINER=1; $(exe rdm-admin main) -q container_proof:: provider_state::container:: & provider_pid=\$!; $(exe $SCENARIO_PKG main) -q container_kill:: executables::a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_executable_outside_them_is_refused declared_secrets::container:: --skip declared_secrets::container::an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_kinds_with_the_value_containers named_listeners::a_container_fabrics_gateway_listeners_are_on_the_containers_own_address & kill_pid=\$!; proof_rc=0; wait \$provider_pid || proof_rc=1; wait \$kill_pid || proof_rc=1; exit \$proof_rc" >> $D/jobs
+echo "container-proof sh:export RDM_REQUIRE_CONTAINER=1 RAFKA_REQUIRE_CONTAINER=1; $(exe rdm-admin main) -q container_proof:: provider_state::container:: & provider_pid=\$!; $(exe $SCENARIO_PKG main) -q container_kill:: executables::a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_executable_outside_them_is_refused declared_secrets::container:: topology_storage_provider::container:: --skip declared_secrets::container::an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_kinds_with_the_value_containers named_listeners::a_container_fabrics_gateway_listeners_are_on_the_containers_own_address & kill_pid=\$!; proof_rc=0; wait \$provider_pid || proof_rc=1; wait \$kill_pid || proof_rc=1; exit \$proof_rc" >> $D/jobs
 # The Rafka-shaped (R-shape) canonical process jobs: each >1 min, so release gate only (run between epics).
 for j in i143-rshape-composition-process i143-rshape-authority-chaos-process i143-rshape-lifecycle-chaos-process i143-rshape-routing-chaos-process i143-rshape-partition-chaos-process; do
     grep -q "\"$j\"" tools/mesh-audit/i143-acceptance-jobs.json && echo "rshape-${j#i143-rshape-} sh:scripts/i143-acceptance-gate.sh $j" >> $D/jobs
@@ -437,7 +443,7 @@ export -f one; export O D DEPLOY SCENARIO_PKG OTEL_EXPORTER_OTLP_ENDPOINT RDM_ST
 # every job over a minute on its own (Luke 10-08: stems > 1 min run in the release suite between
 # epics). The cargo-invoking jobs (doctests, the no-default-features check) are release-only too:
 # during the stem phase they take cargo's package-cache lock that audit-tests' `cargo tree` waits on.
-RELEASE_ONLY='^(mesh_delete_resume|backbone|admins_lost_mid_build|mesh_delete_no_survivor|container-proof|i143-2777-container|i143-2784-chaos-container|cohort_election|rshape-[a-z-]+|i143-2777-process|i143-2780-process|cohort_recovery|peer_mesh_investigation|doctests|workspace-check|demo-admin-ui|restored_faults|node_replace|rafka_time_discipline|fabric_takeover) '
+RELEASE_ONLY='^(mesh_delete_resume|backbone|admins_lost_mid_build|mesh_delete_no_survivor|container-proof|i143-2777-container|i143-2784-chaos-container|cohort_election|rshape-[a-z-]+|i143-2777-process|i143-2780-process|cohort_recovery|peer_mesh_investigation|doctests|workspace-check|demo-admin-ui|restored_faults|node_replace|rafka_time_discipline|fabric_takeover|topology_storage_provider) '
 if [ "$GATE" = fast ]; then grep -vE "$RELEASE_ONLY" $D/jobs > $D/jobs.fast && mv $D/jobs.fast $D/jobs; fi
 # Every suite job starts in the same concurrent batch. The release-only jobs are the long ones by
 # definition (above) and get the 900 s cap, so a job ends with its libtest summary and every

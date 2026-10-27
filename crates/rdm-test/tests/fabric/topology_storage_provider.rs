@@ -1,4 +1,5 @@
-//! product=mesh, feature=storage, subfeature=topology-storage-provider, rung=MM, provider=process.
+//! product=mesh, feature=storage, subfeature=topology-storage-provider, rung=MM, provider=process and
+//! container (the container cells in [`container`], opt-in).
 //!
 //! The fabric's `topology_storage_provider` (storage.md §2; i149): the registered name of the backend
 //! RDM's five record stores (fabric, meshes, nodes, connections, builds) are written to. It is one value
@@ -824,4 +825,291 @@ async fn a_delete_resolves_the_storage_change_before_teardown() {
     let teardown = spans.iter().filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.node_admin.node.delete.") || n.starts_with("rdm.mesh.node.delete.")) && start_ns(sp) >= accepted_ns).map(start_ns).min().expect("the delete tore the nodes down");
     assert!(start_ns(resolved) <= teardown, "the change is resolved before the delete's teardown begins (delete {delete_id})");
     estate.record_trace_url(&s(&resolved["trace_id"]));
+}
+
+// ---- e5: the customer's change end to end (i149 R13–R15; storage.md §2 "Changing it"). The fast gate
+// runs one cell of this stem (the serving births through a change, process provider); the release suite
+// runs the whole stem, and its container-proof job the cells of [`container`].
+
+/// The node store's file on a provider's root.
+const NODES: &str = rdm_admin::store_root::NODES_FILE;
+/// The node created after a change, by a Build that omits the provider (Q166).
+const GROWN: &str = "mesh1.rpc.2";
+
+/// A fabric of the faulted node-admin and the testkit rpc node on the deployment provider `provider`
+/// (`process` or `container`), grown to [`two_meshes`], every node ready-for-traffic.
+async fn two_mesh_estate_on(test: &str, provider: &str) -> (Estate, Vec<NodeView>) {
+    let sha = candidate_sha();
+    let mut set = binding_set(&sha);
+    if provider == "container" {
+        for b in set.bindings.iter_mut() {
+            b.image = Some(rdm_test::estate::RUNTIME_IMAGE.into());
+        }
+    }
+    let owner = Owner { provider: provider.into(), ..owner(test) };
+    let mut estate = Estate::bootstrap_on_with_env(owner, "fabric1", "mesh1", &set, &sha, &[], &[]).await.expect("the faulted-admin binding set is accepted");
+    estate.reconcile(&two_meshes()).await;
+    let views = estate.settles_to_named(&two_mesh_names(), SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
+    (estate, views)
+}
+
+/// [`two_meshes`] with mesh1 grown by one rpc node, [`GROWN`].
+fn grown() -> FabricDesired {
+    let mut fabric = two_meshes();
+    fabric.meshes[0].rpc_node = 2;
+    fabric
+}
+
+/// `node.get` of every node of `views` by its minted id, at the fabric-primary: `path.name` → (node id,
+/// incarnation, status).
+async fn node_gets(estate: &Estate, views: &[NodeView]) -> BTreeMap<String, (String, Option<String>, NodeStatus)> {
+    let nodes = estate.nodes_obj().await;
+    let mut out = BTreeMap::new();
+    for v in views {
+        let got = nodes.get(&v.node_id).await.unwrap_or_else(|e| panic!("node.get {} ({}) is answered: {e}", v.node_id, v.name));
+        out.insert(got.name.to_string(), (got.node_id.to_string(), got.incarnation_id.as_ref().map(|i| i.as_str().to_string()), got.status));
+    }
+    out
+}
+
+/// Every birth of `before` is the node `node.get` answers at its `path.name` in `got`, ready-for-traffic.
+fn serving(got: &BTreeMap<String, (String, Option<String>, NodeStatus)>, before: &BTreeMap<String, (String, Option<String>)>, when: &str) {
+    for (name, (id, incarnation)) in before {
+        let (got_id, got_incarnation, status) = got.get(name).unwrap_or_else(|| panic!("{when}: node.get answers no {name}: {got:?}"));
+        assert_eq!((got_id, got_incarnation), (id, incarnation), "{when}: {name} is the same birth (node id, incarnation)");
+        assert_eq!(*status, NodeStatus::ReadyForTraffic, "{when}: {name} is ready-for-traffic");
+    }
+}
+
+/// The node store's lines on `root` from line `from` on, each as JSON (`{"key", "record", ...}`).
+fn node_lines_from(root_lines: &BTreeMap<&'static str, Vec<String>>, from: usize) -> Vec<Value> {
+    root_lines[NODES].iter().skip(from).filter_map(|l| serde_json::from_str(l).ok()).collect()
+}
+
+/// `source` dials `destination`, a node it holds no connection to, and its connection event is written:
+/// the event's entry, as its span names it.
+async fn connection_event(estate: &Estate, source: &str, destination: &str) -> String {
+    let dialled_ns = now_ns();
+    dial(estate, source, destination);
+    let sp = wait_for(&format!("{source}'s connection event to {destination} is written"), STEP, || async {
+        estate.spans().into_iter().find(|sp| sp["name"] == OBSERVED && attr(sp, "source") == source && attr(sp, "destination") == destination && attr(sp, "origin") == "dial" && start_ns(sp) >= dialled_ns)
+    })
+    .await;
+    attr(&sp, "entry")
+}
+
+/// The serving births through a change (i149 R13), on the deployment provider `provider`.
+async fn every_node_serves_through_a_change(test: &str, provider: &str) {
+    let (mut estate, views) = two_mesh_estate_on(test, provider).await;
+    let before = births(&views);
+    serving(&node_gets(&estate, &views).await, &before, "before the change");
+    let (file_root, target_root) = roots(&estate);
+    let file_before = store_lines(&file_root);
+    let hold = hold_switch(&estate).await;
+    let accepted_ns = now_ns();
+    let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
+    for mesh in ["mesh1", "mesh2"] {
+        blocked_at(&estate, &build_id, mesh).await;
+    }
+    // Throughout: every mesh-primary has replied `blocked` and the change is held before its copy.
+    serving(&node_gets(&estate, &views).await, &before, "every mesh-primary blocked");
+    hold.release("switch").await;
+    let done = estate.follow(stream).await;
+    estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
+    serving(&node_gets(&estate, &views).await, &before, "after the change");
+    fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
+    // The record: every row of a serving node written from the change's acceptance on, on either
+    // provider, records the same node at its path.name with the status its row held before the change
+    // (no node changes state), and the last records its move onto the new provider.
+    let (file_after, target_after) = (store_lines(&file_root), store_lines(&target_root));
+    history_carried(&file_after, &target_after);
+    let held = node_lines_from(&file_before, 0);
+    let written: Vec<Value> = node_lines_from(&file_after, file_before[NODES].len()).into_iter().chain(node_lines_from(&target_after, file_after[NODES].len())).collect();
+    estate.artifact("rows-written.json", &json!(written));
+    for (name, (id, _)) in &before {
+        let status = &held.iter().rev().find(|l| l["key"] == id.as_str()).unwrap_or_else(|| panic!("{name}: its row before the change"))["record"]["status"];
+        let own: Vec<&Value> = written.iter().filter(|l| l["key"] == id.as_str()).collect();
+        assert!(own.iter().all(|l| l["record"]["status"] == *status && l["record"]["name"] == name.as_str()), "{name}: every row written during the change records the same node at its path.name with the status {status} its row held before: {own:#?}");
+        let last = own.last().unwrap_or_else(|| panic!("{name}: its row records its move: no row of it written during the change"));
+        assert_eq!(last["record"]["topology_storage_provider"], TOPOLOGY_STORAGE_TARGET, "{name}: its last row records the provider it writes: {last}");
+    }
+    let stopped_ns = now_ns();
+    estate.stop().await;
+    let spans = estate.spans();
+    // No process of a serving node started again, and no node was created or left during the change.
+    for (name, (id, incarnation)) in &before {
+        let boots: Vec<&Value> = named(&spans, "rdm.mesh.node.create.via-boot").into_iter().filter(|sp| attr(sp, "node_id") == *id).collect();
+        assert_eq!(boots.len(), 1, "{name}: its birth's process started once: {boots:#?}");
+        assert_eq!(Some(attr(boots[0], "incarnation_id")), incarnation.clone(), "{name}: the one start is its incarnation's");
+        assert!(start_ns(boots[0]) < accepted_ns, "{name}: its process started before the change");
+        let moved: Vec<&Value> = of_build(&spans, MOVE, &build_id, None).into_iter().filter(|sp| attr(sp, "node_id") == *id).collect();
+        assert!(!moved.is_empty() && moved.iter().all(|sp| sp["attributes"]["outcome"] == "moved" && attr(sp, "provider") == TOPOLOGY_STORAGE_TARGET), "{name}: its birth moved onto {TOPOLOGY_STORAGE_TARGET} in place: {moved:#?}");
+    }
+    let lifecycle: Vec<&Value> = spans
+        .iter()
+        .filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.node.create.") || n.starts_with("rdm.mesh.node.delete.") || n.starts_with("rdm.node_admin.node.create.via-build") || n.starts_with("rdm.node_admin.node.delete.")))
+        .filter(|sp| (accepted_ns..stopped_ns).contains(&start_ns(sp)))
+        .collect();
+    assert!(lifecycle.is_empty(), "no node was created, started or deleted during the change: {lifecycle:#?}");
+    let switched = of_build(&spans, SWITCH, &build_id, None).into_iter().find(|sp| sp["attributes"]["outcome"] == "inserted").expect("the change switched");
+    estate.record_trace_url(&s(&switched["trace_id"]));
+}
+
+/// CONTRACT (storage.md §2 "Changing it": a storage change "is a property Build: the fabric, every mesh
+/// and every node stay ready-for-traffic, no node restarts, and no node changes state"; i149 R13):
+/// on a two-mesh fabric, `node.get` of every node by its id answers the same birth (node id and
+/// incarnation), ready-for-traffic, before the change to `test-target`, while every mesh-primary has
+/// replied `blocked` and the change is held before its copy, and after the Build completes; every row of a
+/// serving node written during the change, on either provider, records the same node at its path.name
+/// with the status its row held before the change, the last naming `test-target`; each birth's process started once, before the
+/// change, and moved onto `test-target` in place; no node is created, started or deleted during the
+/// change. Must NOT happen: a node restarted, re-born or replaced, a read unanswered while blocked, or a
+/// row recording another status. The fast gate's cell of this stem.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change() {
+    every_node_serves_through_a_change("every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change", "process").await;
+}
+
+/// CONTRACT (storage.md §2 "Changing it": "The previous provider is kept as it was at the switch, named on
+/// the Fabric row, written no more and never deleted by RDM"; step 3, the switch "appends the Fabric row's
+/// line naming the new provider current" on the new provider; i149 R14): after a change to `test-target`
+/// completes, every store on `file` reads whole (every line verified), its Fabric row still names `file`
+/// with no previous provider while `test-target`'s names `test-target` with `file` previous, and every
+/// serving node's row reads there. A Build that omits the provider then creates mesh1.rpc.2 and that node
+/// dials mesh1.admin.2: its records and its connection event are on `test-target` and none on `file`, and
+/// every line of `file` is the line it held at the cutover. Must NOT happen: a line of the previous
+/// provider changed, added or removed, or a write after the cutover landing there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_previous_provider_remains_unchanged_after_cutover() {
+    let test = "a_previous_provider_remains_unchanged_after_cutover";
+    let (mut estate, views) = two_mesh_estate(test, &[]).await;
+    let (file_root, target_root) = roots(&estate);
+    let (stream, _) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
+    estate.follow(stream).await;
+    let cutover = store_lines(&file_root);
+    estate.artifact("previous-at-cutover.json", &json!(cutover));
+    // Readable: every store of the previous provider reads whole, every line verified.
+    for store in STORES {
+        let read = rdm_admin::store_log::read_file(&file_root.join(store)).unwrap_or_else(|e| panic!("{store} on {FILE} reads whole after the cutover: {e}"));
+        assert_eq!(read.len(), cutover[store].iter().filter(|l| !l.is_empty()).count(), "{store} on {FILE}: every line reads");
+    }
+    let fabric_on = |root: &Path| rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::FABRIC_FILE), "fabric-record", None).unwrap_or_else(|| panic!("the Fabric row reads on {}", root.display()));
+    let (old, new) = (fabric_on(&file_root), fabric_on(&target_root));
+    assert_eq!((&old["record"]["topology_storage_provider"], old["record"]["previous_topology_storage_providers"].as_array().map_or(0, Vec::len)), (&json!(FILE), 0), "the Fabric row on {FILE} is the one before the switch: {old}");
+    assert_eq!((&new["record"]["topology_storage_provider"], &new["record"]["previous_topology_storage_providers"]), (&json!(TOPOLOGY_STORAGE_TARGET), &json!([FILE])), "the Fabric row on {TOPOLOGY_STORAGE_TARGET} names it, {FILE} previous: {new}");
+    for v in &views {
+        assert!(rdm_admin::store_log::read_record(&file_root.join(NODES), "node-record", Some(v.node_id.as_str())).is_some(), "{}: its row reads on {FILE}", v.name);
+    }
+    // Writes after the cutover: a node created by a Build that omits the provider, and its connection event.
+    estate.reconcile(&grown()).await;
+    let mut names = two_mesh_names();
+    names.insert(GROWN.into());
+    let grown_id = estate.settles_to_named(&names, SETTLE).await.into_iter().find(|v| v.name.to_string() == GROWN).expect("the grown node").node_id.to_string();
+    let entry = connection_event(&estate, GROWN, "mesh1.admin.2").await;
+    assert!(!lines_naming(&target_root, &grown_id).is_empty() && lines_naming(&file_root, &grown_id).is_empty(), "{GROWN}'s records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
+    assert_eq!((lines_naming(&target_root, &entry).len(), lines_naming(&file_root, &entry).len()), (1, 0), "the connection event {entry} is on {TOPOLOGY_STORAGE_TARGET} once and not on {FILE}");
+    assert_eq!(store_lines(&file_root), cutover, "every line of {FILE} is the one it held at the cutover");
+    estate.stop().await;
+    let spans = estate.spans();
+    let created = named(&spans, "rdm.mesh.node.create.via-boot").into_iter().find(|sp| attr(sp, "node_id") == grown_id).expect("the grown node started");
+    estate.record_trace_url(&s(&created["trace_id"]));
+}
+
+/// A change to `test-target` and back to `file` (i149 R14), on the deployment provider `provider`.
+async fn returns_to_a_previous_provider(test: &str, provider: &str) {
+    let (mut estate, views) = two_mesh_estate_on(test, provider).await;
+    let before = births(&views);
+    let (file_root, target_root) = roots(&estate);
+    let (first, first_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
+    estate.follow(first).await;
+    let at_switch = store_lines(&file_root);
+    // A line `file` lacks: a connection event written on `test-target`.
+    let entry = connection_event(&estate, "mesh1.rpc.1", "mesh1.admin.2").await;
+    assert_eq!((lines_naming(&target_root, &entry).len(), lines_naming(&file_root, &entry).len()), (1, 0), "the connection event {entry} is on {TOPOLOGY_STORAGE_TARGET} alone");
+    let (back, back_id) = change_to(&estate, FILE).await;
+    estate.follow(back).await;
+    let (file_back, target_back) = (store_lines(&file_root), store_lines(&target_root));
+    estate.artifact("file-back.json", &json!(file_back));
+    // Only the lines `file` lacks are copied into it: its lines at the first switch stand, then every line
+    // of `test-target` in source order follows, none twice.
+    for (store, lines) in &at_switch {
+        assert!(file_back[store].len() >= lines.len() && file_back[store][..lines.len()] == lines[..], "{store}: {FILE}'s lines at the first switch stand unchanged");
+    }
+    history_carried(&target_back, &file_back);
+    assert_eq!(lines_naming(&file_root, &entry).len(), 1, "the connection event {entry} is copied into {FILE} once");
+    fabric_names(&estate.fabric_view().await, FILE, &[FILE, TOPOLOGY_STORAGE_TARGET]);
+    let after = estate.node_views().await;
+    assert_eq!(births(&after), before, "every node is the same birth through both changes");
+    assert!(after.iter().all(|v| v.status == NodeStatus::ReadyForTraffic), "every node is ready-for-traffic: {after:?}");
+    nodes_write(&after, FILE);
+    // The fabric serves on `file`: a Build that omits the provider creates a node, written there alone.
+    estate.reconcile(&grown()).await;
+    let mut names = two_mesh_names();
+    names.insert(GROWN.into());
+    let grown_view = estate.settles_to_named(&names, SETTLE).await.into_iter().find(|v| v.name.to_string() == GROWN).expect("the grown node");
+    let grown_id = grown_view.node_id.to_string();
+    assert_eq!(grown_view.topology_storage_provider.as_deref(), Some(FILE), "{GROWN} writes {FILE}: {grown_view:?}");
+    assert!(!lines_naming(&file_root, &grown_id).is_empty() && lines_naming(&target_root, &grown_id).is_empty(), "{GROWN}'s records are on {FILE} and none on {TOPOLOGY_STORAGE_TARGET}");
+    assert_eq!(store_lines(&target_root), target_back, "{TOPOLOGY_STORAGE_TARGET} is written no more once the fabric returned to {FILE}");
+    estate.stop().await;
+    let spans = estate.spans();
+    for id in [&first_id, &back_id] {
+        assert_eq!(of_build(&spans, SWITCH, id, None).into_iter().filter(|sp| sp["attributes"]["outcome"] == "inserted").count(), 1, "Build {id} switched once");
+    }
+    let switched = of_build(&spans, SWITCH, &back_id, None).into_iter().find(|sp| sp["attributes"]["outcome"] == "inserted").expect("the change back switched");
+    estate.record_trace_url(&s(&switched["trace_id"]));
+}
+
+/// CONTRACT (storage.md §2 "Changing it": "A later Build naming it again copies into it only the lines it
+/// lacks"; "The property": the Fabric row carries `previous_topology_storage_providers`, "each provider
+/// the fabric left, in order"; i149 R14): a change to `test-target` completes and mesh1.rpc.1's connection
+/// event is written there alone; a later Build naming `file` completes: `file`'s lines at the first switch
+/// stand, then every line of `test-target` follows in source order, the event once; the Fabric row names
+/// `file` with `file` and `test-target` previous; every node is the same birth, ready-for-traffic, writing
+/// `file`; a Build that omits the provider then creates mesh1.rpc.2, written on `file` and none on
+/// `test-target`, which is written no more. Must NOT happen: a line of `file` rewritten, reordered or
+/// copied twice, or a write after the return landing on `test-target`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_customer_returns_to_a_previous_topology_provider() {
+    returns_to_a_previous_provider("a_customer_returns_to_a_previous_topology_provider", "process").await;
+}
+
+/// The container provider's cells: opt-in, the container-proof step (`RDM_CONTAINER_PROOF=1`, or
+/// `RDM_REQUIRE_CONTAINER=1`); otherwise each skips by name. Each is ignored by name until a role node's
+/// container reaches the testkit's second provider: run opted in at 17fbf387e, every node-admin moved
+/// onto `test-target` and each rpc node refused its move, `refusing to start: <estate>/store-test-target:
+/// the store_dir (RDM_STORE_DIR) cannot be used`, its mesh-primary replying `unblocked` with the node
+/// left on `file` and writing there after the switch.
+mod container {
+    /// Whether the opt-in container step runs this cell; otherwise it skips by name.
+    fn opted_in(what: &str) -> bool {
+        if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
+            eprintln!("SKIP container {what}: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step)");
+            return false;
+        }
+        true
+    }
+
+    /// CONTRACT (i149 R13, R15; container provider): every serving node keeps its birth and
+    /// ready-for-traffic through a change, as the process provider's cell states it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "i149 e5 (R15): the testkit registers test-target beside RDM_STORE_DIR, a place no role node container mounts; a role node refuses its move and its mesh-primary replies unblocked without it (storage_change.rs unblock_mesh)"]
+    async fn every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change_containers() {
+        if !opted_in("topology storage provider") {
+            return;
+        }
+        super::every_node_serves_through_a_change("every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change_containers", "container").await;
+    }
+
+    /// CONTRACT (i149 R14, R15; container provider): a later Build naming the previous provider returns
+    /// the fabric to it, as the process provider's cell states it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "i149 e5 (R15): the testkit registers test-target beside RDM_STORE_DIR, a place no role node container mounts; a role node refuses its move and its mesh-primary replies unblocked without it (storage_change.rs unblock_mesh)"]
+    async fn a_customer_returns_to_a_previous_topology_provider_containers() {
+        if !opted_in("topology storage provider") {
+            return;
+        }
+        super::returns_to_a_previous_provider("a_customer_returns_to_a_previous_topology_provider_containers", "container").await;
+    }
 }
