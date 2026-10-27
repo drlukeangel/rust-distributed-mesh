@@ -368,9 +368,8 @@ Status moves only through [node status](lifecycles/node-status.md), never a put.
 
 node.config is application attributes, a property bag; a node's tags are its own property, not config. Config is distinct from join's cert/time
 and the topology read. Config is a map of name to value; a body that names a key twice keeps the
-last value, `admin_api_base` included. It is a field of the node record, and the node's digest
-carries the live copy (the `config` map). RDM never reads it; it is capped in keys and bytes and
-refused by name past either ([cap and budget](gossip.md#31-frame-catalog)). The
+last value, `admin_api_base` included. It is a field of the node record, held by the fabric-primary in its `FabricAtlas`, and never in the
+digest. RDM never reads it. The
 [config update sequence](lifecycles/node-config-update.md) is a single call, not a Build. A
 node's first config is its create spec's, written to its row at the claim; a node recovered or
 replaced at a path.name inherits the config of the row it takes over, with its tags; a rejoining

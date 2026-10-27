@@ -10,7 +10,7 @@ carried in its first join; a later Build's different `config` is applied as this
 
 ## Numbered end-to-end sequence
 
-1. The caller sends `node.config.update` to the fabric-primary. It writes the map to the node in its `FabricAtlas` and sends the command to the node's mesh-primary (Forward `0x1A` when not directly reachable).
+1. The caller sends `node.config.update` to the fabric-primary. A node sends its own through the node-admin it joined through, and a node-admin's own goes in process to that admin; an admin that is not the fabric-primary carries it to the fabric-primary (Forward `0x1A` when not directly reachable) and carries the answer back. The fabric-primary writes the map to the node in its `FabricAtlas` and sends the command to the node's mesh-primary (Forward `0x1A` when not directly reachable).
 2. The mesh-primary writes the record.
 3. A live node is sent `ApplyNodeConfig`; it applies the map. The command
    completes after `Applied` or `AlreadyApplied`. A stopped node is sent nothing: the command completes after
