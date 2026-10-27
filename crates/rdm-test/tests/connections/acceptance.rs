@@ -193,7 +193,7 @@ fn rows<'a>(history: &'a [Value], to: &str, kind: &str) -> Vec<&'a Value> {
 
 /// `node.connections.delete { Connections(ids) }` of `node`'s exact birth through its mesh-primary.
 async fn connections_delete_ids(estate: &Estate, node: &str, ids: &[String]) -> rdm_core::status::StatusReply {
-    let mesh = estate.meshes_obj().await.nodes("mesh1", None).await.expect("mesh.nodes.get");
+    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]");
     let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
     let target = mesh.iter().find(|n| n.name.to_string() == node).cloned().unwrap_or_else(|| panic!("no {node} in mesh1"));
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(target.node_id.clone()), node_id: target.node_id.clone(), incarnation: target.incarnation_id.clone().expect("a live birth") };
@@ -614,9 +614,8 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     }
     let listed = |view: &rdm_core::views::ConnectionsView, to: &str| -> Vec<String> { view.connections.iter().filter(|c| c.destination == to && c.kind == "direct" && c.state == "connected").map(|c| c.id.clone()).collect() };
     let birth = exact_birth(&estate, SOURCE).await;
-    let nodes = estate.nodes_obj().await;
     let before = wait_for("both open connections are listed", Duration::from_secs(15), || async {
-        let v = nodes.connections_get(&birth).await.ok()?;
+        let v = estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.ok()?;
         (!listed(&v, CARRIER).is_empty() && !listed(&v, DEST).is_empty()).then_some(v)
     })
     .await;
@@ -634,7 +633,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     })
     .await;
     let after = wait_for("the closed connection leaves node.connections.get", Duration::from_secs(15), || async {
-        let v = nodes.connections_get(&birth).await.ok()?;
+        let v = estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.ok()?;
         (!listed(&v, CARRIER).contains(&to_carrier)).then_some(v)
     })
     .await;
@@ -648,7 +647,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     let carrier_client = estate.carrier().await;
     let empty = rdm_client::NodeRpc::new(carrier_client.client()).connections_delete(&primary, &rdm_transport::RouteChoice::Direct, &birth, &rdm_core::status::ConnectionScope::Connections(vec![]), &rdm_transport::CallOptions::default()).await.expect("answered");
     assert!(matches!(&empty, rdm_core::status::StatusReply::RejectedConnectionScope { reason } if reason.contains("at least one")), "an empty list is refused by name: {empty:?}");
-    assert!(listed(&nodes.connections_get(&birth).await.expect("node.connections.get"), DEST).contains(&to_dest), "the refused scope cut nothing");
+    assert!(listed(&estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.expect("connections.get"), DEST).contains(&to_dest), "the refused scope cut nothing");
     let source = estate.node_value(SOURCE).await;
     assert_eq!(s(&source["status"]), "ready-for-traffic", "a delete of named connections changes no status: {source}");
     estate.stop().await;
@@ -656,7 +655,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
 
 /// The mesh1 primary's node id.
 async fn mesh_primary(estate: &Estate) -> rdm_core::NodeId {
-    let mesh = estate.meshes_obj().await.nodes("mesh1", None).await.expect("mesh.nodes.get");
+    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]");
     mesh.iter().find(|n| n.is_primary).map(|n| n.node_id.clone()).expect("node.get names mesh1's primary")
 }
 
@@ -690,7 +689,7 @@ async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work
     let nodes = estate.nodes_obj().await;
     let open = |v: &rdm_core::views::ConnectionsView| -> Vec<(String, String, String)> { v.connections.iter().filter(|c| c.state == "connected").map(|c| (c.kind.clone(), c.destination.clone(), c.id.clone())).collect() };
     let before = wait_for("the Direct and the Proxy are listed open", Duration::from_secs(15), || async {
-        let o = open(&nodes.connections_get(&birth).await.ok()?);
+        let o = open(&estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.ok()?);
         (o.iter().any(|(k, d, _)| k == "direct" && d == CARRIER) && o.iter().any(|(k, d, _)| k == "proxy" && d == DEST)).then_some(o)
     })
     .await;
@@ -707,7 +706,7 @@ async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work
     })
     .await;
     // Status 0x1B still answers; the held projection has taken both drops.
-    let after = nodes.connections_get(&birth).await.expect("Status 0x1B still answers while connections are deleted");
+    let after = estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.expect("Status 0x1B still answers while connections are deleted");
     assert!(open(&after).is_empty(), "no connection is open once the drops landed: {after:?} (before: {before:?})");
     assert!(drops.iter().all(|r| r["source"]["name"] == SOURCE), "every drop under the source's name: {drops:?}");
     let refused = estate.probe(&["snapshot", "--target", &format!("path:{SOURCE}"), "--key", "x"]);

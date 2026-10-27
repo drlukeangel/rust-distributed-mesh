@@ -17,7 +17,7 @@
 
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_client::{BuildCarrier, BuildId, Change, Fabrics, LaunchKind, MeshDesired, Meshes, NodeStatus, Nodes, PathName};
+use rdm_client::{BuildCarrier, BuildId, Change, Fabrics, LaunchKind, MeshDesired, NodeStatus, Nodes, PathName};
 use rdm_test::estate::{bin_dir, Estate};
 use rdm_test::executables::{Current, Executables};
 use rdm_test::node::{app_protocol, echo_streams, APP_PROTOCOL, APP_PROTOCOL_KNOB};
@@ -92,7 +92,6 @@ struct Day0 {
     dialer: Dialer,
     carrier: BuildCarrier,
     nodes: Nodes,
-    meshes: Meshes,
     fabrics: Fabrics,
     _echo: tokio::task::JoinHandle<()>,
 }
@@ -113,7 +112,7 @@ async fn day0(dir: &Path) -> Day0 {
     let fabrics = Fabrics::new(carrier.clone());
     let day_zero = tokio::time::timeout(WRONG, async {
         loop {
-            if let Some(id) = fabrics.get().await.ok().and_then(|f| f.build_id) {
+            if let Some(id) = rdm_test::typed::the_fabric(&fabrics).await.ok().and_then(|f| f.build_id) {
                 return id;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -135,7 +134,7 @@ async fn day0(dir: &Path) -> Day0 {
     .await
     .unwrap_or_else(|_| panic!("the Day-0 admin never held the fabric-primary to stream its Day-0 Build {day_zero}"));
     Estate::until_complete(&mut stream).await;
-    Day0 { running, dialer, nodes: Nodes::new(carrier.clone()), meshes: Meshes::new(carrier.clone()), fabrics, carrier, _echo: echo }
+    Day0 { running, dialer, nodes: Nodes::new(carrier.clone()), fabrics, carrier, _echo: echo }
 }
 
 impl Day0 {
@@ -153,7 +152,7 @@ impl Day0 {
     async fn until_ready(&self, node: &PathName) {
         tokio::time::timeout(WRONG, async {
             loop {
-                let listed = self.meshes.nodes(&node.mesh, None).await.unwrap_or_else(|e| panic!("mesh.nodes.get of {}: {e}", node.mesh));
+                let listed = rdm_test::typed::mesh_nodes(&self.nodes, &node.mesh).await.unwrap_or_else(|e| panic!("nodes.get [mesh: {}]: {e}", node.mesh));
                 if listed.iter().any(|n| &n.name == node && n.status == NodeStatus::ReadyForTraffic) {
                     return;
                 }
@@ -169,7 +168,7 @@ impl Day0 {
     async fn until_fabric_ready(&self) {
         tokio::time::timeout(WRONG, async {
             loop {
-                if self.fabrics.get().await.is_ok_and(|f| f.status == rdm_client::ScopeStatus::ReadyForTraffic) {
+                if rdm_test::typed::the_fabric(&self.fabrics).await.is_ok_and(|f| f.status == rdm_client::ScopeStatus::ReadyForTraffic) {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;

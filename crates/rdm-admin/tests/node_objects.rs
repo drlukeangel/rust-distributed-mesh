@@ -1043,8 +1043,8 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
 
 /// CONTRACT: a `node.name.update` whose name is outside the name grammar (proposal
 /// node-properties-own-commands.md §9 A) is refused `RejectedName` by name before anything is sent,
-/// as are tags that are not a node's tag set and a `node.get` tag filter naming no label or a label
-/// that is not one (R-TG1). A `node.connections.delete` naming no connection is refused by name before
+/// as are tags that are not a node's tag set (R-TG1) and a read's filter its entity's schema refuses
+/// (Q167 R-RD2: an empty values list, a tag value that is not a label, a property the row has not). A `node.connections.delete` naming no connection is refused by name before
 /// anything is sent (R-CR3). Calls whose request no op carries say so by name.
 #[test]
 fn calls_no_op_carries_today_say_so_by_name() {
@@ -1061,18 +1061,19 @@ fn calls_no_op_carries_today_say_so_by_name() {
             let refused = nodes.name_update(&birth, &mp, &route, bad).await.expect("a typed refusal");
             assert!(matches!(&refused, rdm_core::status::StatusReply::RejectedName { reason } if reason.contains(says)), "{bad:?}: {refused:?}");
         }
-        // Labels that are not a node's tag set, and a tag filter no node can match, are refused here.
+        // Labels that are not a node's tag set, and a filter its entity's schema refuses (Q167), are refused here.
         let not_a_label = nodes.tags_create(&birth, &mp, &route, &["Rabbit".to_string()].into()).await.expect("a typed refusal");
         assert!(matches!(&not_a_label, rdm_core::status::StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "{not_a_label:?}");
-        for (filter, says) in [(rdm_client::TagFilter::All(Default::default()), "names no label"), (rdm_client::TagFilter::Any(["a/b".to_string()].into()), "a/b")] {
-            match rdm_client::Fabrics::new(served.carrier.clone()).nodes(Some(&filter)).await {
-                Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-tags" && detail.contains(says), "fabric.nodes.get {filter:?}: {reason}: {detail}"),
+        let filter = rdm_client::Filter::new;
+        for (filter, says) in [(filter().eq("tags", Vec::<String>::new()), "(tags, []) names no value"), (filter().eq("tags", ["a/b"]), "(tags, [a/b])"), (filter().eq("zone", ["eu-1"]), "(zone, [eu-1]) names no property")] {
+            match rdm_client::Nodes::new(served.carrier.clone()).get(&filter).await {
+                Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains(says), "nodes.get {filter:?}: {reason}: {detail}"),
                 other => panic!("{filter:?} is refused by name before anything is sent, not {other:?}"),
             }
-            match rdm_client::Meshes::new(served.carrier.clone()).nodes("mesh1", Some(&filter)).await {
-                Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-tags" && detail.contains(says), "mesh.nodes.get {filter:?}: {reason}: {detail}"),
-                other => panic!("{filter:?} is refused by name before anything is sent, not {other:?}"),
-            }
+        }
+        match rdm_client::Meshes::new(served.carrier.clone()).get(&filter().eq("tags", ["red"])).await {
+            Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("(tags, [red]) names no property of a mesh row"), "meshes.get: {reason}: {detail}"),
+            other => panic!("a mesh pair on a node property is refused by name before anything is sent, not {other:?}"),
         }
         // node.connections.delete naming no connection is refused by name, and nothing is sent.
         assert!(

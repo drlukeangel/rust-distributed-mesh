@@ -86,6 +86,8 @@ pub fn bounded_config_not_applied(node: &str, answered: &str, reason: &str) -> S
 pub fn bounded_blocked(node_id: NodeId, incarnation: IncarnationId, reason: &str, retry_on: RetryOn) -> StatusReply { StatusReply::blocked(node_id, incarnation, reason, retry_on) }
 /// Construct the bounded rejected-tags outcome.
 pub fn bounded_rejected_tags(reason: &str) -> StatusReply { StatusReply::rejected_tags(reason) }
+/// Construct the bounded rejected-filter outcome (Q167 R-RD2).
+pub fn bounded_rejected_filter(reason: &str) -> StatusReply { StatusReply::rejected_filter(reason) }
 /// Construct the bounded node-row-refused outcome.
 pub fn bounded_node_row_refused(node: &str, reason: &str) -> StatusReply { StatusReply::node_row_refused(node, reason) }
 /// Construct the bounded rejected-name outcome.

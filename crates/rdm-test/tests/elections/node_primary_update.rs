@@ -117,11 +117,11 @@ impl Caller {
 /// broke before its terminal ended, and, when the stream ended `FabricPrimaryMoved`, the Build followed on at
 /// the admin it named as soon as it is named.
 async fn replace_by_steps(estate: &Estate, entry: &rdm_client::PathName, p: &str) -> (String, tokio::task::JoinHandle<Followed>) {
-    use rdm_client::{Meshes, Nodes};
+    use rdm_client::Nodes;
     let peers = estate.peers().await;
-    let (nodes, meshes) = (Nodes::new(peers.carrier_at(entry.clone())), Meshes::new(peers.carrier_at(entry.clone())));
+    let nodes = Nodes::new(peers.carrier_at(entry.clone()));
     for mesh in ["mesh1", "mesh2"] {
-        if let Ok(held) = meshes.nodes(mesh, None).await {
+        if let Ok(held) = rdm_test::typed::mesh_nodes(&nodes, mesh).await {
             peers.learn_known(&held);
         }
     }
@@ -308,7 +308,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default()).await.expect("node.config.update answered");
     assert_eq!(reply, rdm_core::status::StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() }, "the fabric-primary sent it down and the node applied it");
     let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.name.to_string() == subject_name).unwrap_or_else(|| panic!("{subject_name} is answered"));
-    let at_once = read(estate.meshes_obj().await.nodes(other_mesh, None).await.expect("mesh.nodes.get at the fabric-primary"));
+    let at_once = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("nodes.get [mesh] at the fabric-primary"));
     assert_eq!(at_once.config, told, "the fabric-primary answers the config at once, from its atlas");
     // The fabric-primary's process is killed below: its evidence is read once its span reached it
     // (the exporter writes in batches), so the kill never decides what the cell can read.
@@ -335,7 +335,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
             (fabric_primary(&ns).as_deref() == Some(successor.as_str())).then_some(())
         })
         .await;
-    let after = read(estate.meshes_obj().await.nodes(other_mesh, None).await.expect("mesh.nodes.get at the new fabric-primary"));
+    let after = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("nodes.get [mesh] at the new fabric-primary"));
     estate.stop().await;
     assert_eq!(after.config, told, "the new fabric-primary answers the config from the atlas it filled at the hand-over");
 

@@ -12,8 +12,8 @@
 
 use rdm_core::{NodeKind, PathName};
 use rdm_client::{
-    birth_of_view, Accepted, BuildCarrier, BuildId, BuildReceipts, Builds, CallEnd, Change, ConnectionsView, ExactBirth, FabricDesired, FabricView, Fabrics,
-    MeshDesired, MeshNode, Meshes, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
+    birth_of_view, Accepted, BuildCarrier, BuildId, BuildReceipts, Builds, CallEnd, Change, Connections, ConnectionsView, ExactBirth, FabricDesired, FabricView, Fabrics,
+    Filter, MeshDesired, MeshNode, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
 };
 use rdm_core::binding::{sha256_file, Binding};
 use rdm_core::meta::{NodeSpec, PersistentDisposition, PlacementMeta, StorageMeta};
@@ -60,14 +60,14 @@ impl Admin {
         self
     }
 
-    /// The topology a request is built from: the current Build `fabric.get` names, and every live
-    /// path the rows hold (`fabric.nodes.get`) with the executable its row records.
+    /// The topology a request is built from: the current Build `fabrics.get` names, and every live
+    /// path the rows hold (`nodes.get`) with the executable its row records.
     async fn current(&self) -> Result<Current, CallEnd> {
         let fabric = self.fabric().await?;
         let unread = |reason: String| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason };
-        let based_on = fabric.build_id.as_deref().ok_or_else(|| unread("fabric.get names no current Build".into()))?;
-        let based_on = BuildId::parse(based_on).map_err(|e| unread(format!("fabric.get names {based_on}, not a Build id: {e}")))?;
-        let rows = Fabrics::new(self.carrier()).nodes(None).await?;
+        let based_on = fabric.build_id.as_deref().ok_or_else(|| unread("fabrics.get names no current Build".into()))?;
+        let based_on = BuildId::parse(based_on).map_err(|e| unread(format!("fabrics.get names {based_on}, not a Build id: {e}")))?;
+        let rows = self.rows().await?;
         let mut current = Current { based_on, paths: BTreeMap::new(), primaries: BTreeSet::new(), image: (fabric.provider == ProviderKind::Container).then(|| CONTAINER_IMAGE.to_string()) };
         for row in rows.into_iter().filter(|n| !n.name.old && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)) {
             if row.is_primary {
@@ -141,17 +141,17 @@ impl Admin {
         self.peers.carrier_at(self.entry.clone())
     }
 
-    /// `fabric.get` at the entry admin.
+    /// `fabrics.get` at the entry admin: the one fabric it holds.
     pub async fn fabric(&self) -> Result<FabricView, CallEnd> {
-        Fabrics::new(self.carrier()).get().await
+        Fabrics::new(self.carrier()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::NotFound, reason: format!("{} answered fabrics.get with no fabric", self.entry) })
     }
 
-    /// `mesh.nodes.get` of every mesh the entry admin's view holds.
+    /// `nodes.get [mesh: m]` of every mesh the entry admin's view holds.
     pub async fn nodes(&self) -> Result<Vec<NodeView>, CallEnd> {
-        let meshes = Meshes::new(self.carrier());
+        let nodes = Nodes::new(self.carrier());
         let mut out = Vec::new();
         for m in self.fabric().await?.meshes {
-            out.extend(meshes.nodes(&m.name, None).await?);
+            out.extend(nodes.get(&Filter::new().eq("mesh", [m.name.clone()])).await?);
         }
         for n in &out {
             if let Some(birth) = birth_of_view(n) {
@@ -161,16 +161,16 @@ impl Admin {
         Ok(out)
     }
 
-    /// `fabric.nodes.get`: every node's row, the executable it records included.
+    /// `nodes.get` with no pair: every node's row, the executable it records included.
     pub async fn rows(&self) -> Result<Vec<NodeView>, CallEnd> {
-        Fabrics::new(self.carrier()).nodes(None).await
+        Nodes::new(self.carrier()).get(&Filter::new()).await
     }
 
     /// Put `key` = `value` on the config of the entry admin's own row, beside what the row holds: one
     /// `node.config.update` to the fabric-primary for its exact birth (node-config-update.md step 1),
     /// admitted at any time (Q166).
     pub async fn put_own_config(&self, key: &str, value: &str) -> Result<rdm_core::status::StatusReply, String> {
-        let rows = self.rows().await.map_err(|e| format!("fabric.nodes.get: {e:?}"))?;
+        let rows = self.rows().await.map_err(|e| format!("nodes.get: {e:?}"))?;
         let own = rows.iter().find(|n| n.name == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds {}", self.entry))?;
         let primary = rows.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.is_fabric_primary).ok_or_else(|| "no row names the fabric-primary".to_string())?;
         let mut config = own.config.clone();
@@ -180,11 +180,11 @@ impl Admin {
         rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, config, &rdm_transport::CallOptions::default()).await.map_err(|e| format!("node.config.update: {e:?}"))
     }
 
-    /// `node.connections.get` of `n`'s exact birth.
+    /// `connections.get { node }` of `n`'s exact birth.
     pub async fn connections(&self, n: &NodeView) -> Option<Result<ConnectionsView, CallEnd>> {
         let incarnation = n.incarnation_id.clone()?;
         let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation };
-        Some(Nodes::new(self.carrier()).connections_get(&birth).await)
+        Some(Connections::new(self.carrier()).get(&birth, &Filter::new()).await)
     }
 
     /// `build.get` of `id`: its receipts.

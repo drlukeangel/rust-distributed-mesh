@@ -12,16 +12,17 @@ use iroh::SecretKey;
 use rdm_core::launch::Launch;
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_transport::{ServedBirth, ServerBuilder};
-use rdm_core::status::{NodeSelect, StatusRequest};
+use rdm_core::filter::{Entity, Filter};
+use rdm_core::status::StatusRequest;
 use rdm_test::proof_store::{self, FileProofStore};
 use std::sync::Arc;
 
 /// CONTRACT: a probe given `--admin-birth` of a node-admin that serves Node RPC only asks that admin
-/// `fabric.get`, then `node.get` for the one mesh the fabric lists, resolves its `exact:` target from
+/// `fabrics.get`, then `nodes.get [mesh: m]` for the one mesh the fabric lists, resolves its `exact:` target from
 /// the nodes it read and makes its proof call: one `Reply` executed by the target node. A node the view
 /// holds unborn (no endpoint, address or incarnation yet) is left out and refuses nothing. The probe's
 /// span file holds the `via-probe` root and, in its trace, the `rdm.node_admin.fabric.resolve.via-call` and
-/// `rdm.node_admin.mesh.resolve.via-nodes-call` reads, each ended `read`. What must NOT happen: a `Refused` line
+/// `rdm.node_admin.node.resolve.via-call` reads, each ended `read`. What must NOT happen: a `Refused` line
 /// (an argument the probe does not know, or a read it could not make), any request to the admin but
 /// those two reads, or a read outside the probe's trace.
 #[test]
@@ -79,7 +80,8 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("the probe printed no JSON ({e}): {stdout} / {stderr}"));
     assert_eq!((v["outcome"].as_str(), v["route"].as_str()), (Some("Reply"), Some("direct")), "the call reaches the target the admin's view names: {v}");
     assert_eq!(v["reply"]["executing_node"].as_str(), Some(target.as_str()), "the target node executed the call: {v}");
-    assert_eq!(*admin.seen.lock().unwrap(), vec![StatusRequest::GetFabric, StatusRequest::GetNodes { select: NodeSelect::Mesh("mesh1".into()) }], "the probe read the fabric, then the one mesh it lists, and nothing else");
+    let read = |entity, filter| StatusRequest::Get { entity, node: None, filter };
+    assert_eq!(*admin.seen.lock().unwrap(), vec![read(Entity::Fabrics, Filter::new()), read(Entity::Nodes, Filter::new().eq("mesh", ["mesh1"]))], "the probe read the fabric, then the one mesh it lists, and nothing else");
     let spans: Vec<serde_json::Value> = std::fs::read_dir(&evidence)
         .unwrap()
         .flatten()
@@ -88,11 +90,11 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
         .collect();
     let root = spans.iter().find(|s| s["name"] == "rdm.node_rpc.proof_store.resolve.via-probe").unwrap_or_else(|| panic!("the probe left no via-probe span: {spans:?}"));
     let trace = root["trace_id"].as_str().unwrap_or_default();
-    for read in ["rdm.node_admin.fabric.resolve.via-call", "rdm.node_admin.mesh.resolve.via-nodes-call"] {
+    for read in ["rdm.node_admin.fabric.resolve.via-call", "rdm.node_admin.node.resolve.via-call"] {
         let s = spans.iter().find(|s| s["name"] == read).unwrap_or_else(|| panic!("the probe left no {read} span: {spans:?}"));
         assert_eq!((s["trace_id"].as_str(), s["attributes"]["outcome"].as_str()), (Some(trace), Some("read")), "{read} is a read of the probe's own trace: {s}");
     }
-    std::fs::write(evidence.join("trace.txt"), format!("probe_entry_admin trace_id={trace} reads=fabric.get,mesh.nodes.get(mesh1) outcome={} executing_node={target}\n", v["outcome"])).unwrap();
+    std::fs::write(evidence.join("trace.txt"), format!("probe_entry_admin trace_id={trace} reads=fabrics.get,nodes.get[mesh:mesh1] outcome={} executing_node={target}\n", v["outcome"])).unwrap();
     rt.block_on(async {
         admin.shutdown().await;
         let _ = router.shutdown().await;

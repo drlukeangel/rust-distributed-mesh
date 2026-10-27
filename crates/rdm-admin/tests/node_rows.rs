@@ -1674,7 +1674,8 @@ fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() 
 ///    marked inherited and whose labels leave the active tags index).
 #[test]
 fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_through_create_get_stop_start_recovery_and_replace() {
-    use rdm_core::status::{NodeSelect, StatusReply};
+    use rdm_core::filter::Filter;
+    use rdm_core::status::StatusReply;
     let cap = capture();
     cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -1712,7 +1713,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         install(&mp.records, &mp.view, move |v| v.nodes.push(north_for_view)).await;
 
         // 2. Get: `nodes_answer` round-trips `name`, `path` and `node_type`.
-        let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &atlas, &NodeSelect::Id(north.node_id.clone())).await else {
+        let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &atlas, &Filter::new().eq("id", [north.node_id.to_string()])).await else {
             panic!("expected StatusReply::Nodes");
         };
         assert_eq!(nodes.len(), 1);
@@ -1730,7 +1731,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
             n.routable = false;
         })
         .await;
-        let StatusReply::Nodes { nodes: stopped } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &atlas, &NodeSelect::Id(north.node_id.clone())).await else {
+        let StatusReply::Nodes { nodes: stopped } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &atlas, &Filter::new().eq("id", [north.node_id.to_string()])).await else {
             panic!("expected StatusReply::Nodes");
         };
         assert!(stopped[0].stopped);
@@ -1744,7 +1745,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
             n.routable = true;
         })
         .await;
-        let StatusReply::Nodes { nodes: started } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &atlas, &NodeSelect::Id(north.node_id.clone())).await else {
+        let StatusReply::Nodes { nodes: started } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &atlas, &Filter::new().eq("id", [north.node_id.to_string()])).await else {
             panic!("expected StatusReply::Nodes");
         };
         assert!(!started[0].stopped);
@@ -1816,7 +1817,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         })
         .await;
 
-        let StatusReply::Nodes { nodes: mesh_nodes } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &atlas, &NodeSelect::Mesh("mesh1".into())).await else {
+        let StatusReply::Nodes { nodes: mesh_nodes } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &atlas, &Filter::new().eq("mesh", ["mesh1"])).await else {
             panic!("expected StatusReply::Nodes");
         };
         let active = mesh_nodes.iter().find(|n| n.name == north_key).expect("active successor at mesh1.broker.north");

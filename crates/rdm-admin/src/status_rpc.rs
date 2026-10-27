@@ -643,7 +643,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } => {
+        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } => {
             (crate::node_self::request_not_handled(&me_name.to_string(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -1095,34 +1095,14 @@ impl StatusAuthority {
                     None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet; {} is refused", req.op())),
                 };
             }
-            // The reads: answered from what this admin holds, changing nothing.
-            StatusRequest::GetNodes { select } => {
-                // Answered from this admin's atlas, never the node store (Q203).
-                let Some(atlas) = self.atlas.get() else {
-                    return rdm_core::reply::status::not_ready(format!("{me_name} holds no fabric atlas yet; {} is refused", req.op()));
-                };
-                return match self.loads.as_ref() {
-                    Some(loads) => {
-                        let planned = match self.fabric_states.get() {
-                            Some(fabric_states) => fabric_states.planned_paths().await,
-                            None => Err(format!("{me_name} holds no checklists yet: the current Build is not read")),
-                        };
-                        {
-                            let mut answer = crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, atlas, &planned, select).await;
-                            if let (Some(channels), StatusReply::Nodes { nodes }) = (&self.app_channels, &mut answer) {
-                                for n in nodes {
-                                    let sets = if n.node_id == self.node_id {
-                                        Some((channels.app_types(), channels.held_types()))
-                                    } else {
-                                        n.incarnation_id.as_ref().and_then(|inc| channels.member_app_types(&n.node_id, inc))
-                                    };
-                                    if let Some((types, held)) = sets { n.types = types; n.held = held; n.held_hash = rdm_core::app_types::hash(&n.held); }
-                                }
-                            }
-                            StatusReply::within_reply_bound(answer, select.read())
-                        }
-                    }
-                    None => rdm_core::reply::status::not_ready(format!("{me_name} reads no digest view; {} is refused", req.op())),
+            // The reads (Q167): answered from what this admin holds, changing nothing.
+            StatusRequest::Get { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
+                let read = req.as_read().expect("a read request is a read");
+                let answer = self.read(&me_name, &view, &read).await;
+                // A retained read variant answers as it always did: `GetFabric` its one fabric.
+                return match (req, answer) {
+                    (StatusRequest::GetFabric, StatusReply::Fabrics { mut fabrics }) if !fabrics.is_empty() => StatusReply::Fabric { fabric: fabrics.remove(0) },
+                    (_, answer) => answer,
                 };
             }
             StatusRequest::GetAtlas => {
@@ -1140,34 +1120,6 @@ impl StatusAuthority {
                     Err(e) => rdm_core::reply::status::bounded_source_failed("nodes.storage", req.op(), &e),
                 };
             }
-            StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric => {
-                if self.loads.is_none() {
-                    return rdm_core::reply::status::not_ready(format!("{me_name} reads no digest view; {} is refused", req.op()));
-                }
-                if matches!(req, StatusRequest::GetFabric) {
-                    // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
-                    // a read that fails is named, never answered as no Build.
-                    // Its topology_storage_provider and the providers it left are the Fabric row's (storage.md §2),
-                    // read from fabric.storage: a read that fails is named, never answered as none.
-                    let record = match self.fabric_storage.fabric().await {
-                        Ok(r) => r,
-                        Err(e) => return rdm_core::reply::status::bounded_source_failed("fabric.storage", "fabric.get", &format!("{me_name} could not read the Fabric record: {e}")),
-                    };
-                    return match self.builds.current_build().await {
-                        Ok(current) => {
-                            let mut reply = crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.nodes_storage, self.certs.as_ref().and_then(|c| c.now_ms())).await;
-                            if let (StatusReply::Fabric { fabric }, Some(r)) = (&mut reply, record) {
-                                fabric.topology_storage_provider = r.topology_storage_provider;
-                                fabric.previous_topology_storage_providers = r.previous_topology_storage_providers;
-                            }
-                            reply
-                        }
-                        Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", "fabric.get", &format!("{me_name} could not read its current Build: {e}")),
-                    };
-                }
-                return crate::views::view_answer(&me_name, &view, req).unwrap_or_else(|| rdm_core::reply::status::not_ready(format!("{me_name} answers no {} from its view", req.op())));
-            }
-            StatusRequest::GetConnections { incarnation, .. } => return self.read_connections(&view, incarnation).await,
             StatusRequest::RenewCert { incarnation, cert, .. } => return self.renew_own_cert(&view, incarnation, cert).await,
             StatusRequest::UpdateIssuer { incarnation, key, cert, .. } => {
                 let from = sender.as_ref().map(|n| n.name.to_string()).or_else(|| peer.map(|k| k.fmt_short().to_string())).unwrap_or_default();
@@ -1315,10 +1267,85 @@ impl StatusAuthority {
         }
     }
 
-    /// `node.connections.get` of this admin's exact birth: the connections it holds, under the name
-    /// it holds. The birth the call reached answers it (R-RX5: no receiver refuses a call for the
-    /// node id it names); another incarnation is refused naming the one held.
-    async fn read_connections(&self, view: &Topology, incarnation: &IncarnationId) -> StatusReply {
+    /// A read (Q167, R-RD1 to R-RD3) answered from what this admin holds: `nodes.get` from its atlas,
+    /// `meshes.get` from its view, `fabrics.get` from its view and its fabric and builds records, and
+    /// `connections.get { node }` of its own exact birth. The node is `connections.get`'s address and
+    /// no other read's: a read without it, or another read with it, is `RejectedFilter`.
+    async fn read(&self, me_name: &crate::model::PathName, view: &Topology, read: &rdm_core::status::Read) -> StatusReply {
+        use rdm_core::filter::Entity;
+        let op = read.entity.read();
+        match (read.entity, &read.node) {
+            (Entity::Connections, None) => return rdm_core::reply::status::bounded_rejected_filter(&format!("{op} names no node: the exact birth (id, incarnation) is the read's address")),
+            (Entity::Connections, Some(_)) => {}
+            (_, Some((node_id, _))) => return rdm_core::reply::status::bounded_rejected_filter(&format!("{op} names the node {node_id}: only connections.get takes a node; a {op} pair names one (id)")),
+            (_, None) => {}
+        }
+        match read.entity {
+            Entity::Connections => {
+                let Some((_, incarnation)) = &read.node else { unreachable!("checked above") };
+                self.read_connections(view, incarnation, &read.filter).await
+            }
+            Entity::Nodes => {
+                // Answered from this admin's atlas, never the node store (Q203).
+                let Some(atlas) = self.atlas.get() else {
+                    return rdm_core::reply::status::not_ready(format!("{me_name} holds no fabric atlas yet; {op} is refused"));
+                };
+                let Some(loads) = self.loads.as_ref() else {
+                    return rdm_core::reply::status::not_ready(format!("{me_name} reads no digest view; {op} is refused"));
+                };
+                let planned = match self.fabric_states.get() {
+                    Some(fabric_states) => fabric_states.planned_paths().await,
+                    None => Err(format!("{me_name} holds no checklists yet: the current Build is not read")),
+                };
+                // The app types this admin's own channels hold, on each row before it is matched.
+                let amend = |n: &mut rdm_core::views::NodeView| {
+                    let Some(channels) = &self.app_channels else { return };
+                    let sets = if n.node_id == self.node_id {
+                        Some((channels.app_types(), channels.held_types()))
+                    } else {
+                        n.incarnation_id.as_ref().and_then(|inc| channels.member_app_types(&n.node_id, inc))
+                    };
+                    if let Some((types, held)) = sets {
+                        n.types = types;
+                        n.held = held;
+                        n.held_hash = rdm_core::app_types::hash(&n.held);
+                    }
+                };
+                crate::views::nodes_answer_with_status(me_name, view, loads, atlas, &planned, &read.filter, &amend).await
+            }
+            Entity::Meshes => {
+                if self.loads.is_none() {
+                    return rdm_core::reply::status::not_ready(format!("{me_name} reads no digest view; {op} is refused"));
+                }
+                crate::views::meshes_answer(me_name, view, &read.filter)
+            }
+            Entity::Fabrics => {
+                if self.loads.is_none() {
+                    return rdm_core::reply::status::not_ready(format!("{me_name} reads no digest view; {op} is refused"));
+                }
+                // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
+                // a read that fails is named, never answered as no Build.
+                // Its topology_storage_provider and the providers it left are the Fabric row's (storage.md §2),
+                // read from fabric.storage: a read that fails is named, never answered as none.
+                let record = match self.fabric_storage.fabric().await {
+                    Ok(r) => r,
+                    Err(e) => return rdm_core::reply::status::bounded_source_failed("fabric.storage", op, &format!("{me_name} could not read the Fabric record: {e}")),
+                };
+                match self.builds.current_build().await {
+                    Ok(current) => {
+                        let record = record.map(|r| (r.topology_storage_provider, r.previous_topology_storage_providers));
+                        crate::views::fabric_answer_with_status(me_name, view, current.into_build_id().map(|b| b.to_string()), &*self.nodes_storage, self.certs.as_ref().and_then(|c| c.now_ms()), record, &read.filter).await
+                    }
+                    Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", op, &format!("{me_name} could not read its current Build: {e}")),
+                }
+            }
+        }
+    }
+
+    /// `connections.get { node }` of this admin's exact birth: the connections it holds that match
+    /// `filter`, under the name it holds. The birth the call reached answers it (R-RX5: no receiver
+    /// refuses a call for the node id it names); another incarnation is refused naming the one held.
+    async fn read_connections(&self, view: &Topology, incarnation: &IncarnationId, filter: &rdm_core::filter::Filter) -> StatusReply {
         let Some(me) = view.own(&self.node_id) else {
             return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "a view holding this admin".into() });
         };
@@ -1328,8 +1355,8 @@ impl StatusAuthority {
             Some(_) => {}
         }
         match self.own.get() {
-            Some(own) => own.connections_get().await,
-            None => rdm_core::reply::status::not_ready(format!("{} is still starting: it holds no connections writer yet, so node.connections.get is refused", me.name)),
+            Some(own) => own.connections_get(filter).await,
+            None => rdm_core::reply::status::not_ready(format!("{} is still starting: it holds no connections writer yet, so connections.get is refused", me.name)),
         }
     }
 }
@@ -3176,7 +3203,7 @@ mod tests {
 
     /// CONTRACT (R24, Luke Q11: "the same variant at every Status door that can lack a handler for a
     /// request it receives"): the node-admin's declaration decision has no handler for a request its
-    /// door answers before the decision (here `fabric.get`). It answers `RequestNotHandled` naming the
+    /// door answers before the decision (here `fabrics.get`). It answers `RequestNotHandled` naming the
     /// request, decided by dispatch alone, on the reject span `rdm.node.status.reject.via-request-not-handled`
     /// naming the request and the admin, and changes nothing. Must NOT happen: an authority refusal or
     /// `NotReady` for a request it has no handler for.
@@ -3195,10 +3222,10 @@ mod tests {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             decide(&mesh_primary_of(&me, view.clone()), &view, &Declared::default(), &StatusRequest::GetFabric)
         };
-        assert_eq!(reply, R::RequestNotHandled { request: "fabric.get".into() });
+        assert_eq!(reply, R::RequestNotHandled { request: "fabrics.get".into() });
         assert!(effect.is_none(), "{effect:?}");
         let rejected: Vec<(String, String)> = capture.named("rdm.node.status.reject.via-request-not-handled").into_iter().map(|s| (s.attributes["request"].clone(), s.attributes["node"].clone())).collect();
-        assert_eq!(rejected, vec![("fabric.get".to_string(), "mesh1.admin.1".to_string())], "the reject span names the request and the admin");
+        assert_eq!(rejected, vec![("fabrics.get".to_string(), "mesh1.admin.1".to_string())], "the reject span names the request and the admin");
     }
 
     /// CONTRACT (node-identity-and-state.md 4.3: "Once a node-admin is created in a mesh it is that

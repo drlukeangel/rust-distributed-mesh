@@ -283,7 +283,7 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
     }
     Estate::workflow(&format!("the predecessor's half of the replace of {node}"), estate.nodes_obj().await.steps(rdm_test::steps::predecessor_steps(&node)).await).await;
     // No wait: the read goes out on the Build's Complete.
-    let listed = estate.meshes_obj().await.nodes(&node.mesh, None).await.expect("mesh.nodes.get at the fabric-primary");
+    let listed = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&node.mesh])).await.expect("nodes.get [mesh] at the fabric-primary");
     let read = atlas(&estate, "R-FA2: fabrics.atlas.get on the Build's Complete").await;
     for d in &mesh2_doors {
         d.release("atlas:no-gossip").await;

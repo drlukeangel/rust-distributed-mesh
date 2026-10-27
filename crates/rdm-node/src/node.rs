@@ -1622,8 +1622,20 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let name = me.topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.name.to_string()).unwrap_or_default();
                 return Ok(crate::node_self::refuse_node_left(&me.topology_view.held_name(&me.digest.node.name).to_string(), &name, &sender_name, &req));
             }
-            let incarnation = match &req {
-                StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::GetConnections { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } => incarnation,
+            // A read (Q167): `connections.get { node }` is this birth's; every other entity is a
+            // node-admin's, not handled here.
+            let read = req.as_read();
+            if let Some(r) = &read {
+                if r.entity != rdm_core::filter::Entity::Connections {
+                    return Ok(crate::node_self::request_not_handled(&me.topology_view.held_name(&me.digest.node.name).to_string(), &req));
+                }
+                if r.node.is_none() {
+                    return Ok(rdm_core::reply::status::bounded_rejected_filter("connections.get names no node: the exact birth (id, incarnation) is the read's address"));
+                }
+            }
+            let incarnation = match (&req, &read) {
+                (_, Some(rdm_core::status::Read { node: Some((_, incarnation)), .. })) => incarnation,
+                (StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. }, _) => incarnation,
                 // No handler on this door for the request: not handled here (R24), decided by dispatch alone.
                 _ => return Ok(crate::node_self::request_not_handled(&me.topology_view.held_name(&me.digest.node.name).to_string(), &req)),
             };
@@ -1633,9 +1645,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             if *incarnation != me.digest.node.incarnation {
                 return Ok(rdm_core::reply::stale(me.digest.node.incarnation.clone()));
             }
+            if let Some(r) = read {
+                // connections.get { node }: what this birth holds, under the name it holds; a read.
+                return Ok(me.own.connections_get(&r.filter).await);
+            }
             match req {
-                // node.connections.get: what this birth holds, under the name it holds; a read.
-                StatusRequest::GetConnections { .. } => Ok(me.own.connections_get().await),
                 // node.cert.renew: its issuing authority installs a fresh member cert on this birth.
                 StatusRequest::RenewCert { cert, .. } => Ok(me.own.renew_cert(&cert)),
                 StatusRequest::ProbeNodeState { .. } => {

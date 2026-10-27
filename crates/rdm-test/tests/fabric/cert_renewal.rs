@@ -19,7 +19,8 @@ use rdm_core::certs::{self, SignedCert};
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::status::{NodeSelect, Status, StatusReply, StatusRequest};
+use rdm_core::filter::{Entity, Filter};
+use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rdm_core::views::{FabricView, NodeCertView, NodeStatus, NodeView, Renewals};
 use rdm_core::{IncarnationId, NodeId};
 use rdm_node::node::RunningNode;
@@ -170,18 +171,18 @@ fn signed(bytes: &[u8]) -> SignedCert {
     certs::cert_from_bytes(bytes).expect("a signed member cert")
 }
 
-/// `node.get` of `node` on `admin`'s Status authority.
+/// `nodes.get [id: node]` on `admin`'s Status authority.
 async fn node_get(admin: &Running, node: &NodeId) -> Option<NodeView> {
-    match admin.status_authority()?.apply(None, &StatusRequest::GetNodes { select: NodeSelect::Id(node.clone()) }).await {
+    match admin.status_authority()?.apply(None, &StatusRequest::Get { entity: Entity::Nodes, node: None, filter: Filter::new().eq("id", [node.to_string()]) }).await {
         StatusReply::Nodes { mut nodes } => nodes.pop(),
         _ => None,
     }
 }
 
-/// `fabric.get` on `admin`'s Status authority.
+/// `fabrics.get` on `admin`'s Status authority.
 async fn fabric_get(admin: &Running) -> Option<FabricView> {
-    match admin.status_authority()?.apply(None, &StatusRequest::GetFabric).await {
-        StatusReply::Fabric { fabric } => Some(fabric),
+    match admin.status_authority()?.apply(None, &StatusRequest::Get { entity: Entity::Fabrics, node: None, filter: Filter::new() }).await {
+        StatusReply::Fabrics { mut fabrics } => fabrics.pop(),
         _ => None,
     }
 }
@@ -401,7 +402,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         // lands, and the renewal is compared against that.
         let opened_id = conn.id().to_string();
         let held_before = until("node.connections.get of mesh1.rpc.1 holds the open connection before the renewal", BOUND, async || {
-            let held = call(&root, &a, &StatusRequest::GetConnections { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() }).await;
+            let held = call(&root, &a, &StatusRequest::Get { entity: Entity::Connections, node: Some((a.digest.node.node_id.clone(), a.digest.node.incarnation.clone())), filter: Filter::new() }).await;
             matches!(&held, Ok(StatusReply::Connections { connections }) if connections.connections.iter().any(|c| c.id == opened_id)).then_some(held)
         })
         .await;
@@ -422,7 +423,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         assert_eq!(connection_spans(&spans), before, "no connection was closed, refused or opened by the renewal");
         echo(b"after").await;
         assert_eq!(conn.id(), server.id(), "the same connection carries the stream after the install");
-        let held_after = bounded("node.connections.get of mesh1.rpc.1 after the renewal", call(&root, &a, &StatusRequest::GetConnections { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() })).await;
+        let held_after = bounded("connections.get of mesh1.rpc.1 after the renewal", call(&root, &a, &StatusRequest::Get { entity: Entity::Connections, node: Some((a.digest.node.node_id.clone(), a.digest.node.incarnation.clone())), filter: Filter::new() })).await;
         assert_eq!(held_after, held_before, "what the node holds is unchanged");
         let view_after = bounded("node.get of mesh1.rpc.1 after the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.rpc.1 in the view");
         assert_eq!(

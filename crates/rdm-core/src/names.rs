@@ -9,13 +9,13 @@
 /// A call on the `node` op family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeOp {
-    /// `node.get`: by id, by mesh, or by tags.
+    /// `nodes.get`: the node rows matching a filter (Q167).
     Get,
     /// `node.name.update`: the node's rename, the name only (proposal node-properties-own-commands.md §2).
     NameUpdate,
     /// `node.topology.get`: the node's held topology.
     TopologyGet,
-    /// `node.connections.get`.
+    /// `connections.get { node }`: the exact birth's own connections (Q167).
     ConnectionsGet,
     /// `node.connections.delete`: a hard cut.
     ConnectionsDelete,
@@ -47,10 +47,10 @@ impl NodeOp {
     /// The canonical name of the call.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Get => "node.get",
+            Self::Get => "nodes.get",
             Self::NameUpdate => "node.name.update",
             Self::TopologyGet => "node.topology.get",
-            Self::ConnectionsGet => "node.connections.get",
+            Self::ConnectionsGet => "connections.get",
             Self::ConnectionsDelete => "node.connections.delete",
             Self::ConfigGet => "node.config.get",
             Self::ConfigUpdate => "node.config.update",
@@ -75,10 +75,10 @@ impl NodeOp {
     /// the two that change a node's status). Every op is spelled out so the name stays a literal.
     pub fn span(self) -> tracing::Span {
         match self {
-            Self::Get => tracing::info_span!("rdm.node_admin.node.resolve.via-call", op = "node.get", outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.node.resolve.via-call", op = "nodes.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
             Self::NameUpdate => tracing::info_span!("rdm.node_admin.name.update.via-call", op = "node.name.update", outcome = tracing::field::Empty),
             Self::TopologyGet => tracing::info_span!("rdm.node_admin.topology.resolve.via-call", op = "node.topology.get", outcome = tracing::field::Empty),
-            Self::ConnectionsGet => tracing::info_span!("rdm.node_admin.connection.resolve.via-call", op = "node.connections.get", outcome = tracing::field::Empty),
+            Self::ConnectionsGet => tracing::info_span!("rdm.node_admin.connection.resolve.via-call", op = "connections.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
             Self::ConnectionsDelete => tracing::info_span!("rdm.node_admin.connection.delete.via-call", op = "node.connections.delete", outcome = tracing::field::Empty),
             Self::ConfigGet => tracing::info_span!("rdm.node_admin.config.resolve.via-call", op = "node.config.get", outcome = tracing::field::Empty),
             Self::ConfigUpdate => tracing::info_span!("rdm.node_admin.config.update.via-call", op = "node.config.update", outcome = tracing::field::Empty),
@@ -97,26 +97,22 @@ impl NodeOp {
 /// A call on the `mesh` op family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MeshOp {
-    /// `mesh.get { name }`: one mesh (Q165).
+    /// `meshes.get`: the meshes matching a filter (Q167).
     Get,
-    /// `mesh.nodes.get { tags? }`: every node of one mesh, with an optional tag filter (Q165).
-    NodesGet,
 }
 
 impl MeshOp {
     /// The canonical name of the call.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Get => "mesh.get",
-            Self::NodesGet => "mesh.nodes.get",
+            Self::Get => "meshes.get",
         }
     }
 
     /// The span of one call: `rdm.node_admin.mesh.resolve.via-…call`.
     pub fn span(self) -> tracing::Span {
         match self {
-            Self::Get => tracing::info_span!("rdm.node_admin.mesh.resolve.via-call", op = "mesh.get", outcome = tracing::field::Empty),
-            Self::NodesGet => tracing::info_span!("rdm.node_admin.mesh.resolve.via-nodes-call", op = "mesh.nodes.get", outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.mesh.resolve.via-call", op = "meshes.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
         }
     }
 }
@@ -124,13 +120,8 @@ impl MeshOp {
 /// A call on the `fabric` op family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FabricOp {
-    /// `fabric.get`: the fabric as the answering admin holds it.
+    /// `fabrics.get`: the fabric the answering admin holds, when it matches a filter (Q167).
     Get,
-    /// `fabric.nodes.get { tags? }`: every node of every mesh, from the rows, with an optional tag
-    /// filter (Q165).
-    NodesGet,
-    /// `fabric.meshes.get`: every mesh of the fabric (Q165).
-    MeshesGet,
     /// `fabrics.atlas.get`: the fabric-primary's atlas (fabric-atlas.md R-FA4).
     AtlasGet,
 }
@@ -139,9 +130,7 @@ impl FabricOp {
     /// The canonical name of the call.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Get => "fabric.get",
-            Self::NodesGet => "fabric.nodes.get",
-            Self::MeshesGet => "fabric.meshes.get",
+            Self::Get => "fabrics.get",
             Self::AtlasGet => "fabrics.atlas.get",
         }
     }
@@ -149,9 +138,7 @@ impl FabricOp {
     /// The span of one call: `rdm.node_admin.fabric.resolve.via-…call`.
     pub fn span(self) -> tracing::Span {
         match self {
-            Self::Get => tracing::info_span!("rdm.node_admin.fabric.resolve.via-call", op = "fabric.get", outcome = tracing::field::Empty),
-            Self::NodesGet => tracing::info_span!("rdm.node_admin.fabric.resolve.via-nodes-call", op = "fabric.nodes.get", outcome = tracing::field::Empty),
-            Self::MeshesGet => tracing::info_span!("rdm.node_admin.fabric.resolve.via-meshes-call", op = "fabric.meshes.get", outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.fabric.resolve.via-call", op = "fabrics.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
             Self::AtlasGet => tracing::info_span!("rdm.node_admin.fabric.resolve.via-atlas-call", op = "fabrics.atlas.get", outcome = tracing::field::Empty),
         }
     }

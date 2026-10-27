@@ -2,7 +2,7 @@
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::node_hooks::{HookOutcome, PreNodeReady, NodeReadyCtx, NodeHooks};
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_core::status::{NodeSelect, StatusReply, StatusRequest};
+use rdm_core::status::{StatusReply, StatusRequest};
 use rdm_core::{IncarnationId, NodeId};
 use std::{
     collections::BTreeSet,
@@ -67,8 +67,10 @@ async fn own_view(r: &Running) -> rdm_core::views::NodeView {
                 .unwrap()
                 .apply(
                     None,
-                    &StatusRequest::GetNodes {
-                        select: NodeSelect::Id(r.birth().node_id.clone()),
+                    &StatusRequest::Get {
+                        entity: rdm_core::filter::Entity::Nodes,
+                        node: None,
+                        filter: rdm_core::filter::Filter::new().eq("id", [r.birth().node_id.to_string()]),
                     },
                 )
                 .await;

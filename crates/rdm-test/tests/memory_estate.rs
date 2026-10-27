@@ -10,7 +10,7 @@
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::storage_backend::MemoryBackend;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_client::{BuildCarrier, BuildId, Builds, Fabrics, LaunchKind, Meshes, NodeStatus, Nodes, PathName, ScopeStatus};
+use rdm_client::{BuildCarrier, BuildId, Builds, Fabrics, LaunchKind, NodeStatus, Nodes, PathName, ScopeStatus};
 use rdm_test::executables::{Current, Executables};
 use rdm_core::build::BuildPhase;
 use rdm_test::estate::{bin_dir, named, Estate};
@@ -93,10 +93,10 @@ fn spans_in(dir: &Path) -> Vec<Value> {
 }
 
 /// `node`'s status as the admin's `mesh.nodes.get` of mesh1 lists it, once it is `want`.
-async fn until_status(meshes: &Meshes, node: &PathName, want: NodeStatus) {
+async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
     tokio::time::timeout(WRONG, async {
         loop {
-            let listed = meshes.nodes(&node.mesh, None).await.unwrap_or_else(|e| panic!("mesh.nodes.get of {}: {e}", node.mesh));
+            let listed = rdm_test::typed::mesh_nodes(nodes, &node.mesh).await.unwrap_or_else(|e| panic!("nodes.get [mesh: {}]: {e}", node.mesh));
             if listed.iter().any(|n| &n.name == node && n.status == want) {
                 return;
             }
@@ -115,7 +115,7 @@ async fn until_status(meshes: &Meshes, node: &PathName, want: NodeStatus) {
 async fn until_fabric_ready(fabrics: &Fabrics) {
     tokio::time::timeout(WRONG, async {
         loop {
-            if fabrics.get().await.unwrap_or_else(|e| panic!("fabric.get: {e}")).status == ScopeStatus::ReadyForTraffic {
+            if rdm_test::typed::the_fabric(fabrics).await.unwrap_or_else(|e| panic!("fabrics.get: {e}")).status == ScopeStatus::ReadyForTraffic {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -171,11 +171,11 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         resolver.insert(admin);
         let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm"));
         let carrier = BuildCarrier::new(client, me.node.name.clone());
-        let (nodes, meshes, builds, fabrics) = (Nodes::new(carrier.clone()), Meshes::new(carrier.clone()), Builds::new(carrier.clone()), Fabrics::new(carrier.clone()));
+        let (nodes, builds, fabrics) = (Nodes::new(carrier.clone()), Builds::new(carrier.clone()), Fabrics::new(carrier.clone()));
         let node: PathName = NODE.parse().unwrap();
         // The admin started its Day-0 Build by starting: it is followed to its end before anything is
         // submitted, as an estate's is.
-        let day_zero = fabrics.get().await.unwrap_or_else(|e| panic!("fabric.get: {e}")).build_id.expect("the Day-0 admin holds its Day-0 Build as the current one");
+        let day_zero = rdm_test::typed::the_fabric(&fabrics).await.unwrap_or_else(|e| panic!("fabrics.get: {e}")).build_id.expect("the Day-0 admin holds its Day-0 Build as the current one");
         let day_zero = BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names {day_zero}, not a Build id: {e}"));
         Estate::until_complete(&mut carrier.resubmit(&day_zero, 1).await.unwrap_or_else(|e| panic!("the admin does not stream its Day-0 Build {day_zero}: {e}"))).await;
 
@@ -189,11 +189,11 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         };
         let (based_on, request) = one_more().await;
         let created = Estate::workflow("node.create of an rpc node in mesh1", nodes.create_named(based_on, request).await).await;
-        until_status(&meshes, &node, NodeStatus::ReadyForTraffic).await;
+        until_status(&nodes, &node, NodeStatus::ReadyForTraffic).await;
         // A stop moves the stopped node's cohort seat to a secondary of its type: a second rpc node.
         let (based_on, request) = one_more().await;
         Estate::workflow("node.create of a second rpc node in mesh1", nodes.create_named(based_on, request).await).await;
-        until_status(&meshes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::ReadyForTraffic).await;
+        until_status(&nodes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::ReadyForTraffic).await;
         until_fabric_ready(&fabrics).await;
         // A Reconcile that changes mesh1.rpc.1's config alone: the Build's `node.config.update` reads the
         // entry in the accepted Build the admin's own log holds, and the node carries it.
@@ -208,7 +208,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         let mut stream = carrier.create(rdm_core::build::BuildChange::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes: request.collect() }).await.unwrap_or_else(|e| panic!("build.create of the config-only Reconcile: {e}"));
         Estate::until_complete(&mut stream).await;
         tokio::time::timeout(WRONG, async {
-            while !meshes.nodes(&node.mesh, None).await.unwrap_or_else(|e| panic!("mesh.nodes.get: {e}")).iter().any(|n| n.name == node && n.config == zone) {
+            while !rdm_test::typed::mesh_nodes(&nodes, &node.mesh).await.unwrap_or_else(|e| panic!("nodes.get [mesh]: {e}")).iter().any(|n| n.name == node && n.config == zone) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
@@ -216,7 +216,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         .unwrap_or_else(|_| panic!("{node} never carried the config its entry names"));
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
-        until_status(&meshes, &node, NodeStatus::ReadyForTraffic).await;
+        until_status(&nodes, &node, NodeStatus::ReadyForTraffic).await;
         let receipts = builds.get(&created.build_id).await.unwrap_or_else(|e| panic!("build.get of the create's Build {}: {e}", created.build_id));
         assert_eq!(receipts.phase, BuildPhase::Complete, "the create's Build is Complete: {receipts:#?}");
         assert!(!receipts.steps.is_empty(), "build.get answers the create's step receipts: {receipts:#?}");

@@ -12,7 +12,7 @@ pub use build_stream::{follow_with, BuildCarrier, BuildFrame, BuildReceipts, Bui
 pub use calls::{CallEnd, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
 pub use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
-    await_fact, Builds, Fabrics, Meshes, NameHeld, Nodes, TagFilter,
+    await_fact, Builds, Connections, Fabrics, Meshes, NameHeld, Nodes,
 };
 pub use peers::{birth_of_line, birth_of_view, client_bind_for, Peers, BIRTH_LINE};
 /// A node's birth, as a node-admin prints it at start ([`BIRTH_LINE`]).
@@ -20,6 +20,8 @@ pub use rdm_core::MeshNode;
 pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
 
 /// What the reads answer: the views travel on op `0x1B` and the control API answers the same shapes.
+/// A read's filter (Q167): `(property, values)` pairs, AND across pairs, any-of within.
+pub use rdm_core::filter::{Entity, Filter};
 pub use rdm_core::views::{AtlasNodeView, AtlasView, ConnectionView, ConnectionsView, DataDirLost, DataDirUnreadable, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 /// Executable bindings: what each created path's config names (build-deployment.md), and a
 /// consumer's per-kind set a caller expands into per-path entries before the typed call.

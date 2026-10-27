@@ -30,7 +30,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_thirty_three_variant_wire_schema() {
+fn requests_match_the_frozen_thirty_four_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Stopped, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
@@ -86,6 +86,8 @@ fn requests_match_the_frozen_thirty_three_variant_wire_schema() {
         (UpdateIssuer { node_id: node(), incarnation: birth(), key: rdm_core::status::IssuingKeyHex("ab".into()), cert: "cd".into() }, "1f0c3031323334353637383961620c397763707266677776746879026162026364"),
         // fabrics.atlas.get (fabric-atlas.md R-FA4), appended last
         (GetAtlas, "20"),
+        // The reads (Q167), appended last: entity Nodes (2) | node None | pairs (len 1: "mesh", values (len 1: "mesh1"))
+        (Get { entity: rdm_core::filter::Entity::Nodes, node: None, filter: rdm_core::filter::Filter::new().eq("mesh", ["mesh1"]) }, "21020001046d65736801056d65736831"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -96,7 +98,7 @@ fn requests_match_the_frozen_thirty_three_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_fifty_six_variant_wire_schema() {
+fn replies_match_the_frozen_fifty_eight_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use StatusReply::*;
     let fixtures = [
@@ -202,6 +204,10 @@ fn replies_match_the_frozen_fifty_six_variant_wire_schema() {
         (RejectedCert { reason: "x".into() }, "360178"),
         // nodes (len 0) (fabrics.atlas.get, fabric-atlas.md R-FA4), appended last
         (Atlas { atlas: rdm_core::views::AtlasView { nodes: vec![] } }, "3700"),
+        // fabrics (len 0) (fabrics.get, Q167), appended last
+        (Fabrics { fabrics: vec![] }, "3800"),
+        // reason "x" (a filter refused naming the pair, Q167), appended last
+        (RejectedFilter { reason: "x".into() }, "390178"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -348,6 +354,13 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(TagScope::Labels(["red".to_string()].into()), "010103726564");
     // All | len 2 | "a" | "b"
     golden(TagFilter::All(["a".to_string(), "b".to_string()].into()), "000201610162");
+    // The read's entity (Q167): Fabrics | Meshes | Nodes | Connections
+    golden(rdm_core::filter::Entity::Fabrics, "00");
+    golden(rdm_core::filter::Entity::Meshes, "01");
+    golden(rdm_core::filter::Entity::Nodes, "02");
+    golden(rdm_core::filter::Entity::Connections, "03");
+    // connections.get { node } with no pair: Connections | Some(node, birth) | pairs (len 0)
+    golden(StatusRequest::Get { entity: rdm_core::filter::Entity::Connections, node: Some((node(), birth())), filter: rdm_core::filter::Filter::new() }, "2103010c3031323334353637383961620c39776370726667777674687900");
     for (status, expected) in [
         (NodeStatus::Pending, "00"), (NodeStatus::ReadyForTraffic, "01"), (NodeStatus::ConnectionsDeleting, "02"), (NodeStatus::Leaving, "03"),
         (NodeStatus::PendingReconnect, "04"), (NodeStatus::Reserved5, "05"), (NodeStatus::Dead, "06"), (NodeStatus::Deleted, "07"),
@@ -367,5 +380,5 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
 
 #[test]
 fn every_reply_variant_of_status_classifies_to_one_code() {
-    replies_match_the_frozen_fifty_six_variant_wire_schema();
+    replies_match_the_frozen_fifty_eight_variant_wire_schema();
 }

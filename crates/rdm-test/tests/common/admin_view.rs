@@ -1,6 +1,6 @@
 //! A node-admin's view, served over Node RPC from a fixed set of nodes: the entry the probe's cells
-//! give `rdm-rpc-probe` (`--admin-birth`). It answers `fabric.get` (Status `GetFabric`) and
-//! `node.get` by mesh (Status `GetNodes { Mesh }`) from that set, as an admin answers both from its
+//! give `rdm-rpc-probe` (`--admin-birth`). It answers `fabrics.get` (Status `Get { Fabrics }`) and
+//! `nodes.get [mesh: m]` (Status `Get { Nodes }`) from that set, as an admin answers both from its
 //! own view (`rafka-node-admin-core` views.rs), and records every Status request it decodes. It
 //! serves no HTTP: the probe reads nothing but Node RPC.
 
@@ -8,7 +8,8 @@ use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MeshNode, NodeId, PathName};
 use rdm_transport::{ServedBirth, ServerBuilder};
 use rdm_core::catalog::OpOwner;
-use rdm_core::status::{NodeSelect, Status, StatusReply, StatusRequest};
+use rdm_core::filter::Entity;
+use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rdm_core::views::{FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -94,9 +95,9 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
             async move {
                 s.lock().unwrap().push(req.clone());
                 Ok(match req {
-                    StatusRequest::GetFabric => StatusReply::Fabric { fabric },
-                    StatusRequest::GetNodes { select: NodeSelect::Mesh(mesh) } => StatusReply::Nodes { nodes: held.into_iter().filter(|n| n.mesh == mesh).collect() },
-                    other => StatusReply::NotReady { reason: format!("the stub admin {ADMIN} answers fabric.get and node.get by mesh only, not {}", other.op()) },
+                    StatusRequest::Get { entity: Entity::Fabrics, filter, .. } if filter.pairs.is_empty() => StatusReply::Fabrics { fabrics: vec![fabric] },
+                    StatusRequest::Get { entity: Entity::Nodes, filter, .. } => StatusReply::Nodes { nodes: held.into_iter().filter(|n| filter.matches(n)).collect() },
+                    other => StatusReply::NotReady { reason: format!("the stub admin {ADMIN} answers fabrics.get and nodes.get only, not {}", other.op()) },
                 })
             }
         })

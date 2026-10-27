@@ -216,7 +216,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
                 Ok(views) => views.iter().map(|n| format!("{}={:?}", n.name, n.status)).collect(),
                 Err(e) => vec![format!("the read ended: {e}")],
             };
-            mesh2_gone = matches!(estate.meshes_obj().await.get("mesh2").await, Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-mesh");
+            mesh2_gone = matches!(rdm_test::typed::one_mesh(&estate.meshes_obj().await, "mesh2").await, Ok(None));
             if mesh2_gone && view.iter().all(|n| n.starts_with("mesh1.")) {
                 break;
             }
@@ -231,7 +231,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let last = last.unwrap_or_else(|| panic!("mesh.deleted leaves mesh2's final primary alive, the one mesh2 node the view holds after build {b}"));
     assert_eq!(deleted["state"], "complete", "the node.delete of mesh2's final primary {last} completes: {deleted}");
     assert!(view.iter().all(|n| n.starts_with("mesh1.")), "the view holds no mesh2 birth after mesh-left: {view:?}");
-    assert!(mesh2_gone, "mesh2 is no longer a mesh of the fabric: mesh.get answers unknown-mesh");
+    assert!(mesh2_gone, "mesh2 is no longer a mesh of the fabric: meshes.get [name: mesh2] answers the empty list");
     Run { build, spans, mesh2_id, lost, b, last }
 }
 

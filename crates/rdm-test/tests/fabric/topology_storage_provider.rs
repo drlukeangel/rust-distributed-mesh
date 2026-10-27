@@ -1107,13 +1107,15 @@ fn grown() -> FabricDesired {
     fabric
 }
 
-/// `node.get` of every node of `views` by its minted id, at the fabric-primary: `path.name` → (node id,
-/// incarnation, status).
+/// `nodes.get [id: x]` of every node of `views` by its minted id, at the fabric-primary: `path.name` →
+/// (node id, incarnation, status).
 async fn node_gets(estate: &Estate, views: &[NodeView]) -> BTreeMap<String, (String, Option<String>, NodeStatus)> {
     let nodes = estate.nodes_obj().await;
     let mut out = BTreeMap::new();
     for v in views {
-        let got = nodes.get(&v.node_id).await.unwrap_or_else(|e| panic!("node.get {} ({}) is answered: {e}", v.node_id, v.name));
+        let mut got = nodes.get(&rdm_client::Filter::new().eq("id", [v.node_id.to_string()])).await.unwrap_or_else(|e| panic!("nodes.get [id: {}] ({}) is answered: {e}", v.node_id, v.name));
+        assert_eq!(got.len(), 1, "nodes.get [id: {}] ({}) answers the one node: {got:?}", v.node_id, v.name);
+        let got = got.remove(0);
         out.insert(got.name.to_string(), (got.node_id.to_string(), got.incarnation_id.as_ref().map(|i| i.as_str().to_string()), got.status));
     }
     out

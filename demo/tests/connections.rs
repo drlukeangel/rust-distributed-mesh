@@ -300,17 +300,18 @@ async fn establish_direct_edge(
 /// `Disconnected(direct-restored)` write).
 const TUNNEL_PAST_ITS_ROUTE: &str = "route: retired";
 
-/// `node.connections.get` of the exact birth `node`, sent by `root`'s Node RPC client, answered
+/// `connections.get { node }` of the exact birth `node`, sent by `root`'s Node RPC client, answered
 /// within `bound`. The node answers once every observation handed to its connections writer has
 /// landed, a Direct Connected's owed `Proxy Disconnected(direct-restored)` write included, so the
 /// answer is the held projection new opens resolve over (connections.md §10: "Only then does
 /// Direct become effective"). Panics naming the read when it is not answered within `bound` or is
 /// answered with anything but the node's connections.
 async fn wait_for_held_connections(root: &Running, node: &Birth, bound: Duration) -> ConnectionsView {
-    let what = format!("node.connections.get of {} ({})", node.name, node.node_id);
-    let req = StatusRequest::GetConnections {
-        node_id: node.node_id.clone(),
-        incarnation: node.incarnation.clone(),
+    let what = format!("connections.get of {} ({})", node.name, node.node_id);
+    let req = StatusRequest::Get {
+        entity: rdm_core::filter::Entity::Connections,
+        node: Some((node.node_id.clone(), node.incarnation.clone())),
+        filter: rdm_core::filter::Filter::new(),
     };
     let (out, _) = tokio::time::timeout(
         bound,

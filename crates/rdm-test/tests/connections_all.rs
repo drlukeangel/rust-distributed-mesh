@@ -168,7 +168,7 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
         let all = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All closes every open entry");
         // A further call on a pool connection of its own: a new dial from the commander, a new accept at the node.
-        let probe = StatusRequest::GetConnections { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        let probe = StatusRequest::Get { entity: rdm_core::filter::Entity::Connections, node: Some((node_id.clone(), incarnation.clone())), filter: rdm_core::filter::Filter::new() };
         let read = call_on(&admin, &target, &probe, Some("after-all")).await;
         assert!(matches!(read, StatusReply::Connections { .. }), "the further call is answered: {read:?}");
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
@@ -294,13 +294,14 @@ fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handl
         std::fs::create_dir_all(&dir).unwrap();
         let (_launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
         let target = NodeTarget::ExactNode(admin.launcher.node_id.clone());
-        let reply = match seams.client.call::<Status>(&target, &StatusRequest::GetFabric, &CallOptions::default()).await.0 {
+        let fabrics = StatusRequest::Get { entity: rdm_core::filter::Entity::Fabrics, node: None, filter: rdm_core::filter::Filter::new() };
+        let reply = match seams.client.call::<Status>(&target, &fabrics, &CallOptions::default()).await.0 {
             RpcOutcome::Reply(r) => r.into_value(),
             other => panic!("the admin side's Status door did not answer: {other:?}"),
         };
-        assert_eq!(reply, StatusReply::RequestNotHandled { request: "fabric.get".into() }, "the rig's admin side answers a request it has no handler for not handled here");
+        assert_eq!(reply, StatusReply::RequestNotHandled { request: "fabrics.get".into() }, "the rig's admin side answers a request it has no handler for not handled here");
         let rejected = fields_of(&spans, "rdm.node.status.reject.via-request-not-handled");
-        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("fabric.get".to_string()), Some(admin.launcher.name.to_string()))], "the admin side's reject span names the request and itself: {rejected:?}");
+        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("fabrics.get".to_string()), Some(admin.launcher.name.to_string()))], "the admin side's reject span names the request and itself: {rejected:?}");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

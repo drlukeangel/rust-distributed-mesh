@@ -458,11 +458,12 @@ impl NodeSelf {
         }
     }
 
-    /// `node.connections.get` at this birth (fabric-mesh-node-lifecycles.md: "Reading or cutting a
-    /// node's held connections"): the connections it holds now, under the name it holds, answered from
-    /// what is held: a connection whose row has not landed is not held yet, and the read never waits
-    /// for a write (Q169); the ids are those `node.connections.delete` names.
-    pub async fn connections_get(&self) -> StatusReply {
+    /// `connections.get { node }` at this birth (fabric-mesh-node-lifecycles.md: "Reading or cutting a
+    /// node's held connections"; Q167 R-RD7): the connections it holds now that match every pair of
+    /// `filter`, under the name it holds, answered from what is held: a connection whose row has not
+    /// landed is not held yet, and the read never waits for a write (Q169); the ids are those
+    /// `node.connections.delete` names.
+    pub async fn connections_get(&self, filter: &rdm_core::filter::Filter) -> StatusReply {
         let writer = self.connections.lock().unwrap().clone();
         let data_connections = self.data_connections.lock().unwrap().clone();
         match writer {
@@ -471,7 +472,7 @@ impl NodeSelf {
                 if let Some(reg) = data_connections {
                     held.routes.extend(reg.held_open_tunnels());
                 }
-                connections_answer(&held)
+                connections_answer(&held, filter)
             }
             None => rdm_core::reply::status::not_ready(format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name())),
         }
@@ -1549,18 +1550,27 @@ pub fn connection_view(f: &NodeConnection) -> ConnectionView {
     }
 }
 
-/// `node.connections.get` answered from `held`, one read of the node's connections writer: the
-/// connections the node holds (its `connected` latest Directs and its active Proxies, each named by
-/// the minted id `node.connections.delete` names it by), under the name it holds. Its span names the
-/// node, how many it answered and whether its set is complete.
-pub fn connections_answer(held: &HeldConnections) -> StatusReply {
-    let view = ConnectionsView { node: held.name.to_string(), complete: held.complete, connections: held.routes.iter().map(connection_view).collect() };
-    let (node, count, complete) = (&held.name, view.connections.len(), view.complete);
-    let reply = StatusReply::within_reply_bound(StatusReply::Connections { connections: view }, "node.connections.get");
+/// `connections.get { node }` answered from `held`, one read of the node's connections writer (Q167
+/// R-RD7): the connections the node holds (its `connected` latest Directs and its active Proxies,
+/// each named by the minted id `node.connections.delete` names it by) that match every pair of
+/// `filter`, under the name it holds; a filter the connection schema refuses is `RejectedFilter`
+/// naming the pair. Its span names the node, the pairs' properties, how many it answered and whether
+/// its set is complete.
+pub fn connections_answer(held: &HeldConnections, filter: &rdm_core::filter::Filter) -> StatusReply {
+    let read = rdm_core::filter::Entity::Connections.read();
+    let node = &held.name;
+    if let Some(reason) = filter.refusal(rdm_core::filter::Entity::Connections) {
+        tracing::info_span!("rdm.node_admin.node.reject.via-filter", node = %node, read, properties = %filter.properties(), detail = %reason, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the filter names a pair the connection schema refuses; nothing is read"));
+        return rdm_core::reply::status::bounded_rejected_filter(&reason);
+    }
+    let view = ConnectionsView { node: held.name.to_string(), complete: held.complete, connections: held.routes.iter().map(connection_view).filter(|c| filter.matches(c)).collect() };
+    let (count, complete) = (view.connections.len(), view.complete);
+    let reply = StatusReply::within_reply_bound(StatusReply::Connections { connections: view }, read);
     match &reply {
-        StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %node, read = "node.connections.get", connections = count, bytes, max, "otel.kind" = "internal")
+        StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %node, read, connections = count, bytes, max, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the held connections encode past the Status reply bound; nothing of them is sent")),
-        _ => tracing::info_span!("rdm.node_admin.node.serve.via-connections-get", node = %node, connections = count, complete, "otel.kind" = "internal")
+        _ => tracing::info_span!("rdm.node_admin.node.serve.via-connections-get", node = %node, properties = %filter.properties(), connections = count, complete, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the connections the node holds answered")),
     }
     reply
