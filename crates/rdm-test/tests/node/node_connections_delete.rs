@@ -32,7 +32,7 @@ fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &str, ste
 /// delete-connections, action delete_connections targeting the live birth, no Build minted). The
 /// operation is exactly `node.connections.delete:<path>`: the one call through the birth's
 /// mesh-primary, then Complete. The Build completes on node.connections.deleted; the node is
-/// connections-deleting under the SAME NodeId and incarnation and its process is still running
+/// connections-deleted under the SAME NodeId and incarnation and its process is still running
 /// afterwards. No stop, no terminate, no NodeDeleted
 /// is run for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -60,8 +60,10 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
     build_log::attempt_complete(&estate.carrier().await, &birth_build, attempt_no, SETTLE).await;
 
-    // The birth is connections-deleting, the same birth, and its process is still alive.
-    let after = estate.until_node(NODE, &format!("{NODE} is connections-deleting"), Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ConnectionsDeleting).map(|n| serde_json::to_value(n).expect("a view serializes"))).await;
+    // The birth is connections-deleted (node-connections-delete.md step 4: its mesh-primary sets it from
+    // the `Established` completion; a read answers the row's status, Q233), the same birth, and its
+    // process is still alive.
+    let after = estate.until_node(NODE, &format!("{NODE} is connections-deleted"), Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ConnectionsDeleted).map(|n| serde_json::to_value(n).expect("a view serializes"))).await;
     assert_eq!(after["node_id"], before["node_id"]);
     assert_eq!(after["incarnation_id"], before["incarnation_id"]);
     assert!(std::path::Path::new(&format!("/proc/{pid}")).exists(), "the process {pid} whose connections were deleted is still running");

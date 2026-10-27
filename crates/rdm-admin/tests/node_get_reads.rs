@@ -334,27 +334,39 @@ async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_f
 /// status, or a lifecycle effect laid over it, answered in place of the row's.
 #[tokio::test]
 async fn an_unacknowledged_stop_reads_ready_for_traffic_and_the_row_answers_each_state_it_takes() {
-    let (admin, mut rpc) = (node("mesh1.admin.1"), node("mesh1.rpc.1"));
+    let (admin, mut rpc, peer) = (node("mesh1.admin.1"), node("mesh1.rpc.1"), node("mesh2.rpc.1"));
     // The stop's admission at the mesh-primary set the birth leaving in its view, with no frame of the node.
     rpc.status = NodeStatus::Leaving;
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
-        nodes: vec![admin.clone(), rpc.clone()],
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }, Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic }],
+        nodes: vec![admin.clone(), rpc.clone(), peer.clone()],
     };
     let records = MemoryNodesStorage::default();
     let mut row = NodeRow::new(rpc.name.clone(), rpc.node_id.clone(), NodeStatus::ReadyForTraffic);
     row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.name).declared.insert(rdm_core::status::NodeState::ReadyForTraffic);
     records.write_record(&row).await.unwrap();
+    // mesh2's row as the fabric-primary's fill read it, before mesh2's primary moved it on.
+    let mut peer_row = NodeRow::new(peer.name.clone(), peer.node_id.clone(), NodeStatus::Pending);
+    peer_row.birth_mut(peer.incarnation_id.as_ref().unwrap(), &peer.name);
+    records.write_record(&peer_row).await.unwrap();
+    // The fabric-primary, mesh1's primary too: every mesh taken, mesh1's rows its writer's.
     let atlas = rdm_admin::atlas::Atlas::default();
-    atlas.scope(&records, ["mesh1".to_string()].into()).await.unwrap();
+    atlas.scope(&records, ["mesh1".to_string(), "mesh2".to_string()].into()).await.unwrap();
+    atlas.writes("mesh1");
     use rdm_core::views::NodeStatus as Read;
     assert_eq!(status_of(&view, &atlas, &rpc.node_id).await, (Read::ReadyForTraffic, false), "a stop the node has not acknowledged moves its row nowhere: ready-for-traffic");
     let ready: Vec<String> = match rdm_admin::views::nodes_answer(&path("mesh1.admin.1"), &view, &(Arc::new(BTreeMap::new) as rdm_admin::views::Loads), &atlas, &Filter::new().eq("status", ["ready-for-traffic"])).await {
         StatusReply::Nodes { nodes } => nodes.into_iter().map(|n| n.name.to_string()).collect(),
         other => panic!("{other:?}"),
     };
-    assert_eq!(ready, ["mesh1.admin.1", "mesh1.rpc.1"], "[status: ready-for-traffic] matches the birth whose stop is unacknowledged");
+    assert_eq!(ready, ["mesh1.admin.1", "mesh1.rpc.1", "mesh2.rpc.1"], "[status: ready-for-traffic] matches the birth whose stop is unacknowledged");
+    // Another mesh's row holds a status only as a fill read it: the view's answers until that mesh's
+    // primary feeds this atlas; the stopped this atlas's own receipt sets answers itself.
+    assert_eq!(status_of(&view, &atlas, &peer.node_id).await, (Read::ReadyForTraffic, false), "mesh2's birth: the view's ready-for-traffic, not the pending its row held at the fill");
+    peer_row.status = NodeStatus::Stopped;
+    atlas.write_record(&peer_row);
+    assert_eq!(status_of(&view, &atlas, &peer.node_id).await, (Read::Stopped, true), "mesh2's birth: the stopped this atlas's receipt set");
 
     row.status = NodeStatus::Stopping;
     atlas.write_record(&row);

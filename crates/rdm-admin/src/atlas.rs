@@ -79,6 +79,10 @@ struct Held {
     /// The meshes this admin is primary for (Q207): its own mesh as a mesh-primary, every mesh as the
     /// fabric-primary; empty for an admin that holds no primary. Each was filled once as it was taken.
     meshes: std::collections::BTreeSet<String>,
+    /// The mesh whose rows this admin's writer writes, every write fed here as it is made
+    /// ([`crate::node_rows::WrittenRows::feeds`]): its records are the rows as written. Another mesh's
+    /// records are read at a fill and moved by this atlas's own receipts only.
+    written: std::collections::BTreeSet<String>,
 }
 
 /// Q207's decision on a caller birth a primary refused as one it does not hold (a status declaration
@@ -382,6 +386,11 @@ impl Atlas {
         recorded || held.effects.get(incarnation.as_str()).is_some_and(|e| e.lifecycle == Lifecycle::Deleted)
     }
 
+    /// `mesh` is the mesh whose rows this admin's writer writes and feeds to this atlas.
+    pub fn writes(&self, mesh: &str) {
+        self.held.lock().unwrap().written.insert(mesh.to_string());
+    }
+
     /// The records the atlas holds of `mesh`'s nodes, a mesh this admin is primary for (Q224; none
     /// otherwise): what `fabrics.get`'s cert summary folds (fabric-certs.md §Tracking), never a store read.
     pub fn records_of(&self, mesh: &str) -> Vec<NodeRow> {
@@ -670,15 +679,18 @@ impl Atlas {
     /// each state": "A query answers the state the row last took from the node's frame or the
     /// mesh-primary's receipt"): the name its record holds, and, where the record is of this birth (its
     /// newest, or a record with no birth yet) in a mesh this admin is primary for (only a primary's
-    /// atlas holds a mesh's records, Q224), the row's status, `stopped` exactly when that is stopped.
-    /// Never the gossip view's lifecycle status nor a lifecycle effect laid over it: a command the node
-    /// has not acknowledged moved the row nowhere, so it moves the answer nowhere. Silence is not a state
-    /// a command sets: a birth its row holds live (starting through connections-deleted) that the view
-    /// holds silent (`PendingReconnect`, `Dead`, observer-inferred, node-identity-and-state.md §7.3) is
-    /// answered as the view holds it, cleared the moment it is heard; a birth its row holds leaving,
-    /// stopped or deleting is silent as expected (Q58) and answers its row. A birth no such record is of
-    /// answers the view's status. `false` when an op deleted the birth: it is not answered. Build
-    /// acceptance reads [`Self::answer`], not this.
+    /// atlas holds a mesh's records, Q224), the row's status, `stopped` exactly when that is stopped:
+    /// every status of the mesh whose rows this admin writes ([`Self::writes`]), and in another mesh the
+    /// statuses this atlas's own receipts set (`stopped`, `deleted`, [`Self::take_receipt`]); another
+    /// mesh's record holds any other status only as a fill read it, so that birth answers the view's
+    /// status until that mesh's primary feeds this atlas. Never a lifecycle effect laid over the view: a
+    /// command the node has not acknowledged moved the row nowhere, so it moves the answer nowhere.
+    /// Silence is not a state a command sets: a birth its row holds live (starting through
+    /// connections-deleted) that the view holds silent (`PendingReconnect`, `Dead`, observer-inferred,
+    /// node-identity-and-state.md §7.3) is answered as the view holds it, cleared the moment it is
+    /// heard; a birth its row holds leaving, stopped or deleting is silent as expected (Q58) and answers
+    /// its row. A birth no such record is of answers the view's status. `false` when an op deleted the
+    /// birth: it is not answered. Build acceptance reads [`Self::answer`], not this.
     pub(crate) fn read(&self, n: &mut crate::model::Node) -> bool {
         let held = self.held.lock().unwrap();
         if n.incarnation_id.as_ref().and_then(|i| held.effects.get(i.as_str())).is_some_and(|e| e.lifecycle == Lifecycle::Deleted) {
@@ -689,7 +701,8 @@ impl Atlas {
             let of_birth = r.newest_birth().is_none_or(|b| Some(&b.incarnation_id) == n.incarnation_id.as_ref());
             let live = matches!(r.status, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::ReadyForTraffic | NodeStatus::ConnectionsDeleting | NodeStatus::ConnectionsDeleted);
             let silent = live && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead);
-            if of_birth && held.meshes.contains(&r.name.mesh) && !silent {
+            let current = held.written.contains(&r.name.mesh) || matches!(r.status, NodeStatus::Stopped | NodeStatus::Deleted);
+            if of_birth && held.meshes.contains(&r.name.mesh) && current && !silent {
                 n.status = r.status;
                 n.stopped = r.status == NodeStatus::Stopped;
             }

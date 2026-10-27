@@ -1479,6 +1479,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let written = records.caches.nodes.clone();
                                 // Every record the writer holds is this admin's atlas's too (Q203).
                                 written.feeds(control.atlas.clone());
+                                control.atlas.writes(&own_mesh);
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone(), written.clone());
                                 // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).
                                 configs.watch_views(records.subscribe_view());
