@@ -451,6 +451,20 @@ impl ControlPlane {
                         outer.in_scope(|| reject_span(route, &reject));
                         return Err(Refusal::Reject(reject));
                     }
+                    // A registered provider other than the Fabric row's is opened now, on this fabric-primary's
+                    // scope, and closed again: one that does not open is refused by name, nothing accepted and
+                    // nothing moved (storage.md §2 "Changing it": "does not register or cannot open").
+                    if let Some(provider) = topology_storage_provider.as_ref() {
+                        let named = self.accepted.topology_storage_provider().await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
+                        if named.as_deref() != Some(provider.as_str()) {
+                            let changes = self.storage_changes.get().ok_or_else(|| Refusal::Unavailable(format!("{}: no topology storage handle is held yet to open `{provider}`", self.me)))?;
+                            if let Err(detail) = changes.handle.opens(provider).await {
+                                let reject = BuildReject::TopologyStorageProviderNotOpened { provider: provider.clone(), detail };
+                                outer.in_scope(|| reject_span(route, &reject));
+                                return Err(Refusal::Reject(reject));
+                            }
+                        }
+                    }
                     let rows = self.node_rows.get().ok_or_else(|| Refusal::Unavailable(format!("{}: no nodes.storage is open yet to read what each node's row records", self.me)))?;
                     crate::accepted::recorded_executables(&**rows, &current.topology).await.map_err(Refusal::Unavailable)?
                 }
@@ -1256,7 +1270,8 @@ pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
         "empty-recipe",
         "recipe-step-repeated",
         "recipe-node-unknown",
-        "topology-storage-provider-not-registered"
+        "topology-storage-provider-not-registered",
+        "topology-storage-provider-not-opened"
     );
 }
 

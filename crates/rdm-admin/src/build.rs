@@ -523,6 +523,15 @@ pub enum BuildReject {
         /// The providers the fabric-primary's wiring registers.
         registered: Vec<String>,
     },
+    /// A complete-topology request naming a `topology_storage_provider` the fabric-primary's wiring
+    /// registers and cannot open (storage.md §2 "Changing it": "Acceptance refuses by name a provider the
+    /// fabric-primary's wiring does not register or cannot open"): nothing is accepted and nothing moved.
+    TopologyStorageProviderNotOpened {
+        /// The provider the request names.
+        provider: String,
+        /// Why it does not open.
+        detail: String,
+    },
     /// A complete-topology request naming one `path.name` twice.
     NodeNamedTwice {
         /// The `path.name` named twice.
@@ -582,6 +591,7 @@ impl BuildReject {
             Self::BasedOnNotCurrent { .. } => "based-on-not-current",
             Self::NoNodeListed => "no-node-listed",
             Self::TopologyStorageProviderNotRegistered { .. } => "topology-storage-provider-not-registered",
+            Self::TopologyStorageProviderNotOpened { .. } => "topology-storage-provider-not-opened",
             Self::NodeNamedTwice { .. } => "node-named-twice",
             Self::ExecutableMissing { .. } => "executable-missing",
             Self::ExecutableRefused { .. } => "executable-refused",
@@ -622,6 +632,7 @@ impl fmt::Display for BuildReject {
             Self::BasedOnNotCurrent { based_on, current } => write!(f, "the request is based on Build {based_on}, and the current Build is {current}: nothing is accepted; read the topology again and submit from it"),
             Self::NoNodeListed => write!(f, "the request lists no node: a fabric with no mesh is fabric.delete, never a topology request; nothing is accepted"),
             Self::TopologyStorageProviderNotRegistered { provider, registered } => write!(f, "the request names topology_storage_provider `{provider}`, which the fabric-primary's wiring does not register (it registers: {}): nothing is accepted and nothing moved", registered.join(", ")),
+            Self::TopologyStorageProviderNotOpened { provider, detail } => write!(f, "the request names topology_storage_provider `{provider}`, which the fabric-primary's wiring registers and cannot open ({detail}): nothing is accepted and nothing moved"),
             Self::NodeNamedTwice { node } => write!(f, "the request names `{node}` twice: each node is listed once"),
             Self::ExecutableMissing { node } => write!(f, "`{node}` is created by the request and its create spec names no executable: every created node names the executable it runs; nothing is accepted"),
             Self::ExecutableRefused { node, detail } => write!(f, "the executable the request names for `{node}` is refused: {detail}; nothing is accepted"),

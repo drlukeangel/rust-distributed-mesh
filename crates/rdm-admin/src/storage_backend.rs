@@ -376,6 +376,17 @@ impl TopologyStorageHandle {
         self.replace_for(provider, None).await
     }
 
+    /// Open the provider this executable registers as `provider` on this admin's scope, and close it
+    /// again: what the fabric-primary's acceptance of a storage change asks before anything is accepted
+    /// (storage.md §2 "Changing it": "Acceptance refuses by name a provider the fabric-primary's wiring
+    /// does not register or cannot open"). A name not registered, or a provider that does not open, is
+    /// refused by name.
+    pub async fn opens(&self, provider: &str) -> Result<(), String> {
+        let boundaries = self.providers.named(provider)?.open(&self.scope).await?;
+        drop(boundaries);
+        Ok(())
+    }
+
     /// Call `written` with the provider the admin writes each time it moves to another, so the rows it
     /// writes record it (storage.md §2: "The same name on a node's row is the provider that node
     /// writes").
