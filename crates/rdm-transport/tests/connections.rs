@@ -1030,6 +1030,188 @@ async fn a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned
     dst.shutdown().await;
 }
 
+/// CONTRACT (telemetry.md §3: a call span's children are the serve span, the handler's spans and
+/// the invocation's end; pool.rs: a dial's span is a root of its own, linked (follows_from) to the
+/// call that started it, never current while the dial runs): the transport spawns a connection's
+/// driver task with the span current at its connect, and that task lives as long as the
+/// connection. A Direct or Proxy open therefore connects under `rdm.node.connections.create.via-dial`,
+/// a root linked to the opener's span (the Proxy's: to its tunnel span), so the caller's span
+/// closes when its last handle drops while its connection still carries streams, and the dial's
+/// span closes with the dial. Must NOT happen: the caller's span, and every span above it, held
+/// open (and unexported) until the connection closes (rafka-v2 #3221; i141 #3164, trace
+/// 889244ddf61ac4043385977c17a95eb8: request spans exported 53 min late, at the connections'
+/// delete). Its own process, as the subscriber-sensitive cell above.
+#[tokio::test]
+async fn a_callers_span_closes_while_its_direct_and_proxy_connections_live() {
+    if crate::own_process::delegated(module_path!(), "a_callers_span_closes_while_its_direct_and_proxy_connections_live") {
+        return;
+    }
+    use tracing::instrument::WithSubscriber;
+    use tracing::span::{Attributes, Id};
+    use tracing::Subscriber;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::Registry;
+
+    #[derive(Default, Clone)]
+    struct SpanLives {
+        opened: Arc<Mutex<Vec<(Id, String, Option<Id>)>>>,
+        closed: Arc<Mutex<Vec<Id>>>,
+        follows: Arc<Mutex<Vec<(Id, Id)>>>,
+    }
+
+    impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>>
+        tracing_subscriber::Layer<S> for SpanLives
+    {
+        fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+            let parent = if let Some(p) = attrs.parent() {
+                Some(p.clone())
+            } else if attrs.is_contextual() {
+                ctx.current_span().id().cloned()
+            } else {
+                None
+            };
+            self.opened.lock().unwrap().push((id.clone(), attrs.metadata().name().to_string(), parent));
+        }
+        fn on_follows_from(&self, span: &Id, follows: &Id, _ctx: Context<'_, S>) {
+            self.follows.lock().unwrap().push((span.clone(), follows.clone()));
+        }
+        fn on_close(&self, id: Id, _ctx: Context<'_, S>) {
+            self.closed.lock().unwrap().push(id);
+        }
+    }
+
+    impl SpanLives {
+        fn is_closed(&self, id: &Id) -> bool {
+            self.closed.lock().unwrap().contains(id)
+        }
+        /// The `via-dial` spans linked to `from`, each with its parent.
+        fn dials_linked_to(&self, from: &Id) -> Vec<(Id, Option<Id>)> {
+            let follows = self.follows.lock().unwrap().clone();
+            self.opened
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(id, name, _)| {
+                    name == "rdm.node.connections.create.via-dial" && follows.contains(&(id.clone(), from.clone()))
+                })
+                .map(|(id, _, parent)| (id.clone(), parent.clone()))
+                .collect()
+        }
+    }
+
+    let lives = SpanLives::default();
+    let dispatch = tracing::Dispatch::new(Registry::default().with(lives.clone()));
+    rdm_transport::enable_callsites();
+    let caller = |route: &'static str| tracing::dispatcher::with_default(&dispatch, || tracing::info_span!("caller_operation", route));
+
+    // Direct.
+    let (a, b) = async {
+        let a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+        let b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+        a.know(&b);
+        b.know(&a);
+        (a, b)
+    }
+    .with_subscriber(dispatch.clone())
+    .await;
+    let (dialer_a, _) = a.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_b) = b.registry.connections(ALPN_A).unwrap().split();
+    let accept_b = tokio::spawn(async move { acceptor_b.accept().await.unwrap() }.with_subscriber(dispatch.clone()));
+    let caller_direct = caller("direct");
+    let caller_direct_id = caller_direct.id().expect("the caller's span has an id");
+    let conn_a = tracing::Instrument::instrument(dialer_a.open(&b.birth), caller_direct.clone())
+        .with_subscriber(dispatch.clone())
+        .await
+        .expect("the Direct open");
+    let conn_b = accept_b.await.unwrap();
+    assert_eq!(conn_a.kind(), ConnectionKind::Direct);
+    drop(caller_direct);
+    assert!(
+        lives.is_closed(&caller_direct_id),
+        "the caller's span is closed once its last handle drops, while its Direct connection lives: {:?}",
+        lives.opened.lock().unwrap()
+    );
+    let dials = lives.dials_linked_to(&caller_direct_id);
+    assert_eq!(dials.len(), 1, "one via-dial span linked (follows_from) to the caller's: {:?}", lives.opened.lock().unwrap());
+    assert_eq!(dials[0].1, None, "the dial's span is a root");
+    assert!(lives.is_closed(&dials[0].0), "the dial's span closed with the dial");
+    // The connection the caller's span no longer covers carries a stream both ways.
+    async {
+        let (mut send, mut recv) = conn_a.open_bi().await.unwrap();
+        send.write_all(b"direct-after-caller").await.unwrap();
+        send.finish().unwrap();
+        let (mut send_b, mut recv_b) = conn_b.accept_bi().await.unwrap();
+        assert_eq!(recv_b.read_to_end(64).await.unwrap(), b"direct-after-caller");
+        send_b.write_all(b"direct-back").await.unwrap();
+        send_b.finish().unwrap();
+        assert_eq!(recv.read_to_end(64).await.unwrap(), b"direct-back");
+    }
+    .with_subscriber(dispatch.clone())
+    .await;
+
+    // Proxy, through the carrier.
+    let alpns = [gateway_alpn(ALPN_B)];
+    let (src, gw, dst) = async {
+        let s = TestPeer::bind("mesh1.rpc.3", &alpns).await;
+        let g = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+        let d = TestPeer::bind("mesh1.rpc.4", &alpns).await;
+        s.know(&g);
+        g.know(&d);
+        seed_carrier_direct_edge(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_B).await;
+        (s, g, d)
+    }
+    .with_subscriber(dispatch.clone())
+    .await;
+    let (dialer_s, _) = src.registry.connections(ALPN_B).unwrap().split();
+    let (_, mut acceptor_d) = dst.registry.connections(ALPN_B).unwrap().split();
+    let accept_d = tokio::spawn(async move { acceptor_d.accept().await.unwrap() }.with_subscriber(dispatch.clone()));
+    let caller_proxy = caller("proxy");
+    let caller_proxy_id = caller_proxy.id().expect("the caller's span has an id");
+    let conn_s = tracing::Instrument::instrument(dialer_s.open(&dst.birth), caller_proxy.clone())
+        .with_subscriber(dispatch.clone())
+        .await
+        .expect("the Proxy open");
+    let conn_d = accept_d.await.unwrap();
+    assert_eq!(conn_s.kind(), ConnectionKind::Proxy { via: gw.birth.clone() });
+    drop(caller_proxy);
+    assert!(
+        lives.is_closed(&caller_proxy_id),
+        "the caller's span is closed once its last handle drops, while its Proxy connection lives: {:?}",
+        lives.opened.lock().unwrap()
+    );
+    let tunnel = lives
+        .opened
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(_, name, parent)| name == "rdm.node.connections.create.via-tunnel" && parent.as_ref() == Some(&caller_proxy_id))
+        .map(|(id, _, _)| id.clone())
+        .expect("the opener's tunnel span is the caller's child");
+    assert!(lives.is_closed(&tunnel), "the opener's tunnel span closed with the open");
+    let dials = lives.dials_linked_to(&tunnel);
+    assert_eq!(dials.len(), 1, "one via-dial span linked (follows_from) to the tunnel span: {:?}", lives.opened.lock().unwrap());
+    assert_eq!(dials[0].1, None, "the dial's span is a root");
+    assert!(lives.is_closed(&dials[0].0), "the dial's span closed with the dial");
+    async {
+        let (mut send, mut recv) = conn_s.open_bi().await.unwrap();
+        send.write_all(b"proxy-after-caller").await.unwrap();
+        send.finish().unwrap();
+        let (mut send_d, mut recv_d) = conn_d.accept_bi().await.unwrap();
+        assert_eq!(recv_d.read_to_end(64).await.unwrap(), b"proxy-after-caller");
+        send_d.write_all(b"proxy-back").await.unwrap();
+        send_d.finish().unwrap();
+        assert_eq!(recv.read_to_end(64).await.unwrap(), b"proxy-back");
+    }
+    .with_subscriber(dispatch.clone())
+    .await;
+
+    a.shutdown().await;
+    b.shutdown().await;
+    src.shutdown().await;
+    gw.shutdown().await;
+    dst.shutdown().await;
+}
+
 fn gateway_alpn(name: &[u8]) -> Alpn {
     Alpn {
         name: name.to_vec(),
