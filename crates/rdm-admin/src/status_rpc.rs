@@ -1252,6 +1252,19 @@ impl StatusAuthority {
     /// ([`crate::storage::NodeRow::set_status`]), with one `rdm.node_admin.node.update.via-row-status`
     /// span.
     async fn put_declared(&self, row: &crate::status_rpc::Declaration, operation: Option<&OperationEffect>, moves: bool) -> Result<(), String> {
+        // Once this admin replied `blocked`, nothing of its mesh writes the old provider: the report waits,
+        // neither applied nor answered, until its `mesh.unblock` moved it, and its row is written on the
+        // provider current then before it is answered (storage.md §2 step 2, states.md; i149 R8).
+        let _turn = loop {
+            match self.commands.row_writes().await {
+                Some(turn) => break turn,
+                None => {
+                    tracing::info_span!("rdm.node_admin.node.update.via-row-status", node = %self.me, subject = %row.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), status = ?node_status_of(row.state), outcome = "held", "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("this mesh-primary replied blocked to a storage change: the node's report waits for its unblock, unanswered"));
+                    self.commands.rows_released().await;
+                }
+            }
+        };
         let base = crate::storage::NodeRow::new(row.name.clone(), row.node_id.clone(), crate::model::NodeStatus::Pending);
         let status = node_status_of(row.state);
         let written = self.caches.nodes.update(&*self.nodes_storage, &row.node_id, Some(base), |r| {
@@ -1266,11 +1279,6 @@ impl StatusAuthority {
             row_status_span(&self.me, &row.name, &row.node_id, &row.incarnation_id, status, &written);
         }
         written.map(|_| ())
-    }
-
-    /// `mesh.unblock`'s reply (storage.md §2 step 4): this admin, a mesh-primary, issues commands again.
-    pub(crate) async fn unblock(&self) {
-        self.commands.unblock();
     }
 
     /// Write `status` on the record of `node_id` for its birth `incarnation`, whole, at the transition

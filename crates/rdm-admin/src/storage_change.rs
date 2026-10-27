@@ -388,10 +388,12 @@ impl StorageChanges {
         let provider = self.decide(change).await;
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-unblock", build_id = %build_id.log(), change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, provider = %provider, moved = tracing::field::Empty, recreated = tracing::field::Empty, outcome = tracing::field::Empty);
         self.move_own(&door, build_id, &change.change_id, &provider).await?;
+        // Moved: this admin writes rows again, on the decided provider (its re-creates' rows among them).
+        door.commands.release_rows();
         let paths: Vec<PathName> = topology.read().await.members().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status.is_live()).map(|n| n.name.clone()).collect();
         let ends = futures_util::future::join_all(paths.iter().map(|p| self.move_until(&door, &topology, build_id, &change.change_id, mesh, p, &provider, recreate))).await;
         let recreated = ends.iter().filter(|e| **e == PathEnd::Recreated).count();
-        door.unblock().await;
+        door.commands.unblock();
         span.record("moved", (paths.len() - recreated) as u64).record("recreated", recreated as u64).record("outcome", "unblocked");
         span.in_scope(|| tracing::info!("mesh.unblock: every node of this mesh moved or was re-created; this mesh-primary replies unblocked and issues commands again"));
         receipt(builds, build_id, attempt, unblock_operation(&change.change_id, mesh)).await

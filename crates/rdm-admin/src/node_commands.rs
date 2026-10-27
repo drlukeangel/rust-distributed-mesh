@@ -95,9 +95,12 @@ pub struct CommandView {
     /// Whether this admin, as a mesh-primary, replied `blocked` to a storage change's `mesh.block`
     /// (storage.md §2 "Changing it", step 1): it issues no new command until it is unblocked.
     blocked: watch::Sender<bool>,
-    /// Held by a sweep of this admin's rows writer while it writes: `mesh.block` waits for a sweep in
-    /// progress, so nothing of the mesh writes the old provider once it replied `blocked` (step 2: the
-    /// copy holds every line of the old provider; i149 R8).
+    /// Whether this admin's rows are held: from its `blocked` until its `mesh.unblock` has moved it onto
+    /// the provider the change decided ([`Self::release_rows`]), nothing of its mesh writes a row (step 2:
+    /// the copy holds every line of the old provider; i149 R8).
+    rows_held: watch::Sender<bool>,
+    /// Held by a row writer while it writes (the rows writer's sweep, a node's declared-state row):
+    /// `mesh.block` waits for a write in progress, so none lands after it replied `blocked`.
     row_writes: tokio::sync::Mutex<()>,
 }
 
@@ -111,7 +114,7 @@ impl Default for CommandView {
 impl CommandView {
     /// A view whose commanded births run their `node.connections.delete { All }` under `connections_delete_deadline`.
     pub fn new(connections_delete_deadline: Duration) -> Self {
-        Self { open: Mutex::new(HashMap::new()), unanswered: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0, row_writes: tokio::sync::Mutex::new(()) }
+        Self { open: Mutex::new(HashMap::new()), unanswered: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0, rows_held: watch::channel(false).0, row_writes: tokio::sync::Mutex::new(()) }
     }
 
     /// `mesh.block`: from here no new command is issued and no row is written; resolves once every
@@ -119,6 +122,7 @@ impl CommandView {
     /// it", steps 1 and 2). Answers how many commands were in flight at the block.
     pub async fn block(&self) -> usize {
         self.blocked.send_replace(true);
+        self.rows_held.send_replace(true);
         let in_flight = self.open.lock().unwrap().len();
         while !self.open.lock().unwrap().is_empty() {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -127,16 +131,28 @@ impl CommandView {
         in_flight
     }
 
-    /// A rows sweep's turn to write: `None` while this admin replied `blocked` and is not unblocked yet,
-    /// its rows held (storage.md §2 step 2; i149 R8).
+    /// A row writer's turn to write: `None` while this admin's rows are held (storage.md §2 step 2;
+    /// i149 R8).
     pub async fn row_writes(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
         let turn = self.row_writes.lock().await;
-        (!*self.blocked.borrow()).then_some(turn)
+        (!*self.rows_held.borrow()).then_some(turn)
     }
 
-    /// `mesh.unblock`: commands are issued again.
+    /// `mesh.unblock`, this admin moved onto the provider the change decided: rows are written again,
+    /// on that provider, while commands stay held until [`Self::unblock`] (storage.md §2 step 4).
+    pub fn release_rows(&self) {
+        self.rows_held.send_replace(false);
+    }
+
+    /// `mesh.unblock`: commands are issued and rows written again.
     pub fn unblock(&self) {
+        self.rows_held.send_replace(false);
         self.blocked.send_replace(false);
+    }
+
+    /// Resolves once this admin's rows are written again: at once, or once its `mesh.unblock` moved it.
+    pub async fn rows_released(&self) {
+        let _ = self.rows_held.subscribe().wait_for(|held| !*held).await;
     }
 
     /// Whether this admin replied `blocked` and is not unblocked yet.
