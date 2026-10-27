@@ -16,10 +16,10 @@ itself from the topology it holds. Both take the same filter.
 
 A caller outside the node sends the read to the fabric-primary. A node asking for rows it does not
 hold sends it to the node-admin it joined through, its mesh-primary, as it sends its own
-`node.config.update`; the node never names the fabric-primary. Each node-admin holds an Atlas of the
-meshes it is primary for (Q224): the mesh-primary answers a read of its own mesh from its Atlas and
-carries any other read up to the fabric-primary, which holds every mesh. No read touches the store
-(Q227).
+`node.config.update`; the node never names the fabric-primary. Only a primary keeps an Atlas
+(Q224): a mesh-primary's holds its own mesh and nothing else, the fabric-primary's holds every mesh,
+and a node-admin that is not a primary keeps none. The mesh-primary answers a read of its own mesh
+from its Atlas and carries any other read up to the fabric-primary. No read touches the store (Q227).
 
 One read per entity, each answering a list in a stable order: `fabrics.get`, `meshes.get`,
 `nodes.get`, `connections.get`, `builds.get`. A filter is a list of `[property, [values…]]` pairs.
