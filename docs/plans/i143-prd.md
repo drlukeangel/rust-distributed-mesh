@@ -3198,3 +3198,13 @@ past 300 s with the host's load average at 19 under parallel agents' estates; re
 
 - 2026-10-27, from Rafka 141 (#3193), owed on the RDM side, not started: (1) demo/tests/fabric_hooks.rs:144-153 launches a node by hand after stop_reconciling(), which aborts only the drift loop (admin/boot.rs:150-151), not a running Build's drive (:3205); the Day-0 Build's attempt 2, planned after the launch, deletes the hand-launched node as surplus, and with an of_this_process RuntimeFact that is a SIGTERM to the test process (deployment/process.rs:512). (2) A declare-node-state reply that finds its connection gone at node stop ends CANCELLED caller-gone at 3000 ms (rdm-transport client.rs:739, delivery.rs:997), a 3 s tail at stop. Traces .99 Jaeger 447b70d402fa6dc7c3f601b684d6d8f4, ddd17b3e4a0455c5359b87393f377433.
 - 2026-10-27, Q205 (Luke): node.stop calls its primitives (node.connections.delete, node.mesh.leave) and streams each one's acknowledgement and completion; owed: the stop's stream, standalone LeaveMesh on 0x22 with CommandAccepted, the mesh-primary's Leaving/Left row writes, the pages (node-stop.md, node-mesh-leave.md, node-rpc-envelope.md:217/308/311, node-connections-delete.md:7), and an adversarial review of every workflow for the same gap (D34).
+
+## e12.s105 — 2026-10-27: the gates documented; Q209 and Q210 ruled by the lead
+
+build.md §4.4 "The gates before an operation" landed 7cd531aa3 (Luke: the gates before an event
+belong in build.md): each gate at the fabric-primary in the code's order, the source it reads and its
+refusal; the lifecycles index and node-start.md's Admission row point at it. Q189 stays closed by Luke:
+admission reads the fabric-primary's view. Q209 (recovery submits behind a cut) and Q210 (a node's
+declarations in owed order) ruled A by the lead, delegated by Luke (INDEX); both land page and code
+together: Q209 from the held commit 57fab58bb (branch q118-no-local-recovery-2) with the page
+sentence, Q210 as a new unit (one declaration task per node, the §43 sentence, the RED cells).
