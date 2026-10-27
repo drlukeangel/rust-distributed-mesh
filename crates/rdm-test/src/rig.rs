@@ -242,9 +242,9 @@ pub struct AdminSide {
     /// sent it: the admin side answers each `ConfigUpdated` for the birth it names, as the fabric-primary
     /// answers once the command completed.
     pub config_updates: Arc<std::sync::Mutex<Vec<(iroh::PublicKey, rdm_core::status::StatusRequest)>>>,
-    /// The node rows this admin side holds by `path.name` (what a mesh-primary's store answers
-    /// `node_row_at` with): its join door reads the row's config to hand a joiner.
-    rows: Arc<std::sync::Mutex<std::collections::HashMap<rdm_core::PathName, rdm_admin::storage::NodeRow>>>,
+    /// The node rows this admin side holds, its atlas (Q234): its join door reads the row at a
+    /// joiner's `path.name` from it to hand the joiner its config, as a mesh-primary does.
+    rows: Arc<rdm_admin::atlas::Atlas>,
     /// The digest this admin side publishes as itself, on the topology cadence as a node-admin does.
     digest: Arc<std::sync::Mutex<rdm_core::digest::MeshDigest>>,
     /// Over the data root where every launch from this admin side's template keeps its births'
@@ -321,7 +321,7 @@ impl AdminSide {
 
     /// Hold `row` as the node row at its `path.name`, a blind put of its own key.
     pub fn put_row(&self, row: rdm_admin::storage::NodeRow) {
-        self.rows.lock().unwrap().insert(row.name.clone(), row);
+        self.rows.write_record(&row);
     }
 
     /// The digest this admin side holds of itself.
@@ -439,7 +439,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // deployed it, which verifies it against the deployment and answers what it hears.
     let nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
     let joins = Arc::new(rdm_admin::join::Joins::over(nodes_storage.clone()));
-    let rows: Arc<std::sync::Mutex<std::collections::HashMap<rdm_core::PathName, rdm_admin::storage::NodeRow>>> = Arc::default();
+    let rows: Arc<rdm_admin::atlas::Atlas> = Arc::default();
     let (admin_node_id, admin_incarnation) = (NodeId::mint(), IncarnationId::mint());
     let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let door = {
@@ -480,13 +480,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
                 rdm_admin::certs::keep_ca(&cert_dir, &crate::test_certs::test_ca()).expect("the admin side keeps the testkit CA");
                 certs.issuer(&cert_dir, false, rafka_time.clone()).expect("the admin side's cert choice is made")
             }),
-            row: Arc::new({
-                let rows = rows.clone();
-                move |name| {
-                    let row = rows.lock().unwrap().get(&name).cloned();
-                    Box::pin(async move { Ok(row) })
-                }
-            }),
+            atlas: Some(rows.clone()),
         })
     };
     if takes_joins {

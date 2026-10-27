@@ -2826,7 +2826,7 @@ mod tests {
                 }
             }),
             primary: Arc::new(|| None),
-            row: Arc::new(|_| Box::pin(async { Ok(None) })),
+            atlas: None,
             issuer: Arc::new(crate::certs::CertIssuer::no_certs({
                 let t = rdm_transport::clock::RafkaTime::unadopted();
                 t.adopt(1_000);

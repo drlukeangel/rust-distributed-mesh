@@ -194,7 +194,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.1".into())),
-            row: Arc::new(|_| Box::pin(async { Ok(None) })),
+            atlas: None,
             issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs({
                 let t = rdm_transport::clock::RafkaTime::unadopted();
                 t.adopt(1_000);

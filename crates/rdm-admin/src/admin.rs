@@ -3128,7 +3128,7 @@ mod tests {
             known: view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, digest_view.clone(), records.clone()),
             pending: Arc::new(|_, _| Box::pin(async {})),
             primary: Arc::new(|| None),
-            row: Arc::new(|_| Box::pin(async { Ok(None) })),
+            atlas: None,
             issuer: Arc::new(crate::certs::CertIssuer::no_certs({
                 let t = rdm_transport::clock::RafkaTime::unadopted();
                 t.adopt(1_000);

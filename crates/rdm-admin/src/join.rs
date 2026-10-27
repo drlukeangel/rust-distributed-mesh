@@ -350,9 +350,11 @@ pub struct JoinDoor {
     /// the key it holds, through the records this admin holds; `None` for a door that keeps no records
     /// (a testkit admin side).
     pub nodes: Option<(Arc<dyn crate::storage::NodesStorage>, Arc<crate::node_rows::WrittenRows>)>,
-    /// The node row at a `path.name`: a point read through the store's `path.name` key (`Ok(None)`
-    /// when none was ever written). The join answer hands the row's config beside its name.
-    pub row: Arc<dyn Fn(PathName) -> Pin<Box<dyn Future<Output = Result<Option<crate::storage::NodeRow>, String>> + Send>> + Send + Sync>,
+    /// The atlas this admin holds its rows in (Q234; every row its writer claims or writes is held
+    /// there): the row at a joiner's `path.name` is read from it, never from the store (Q227). The join
+    /// answer hands the row's config beside its name. `None` for a door that keeps no records (a
+    /// testkit admin side): no row is held at any name.
+    pub atlas: Option<Arc<crate::atlas::Atlas>>,
 }
 
 /// The door a running admin fills once it holds a view.
@@ -402,8 +404,8 @@ impl JoinDoor {
                 // reported name, when it is the last accepted one, is never admitted (R-JN1).
                 d.node.name = name;
                 span.record("admitted_as", tracing::field::display(&d.node.name));
-                // The row's config, handed beside its name and installed on the digest: read before
-                // anything is installed, so a row that cannot be read installs nothing. A first start
+                // The row's config, handed beside its name and installed on the digest: the row as this
+                // admin's atlas holds it (Q234), never read from the store (Q227). A first start
                 // is admitted under its create spec's name (R-JN1 item 6), and its row there is its own
                 // create's claim, written before it was launched (node-create.md step 1) and seeded
                 // from the previous row at that path.name (node-recovery.md step 4): it is handed that
@@ -411,9 +413,9 @@ impl JoinDoor {
                 // step 2). Another node's row at a first start's name (a create that wrote no claim, a
                 // predecessor's row) is handed nothing and refuses nothing; a held birth's join is
                 // reconciled to its row, and another node's row there is refused by name.
-                let config = match (self.row)(d.node.name.clone()).await {
-                    Ok(None) => None,
-                    Ok(Some(row)) if row.node_id == d.node.node_id => {
+                let config = match self.atlas.as_ref().and_then(|a| a.record_for_join(&d.node.name, &d.node.node_id)) {
+                    None => None,
+                    Some(row) if row.node_id == d.node.node_id => {
                         if let Some(held) = row.app_types.as_ref().filter(|held| held.incarnation == d.node.incarnation) {
                             if held.types != types {
                                 return rdm_core::reply::join::join_mismatch("types".into(), format!("{:?}", held.types), format!("{types:?}"));
@@ -421,17 +423,13 @@ impl JoinDoor {
                         }
                         Some(row.config)
                     },
-                    Ok(Some(_)) if !held => None,
-                    Ok(Some(row)) => {
+                    Some(_) if !held => None,
+                    Some(row) => {
                         span.record("outcome", "mismatch");
                         let m = Mismatch { field: "name", deployed: format!("the row at {} holds node {}", row.name, row.node_id), reported: format!("node {} as {}", d.node.node_id, d.node.name) };
                         tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
                             .in_scope(|| tracing::warn!("the row at the admitted name belongs to another node"));
                         return rdm_core::reply::join::join_mismatch(m.field.into(), m.deployed, m.reported);
-                    }
-                    Err(why) => {
-                        span.record("outcome", "not-ready");
-                        return rdm_core::reply::join::not_ready(format!("{}: the node row at {} could not be read: {why}", self.me, d.node.name));
                     }
                 };
                 span.record("config_keys", config.as_ref().map_or(0, |c| c.len()) as u64);

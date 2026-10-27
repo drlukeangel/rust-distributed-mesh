@@ -248,6 +248,38 @@ fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<Gos
     out
 }
 
+/// A node's own whole row as its mesh-primary's atlas holds it (Q234: every node property; the
+/// hydration sync's `OwnRow`): what `node.get` of the node answers from `view` and `records`, never the
+/// node store; a birth `view` does not hold yet is answered from its record alone.
+pub fn own_row_view(view: &Topology, records: &Atlas, row: &crate::storage::NodeRow) -> NodeView {
+    if let Some(v) = nodes(view, &BTreeMap::new(), records, &Chosen::Id(&row.node_id), &BTreeMap::new()).into_iter().find(|v| v.node_id == row.node_id) {
+        return v;
+    }
+    let mut n = Node::allocated(row.name.clone());
+    n.node_id = row.node_id.clone();
+    n.status = row.status;
+    n.provider = Some(view.fabric.provider);
+    if let Some(b) = row.newest_birth() {
+        n.incarnation_id = Some(b.incarnation_id.clone());
+        n.endpoint_id = b.endpoint_id.clone();
+        n.transport_addr = b.transport_addr;
+        n.listeners = b.listeners.clone();
+    }
+    let mut v = node_view(&n, None, None, row.tags.clone(), row.config.clone());
+    v.executable = row.executable.clone();
+    v.storage_persistence = row.storage_persistence;
+    v.topology_storage_provider = row.topology_storage_provider.clone();
+    if let Some(declared) = row.app_types.clone().filter(|t| Some(&t.incarnation) == n.incarnation_id.as_ref()) {
+        v.types = declared.types;
+        v.held = v.types.clone();
+    }
+    v.held_hash = rdm_core::app_types::hash(&v.held);
+    v.cert = n.incarnation_id.as_ref().and_then(|i| row.birth(i)?.cert.clone()).map(|c| rdm_core::views::NodeCertView { issued_at: c.issued_at, expires_at: c.expires_at, issuer_expires_at: c.issuer_expires_at });
+    v.data_dir_lost = data_dir_lost_of(records, &n, Some(row));
+    v.data_dir_unreadable = data_dir_unreadable_of(&n, Some(row));
+    v
+}
+
 /// The node reads (`node.get`, `mesh.nodes.get`, `fabric.nodes.get`; Q165) answered by the node-admin
 /// `me` from its `view`, its nodes' `loads` and the node records its atlas holds (`records`;
 /// never the node store, Q203): the births `select` selects, each with its record's properties. A tag

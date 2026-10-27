@@ -208,6 +208,15 @@ pub enum TopologyReply {
         /// else its mesh's mesh-primary, else none.
         kind: Option<PrimaryKind>,
     },
+    /// The reader's own whole row as its mesh-primary's atlas holds it (Q234: every node property:
+    /// config, tags, executable, storage, placement, listeners, status, primaries), never read from the
+    /// store: one frame, answered only by the reader's own mesh-primary to a node of its mesh, after
+    /// `RafkaTime` and before `End`; it is not a mesh and `End.meshes` does not count it. The reader
+    /// holds it on its own entry in its topology.
+    OwnRow {
+        /// The reader's row.
+        node: crate::views::NodeView,
+    },
 }
 
 impl TopologyReply {
@@ -228,6 +237,7 @@ impl TopologyReply {
             Self::Stored { .. } => "stored",
             Self::Primaries { .. } => "primaries",
             Self::RafkaTime { .. } => "rafka-time",
+            Self::OwnRow { .. } => "own-row",
         }
     }
 }
@@ -241,7 +251,7 @@ impl NodeProtocol for Topology {
     const MAX_REPLY_FRAME_BYTES: usize = 8 * 1024;
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 14;
+    const REPLY_VARIANTS: u32 = 15;
 
     type Request = TopologyRequest;
     type Reply = TopologyReply;
@@ -262,6 +272,7 @@ impl NodeProtocol for Topology {
             TopologyReply::Stored { .. } => "stored",
             TopologyReply::Primaries { .. } => "primaries",
             TopologyReply::RafkaTime { .. } => "rafka-time",
+            TopologyReply::OwnRow { .. } => "own-row",
         }
     }
 
@@ -281,6 +292,7 @@ impl NodeProtocol for Topology {
             TopologyReply::Stored { .. } => ReplyKind::Success,
             TopologyReply::Primaries { .. } => ReplyKind::Success,
             TopologyReply::RafkaTime { .. } => ReplyKind::Success,
+            TopologyReply::OwnRow { .. } => ReplyKind::Success,
         }
     }
 
@@ -308,7 +320,7 @@ impl StreamingProtocol for Topology {
     fn frame_kind(frame: &TopologyReply) -> FrameKind {
         match frame {
             TopologyReply::Started => FrameKind::Started,
-            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Primaries { .. } | TopologyReply::RafkaTime { .. } => FrameKind::Data,
+            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Primaries { .. } | TopologyReply::RafkaTime { .. } | TopologyReply::OwnRow { .. } => FrameKind::Data,
             TopologyReply::End { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Topology::classify_reply(other)),
         }

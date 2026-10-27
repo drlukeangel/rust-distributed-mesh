@@ -2503,6 +2503,10 @@ pub struct TopologyView {
     /// The config this birth's mesh-primary last told it (`ApplyNodeConfig`, node-config-update.md):
     /// the map the application reads ([`Self::config`]); never gossiped (Q203). `None` until it is told.
     config: Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>,
+    /// This birth's own whole row as its mesh-primary's atlas held it at its last hydration sync
+    /// (Q234, `node.topology.get`'s `OwnRow`), kept current by `ApplyNodeConfig` and `ApplyNodeName`:
+    /// what the node reads its own properties from. `None` until a sync carried it.
+    own_row: Arc<Mutex<Option<rdm_core::views::NodeView>>>,
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12): carried in every
     /// digest this topology view publishes from then on. `None` while the birth holds its launch name.
     name: Arc<Mutex<Option<rdm_core::PathName>>>,
@@ -2591,7 +2595,7 @@ impl TopologyView {
         forward_path.spawn_sender(forward_rx, sink);
         let name = view.held_name.clone();
         let apps = crate::gossip::Hub::new(gossip, fabric, channel.author.clone(), clock.clone(), types, &app_seeds).await?;
-        let me = Self { apps, mesh: channel, digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name };
+        let me = Self { apps, mesh: channel, digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), own_row: Arc::default(), name };
         me.watch_meshes();
         Ok(me)
     }
@@ -2837,7 +2841,23 @@ impl TopologyView {
     /// Hold `config` as this birth's config (node-config-update.md step 3: "it applies the map"): the
     /// map the application reads from now on ([`Self::config`]). No digest carries it (Q203).
     pub fn set_config(&self, config: std::collections::BTreeMap<String, String>) {
+        if let Some(row) = self.own_row.lock().unwrap().as_mut() {
+            row.config = config.clone();
+        }
         *self.config.lock().unwrap() = Some(config);
+    }
+
+    /// Hold `row` as this birth's own whole row, the one its mesh-primary's hydration sync carried
+    /// (Q234): its config is the map the application reads from now on ([`Self::config`]).
+    pub fn set_own_row(&self, row: rdm_core::views::NodeView) {
+        *self.config.lock().unwrap() = Some(row.config.clone());
+        *self.own_row.lock().unwrap() = Some(row);
+    }
+
+    /// This birth's own whole row as its last hydration sync carried it and the commands since kept it
+    /// (Q234); `None` until a sync carried it.
+    pub fn own_row(&self) -> Option<rdm_core::views::NodeView> {
+        self.own_row.lock().unwrap().clone()
     }
 
     /// The config this birth was last told (its join answer or `ApplyNodeConfig`); `None` until told.
@@ -2848,6 +2868,9 @@ impl TopologyView {
     /// Hold `name` as this birth's name: every digest this topology view publishes from now on carries
     /// it (R12: the node publishes only the name its row holds).
     pub fn set_name(&self, name: rdm_core::PathName) {
+        if let Some(row) = self.own_row.lock().unwrap().as_mut() {
+            row.name = name.clone();
+        }
         *self.view.digest_view.observer_name.lock().unwrap() = name.to_string();
         *self.name.lock().unwrap() = Some(name);
     }

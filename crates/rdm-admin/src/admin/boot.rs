@@ -1902,28 +1902,28 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
                                     issuer: issuer.clone(),
                                     nodes: Some((nodes_storage.clone(), records.caches.nodes.clone())),
-                                    row: Arc::new({
-                                        let rows = nodes_storage.clone();
-                                        move |name: PathName| {
-                                            let rows = rows.clone();
-                                            Box::pin(async move { crate::node_rows::record_at(&*rows, &name).await.map_err(|e| e.to_string()) })
-                                        }
-                                    }),
+                                    // A joiner's row is read from this admin's atlas, never the store (Q227, Q234).
+                                    atlas: Some(control.atlas.clone()),
                                 });
                                 let _ = join_slot.set(door);
                                 // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
                                 let own = digest.clone();
-                                // For a mesh it holds no snapshot of, this admin answers from the births it stores.
-                                // The births it stores and the births its view holds now: what this admin knows of a mesh
-                                // does not wait on the records being written.
-                                let (stored_nodes, meshes, held_digest_view, held_fabric, held_me, own_mesh) = (nodes_storage.clone(), mesh_storage.clone(), digest_view.clone(), cfg.fabric_id.clone(), node_id.clone(), cfg.mesh.clone());
+                                // For a mesh it holds no snapshot of, this admin answers from the records its atlas holds
+                                // (the meshes it is primary for) and the births its view holds now, never from the store
+                                // (Q227): a read is never refused because the store is mid-write.
+                                let (atlas, held_digest_view, held_fabric, held_me, held_ids) = (control.atlas.clone(), digest_view.clone(), cfg.fabric_id.clone(), node_id.clone(), records.clone());
                                 let stored: crate::topology_read::StoredSource = Arc::new(move || {
-                                    let (stored_nodes, meshes, held_digest_view, held_fabric, held_me, own_mesh) = (stored_nodes.clone(), meshes.clone(), held_digest_view.clone(), held_fabric.clone(), held_me.clone(), own_mesh.clone());
+                                    let (atlas, held_digest_view, held_fabric, held_me, held_ids) = (atlas.clone(), held_digest_view.clone(), held_fabric.clone(), held_me.clone(), held_ids.clone());
                                     Box::pin(async move {
-                                        let rows = super::rows_writer::recorded_births(&*meshes, &*stored_nodes, &own_mesh).await.map_err(|e| e.to_string())?;
-                                        let ids = meshes.meshes().await.map_err(|e| e.to_string())?;
-                                        let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = rows
-                                            .into_iter()
+                                        // The id this admin holds for each mesh it knows, a deleted mesh's none.
+                                        let mut ids = held_ids.meshes.lock().unwrap().clone();
+                                        let deleted = held_ids.deleted_meshes.lock().unwrap().clone();
+                                        ids.retain(|_, id| !deleted.contains(id));
+                                        let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = atlas
+                                            .records()
+                                            .iter()
+                                            .filter(|r| r.status != NodeStatus::Deleted)
+                                            .filter_map(crate::reenter::MapNode::of_record)
                                             .map(|r| (r.node_id.clone(), rdm_core::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation, transport_addr: r.transport_addr }))
                                             .collect();
                                         for d in held_births(&held_digest_view, &held_fabric, &held_me) {
@@ -1932,18 +1932,33 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 rdm_core::topology::StoredNode { node_id: d.node.node_id, name: d.node.name.to_string(), endpoint_id: d.node.endpoint_id, incarnation: d.node.incarnation, transport_addr: d.node.transport_addr },
                                             );
                                         }
-                                        Ok(crate::topology_read::StoredMap {
-                                            nodes: nodes.into_values().collect(),
-                                            mesh_ids: ids.into_iter().filter(|m| !m.dead).map(|m| (m.name, m.mesh_id)).collect(),
-                                        })
+                                        Ok(crate::topology_read::StoredMap { nodes: nodes.into_values().collect(), mesh_ids: ids })
                                     })
                                 });
                                 let gone: crate::topology_read::GoneSource = {
                                     let (digest_view, records) = (digest_view.clone(), records.clone());
                                     Arc::new(move |h: &rdm_core::Primary| incumbency_of(&digest_view, &records).lost.contains(&h.incarnation))
                                 };
+                                // The hydration sync's own row (Q234): a node of this admin's mesh reading its mesh-primary
+                                // is answered its whole row from this admin's atlas, never the store; any other
+                                // caller, or this admin while it is not its mesh's primary, is answered none.
+                                let own_row: crate::topology_read::OwnRowSource = {
+                                    let (atlas, view, mesh, me) = (control.atlas.clone(), control.topology.clone(), cfg.mesh.clone(), node_id.clone());
+                                    Arc::new(move |caller: String| {
+                                        let (atlas, view, mesh, me) = (atlas.clone(), view.clone(), mesh.clone(), me.clone());
+                                        Box::pin(async move {
+                                            let view = view.read().await;
+                                            if !view.is_mesh_primary(&mesh, &me) {
+                                                return None;
+                                            }
+                                            let held = view.births().find(|n| n.endpoint_id.as_ref().is_some_and(|e| e.0 == caller)).and_then(|n| atlas.record(&n.node_id));
+                                            let row = held.or_else(|| atlas.record_of_endpoint(&caller)).filter(|r| r.name.mesh == mesh && r.node_id != me)?;
+                                            Some(crate::views::own_row_view(&view, &atlas, &row))
+                                        })
+                                    })
+                                };
                                 let own_topology_view = topology_view.clone();
-                                let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(&own.lock().unwrap())), rafka_time.clone()).with_stored(stored).with_gone(gone)));
+                                let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(&own.lock().unwrap())), rafka_time.clone()).with_stored(stored).with_gone(gone).with_own_row(own_row)));
                             }
                             // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
                             // a blind put (a successor fabric primary proves an exit from it).

@@ -35,6 +35,8 @@ pub struct TopologyDoor {
     stored: Option<StoredSource>,
     /// Whether this node holds a seat holder's exact birth as proven gone.
     gone: Option<GoneSource>,
+    /// The caller's own whole row, when this node is the caller's mesh-primary (Q234).
+    own_row: Option<OwnRowSource>,
     /// The rafka-time this node adopted: the value its answer carries, never its own clock.
     time: rdm_transport::clock::RafkaTime,
     snapshots: AtomicU64,
@@ -42,6 +44,11 @@ pub struct TopologyDoor {
 
 /// Whether the node holds a recorded seat holder's exact birth as proven gone.
 pub type GoneSource = Arc<dyn Fn(&rdm_core::Primary) -> bool + Send + Sync>;
+
+/// The whole row of the caller whose endpoint key is given, answered by its own mesh-primary from its
+/// atlas (Q234), never the store: `None` from any other node, or for a caller that is not a node of the
+/// answering mesh-primary's mesh.
+pub type OwnRowSource = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<rdm_core::views::NodeView>> + Send>> + Send + Sync>;
 
 /// What a node stores of the meshes it does not hold a snapshot of: the births it knows, and the id
 /// it stored for each mesh.
@@ -62,12 +69,18 @@ const STORED_PER_FRAME: usize = 24;
 impl TopologyDoor {
     /// A door over `topology_view`, the node's own digest and the rafka-time the node adopted.
     pub fn new(topology_view: TopologyView, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>, time: rdm_transport::clock::RafkaTime) -> Self {
-        Self { topology_view, own, stored: None, gone: None, time, snapshots: AtomicU64::new(0) }
+        Self { topology_view, own, stored: None, gone: None, own_row: None, time, snapshots: AtomicU64::new(0) }
     }
 
     /// This node also answers, for a mesh it holds no snapshot of, from the map it stores.
     pub fn with_stored(mut self, stored: StoredSource) -> Self {
         self.stored = Some(stored);
+        self
+    }
+
+    /// This node also answers a caller of its mesh its own whole row (Q234): a mesh-primary's door.
+    pub fn with_own_row(mut self, own_row: OwnRowSource) -> Self {
+        self.own_row = Some(own_row);
         self
     }
 
@@ -99,7 +112,7 @@ pub fn snapshot_replies(s: &SourceSnapshot, snapshot_id: u64) -> Vec<TopologyRep
 }
 
 impl TopologyDoor {
-    async fn serve(&self, req: TopologyRequest, sink: rdm_transport::stream::ReplySink<Topology, rdm_transport::stream::NotStarted>) -> TopologyReply {
+    async fn serve(&self, caller: String, req: TopologyRequest, sink: rdm_transport::stream::ReplySink<Topology, rdm_transport::stream::NotStarted>) -> TopologyReply {
         let TopologyRequest::GetTopology { mesh, since } = req;
         let me = (self.own)();
         let span = tracing::info_span!(
@@ -114,6 +127,7 @@ impl TopologyDoor {
             primaries = tracing::field::Empty,
             rafka_time_ms = tracing::field::Empty,
             kind = tracing::field::Empty,
+            own_row = tracing::field::Empty,
             bytes = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
@@ -217,6 +231,19 @@ impl TopologyDoor {
                 span.record("outcome", format!("caller-gone: {e:?}").as_str());
                 return TopologyReply::End { meshes: answered };
             }
+            // The caller's own whole row, when this node is its mesh-primary (Q234).
+            if let Some(source) = &self.own_row {
+                let row = source(caller).await;
+                span.record("own_row", row.as_ref().map_or(String::new(), |r| r.name.to_string()).as_str());
+                if let Some(node) = row {
+                    let r = TopologyReply::OwnRow { node };
+                    bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
+                    if let Err(e) = sink.data(r).await {
+                        span.record("outcome", format!("caller-gone: {e:?}").as_str());
+                        return TopologyReply::End { meshes: answered };
+                    }
+                }
+            }
             span.record("rafka_time_ms", time_ms);
             span.record("kind", kind.map_or("none", rdm_core::topology::PrimaryKind::name));
             span.record("primaries", primary_records);
@@ -236,13 +263,14 @@ impl TopologyDoor {
 /// Serve `GetTopology` on this node. Until `slot` is filled the node holds no topology and a read
 /// is `NotReady` by name.
 pub fn serve(b: ServerBuilder, slot: TopologySlot) -> ServerBuilder {
-    b.serve_stream::<Topology, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: TopologyRequest, sink| {
+    b.serve_stream::<Topology, _, _>(OpOwner::Product("rdm".into()), move |peer, req: TopologyRequest, sink| {
         let slot = slot.clone();
+        let caller = peer.endpoint_id.to_string();
         async move {
             let Some(door) = slot.get().cloned() else {
                 return Ok(rdm_core::reply::topology::not_ready("this node holds no topology view yet".into()));
             };
-            Ok(door.serve(req, sink).await)
+            Ok(door.serve(caller, req, sink).await)
         }
     })
 }
@@ -264,6 +292,8 @@ pub struct TopologyRead {
     /// The rafka-time the target served and the seat it held when it served it. Every accepted
     /// read carries it.
     pub rafka_time: Option<ServedTime>,
+    /// The reader's own whole row, when the target is its mesh-primary (Q234).
+    pub own_row: Option<rdm_core::views::NodeView>,
 }
 
 /// The rafka-time a topology read was served with.
@@ -379,6 +409,10 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
     // The seat records the target holds are this node's too, wherever they supersede its own: it
     // computes no seat before it has them.
     topology_view.learn_primaries(&read.seats, "entry");
+    // The reader's own whole row its mesh-primary's atlas holds: held on its own entry (Q234).
+    if let Some(row) = &read.own_row {
+        topology_view.set_own_row(row.clone());
+    }
     Ok(read)
 }
 
@@ -487,6 +521,7 @@ async fn read_with(
                 rdm_core::topology::PrimaryKind::FabricPrimary => rdm_core::Seat::FabricPrimary,
             }, primary, gone)),
             StreamItem::Frame(_, TopologyReply::RafkaTime { ms, kind }) => read.rafka_time = Some(ServedTime { ms, kind }),
+            StreamItem::Frame(_, TopologyReply::OwnRow { node }) => read.own_row = Some(node),
             StreamItem::Frame(_, TopologyReply::End { meshes }) => served_meshes = Some(meshes),
             StreamItem::Frame(_, other) => return Err(TopologyFailure::Refused(format!("an unexpected frame in the stream: {}", other.name()))),
             StreamItem::Failed(f) => return Err(TopologyFailure::Unreached(format!("the stream failed before its end: {f:?}"))),

@@ -387,6 +387,28 @@ impl Atlas {
         self.held.lock().unwrap().records.values().find(|r| r.name == *path).cloned()
     }
 
+    /// The record a join at `path` of the node `node_id` is reconciled to (Q234; never the store,
+    /// Q227): the node's own record when it is at `path`, else another node's live record there, else a
+    /// `Deleted` one there; a `Withdrawn` record names nothing (a withdrawn claim, as the store's
+    /// `path.name` index holds it).
+    pub fn record_for_join(&self, path: &PathName, node_id: &NodeId) -> Option<NodeRow> {
+        let held = self.held.lock().unwrap();
+        let at: Vec<&NodeRow> = held.records.values().filter(|r| r.name == *path && r.status != NodeStatus::Withdrawn).collect();
+        at.iter().find(|r| r.node_id == *node_id).or_else(|| at.iter().find(|r| r.status != NodeStatus::Deleted)).or_else(|| at.first()).map(|r| (*r).clone())
+    }
+
+    /// Every record the atlas holds, in node id order.
+    pub fn records(&self) -> Vec<NodeRow> {
+        self.held.lock().unwrap().records.values().cloned().collect()
+    }
+
+    /// The record of the node whose birth holds the endpoint key `endpoint_id`, its newest birth first.
+    pub fn record_of_endpoint(&self, endpoint_id: &str) -> Option<NodeRow> {
+        let held = self.held.lock().unwrap();
+        let of = |r: &&NodeRow| r.newest_birth().and_then(|b| b.endpoint_id.as_ref()).is_some_and(|e| e.0 == endpoint_id);
+        held.records.values().find(of).cloned()
+    }
+
     /// Fill the records of each mesh in `meshes` from the node records, read whole (one listing per
     /// mesh): at the fabric-primary's start or hand-over (Q204), and once a Build's attempt completed
     /// (its op results on every mesh it names, Q197). The number of records held after.
