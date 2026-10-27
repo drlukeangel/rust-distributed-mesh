@@ -291,7 +291,8 @@ pub async fn start_on(mut cfg: AdminConfig, wiring: crate::wiring::Wiring, provi
                 (cfg.mesh_primary, cfg.fabric_primary, cfg.mesh_id) = (false, false, None);
                 cfg.seeds.clear();
             }
-            start_booted(cfg, wiring, providers, boot.clone()).await
+            // Boxed: the boot is one large state machine, and its caller holds only the box.
+            Box::pin(start_booted(cfg, wiring, providers, boot.clone())).await
         }
         Err(e) => Err(e),
     };

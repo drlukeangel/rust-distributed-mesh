@@ -186,9 +186,10 @@ impl RunningNode {
     /// the endpoint; the owed declarations end with the process (node-rpc.md §34).
     pub async fn stop(self) {
         if self.own.stop_admitted() {
-            return self.stop_commanded().await;
+            return Box::pin(self.stop_commanded()).await;
         }
-        crate::taskdump::watched("stop", self.stop_inner()).await
+        // Boxed, as the boot is.
+        crate::taskdump::watched("stop", Box::pin(self.stop_inner())).await
     }
 
     async fn stop_inner(self) {
@@ -396,7 +397,8 @@ pub async fn start_on(
     rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
     rdm_transport::connections::validate_alpns(alpns).map_err(|e| anyhow!("{e}"))?;
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.name.kind.name());
-    let started = crate::taskdump::watched("start", start_booted(launch, providers, rafka_time, node_hooks, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot)).await;
+    // Boxed: the boot is one large state machine, and its caller holds only the box.
+    let started = crate::taskdump::watched("start", Box::pin(start_booted(launch, providers, rafka_time, node_hooks, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot))).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
     }

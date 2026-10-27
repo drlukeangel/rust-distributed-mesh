@@ -1255,17 +1255,28 @@ impl DeploymentPipeline<'_> {
 
     /// Run one step under its span and append its receipt (with its output),
     /// or reuse an earlier attempt's decision. A failure stops the run.
-    async fn step<T, Fut>(&self, run: &mut Run<'_>, step: &'static str, work: Fut) -> Result<T, PipelineError>
+    fn step<'s, T, Fut>(&'s self, run: &'s mut Run<'_>, step: &'static str, work: Fut) -> futures_util::future::BoxFuture<'s, Result<T, PipelineError>>
     where
-        T: Serialize + DeserializeOwned,
-        Fut: std::future::Future<Output = Result<T, String>>,
+        T: Serialize + DeserializeOwned + Send + 's,
+        Fut: std::future::Future<Output = Result<T, String>> + Send + 's,
     {
-        self.step_with(run, step, async move { work.await.map_err(StepFailure::from) }).await
+        // Boxed where it is made: a step's state machine holds its work, and the operation that runs
+        // it holds only the box on its worker's stack.
+        Box::pin(self.step_body(run, step, async move { work.await.map_err(StepFailure::from) }))
     }
 
     /// [`Self::step`] for a step whose failure names where it stopped: its Failed receipt carries
     /// the typed stage (`TerminateRuntime`, node-recovery.md step 4's end).
-    async fn step_with<T, Fut>(&self, run: &mut Run<'_>, step: &'static str, work: Fut) -> Result<T, PipelineError>
+    fn step_with<'s, T, Fut>(&'s self, run: &'s mut Run<'_>, step: &'static str, work: Fut) -> futures_util::future::BoxFuture<'s, Result<T, PipelineError>>
+    where
+        T: Serialize + DeserializeOwned + Send + 's,
+        Fut: std::future::Future<Output = Result<T, StepFailure>> + Send + 's,
+    {
+        // Boxed where it is made, as `step`.
+        Box::pin(self.step_body(run, step, work))
+    }
+
+    async fn step_body<T, Fut>(&self, run: &mut Run<'_>, step: &'static str, work: Fut) -> Result<T, PipelineError>
     where
         T: Serialize + DeserializeOwned,
         Fut: std::future::Future<Output = Result<T, StepFailure>>,
@@ -1416,12 +1427,12 @@ impl DeploymentPipeline<'_> {
         self.create_with_claim(req, crate::node_rows::ClaimFor::Recovery, pre_node_ready, before_launch).await
     }
 
-    async fn create_with_claim(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+    fn create_with_claim<'a>(&'a self, req: &'a CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
-        // Boxed: the create's steps are one large state machine, and every caller (a recipe step, a
-        // recovery, a drive) holds only the box on its worker's stack.
-        Box::pin(self.create_steps(req, claim_for, pre_node_ready, before_launch)).instrument(span).await
+        // Boxed where it is made: the create's steps are one large state machine, and every caller (a
+        // recipe step, a recovery, a drive) holds only the box on its worker's stack.
+        Box::pin(self.create_steps(req, claim_for, pre_node_ready, before_launch).instrument(span))
     }
 
     async fn create_steps(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
@@ -1440,7 +1451,12 @@ impl DeploymentPipeline<'_> {
     /// `req.data_dir`: the data dir the spec names (the create over an exited birth's), taken over
     /// whole (node-recovery.md sequence step 4). `before_launch`: awaited right before the new runtime
     /// is launched, and only when it is ([`BeforeLaunch`]).
-    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+    fn create_to_ready<'a>(&'a self, run: &'a mut Run<'_>, req: &'a CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
+        // Boxed where it is made, as `step`.
+        Box::pin(self.create_to_ready_body(run, req, claim_for, pre_node_ready, before_launch))
+    }
+
+    async fn create_to_ready_body(&self, run: &mut Run<'_>, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         // The name this create claimed: a step after the claim that fails withdraws it, so the next
         // attempt's fresh birth is not refused by this one's claim (lifecycles/node-create.md step 1).
         let mut claimed: Option<NodeId> = None;
@@ -1575,7 +1591,12 @@ impl DeploymentPipeline<'_> {
         }
     }
 
-    async fn create_to_ready_claimed(&self, run: &mut Run<'_>, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>, claimed: &mut Option<NodeId>) -> Result<Created, PipelineError> {
+    fn create_to_ready_claimed<'a>(&'a self, run: &'a mut Run<'_>, req: &'a CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>, claimed: &'a mut Option<NodeId>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
+        // Boxed where it is made, as `step`.
+        Box::pin(self.create_to_ready_claimed_body(run, req, claim_for, pre_node_ready, before_launch, claimed))
+    }
+
+    async fn create_to_ready_claimed_body(&self, run: &mut Run<'_>, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>, claimed: &mut Option<NodeId>) -> Result<Created, PipelineError> {
         let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
         // A receipt names a runtime; its birth is reused only while that
         // runtime runs. A launch that has since died (its executor's mesh was
@@ -1984,10 +2005,10 @@ impl DeploymentPipeline<'_> {
     /// the exact birth's mesh-primary sets connections-deleting at admission and holds the birth's
     /// `node.connections.deleted` with its receipt. The process keeps running; nothing
     /// stops it and nothing is deleted.
-    pub async fn delete_connections(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    pub fn delete_connections<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("node.connections.delete", &req.build_id, &req.node.name, req.attempt);
-        async {
+        Box::pin(async move {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.connections.delete:{name}")).await?;
             let node = req.node.clone();
@@ -2005,8 +2026,7 @@ impl DeploymentPipeline<'_> {
                 .await?;
             self.complete(&mut run).await
         }
-        .instrument(span)
-        .await
+        .instrument(span))
     }
 
     /// A standalone stop (node-stop.md): `node.stop:<path>` is the stop-node command, whose reply is the
@@ -2014,10 +2034,10 @@ impl DeploymentPipeline<'_> {
     /// The mesh primary publishes `NodeStopped` from that reply, and `Complete` names the birth and the
     /// rafka-time it stopped at. No
     /// runtime exit is asked and no departure is published.
-    pub async fn stop(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    pub fn stop<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("stop", &req.build_id, &req.node.name, req.attempt);
-        async {
+        Box::pin(async move {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.stop:{name}")).await?;
             let mut node = req.node.clone();
@@ -2030,16 +2050,15 @@ impl DeploymentPipeline<'_> {
             let _: LifecycleOp = self.step(&mut run, RetireStep::Complete.name(), async { Ok(op) }).await?;
             Ok(())
         }
-        .instrument(span)
-        .await
+        .instrument(span))
     }
 
     /// A standalone start (node-start.md): `node.start:<path>` is the start-node command to the stopped
     /// birth, whose reply is `Started` once it rejoined, then the wait for it to report ready.
-    pub async fn start(&self, req: &StartRequest) -> Result<(), PipelineError> {
+    pub fn start<'a>(&'a self, req: &'a StartRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("start", &req.build_id, &req.node.name, req.attempt);
-        async {
+        Box::pin(async move {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.start:{name}")).await?;
             let mut node = req.node.clone();
@@ -2047,8 +2066,7 @@ impl DeploymentPipeline<'_> {
             self.complete(&mut run).await?;
             Ok(())
         }
-        .instrument(span)
-        .await
+        .instrument(span))
     }
 
     /// The start leg: the admin holds what it deployed for the birth again (its `JoinNode` is
@@ -2125,10 +2143,10 @@ impl DeploymentPipeline<'_> {
     /// Exited is the proof, and the executor publishes NodeDeleted from it. Storage is kept: "It
     /// releases node.id and name, not storage". The lifecycle events name the birth as its own
     /// digest does (`<path>`), by its exact `(node.id, incarnation)`.
-    pub async fn delete_stopped(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    pub fn delete_stopped<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
-        async {
+        Box::pin(async move {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
             let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?;
@@ -2149,18 +2167,17 @@ impl DeploymentPipeline<'_> {
             self.lifecycle.deleted(&op).await;
             self.complete(&mut run).await
         }
-        .instrument(span)
-        .await
+        .instrument(span))
     }
 
     /// Terminate the runtime of a deleted birth heard again (node-investigation.md: "The node that refused
     /// it reports it to the fabric-primary, which terminates its runtime"; Q110, Q128): the existing
     /// `TerminateRuntime` step on its exact runtime, under `node.terminate:<path>@<incarnation>`. Its
     /// departure and Deleted row stand: nothing else is written.
-    pub async fn terminate_returned(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+    pub fn terminate_returned<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("terminate", &req.build_id, &req.node.name, req.attempt);
-        async {
+        Box::pin(async move {
             let name = &req.node.name;
             let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::TerminateRuntime.name(), reason: format!("{name} has no known birth"), code: rdm_core::outcome::Code::FailedPrecondition })?;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.terminate:{name}@{}", birth.as_str())).await?;
@@ -2168,34 +2185,33 @@ impl DeploymentPipeline<'_> {
             self.complete(&mut run).await?;
             Ok(receipt)
         }
-        .instrument(span)
-        .await
+        .instrument(span))
     }
 
     /// Retire `req.node` through every step (node.delete): the provider's exact terminal receipt of
     /// the birth's runtime, the proof its NodeDeleted was published from.
-    pub async fn delete_node(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+    pub fn delete_node<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
-        self.delete_steps(req, Terminate::Unreached).instrument(span).await
+        Box::pin(self.delete_steps(req, Terminate::Unreached).instrument(span))
     }
 
     /// An explicit node.delete of an unreached birth (a mesh.delete's lost or silent birth, a member of a
     /// mesh deleted in process under fabric.delete; fabric-delete.md "Receipts"): the unreached delete,
     /// except that an `os-stopped` runtime is terminated `Immediate` (deployment-provider.md §2.5;
     /// node-runtime-inspect.md "What follows"), never left as node recovery leaves it.
-    pub async fn delete_explicit(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+    pub fn delete_explicit<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
-        self.delete_steps(req, Terminate::Explicit).instrument(span).await
+        Box::pin(self.delete_steps(req, Terminate::Explicit).instrument(span))
     }
 
     /// Fabric recovery's backbone arm's node.delete of the exact lost birth (fabric-recovery.md step 3,
     /// Q148): the unreached delete, its runtime read and never terminated.
-    pub async fn delete_from_backbone(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+    pub fn delete_from_backbone<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
-        self.delete_steps(req, Terminate::Backbone).instrument(span).await
+        Box::pin(self.delete_steps(req, Terminate::Backbone).instrument(span))
     }
 
     async fn delete_steps(&self, req: &RetireRequest, unreached: Terminate) -> Result<TerminalReceipt, PipelineError> {
@@ -2281,10 +2297,10 @@ impl DeploymentPipeline<'_> {
     /// nobody is left in the fabric to record it ("Receipts": the one exception). The executor ends its
     /// runtime through the provider after the reply (`AdminRunner::delete_own`). Every other node.delete
     /// is [`Self::delete_node`]: the provider's `Exited` before node.deleted.
-    pub async fn delete_own(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    pub fn delete_own<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
-        async {
+        Box::pin(async move {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
             let mut node = req.node.clone();
@@ -2310,8 +2326,7 @@ impl DeploymentPipeline<'_> {
             .await?;
             self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await
         }
-        .instrument(span)
-        .await
+        .instrument(span))
     }
 
     /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
@@ -2599,57 +2614,54 @@ impl DeploymentPipeline<'_> {
 
     /// A recipe's node.mesh.leave of `node` (`node.mesh.leave:<path>`, node-mesh-leave.md): `leave`
     /// is the mesh-primary's carry of `LeaveMesh` to the exact birth, then `Complete`.
-    pub async fn leave_mesh<F>(&self, build_id: &BuildId, attempt: u32, node: &PathName, leave: F) -> Result<(), PipelineError>
+    pub fn leave_mesh<'a, F>(&'a self, build_id: &'a BuildId, attempt: u32, node: &'a PathName, leave: F) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>>
     where
-        F: std::future::Future<Output = Result<(), String>>,
+        F: std::future::Future<Output = Result<(), String>> + Send + 'a,
     {
         use tracing::Instrument;
         let span = self.pipeline_span("leave", build_id, node, attempt);
-        async {
+        Box::pin(async move {
             let mut run = self.begin(build_id, attempt, node, format!("node.mesh.leave:{node}")).await?;
             self.step(&mut run, LeaveStep::LeaveMesh.name(), leave).await?;
             self.step(&mut run, LeaveStep::Complete.name(), async { Ok(()) }).await
         }
-        .instrument(span)
-        .await
+        .instrument(span))
     }
 
     /// node.name.update of the name of `node` as a recipe's step (node-name-update.md;
     /// lifecycles/node-replace.md step 2), as ONE operation `node.update:<path>`: `UpdateNode`, the
     /// update `put` (node.name.update's own core at the node's mesh-primary, answered `NameUpdated`
     /// or refused by name), then `Complete`.
-    pub async fn update_name<F>(&self, build_id: &BuildId, attempt: u32, node: &PathName, put: F) -> Result<(), PipelineError>
+    pub fn update_name<'a, F>(&'a self, build_id: &'a BuildId, attempt: u32, node: &'a PathName, put: F) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>>
     where
-        F: std::future::Future<Output = Result<(), String>>,
+        F: std::future::Future<Output = Result<(), String>> + Send + 'a,
     {
         use tracing::Instrument;
         let span = self.pipeline_span("update", build_id, node, attempt);
-        async {
+        Box::pin(async move {
             let mut run = self.begin(build_id, attempt, node, format!("node.update:{node}")).await?;
             self.step(&mut run, UpdateStep::UpdateNode.name(), put).await?;
             self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await
         }
-        .instrument(span)
-        .await
+        .instrument(span))
     }
 
     /// A property of `node` a Build applies in place (build.md §1, "The Build applies the diff") as the
     /// Build operation `operation` (`node.config.update:<path>`, `node.tags.create:<path>`,
     /// `node.tags.delete:<path>`): its one step `step`, the put at the node's mesh-primary, then
     /// `Complete`. No runtime is touched.
-    pub async fn apply_in_place<F>(&self, build_id: &BuildId, attempt: u32, node: &PathName, operation: String, step: &'static str, put: F) -> Result<(), PipelineError>
+    pub fn apply_in_place<'a, F>(&'a self, build_id: &'a BuildId, attempt: u32, node: &'a PathName, operation: String, step: &'static str, put: F) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>>
     where
-        F: std::future::Future<Output = Result<(), String>>,
+        F: std::future::Future<Output = Result<(), String>> + Send + 'a,
     {
         use tracing::Instrument;
         let span = self.pipeline_span("update", build_id, node, attempt);
-        async {
+        Box::pin(async move {
             let mut run = self.begin(build_id, attempt, node, operation).await?;
             self.step(&mut run, step, put).await?;
             self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await
         }
-        .instrument(span)
-        .await
+        .instrument(span))
     }
 }
 
