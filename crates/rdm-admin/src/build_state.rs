@@ -2276,6 +2276,8 @@ pub struct FileJournal {
 /// another is told apart from one that waited on the store root.
 struct Turn<'a> {
     guard: tokio::sync::MutexGuard<'a, Derived>,
+    /// The operation the turn is for: what its reads of the store root are named by.
+    op: &'static str,
     journal: &'a FileJournal,
     span: tracing::Span,
     began: std::time::Instant,
@@ -2409,7 +2411,7 @@ impl FileJournal {
         *self.turn_of.lock().unwrap() = Some((op, std::time::Instant::now()));
         self.turn_store_ns.store(0, std::sync::atomic::Ordering::Relaxed);
         self.hold_begins();
-        Turn { guard, journal: self, span, began: std::time::Instant::now() }
+        Turn { guard, op, journal: self, span, began: std::time::Instant::now() }
     }
 
     /// The holder of `writer` begins: its store calls' blocking I/O and the facts it reads are its own.
@@ -2441,10 +2443,10 @@ impl FileJournal {
     }
 
     /// The records on the store root this journal has not taken yet, each with its key: the file's
-    /// lines past the fold's offset, read now, and any a read could not take before. Nothing is marked
-    /// taken here.
-    async fn read_new(&self) -> Result<Vec<(String, StoredFact)>, BuildStateError> {
-        self.file.advance().await.map_err(store_io)?;
+    /// lines past the fold's offset, read now for `op` (the turn or read it is for, what a read that
+    /// waits on the file names), and any a read could not take before. Nothing is marked taken here.
+    async fn read_new(&self, op: &'static str) -> Result<Vec<(String, StoredFact)>, BuildStateError> {
+        self.file.advance_for(op).await.map_err(store_io)?;
         Ok(std::mem::take(&mut *self.unread.lock().unwrap_or_else(|e| e.into_inner())))
     }
 
@@ -2485,8 +2487,8 @@ impl FileJournal {
 
     /// Read the records not taken yet, under the writer's turn `w`: every admin reads the store root
     /// (Q185), the fabric-primary or not.
-    async fn sync(&self, w: &Derived) -> Result<(), BuildStateError> {
-        let read = self.store_call(self.read_new()).await?;
+    async fn sync(&self, w: &Turn<'_>) -> Result<(), BuildStateError> {
+        let read = self.store_call(self.read_new(w.op)).await?;
         self.take_read(w, read);
         Ok(())
     }
@@ -2497,7 +2499,7 @@ impl FileJournal {
     /// never waits behind a writer either. While it takes, `op` (the reader) is the holder a waiting
     /// turn names. Records a read could not take stay untaken for the next read.
     async fn sync_for_read(&self, op: &'static str) -> Result<(), BuildStateError> {
-        let read = self.read_new().await?;
+        let read = self.read_new(op).await?;
         match self.writer.try_lock() {
             Ok(w) => {
                 let _holder = ReadHolder::name(self, op);

@@ -225,8 +225,8 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node.mesh.update.via-left` | `crates/rdm-node/src/node_self.rs` | 1374 |
 | `rdm.node.mesh.update.via-left` | `crates/rdm-node/src/node_self.rs` | 1385 |
 | `rdm.node.status.reject.via-request-not-handled` | `crates/rdm-node/src/node_self.rs` | 1446 |
-| `rdm.node.store.resolve.via-fold` | `crates/rdm-node/src/store_log.rs` | 529 |
-| `rdm.node.store.update.via-tail-read-waiting` | `crates/rdm-node/src/store_log.rs` | 745 |
+| `rdm.node.store.resolve.via-fold` | `crates/rdm-node/src/store_log.rs` | 530 |
+| `rdm.node.store.update.via-tail-read-waiting` | `crates/rdm-node/src/store_log.rs` | 755 |
 | `rdm.node.tickle.resolve.via-direct` | `crates/rdm-admin/src/offline.rs` | 440 |
 | `rdm.node.tickle.resolve.via-peer` | `crates/rdm-admin/src/offline.rs` | 468 |
 | `rdm.node.tickle.returns-unknown.via-unreached` | `crates/rdm-admin/src/offline.rs` | 494 |
@@ -336,7 +336,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.update.via-fetch-facts` | `crates/rdm-admin/src/fetch_build.rs` | 254 |
 | `rdm.node_admin.build.update.via-interrupted` | `crates/rdm-admin/src/executor.rs` | 577 |
 | `rdm.node_admin.build.update.via-interrupted-terminal` | `crates/rdm-admin/src/build_drive.rs` | 1511 |
-| `rdm.node_admin.build.update.via-journal-turn` | `crates/rdm-admin/src/build_state.rs` | 2387 |
+| `rdm.node_admin.build.update.via-journal-turn` | `crates/rdm-admin/src/build_state.rs` | 2389 |
 | `rdm.node_admin.build.update.via-node-recovery` | `crates/rdm-admin/src/admin/recovery.rs` | 431 |
 | `rdm.node_admin.build.update.via-node-rpc` | `crates/rdm-admin/src/build_op.rs` | 95 |
 | `rdm.node_admin.build.update.via-owner-facts-absorbed` | `crates/rdm-admin/src/mesh_delete.rs` | 641 |
@@ -781,7 +781,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.testkit.fault.update.via-arm` | `crates/rdm-test/src/admin_faults.rs` | 338 |
 | `rdm.testkit.fault.update.via-container-command` | `crates/rdm-test/src/container_faults.rs` | 624 |
 | `rdm.testkit.fault.update.via-disk-fill` | `crates/rdm-test/src/disk_faults.rs` | 77 |
-| `rdm.testkit.fault.update.via-hold` | `crates/rdm-node/src/store_log.rs` | 1169 |
+| `rdm.testkit.fault.update.via-hold` | `crates/rdm-node/src/store_log.rs` | 1179 |
 | `rdm.testkit.fault.update.via-hold` | `crates/rdm-test/src/admin_faults.rs` | 416 |
 | `rdm.testkit.fault.update.via-hold` | `crates/rdm-test/src/admin_faults.rs` | 444 |
 | `rdm.testkit.fault.update.via-inbound-drop` | `crates/rdm-test/src/link_faults.rs` | 233 |

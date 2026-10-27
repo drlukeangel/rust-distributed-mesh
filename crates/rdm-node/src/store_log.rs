@@ -487,9 +487,10 @@ struct Inner {
     /// that call (a task its node-admin's stop gate holds, stop_gate.rs) keeps no lock another
     /// task's read needs, and the read it began still ends.
     reading: Mutex<()>,
-    /// The tail read in progress: the span it was called under, and since when. What a read that
-    /// waits for it names ([`Inner::read_waits`]).
-    reading_by: Mutex<Option<(&'static str, std::time::Instant)>>,
+    /// The tail read in progress: the span it was called under, the reader it was called for
+    /// ([`StoreLog::advance_for`]), and since when. What a read that waits for it names
+    /// ([`Inner::read_waits`]).
+    reading_by: Mutex<Option<(&'static str, &'static str, std::time::Instant)>>,
     /// One append at a time, holding this store's pending append.
     append: Arc<tokio::sync::Mutex<Option<Pending>>>,
     /// Shown every line the fold reads, once each, in file order: an index the store folds beside
@@ -597,6 +598,14 @@ impl StoreLog {
     /// task its node-admin's stop gate holds) keeps nothing another read needs, and the read ends and
     /// is folded whether the caller is polled again or not.
     pub async fn advance(&self) -> Result<(), StorageError> {
+        self.advance_for("").await
+    }
+
+    /// [`StoreLog::advance`] for `reader`, the operation that reads (a Build journal's turn or read,
+    /// `current_build`): a read that waits for another names both its own reader and the one it
+    /// waits for, beside their callers' spans, so a wait that never ends names what is still open
+    /// even where the caller runs under no span.
+    pub async fn advance_for(&self, reader: &'static str) -> Result<(), StorageError> {
         let caller = caller_span();
         let parent = tracing::Span::current();
         #[cfg(feature = "testkit-store")]
@@ -607,11 +616,11 @@ impl StoreLog {
                 Ok(one) => one,
                 Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
                 Err(std::sync::TryLockError::WouldBlock) => {
-                    inner.read_waits(caller, &parent);
+                    inner.read_waits(caller, reader, &parent);
                     inner.reading.lock().unwrap_or_else(|e| e.into_inner())
                 }
             };
-            let _by = ReadingBy::begin(&inner, caller);
+            let _by = ReadingBy::begin(&inner, caller, reader);
             #[cfg(feature = "testkit-store")]
             if let Some(door) = door {
                 door.hold();
@@ -722,8 +731,8 @@ fn caller_span() -> &'static str {
 struct ReadingBy<'a>(&'a Inner);
 
 impl<'a> ReadingBy<'a> {
-    fn begin(inner: &'a Inner, caller: &'static str) -> Self {
-        *inner.reading_by.lock().unwrap_or_else(|e| e.into_inner()) = Some((caller, std::time::Instant::now()));
+    fn begin(inner: &'a Inner, caller: &'static str, reader: &'static str) -> Self {
+        *inner.reading_by.lock().unwrap_or_else(|e| e.into_inner()) = Some((caller, reader, std::time::Instant::now()));
         Self(inner)
     }
 }
@@ -735,14 +744,15 @@ impl Drop for ReadingBy<'_> {
 }
 
 impl Inner {
-    /// A tail read called under `caller` waits for the one in progress on this file: named on its own
-    /// span when the wait begins, so a wait that never ends still names the read it waits for.
-    fn read_waits(&self, caller: &'static str, parent: &tracing::Span) {
-        let (held_by, held_ms) = match *self.reading_by.lock().unwrap_or_else(|e| e.into_inner()) {
-            Some((by, since)) => (by, since.elapsed().as_millis() as u64),
-            None => ("", 0),
+    /// A tail read called under `caller` for `reader` waits for the one in progress on this file:
+    /// named on its own span when the wait begins, so a wait that never ends still names the read it
+    /// waits for (`held_by`, its caller's span; `held_reader`, its reader).
+    fn read_waits(&self, caller: &'static str, reader: &'static str, parent: &tracing::Span) {
+        let (held_by, held_reader, held_ms) = match *self.reading_by.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some((by, held_reader, since)) => (by, held_reader, since.elapsed().as_millis() as u64),
+            None => ("", "", 0),
         };
-        tracing::info_span!(parent: parent, "rdm.node.store.update.via-tail-read-waiting", file = %self.path.display(), caller, held_by, held_ms)
+        tracing::info_span!(parent: parent, "rdm.node.store.update.via-tail-read-waiting", file = %self.path.display(), caller, reader, held_by, held_reader, held_ms)
             .in_scope(|| tracing::info!("this tail read waits for the one in progress on the same file"));
     }
 
