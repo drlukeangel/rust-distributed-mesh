@@ -1968,23 +1968,6 @@ impl Run {
         attempt
     }
 
-    /// The caller's resubmit of `build_id`, whose restart's stop of `node` ended at `failed_attempt`
-    /// (node-rpc-envelope.md build.create: "existing build_id for resubmission"; R-PV1: "the
-    /// uncompleted stop-then-start sequence runs again through the caller's resubmit"): never a second
-    /// Build. Its `Started` names the attempt the caller resubmits from; the attempt it drives is the
-    /// next one, which [`Self::finish`] waits for. The caller's stream is read on a task of its own.
-    async fn write_resubmit(&mut self, f: &Formed, st: &Stable, what: &str, node: &str, build_id: &str, failed_attempt: u32) {
-        use rdm_client::{Nodes, WorkflowKind};
-        let t0 = now_ms();
-        let nodes = Nodes::new(f.estate.carrier_at(&path_of(&st.fp_name())).await);
-        let accepted = rdm_core::dto::Accepted { build_id: build_id.parse().unwrap_or_else(|e| panic!("{what}: {build_id} is not a Build id: {e:?}")), attempt: failed_attempt };
-        let mut stream = nodes.resume(WorkflowKind::Stop(node.parse().unwrap()), &accepted).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {} refused the resubmit of {build_id}: {e}", st.fp_name()));
-        tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
-        self.attempts.insert(build_id.to_string(), u64::from(failed_attempt) + 1);
-        self.actions.push(json!({"t_ms": t0, "action": what, "via": "build.create resubmit", "subject": node, "build_id": build_id, "from_attempt": failed_attempt, "accepted_by": st.fp["name"]}));
-        progress(&format!("{what}: {build_id} resubmitted from attempt {failed_attempt} to {}", st.fp_name()));
-    }
-
     /// Submit the replace recipe of `node` (lifecycles/node-replace.md: one Build of node primitives)
     /// to the fabric-primary over the `node` objects: the Build it runs on. The attempt it opened is
     /// what [`Self::finish`] waits for. The caller's stream is read on a task of its own.
@@ -4322,14 +4305,19 @@ fn exact_rt_from_record(r: &Value, retired: &Value) -> Rt {
 }
 
 /// The provider's action meets a held runtime: with the node's exact runtime held (acknowledged by the
-/// provider) the fabric-primary is asked to restart it. The Build's attempt cannot stop a runtime that
-/// does not answer; what it does is observed from the Build's own projection and the node's view, every
-/// 500 ms, for as long as the hold lasts (10 s plus two staleness windows). Silence is never death: the node
-/// stays listed under its NodeId and no replacement is started. A restart terminates nothing
-/// (node-stop.md, node-start.md: the live process stops and rejoins, no relaunch), so the held runtime is alive at the
-/// end of the observation. The hold is then released (acknowledged); an attempt that failed on the held
-/// runtime is resubmitted by the caller, and the Build must complete with the node ready again as the
-/// same birth on the same runtime, within the 120 s `finish` gives it.
+/// provider) the fabric-primary is asked to restart it, node.stop then node.start (Q183). A held runtime
+/// admits no stop-node, so the stop's attempt cannot complete; the birth goes unheard, and its
+/// investigation reads it `os-stopped`, which is recovered at once like any verdict but `reached`
+/// (node-runtime-inspect.md "What follows"; node-recovery.md step 3; Q188: the cell follows the page).
+/// The recovery waits for the restart's attempt to end, then
+/// re-creates the path under a new NodeId as a further attempt of the same accepted Build: no Build is
+/// accepted for it. Recovery leaves an `os-stopped` runtime as it is (node-recovery.md step 3), so the
+/// held runtime is alive when the path is re-created, and no admin lists the held birth afterwards. The
+/// restart's own start is never sent: its target is a deleted birth. The hold is then released
+/// (acknowledged): the continued old birth is a deleted birth, refused by every view, reported by its
+/// mesh-primary and its runtime terminated by the fabric-primary under the current Build (Q188), which
+/// then completes. What must NOT happen: a Build minted for the recovery, the held runtime terminated by
+/// the recovery itself, the held birth listed after its re-creation, the released birth left running.
 async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
     let n = at(st, node).clone();
     let (node_id, inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
@@ -4340,67 +4328,67 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv:
     let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap());
     let build_id = a.write(f, st, "C17: node.restart of a node whose runtime is held", Write::Restart(node.to_string())).await;
     assert_eq!(build_id, fabric_build, "{node}: the restart is an attempt of the accepted Build");
-    // The stop-node the restart sends meets a runtime that reads nothing: its send budget is 5 s
-    // (node_commands.rs `send_command`, `NodeCommand::Stop`); the observation outlasts it by two
-    // staleness windows, so what the attempt does with a stop that met a held runtime is seen,
-    // whichever way it goes.
-    let window = 10_000 + 2 * std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
-    let until = Instant::now() + Duration::from_millis(window);
+    let restart_attempt = a.attempts[&build_id];
+    // Re-created at its path: a new NodeId ready there, under the same current Build. The bound is
+    // hold_phase's: a staleness floor to the silence, the investigation, the restart's attempt ending
+    // (its stop-node's send bound) and the recovery's create.
+    let floor_ms = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
+    let bound = Duration::from_millis(4 * floor_ms + 60_000);
+    let t = Instant::now();
     let mut seen: Vec<Value> = Vec::new();
-    let mut completed_while_held = false;
-    while Instant::now() < until {
+    let ready = loop {
         let b = a.build(f, &build_id).await.unwrap_or(Value::Null);
         a.observe_build(&b);
-        let views = admin_views_of(a, f, node).await;
-        for v in &views {
-            assert!(v["lists_path"] == true && v["node_id"] == json!(node_id), "{node}: an admin stopped listing the node under its NodeId while its restart waited on a held runtime: {v}");
+        let ns = a.nodes_now(f).await;
+        let at_path = ns.iter().find(|x| x["name"] == node).cloned();
+        seen.push(json!({"t_ns": now_ns(), "build_state": b["state"], "attempt": b["attempt"], "executor": b["executor"], "reason": b["reason"], "last_failure": b["last_failure"], "at_path": at_path.as_ref().map(|x| json!({"node_id": x["node_id"], "status": x["status"]}))}));
+        if let Some(x) = at_path.filter(|x| x["status"] == "ready-for-traffic" && x["node_id"] != node_id.as_str()) {
+            break x;
         }
-        seen.push(json!({"t_ns": now_ns(), "build_state": b["state"], "attempt": b["attempt"], "executor": b["executor"], "reason": b["reason"], "last_failure": b["last_failure"], "node_statuses": views.iter().map(|v| v["status"].clone()).collect::<Vec<_>>()}));
-        if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= a.attempts[&build_id] && views.iter().all(|v| v["node_id"] == json!(node_id)) && a.nodes_now(f).await.iter().any(|x| x["name"] == node && x["incarnation_id"] == inc.as_str() && x["status"] == "ready-for-traffic") {
-            completed_while_held = true;
-            break;
-        }
+        assert!(t.elapsed() < bound, "{node} was not re-created at its path within {bound:?} of its restart while its runtime was held");
         tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    let observed_ns = now_ns();
-    // The provider's view of the held runtime at the end of the observation: alive and stopped, or gone.
-    let runtime_at_end = match &rt {
+    };
+    let recreated_ms = t.elapsed().as_millis() as u64;
+    let recreated_ns = now_ns();
+    // Recovery leaves an `os-stopped` runtime as it is (node-recovery.md step 3): the held runtime is alive.
+    let runtime_at_recreation = match &rt {
         Rt::Process(r) => json!({"check": format!("{:?}", r.check()), "state": proc_state_of(r.pid)}),
         Rt::Container(c) => json!(container_faults::inspect(&c.id).map(|i| json!({"status": i.status, "running": i.running})).unwrap_or_else(|e| json!({"gone": e}))),
     };
-    assert!(rt_alive(&rt), "{node}: a restart terminates nothing, and the held runtime is gone at the end of the observation: {runtime_at_end}");
+    assert!(rt_alive(&rt), "{node}: the recovery terminated the held (os-stopped) runtime, which it leaves as it is: {runtime_at_recreation}");
+    let fabric = a.fabric(f).await.unwrap_or(Value::Null);
+    assert_eq!(s(&fabric["build_id"]), fabric_build, "{node}: the recovery minted no Build: {fabric}");
+    for v in admin_views_of(a, f, node).await {
+        assert!(v["node_id"] != json!(node_id), "{node}: an admin still lists the held birth after its re-creation: {v}");
+    }
     let release_ack = held.release();
     let release_ns = now_ns();
-    // A stop that met the held runtime was not admitted (NotSent): the attempt ends `Failed { step,
-    // reason }`, no success follows it, and the caller resubmits (node-rpc-envelope.md, Caller execution
-    // and certainty: "A failure is `Failed { step, reason }`: no downstream success event follows it",
-    // "The caller resubmits the same build_id to the fabric-primary"). The resubmitted restart is the
-    // next attempt of the same accepted Build.
-    let after_hold = a.build(f, &build_id).await.unwrap_or(Value::Null);
-    let resubmitted = (!completed_while_held && after_hold["state"] == "failed").then(|| json!({"failed_attempt": after_hold["failed_at"], "last_failure": after_hold["last_failure"]}));
-    if resubmitted.is_some() {
-        // The failed attempt leaves the restart open: every view lists the birth `restarting` (commanded
-        // silence its executor owns) until its node.started, and a fresh node.restart of it is refused
-        // `node-not-live`. The caller resubmits the Build; its next attempt runs the whole stop, then the
-        // whole start (R-PV1).
-        let failed_attempt = u32::try_from(a.attempts[&build_id]).expect("an attempt number");
-        a.write_resubmit(f, st, "C17: the failed restart resubmitted after the hold's release", node, &build_id, failed_attempt).await;
-    }
-    let fin = a.finish(f, &build_id, Until::Restarted { node: node.into(), node_id: node_id.clone(), incarnation: inc.clone() }, "after-hold-release").await;
-    let after = f.estate.node_value(node).await;
-    assert_eq!(after["node_id"], n["node_id"], "{node}: the restart of a held runtime keeps the logical node");
-    assert_eq!(after["incarnation_id"], n["incarnation_id"], "{node}: the restart of a held runtime keeps the incarnation (node-stop.md, Kept)");
+    // The released birth comes back as a deleted birth (Q188): refused by every view, reported by its
+    // mesh-primary, and its runtime terminated by the fabric-primary under the current Build, which completes.
+    let t = Instant::now();
+    let after = loop {
+        let b = a.build(f, &fabric_build).await.unwrap_or(Value::Null);
+        a.observe_build(&b);
+        if !rt_alive(&rt) && b["state"] == "complete" {
+            break b;
+        }
+        assert!(t.elapsed() < bound, "{node}: the released held birth was not terminated with the Build complete within {bound:?}: alive={} build {b}", rt_alive(&rt));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    let attempt_after = after["attempt"].as_u64().unwrap_or(0);
+    assert!(attempt_after > restart_attempt, "{node}: the recovery is a further attempt of the accepted Build than the restart's {restart_attempt}: {after}");
     let rt_after = exact_runtime(f, node).await;
-    let runtimes = live_and_same(node, &rt, &rt_after);
+    assert!(!rt.is(&rt_after), "{node}: the re-created birth runs in the held birth's runtime: {:?}", rt_after.record());
     let rec = json!({
-        "node": node, "node_id": node_id, "incarnation_id": inc, "build_id": build_id, "attempt_before": attempt_before, "attempt_after": fin["build"]["attempt"],
-        "hold_ack": hold_ack, "hold_ns": hold_ns, "observation_window_ms": window, "observed_until_ns": observed_ns, "observations": seen, "restart_completed_while_held": completed_while_held,
-        "runtime_at_end_of_observation": runtime_at_end, "release_ack": release_ack, "release_ns": release_ns, "resubmitted_after_failed_attempt": resubmitted, "wall_after_release_ms": fin["wall_ms"], "runtimes": runtimes,
+        "node": node, "node_id": node_id, "incarnation_id": inc, "build_id": build_id, "attempt_before": attempt_before, "restart_attempt": restart_attempt, "attempt_after": attempt_after,
+        "hold_ack": hold_ack, "hold_ns": hold_ns, "observations": seen, "recreated_ms": recreated_ms, "recreated_ns": recreated_ns, "new_node_id": ready["node_id"], "new_incarnation_id": ready["incarnation_id"],
+        "runtime_at_recreation": runtime_at_recreation, "release_ack": release_ack, "release_ns": release_ns, "terminated_after_release_ms": t.elapsed().as_millis() as u64,
+        "runtimes": {"held": rt.record(), "recreated": rt_after.record()},
     });
     inv.holds(
-        &format!("{node}: a restart requested while its exact runtime was held (acknowledged) kept the logical node listed under its NodeId in every admin's view; it terminated nothing, completed {} and ended in the same exact birth of the same NodeId on the same runtime", if completed_while_held { "while the hold was in force" } else { "after the release" }),
+        &format!("{node}: a restart requested while its exact runtime was held (acknowledged) did not complete on it; the held birth was recovered at once as {} after {recreated_ms} ms under the same Build (os-stopped, Q188), its runtime left as it is until the release, then terminated as a deleted birth", s(&ready["node_id"])),
         true,
-        json!({"node_id": node_id, "restart_completed_while_held": completed_while_held, "wall_after_release_ms": fin["wall_ms"]}),
+        json!({"node_id": node_id, "new_node_id": ready["node_id"], "recreated_ms": recreated_ms, "restart_attempt": restart_attempt, "attempt_after": attempt_after}),
     );
     rec
 }
