@@ -106,6 +106,15 @@ pub enum OriginateRequest {
         /// The reason the transport stopped.
         reason: String,
     },
+    /// Block (`blocked: true`) or release this node's Direct dials toward `destination` on its one
+    /// data-plane ALPN: a blocked dial answers `NotSent` and records Direct Failed, as an unreachable
+    /// direct dial does (`connection_faults::block_direct`, connections.md §13 A, F, J).
+    BlockDirect {
+        /// The `path.name` whose Direct dials are blocked or released.
+        destination: String,
+        /// Block when true, release when false.
+        blocked: bool,
+    },
 }
 
 /// Who answered.
@@ -167,6 +176,9 @@ pub enum OriginateReply {
         own_latest_directs: Vec<NodeConnection>,
         /// The number of active Direct facts held that name a destination process still current.
         active_len: usize,
+        /// Every active Direct fact held, whatever its source (connections.md §4.1: the fleet-wide
+        /// Direct graph a source discovers carriers from).
+        active_directs: Vec<NodeConnection>,
         /// The Proxy retirements the node owes now.
         owed: Vec<NodeConnection>,
         /// The number of writes the fault has refused.
@@ -260,6 +272,15 @@ pub enum OriginateReply {
         /// The reason recorded.
         reason: String,
     },
+    /// The Direct dial block toward `destination` is set as asked.
+    DirectBlocked {
+        /// Who set it.
+        by: AnsweredBy,
+        /// The `path.name` the block names.
+        destination: String,
+        /// Whether Direct dials toward it are now blocked.
+        blocked: bool,
+    },
 }
 
 impl NodeProtocol for Originate {
@@ -268,8 +289,8 @@ impl NodeProtocol for Originate {
     const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 65536;
     const FORWARDABLE: bool = false;
-    const REQUEST_VARIANTS: u32 = 8;
-    const REPLY_VARIANTS: u32 = 16;
+    const REQUEST_VARIANTS: u32 = 9;
+    const REPLY_VARIANTS: u32 = 17;
     type Request = OriginateRequest;
     type Reply = OriginateReply;
 
@@ -291,6 +312,7 @@ impl NodeProtocol for Originate {
             OriginateReply::Streamed { .. } => "streamed",
             OriginateReply::StreamFailed { .. } => "stream-failed",
             OriginateReply::TransportStopMarked { .. } => "transport-stop-marked",
+            OriginateReply::DirectBlocked { .. } => "direct-blocked",
         }
     }
     fn classify_reply(reply: &OriginateReply) -> ReplyKind {
@@ -311,6 +333,7 @@ impl NodeProtocol for Originate {
             OriginateReply::Streamed { .. } => ReplyKind::Success,
             OriginateReply::StreamFailed { .. } => ReplyKind::Success,
             OriginateReply::TransportStopMarked { .. } => ReplyKind::Success,
+            OriginateReply::DirectBlocked { .. } => ReplyKind::Success,
         }
     }
 
@@ -350,6 +373,9 @@ pub struct Seams {
     /// The dial half of this node's one data-plane ALPN, set once the node runs
     /// (`node::start_with_seams_and_alpn`); unset, `Stream` is refused by name.
     pub data_plane: Arc<std::sync::OnceLock<rdm_transport::connections::Dialer>>,
+    /// This node's data-plane connections registry and the name of its one data-plane ALPN, set
+    /// with [`Self::data_plane`]: the testkit's Direct dial block acts on it (`BlockDirect`).
+    pub data_plane_registry: Arc<std::sync::OnceLock<(rdm_transport::connections::ConnectionsRegistry, Vec<u8>)>>,
 }
 
 /// Serve the door on this node's own seams, with the testkit's default carrier policy ([`POLICY`]).
@@ -379,6 +405,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                 OriginateRequest::RecordProxy { destination, carrier, failed_attempts } => record_proxy(&by, &seams, &destination, &carrier, failed_attempts).await,
                 OriginateRequest::Dial { destination } => dial(&by, &seams, &destination).await,
                 OriginateRequest::Stream { destination, payload } => stream(&by, &seams, &destination, payload).await,
+                OriginateRequest::BlockDirect { destination, blocked } => block_direct(&by, &seams, &destination, blocked),
                 OriginateRequest::StopTransport { reason } => {
                     // The mark runs after this reply is on its way: the exit it causes is the real one.
                     let marked = reason.clone();
@@ -396,6 +423,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                         own_active_proxies: held.own_active_proxies().into_iter().cloned().collect(),
                         own_latest_directs: held.own_latest_directs().into_iter().cloned().collect(),
                         active_len: held.active_len(),
+                        active_directs: held.active_directs().into_iter().cloned().collect(),
                         owed: rdm_core::reconnect::owed_direct_restored(&held, 0),
                         fault_refused: seams.fault.refused(),
                     }
@@ -512,6 +540,23 @@ async fn stream(by: &AnsweredBy, seams: &Seams, destination: &str, payload: Vec<
         connection_id: conn.id().to_string(),
         answered,
     }
+}
+
+/// Block or release this node's Direct dials toward `destination` on its one data-plane ALPN.
+fn block_direct(by: &AnsweredBy, seams: &Seams, destination: &str, blocked: bool) -> OriginateReply {
+    let path: PathName = match destination.parse() {
+        Ok(p) => p,
+        Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
+    };
+    let Some((registry, alpn)) = seams.data_plane_registry.get() else {
+        return OriginateReply::StreamFailed { by: by.clone(), reason: "no-data-plane-alpn: this node registered no data-plane ALPN".into() };
+    };
+    if blocked {
+        registry.block_direct_dial(&path, alpn);
+    } else {
+        registry.unblock_direct_dial(&path, alpn);
+    }
+    OriginateReply::DirectBlocked { by: by.clone(), destination: path.to_string(), blocked }
 }
 
 async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier: &str, failed_attempts: u32) -> OriginateReply {

@@ -107,7 +107,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--since" => since = Some(take("--since")?),
             "--carrier" => carrier = Some(take("--carrier")?),
             "--failed-attempts" => failed_attempts = take("--failed-attempts")?.parse().map_err(|e| format!("--failed-attempts: {e}"))?,
-            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "stop-transport" | "topology" | "nodes" | "fabric-delete" | "node-delete" if op.is_none() => op = Some(a),
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "block-direct" | "stop-transport" | "topology" | "nodes" | "fabric-delete" | "node-delete" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -320,7 +320,7 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
     if a.op == "topology" {
         return run_topology(&a, &target).await.map(|value| (value, None));
     }
-    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "stop-transport") {
+    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "block-direct" | "stop-transport") {
         return run_originate(&a, &target).await.map(|value| (value, None));
     }
     let req = request(&a)?;
@@ -495,6 +495,10 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             OriginateRequest::RecordProxy { destination: path("--destination", &a.destination)?, carrier: path("--carrier", &a.carrier)?, failed_attempts: a.failed_attempts }
         }
         "stop-transport" => OriginateRequest::StopTransport { reason: "testkit stop-transport".to_string() },
+        "block-direct" => OriginateRequest::BlockDirect {
+            destination: a.destination.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or("block-direct needs --destination path:<path.name>")?,
+            blocked: !a.release,
+        },
         "fault" if a.release => OriginateRequest::ReleaseFault,
         "fault" => OriginateRequest::ArmFault { refuse_index: a.refuse_index, refuse_history: a.refuse_history, pass_history: a.pass_history },
         _ => OriginateRequest::Snapshot,
@@ -513,9 +517,9 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             }),
             OriginateReply::FaultArmed { by, refuse_index, refuse_history } => json!({"outcome": "Reply", "by": by.node, "fault": "armed", "refuse_index": refuse_index, "refuse_history": refuse_history}),
             OriginateReply::FaultReleased { by, refused } => json!({"outcome": "Reply", "by": by.node, "fault": "released", "refused": refused}),
-            OriginateReply::Snapshot { by, own_active_proxies, own_latest_directs, active_len, owed, fault_refused } => json!({
+            OriginateReply::Snapshot { by, own_active_proxies, own_latest_directs, active_len, active_directs, owed, fault_refused } => json!({
                 "outcome": "Reply", "by": by.node, "own_active_proxies": own_active_proxies, "own_latest_directs": own_latest_directs,
-                "active_len": active_len, "owed": owed, "fault_refused": fault_refused,
+                "active_len": active_len, "active_directs": active_directs, "owed": owed, "fault_refused": fault_refused,
             }),
             OriginateReply::TransportStopMarked { by, reason } => json!({"outcome": "Reply", "by": by.node, "transport_stop_marked": reason}),
             OriginateReply::Dialed { by, destination_node_id, outcome } => json!({"outcome": "Reply", "by": by.node, "dialed": outcome, "destination_node_id": destination_node_id}),
@@ -524,6 +528,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
                 "peer_incarnation": peer.incarnation_id, "answered": String::from_utf8_lossy(answered),
             }),
             OriginateReply::StreamFailed { by, reason } => json!({"outcome": "Reply", "by": by.node, "streamed": false, "reason": reason}),
+            OriginateReply::DirectBlocked { by, destination, blocked } => json!({"outcome": "Reply", "by": by.node, "direct_blocked": blocked, "destination": destination}),
             OriginateReply::ProxyRecorded { by, destination_node_id, destination_incarnation, carrier_node_id, carrier_incarnation, failed_attempts } => json!({
                 "outcome": "Reply", "by": by.node, "proxy_recorded": true, "destination_node_id": destination_node_id, "destination_incarnation": destination_incarnation,
                 "carrier_node_id": carrier_node_id, "carrier_incarnation": carrier_incarnation, "failed_attempts": failed_attempts,

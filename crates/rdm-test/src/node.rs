@@ -99,14 +99,37 @@ pub const APP_PROTOCOL: &[u8] = b"rdm-test/echo/1";
 /// [`APP_PROTOCOL`].
 pub const APP_PROTOCOL_KNOB: &str = "app-protocol.knob";
 
+/// The file, under the root that holds an estate's data dirs, that has its rpc nodes register
+/// [`APP_PROTOCOL`] forwardable through an rpc node carrier (connections.md §6, §7): a Direct open
+/// that ends `NotSent` proves a Proxy through a carrier.
+pub const APP_PROTOCOL_FORWARDABLE_KNOB: &str = "app-protocol-forwardable.knob";
+
 /// [`APP_PROTOCOL`] as the `Alpn` a node or a node-admin registers.
 pub fn app_protocol() -> rdm_transport::connections::Alpn {
     rdm_transport::connections::Alpn { name: APP_PROTOCOL.to_vec(), forwardable: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
 }
 
-/// Whether `launch`'s root holds [`APP_PROTOCOL_KNOB`].
+/// [`app_protocol`], forwardable through an rpc node carrier.
+pub fn app_protocol_forwardable() -> rdm_transport::connections::Alpn {
+    rdm_transport::connections::Alpn { forwardable: true, ..app_protocol() }
+}
+
+/// Whether `launch`'s root holds [`APP_PROTOCOL_KNOB`] or [`APP_PROTOCOL_FORWARDABLE_KNOB`].
 pub fn app_protocol_knob(launch: &Launch) -> bool {
-    launch.data_dir.parent().is_some_and(|root| root.join(APP_PROTOCOL_KNOB).exists())
+    app_protocol_for(launch).is_some()
+}
+
+/// The app protocol `launch`'s root asks its rpc nodes to register: forwardable under
+/// [`APP_PROTOCOL_FORWARDABLE_KNOB`], not under [`APP_PROTOCOL_KNOB`], none without either.
+pub fn app_protocol_for(launch: &Launch) -> Option<rdm_transport::connections::Alpn> {
+    let root = launch.data_dir.parent()?;
+    if root.join(APP_PROTOCOL_FORWARDABLE_KNOB).exists() {
+        Some(app_protocol_forwardable())
+    } else if root.join(APP_PROTOCOL_KNOB).exists() {
+        Some(app_protocol())
+    } else {
+        None
+    }
 }
 
 /// Answer every stream of every connection `acceptor` admits with `echo <own>: <the bytes it read>`.
@@ -137,9 +160,11 @@ pub async fn start_pre_node_ready_with_alpn(
 ) -> Result<(RunningNode, rdm_transport::connections::Acceptor)> {
     let name = alpn.name.clone();
     let dialer = Arc::new(std::sync::OnceLock::new());
-    let running = start_with_rafka_time_pre_node_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, register, &[alpn], dialer.clone()).await?;
+    let registry = Arc::new(std::sync::OnceLock::new());
+    let running = start_with_rafka_time_pre_node_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, register, &[alpn], dialer.clone(), registry.clone()).await?;
     let (d, acceptor) = running.connections(&name).map_err(|e| anyhow::anyhow!("taking the {:?} handle: {e:?}", String::from_utf8_lossy(&name)))?.split();
     let _ = dialer.set(d);
+    let _ = registry.set((running.data_connections_for_testkit().clone(), name));
     Ok((running, acceptor))
 }
 
@@ -153,9 +178,11 @@ pub async fn start_with_seams_and_alpn(
 ) -> Result<(RunningNode, rdm_transport::connections::Acceptor)> {
     let name = alpn.name.clone();
     let dialer = Arc::new(std::sync::OnceLock::new());
-    let running = start_with_rafka_time_pre_node_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), register, &[alpn], dialer.clone()).await?;
+    let registry = Arc::new(std::sync::OnceLock::new());
+    let running = start_with_rafka_time_pre_node_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), register, &[alpn], dialer.clone(), registry.clone()).await?;
     let (d, acceptor) = running.connections(&name).map_err(|e| anyhow::anyhow!("taking the {:?} handle: {e:?}", String::from_utf8_lossy(&name)))?.split();
     let _ = dialer.set(d);
+    let _ = registry.set((running.data_connections_for_testkit().clone(), name));
     Ok((running, acceptor))
 }
 
@@ -165,7 +192,7 @@ async fn start_with_rafka_time_pre_node_ready(
     node_hooks: rdm_node::node_hooks::NodeHooks,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<RunningNode> {
-    start_with_rafka_time_pre_node_ready_alpns(launch, rafka_time, node_hooks, register, &[], Arc::new(std::sync::OnceLock::new())).await
+    start_with_rafka_time_pre_node_ready_alpns(launch, rafka_time, node_hooks, register, &[], Arc::new(std::sync::OnceLock::new()), Arc::new(std::sync::OnceLock::new())).await
 }
 
 async fn start_with_rafka_time_pre_node_ready_alpns(
@@ -175,6 +202,7 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
     alpns: &[rdm_transport::connections::Alpn],
     data_plane: Arc<std::sync::OnceLock<rdm_transport::connections::Dialer>>,
+    data_plane_registry: Arc<std::sync::OnceLock<(rdm_transport::connections::ConnectionsRegistry, Vec<u8>)>>,
 ) -> Result<RunningNode> {
     let fault = Arc::new(crate::faults::StorageFault::default());
     let fault_for_storage = fault.clone();
@@ -194,6 +222,7 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
                 fault,
                 name: ns.name,
                 data_plane,
+                data_plane_registry,
             };
             register(b, seams).carry::<crate::proof_store::ProofStore>()
         },

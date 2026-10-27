@@ -60,8 +60,8 @@ async fn main() {
         // The testkit's app protocol, registered when the estate's root holds its knob: every admitted
         // connection's streams are echoed, and the originate door's `Stream` dials on it.
         let started = async {
-            if node::app_protocol_knob(&launch) {
-                let (running, acceptor) = node::start_pre_node_ready_with_alpn(&launch, pre_node_ready, node::app_protocol(), register).await?;
+            if let Some(alpn) = node::app_protocol_for(&launch) {
+                let (running, acceptor) = node::start_pre_node_ready_with_alpn(&launch, pre_node_ready, alpn, register).await?;
                 node::echo_streams(acceptor, launch.name.to_string());
                 Ok(running)
             } else {
