@@ -455,7 +455,17 @@ impl Prepared {
                 .filter(|s| [INHERITED_ROOT, "rdm.mesh.entry.update.via-rafka-time-adopted", "rdm.mesh.entry.resolve.via-recovery-pull"].contains(&s["name"].as_str().unwrap_or_default()))
                 .map(|s| (&s["name"], &s["attributes"]))
                 .collect();
-            assert!(Instant::now() < until, "no {name} in {} ms; its boot from its own row, its rafka-time adoption and its recovery pulls so far: {story:?}", within.as_millis());
+            // Every span the admin closed, in order, with its duration: what its boot was doing when the wait ran out.
+            let closed: Vec<String> = {
+                let mut v: Vec<(u64, String)> = spans.iter().map(|s| {
+                    let st = s["start_unix_nano"].as_u64().unwrap_or(0);
+                    let ms = s["end_unix_nano"].as_u64().unwrap_or(st).saturating_sub(st) / 1_000_000;
+                    (st, format!("{} {}ms {}", s["name"].as_str().unwrap_or_default(), ms, s["attributes"].get("outcome").and_then(|o| o.as_str()).unwrap_or_default()))
+                }).collect();
+                v.sort();
+                v.into_iter().map(|(_, l)| l).collect()
+            };
+            assert!(Instant::now() < until, "no {name} in {} ms; its boot from its own row, its rafka-time adoption and its recovery pulls so far: {story:?}; every span it closed: {closed:#?}", within.as_millis());
             std::thread::sleep(Duration::from_millis(20));
         }
     }
