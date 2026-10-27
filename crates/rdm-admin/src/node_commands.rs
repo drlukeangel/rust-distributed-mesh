@@ -95,6 +95,10 @@ pub struct CommandView {
     /// Whether this admin, as a mesh-primary, replied `blocked` to a storage change's `mesh.block`
     /// (storage.md §2 "Changing it", step 1): it issues no new command until it is unblocked.
     blocked: watch::Sender<bool>,
+    /// Held by a sweep of this admin's rows writer while it writes: `mesh.block` waits for a sweep in
+    /// progress, so nothing of the mesh writes the old provider once it replied `blocked` (step 2: the
+    /// copy holds every line of the old provider; i149 R8).
+    row_writes: tokio::sync::Mutex<()>,
 }
 
 /// A view whose commanded births run their `node.connections.delete { All }` under the launch default.
@@ -107,18 +111,27 @@ impl Default for CommandView {
 impl CommandView {
     /// A view whose commanded births run their `node.connections.delete { All }` under `connections_delete_deadline`.
     pub fn new(connections_delete_deadline: Duration) -> Self {
-        Self { open: Mutex::new(HashMap::new()), unanswered: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0 }
+        Self { open: Mutex::new(HashMap::new()), unanswered: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0, row_writes: tokio::sync::Mutex::new(()) }
     }
 
-    /// `mesh.block`: from here no new command is issued; resolves once every command in flight has
-    /// completed (storage.md §2 "Changing it", step 1). Answers how many were in flight at the block.
+    /// `mesh.block`: from here no new command is issued and no row is written; resolves once every
+    /// command in flight has completed and a rows sweep in progress has ended (storage.md §2 "Changing
+    /// it", steps 1 and 2). Answers how many commands were in flight at the block.
     pub async fn block(&self) -> usize {
         self.blocked.send_replace(true);
         let in_flight = self.open.lock().unwrap().len();
         while !self.open.lock().unwrap().is_empty() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        drop(self.row_writes.lock().await);
         in_flight
+    }
+
+    /// A rows sweep's turn to write: `None` while this admin replied `blocked` and is not unblocked yet,
+    /// its rows held (storage.md §2 step 2; i149 R8).
+    pub async fn row_writes(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        let turn = self.row_writes.lock().await;
+        (!*self.blocked.borrow()).then_some(turn)
     }
 
     /// `mesh.unblock`: commands are issued again.

@@ -135,9 +135,11 @@ impl MeshRowsWriter {
 /// carrying the primaries the view holds for it. A row the store did not acknowledge is owed: the sweep
 /// runs again on this writer's own clock under the one backoff rule (node-rpc.md §43), never waiting
 /// for a birth, a digest or a primary change (node-identity-and-state.md §2.7). Each sweep takes its
-/// turn of `stop`. `commands` is this admin's command view, where a storage change's block stands.
+/// turn of `stop`. While this admin, a mesh-primary, has replied `blocked` to a storage change
+/// (`commands`), nothing of its mesh is written to the old provider: its rows are held, owed, and the
+/// first sweep after the unblock writes them on the provider current then, the new one after the
+/// switch, the old one when the change failed before it (storage.md §2 steps 1, 2 and 4; i149 R8).
 pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: DigestView, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, stop: crate::stop_gate::StopGate, commands: Arc<crate::node_commands::CommandView>) {
-    let _ = &commands;
     let mut births = digest_view.birth_changes();
     let mut primaries = digest_view.seats.subscribe();
     let pacing = rdm_transport::delivery::Pacing::from_cadences();
@@ -145,6 +147,13 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: Dige
     loop {
         // Held here while the admin is stopped: its own wait, outside every lock.
         let turn = stop.turn("mesh-rows").await;
+        let Some(writing) = commands.row_writes().await else {
+            drop(turn);
+            tracing::info_span!("rdm.node_admin.node.update.via-rows-held", node = %writer.me, mesh = %writer.mesh)
+                .in_scope(|| tracing::info!("this mesh-primary replied blocked to a storage change: its rows are held, owed, and written at its unblock"));
+            commands.admitted().await;
+            continue;
+        };
         births.borrow_and_update();
         primaries.borrow_and_update();
         let meshes = writes.borrow_and_update().clone();
@@ -159,6 +168,7 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: Dige
             .collect();
         let owed = writer.sweep(&held, &meshes, |id| digest_view.is_deleted(id.as_str())).await;
         owed_sweeps = if owed { owed_sweeps + 1 } else { 0 };
+        drop(writing);
         drop(turn);
         let again = async {
             if owed_sweeps == 0 {
