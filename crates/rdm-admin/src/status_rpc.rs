@@ -1191,6 +1191,11 @@ impl StatusAuthority {
             Some(effect) => self.persist_then_commit(effect).await,
             None => reply,
         };
+        // A caller birth this admin does not hold (Q207): refused `SubjectUnknown`, then deleted or
+        // re-admitted by its path.name and this admin's atlas, on its own task.
+        if let (StatusRequest::DeclareNodeState { node_id, incarnation, .. }, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, Some(atlas)) = (req, &reply, self.atlas.get()) {
+            atlas.refused("declaration", node_id, incarnation);
+        }
         // A `ReadyForTraffic` Mesh declaration the authority took (applied now or already applied) is
         // the mesh primary's checklist-complete report: the primary sends it only when its checklist is
         // complete. Whichever it was, the report is what this admin received now from that exact birth.

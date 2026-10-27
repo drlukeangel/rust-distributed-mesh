@@ -2453,6 +2453,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         .unwrap_or_else(|| cfg.data_dir.clone()),
                                                     gone_dirs: Arc::default(),
                                                 };
+                                                // A refused caller (Q207) is decided by its path.name and this admin's atlas, and acts
+                                                // through this recovery submitter's terminate report and the heard-again door.
+                                                control.atlas.refused_callers(Arc::new(crate::refused_caller::RefusedCallers::new(node_id.clone(), recovery.clone(), heard_again_slot.clone())));
                                                 // Fabric recovery (Q122): started by the seat watch in the fabric-primary's own mesh, and by mesh
                                                 // investigation's decision step from the backbone.
                                                 let fabric_recovery = Arc::new(
@@ -2516,6 +2519,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // The commands this admin sent: a member that left one unanswered past the
                                                     // floor is silent whatever it gossips (Q182).
                                                     let ladder_commands = commands.clone();
+                                                    // The refused callers' atlas (Q207): a returned birth is decided from it.
+                                                    let control_atlas = control.atlas.clone();
                                                     tasks.push(tokio::spawn(async move {
                                             // The births whose inspection or submitted recovery is in flight. The tick never waits
                                             // on it.
@@ -2739,14 +2744,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         }
                                                     }
                                                     // A deleted birth of this mesh heard again by its own digest: refused by every
-                                                    // view, and reported to the fabric-primary, which terminates its runtime
-                                                    // (node-investigation.md, Q110, Q128).
-                                                    if holds_seat {
+                                                    // view, and deleted or re-admitted by its path.name and this admin's atlas (Q207,
+                                                    // node-investigation.md).
+                                                    if let (true, Some(callers)) = (holds_seat, control_atlas.callers().cloned()) {
                                                         for d in recovery.digest_view.returned_births().into_iter().filter(|d| d.node.name.mesh == mesh) {
-                                                            let (recovery, client) = (recovery.clone(), runner.node_rpc.client.clone());
+                                                            let (recovery, callers, atlas) = (recovery.clone(), callers.clone(), control_atlas.clone());
                                                             tokio::spawn(async move {
-                                                                if recovery.report_returned(&client, &d).await.is_ok() {
-                                                                    recovery.digest_view.returned_reported(d.node.node_id.as_str(), d.node.incarnation.as_str());
+                                                                if let Some((_, outcome)) = callers.decide(&atlas, "digest", &d.node.node_id, &d.node.incarnation).await {
+                                                                    if outcome == "terminate-reported" || outcome.starts_with("mesh-join:") {
+                                                                        recovery.digest_view.returned_reported(d.node.node_id.as_str(), d.node.incarnation.as_str());
+                                                                    }
                                                                 }
                                                             });
                                                         }
@@ -2947,22 +2954,37 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if fabric_primary && !was_fabric_primary {
                                                     let adopted = topology_view.fabric_status().is_some_and(|s| s.status == "degraded");
                                                     records.set_adopted_degraded(adopted);
-                                                    // Its FabricAtlas holds every node record, read once at its start or
-                                                    // hand-over (Q204): the meshes its view and the current Build name.
-                                                    let meshes: std::collections::BTreeSet<String> = t.members().map(|n| n.mesh.clone()).chain(current.and_then(|c| c.as_ref()).map(|b| b.topology.meshes.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()).collect();
-                                                    let filled = atlas.fill(&*atlas_rows, meshes.iter().cloned()).await;
-                                                    tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-filled", node = %me, meshes = %meshes.iter().map(String::as_str).collect::<Vec<_>>().join(","), records = filled.as_ref().map(|n| *n as u64).unwrap_or(0), outcome = if filled.is_ok() { "filled" } else { "fill-refused" }, detail = %filled.err().unwrap_or_default(), "otel.kind" = "internal")
-                                                        .in_scope(|| tracing::info!("the fabric-primary's atlas holds every node record, read once as it became the fabric-primary"));
                                                 }
-                                                if fabric_primary {
-                                                    // A birth first heard (a mesh-primary's self-healing among them) has
-                                                    // its record read once into the atlas (Q197, Q203).
-                                                    let births: Vec<(rdm_core::NodeId, rdm_core::IncarnationId)> = t.births().filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
+                                                // The atlas covers the meshes this admin is primary for (Q207): every mesh its view and
+                                                // the current Build name as the fabric-primary, its own as a mesh-primary, none else. A
+                                                // mesh taken (a start, a hand-over, an election) is filled once from its node records
+                                                // (Q204); a mesh handed away is narrowed off.
+                                                let scope: std::collections::BTreeSet<String> = if fabric_primary {
+                                                    t.members().map(|n| n.mesh.clone()).chain(current.and_then(|c| c.as_ref()).map(|b| b.topology.meshes.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()).collect()
+                                                } else if mesh_primary {
+                                                    std::iter::once(mesh.clone()).collect()
+                                                } else {
+                                                    Default::default()
+                                                };
+                                                match atlas.scope(&*atlas_rows, scope.clone()).await {
+                                                    Ok((taken, handed)) if taken.is_empty() && handed.is_empty() => {}
+                                                    filled => {
+                                                        let (taken, handed) = filled.as_ref().map(|(t, h)| (t.join(","), h.join(","))).unwrap_or_default();
+                                                        tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-filled", node = %me, meshes = %scope.iter().map(String::as_str).collect::<Vec<_>>().join(","), taken = %taken, handed = %handed, fabric_primary, mesh_primary, outcome = if filled.is_ok() { "filled" } else { "fill-refused" }, detail = %filled.err().unwrap_or_default(), "otel.kind" = "internal")
+                                                            .in_scope(|| tracing::info!("the atlas holds the node records of the meshes this admin is primary for, each read once as it was taken"));
+                                                    }
+                                                }
+                                                if !scope.is_empty() {
+                                                    // A birth first heard in one of its meshes (a mesh-primary's self-healing among
+                                                    // them) has its record read once into the atlas (Q197, Q203).
+                                                    let births: Vec<(rdm_core::NodeId, rdm_core::IncarnationId)> = t.births().filter(|n| scope.contains(&n.mesh)).filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
                                                     let read = atlas.read_new_births(&*atlas_rows, births).await;
                                                     if read > 0 {
                                                         tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-births-read", node = %me, records = read as u64, "otel.kind" = "internal")
                                                             .in_scope(|| tracing::info!("the records of births first heard are the atlas's"));
                                                     }
+                                                }
+                                                if fabric_primary {
                                                     records.set_published_degraded(false);
                                                     crate::investigate::restore_peer_recovery(&me, &records, &t);
                                                 } else {

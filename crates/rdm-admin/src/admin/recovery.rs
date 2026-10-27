@@ -539,7 +539,7 @@ impl RecoverySubmitter {
     /// Each is a superseded birth: this mesh-primary writes its record deleted, releasing the name if it
     /// held it, and answers its `node.delete:<path>` operation, which the caller publishes as
     /// `NodeDeleted`; its next digest is then a deleted birth heard again, refused and reported to the
-    /// fabric-primary, which terminates its runtime ([`Self::report_returned`]).
+    /// fabric-primary, which terminates its runtime ([`Self::report_terminate`], Q207).
     pub(crate) async fn superseded_births(&self, view: &Topology, mesh: &str) -> Vec<rdm_core::LifecycleOp> {
         let build_id = match self.builds.current_build().await {
             Ok(current) => current.into_build_id().map(|b| b.to_string()).unwrap_or_default(),
@@ -586,12 +586,11 @@ pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str
 }
 
 impl RecoverySubmitter {
-    /// Report the deleted birth `d`, heard again by its own digest, to the fabric-primary
-    /// (node-investigation.md: "The node that refused it reports it to the fabric-primary, which
-    /// terminates its runtime"; Q110, Q128): `build.create { Change(Terminate) }`, opened here when this
-    /// admin is the fabric-primary. `Ok` once the fabric-primary answered (opened, or already applied).
-    pub(crate) async fn report_returned(&self, client: &Arc<rdm_transport::NodeRpcClient>, d: &rdm_core::MeshDigest) -> Result<(), String> {
-        let (path, node_id, incarnation) = (d.node.name.clone(), d.node.node_id.clone(), d.node.incarnation.clone());
+    /// The caller birth `(node_id, incarnation)` at `path` Q207's decision deletes, reported to the
+    /// fabric-primary, which terminates its runtime under `node.terminate:<path>@<incarnation>`
+    /// (node-investigation.md): `build.create { Change(Terminate) }`, opened here when this admin is the
+    /// fabric-primary. `Ok` once the fabric-primary answered (opened, or already applied).
+    pub(crate) async fn report_terminate(&self, client: &Arc<rdm_transport::NodeRpcClient>, path: PathName, node_id: NodeId, incarnation: IncarnationId) -> Result<(), String> {
         let me = self.held_name();
         let span = tracing::info_span!("rdm.node_admin.node.update.via-returned-reported", node = %me, returned = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), outcome = tracing::field::Empty);
         let fabric_primary = self.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
