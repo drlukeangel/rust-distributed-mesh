@@ -223,8 +223,8 @@ impl RecoverySubmitter {
             .in_scope(|| tracing::info!("the mesh primary asked the provider about the TRUE OFFLINE member's exact runtime"));
     }
 
-    /// The recovery of `node`'s unreached birth on its verdict `outcome`: this mesh primary opens and
-    /// runs it itself, keyed on the birth ([`Self::submit_in`], R-BI7). The run is followed to its
+    /// The recovery of `node`'s unreached birth on its verdict `outcome`: this mesh primary submits
+    /// it, keyed on the birth ([`Self::submit_in`], Q118). The run is followed to its
     /// end, so the caller holds the birth as submitted until then. A repeat answers AlreadyApplied or
     /// BuildInProgress.
     pub(crate) async fn submit(&self, node: &Node, outcome: &Inspected) -> Result<(), String> {
@@ -322,11 +322,12 @@ impl RecoverySubmitter {
         settled(&span, end)
     }
 
-    /// The recovery of `node`'s exited birth at `incarnation`, run by this admin as its mesh's primary
-    /// (R-BI7; node-recovery.md as R-BI7 moves it: "the mesh-primary opens the recovery attempt of the
-    /// current Build itself: claim on its mesh's rows, then run; no call to the fabric-primary"):
-    /// opened and claimed at its own door, run through its own executor in its mesh's lane and
-    /// followed to the terminal ([`crate::build_run::run_recovery`]).
+    /// The recovery of `node`'s exited birth at `incarnation`, submitted by this admin as its mesh's
+    /// primary (node-recovery.md "Execution", Q118): a mesh-primary that is not the fabric-primary
+    /// reports the drift up and runs the attempt the fabric-primary opens; one whose view names no
+    /// fabric-primary fails by name; the fabric-primary opens and claims it at its own door, runs it
+    /// through its own executor in its mesh's lane and follows it to the terminal
+    /// ([`crate::build_run::run_recovery`]). Fabric recovery's re-create is its executor's own.
     pub(crate) async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, route: &'static str) -> Result<RecoveryEnd, String> {
         use crate::build_run::{Recovered, RecoveryNotRun};
         use rdm_core::build::BuildReply;
@@ -345,6 +346,7 @@ impl RecoverySubmitter {
             .await
             .fabric_primary()
             .map(|n| (n.name.clone(), n.node_id.clone()));
+        let no_fabric_primary = fabric_primary.is_none();
         if let Some((fp, fp_id)) = fabric_primary
             .filter(|(_, id)| route == "node-recovery" && *id != door.env.door.node_id)
         {
@@ -358,6 +360,18 @@ impl RecoverySubmitter {
             return self
                 .report_drift(span, &door, &client, &fp, &fp_id, node, incarnation)
                 .await;
+        }
+        // A mesh-primary whose view names no fabric-primary is behind a cut from it: the fabric-primary
+        // writes every Build record and a mesh behind a cut is not repaired locally until the heal, so its
+        // member's recovery fails by name and the tick submits it again while the birth stays unreached
+        // (node-recovery.md "Execution": "While the mesh is cut from the fabric-primary, its recoveries fail
+        // by name and run after the heal"; Q118). Only the fabric-primary opens and runs a recovery itself.
+        if route == "node-recovery" && no_fabric_primary {
+            return Err(format!(
+                "{}: its view names no fabric-primary to report {}'s drift to: the recovery runs after the heal (Q118)",
+                self.held_name(),
+                node.name
+            ));
         }
         match crate::build_run::run_recovery(
             &door.control,
