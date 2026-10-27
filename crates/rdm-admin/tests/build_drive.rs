@@ -2825,3 +2825,50 @@ async fn a_fabric_delete_ends_an_attempt_this_fabric_primary_holds_without_waiti
     assert!(frames.iter().any(|f| matches!(f, Read::Terminal(BuildReply::Failed { step, .. }) if step == "fabric.delete")), "the stream ends Failed naming the delete: {frames:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing of the interrupted Build ran: {:?}", r.ran.0.lock().unwrap());
 }
+
+/// While attempt 1 runs, another admin's claim of attempt 2 lands on the Build log (fabric-recovery.md
+/// step 4: the executor's "one winning claim"), and the run's call is refused naming the later attempt
+/// the receiver holds: the run ends `Failed`.
+struct ClaimedPastTheRun(Arc<MemoryBuildStateAdapter>);
+
+#[async_trait::async_trait]
+impl OperationRunner for ClaimedPastTheRun {
+    async fn run(&self, build: &BuildId, _lane: Option<&str>, attempt: u32, _op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
+        let claim = rdm_admin::build_state::BuildAttemptClaim { build_id: build.clone(), attempt: attempt + 1, executor: "mesh2.admin.1".into(), claimant: Some("mesh2.admin.1".into()), mesh: None };
+        assert_eq!(self.0.claim_attempt(&claim).await.unwrap(), rdm_admin::build_state::ClaimOutcome::Won, "mesh2.admin.1 wins attempt {}", attempt + 1);
+        Err(rdm_admin::executor::RunEnd::failed(format!("mesh1.admin.2 refused delete-mesh: rejected-stale-workflow (held attempt {}, offered attempt {attempt})", attempt + 1)))
+    }
+}
+
+/// CONTRACT (build.md §5.2: the current attempt is the "folded maximum/winning claim", and "a delayed
+/// dispatch or receipt of an earlier attempt never reopens a terminally closed run"; fabric-recovery.md
+/// step 4, Q160: a returning fabric-primary's writes are ignored and "it stops on its first read after the
+/// heal (Q109)"): the fabric-primary's run of attempt 1 ends `Failed` after mesh2.admin.1 won attempt 2.
+/// The drive reads the Build before it decides on the run's end: attempt 2 is the current attempt and not
+/// this admin's claim, so the end of attempt 1 decides nothing. The drive ends `SeatLost` naming
+/// mesh2.admin.1, the callers' streams end with that move, and the Build stays in progress under attempt 2.
+/// What must NOT happen: the superseded attempt's `Failed` sent to the callers as the Build's terminal, or
+/// the Build read failed.
+#[tokio::test]
+async fn a_fabric_primary_whose_attempt_another_admin_superseded_mid_run_sends_no_terminal_and_names_the_claimant() {
+    let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) }, |ran, _| Arc::new(ClaimedPastTheRun(ran.1.clone()))).await;
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("superseded-mid-run");
+    let end = tokio::time::timeout(Duration::from_secs(2), r.env.run(&drive)).await.expect("the drive ends");
+    match end {
+        DriveEnd::SeatLost(why) => assert!(why.contains("attempt 2") && why.contains("mesh2.admin.1"), "the end names the current attempt and its claimant: {why}"),
+        other => panic!("the superseded attempt's end decides nothing and the drive stops on its read: {other:?}"),
+    }
+    let mut reads = Vec::new();
+    while let Some(read) = next_within(&mut reader).await {
+        reads.push(read);
+    }
+    assert!(!reads.iter().any(|r| matches!(r, Read::Terminal(_))), "no terminal of the superseded attempt reaches the callers: {reads:?}");
+    assert!(reads.iter().any(|r| matches!(r, Read::SeatLost(loss) if loss.to.as_deref() == Some("mesh2.admin.1"))), "the callers are sent to mesh2.admin.1: {reads:?}");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt, p.state, p.executor.as_deref()), (2, rdm_admin::build_state::BuildState::Running, Some("mesh2.admin.1")), "the Build stays in progress under attempt 2");
+    let read = capture.spans("rdm.node_admin.build.reject.via-superseded-attempt");
+    assert_eq!(read.len(), 1, "the read that stopped the drive is named: {read:?}");
+    assert_eq!((read[0].1.get("attempt").map(String::as_str), read[0].1.get("current_attempt").map(String::as_str), read[0].1.get("to").map(String::as_str)), (Some("1"), Some("2"), Some("mesh2.admin.1")), "{:?}", read[0].1);
+}

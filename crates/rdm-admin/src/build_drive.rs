@@ -969,6 +969,24 @@ impl DriveEnv {
         None
     }
 
+    /// `Some` when the Build's current attempt is past `attempt` and was claimed by another admin: the end
+    /// of `attempt` decides nothing, and the drive ends `SeatLost` naming that claimant, the fabric-primary
+    /// that decided the claim of the current fabric-lane attempt ([`BuildProjection::claimant`]). A Build
+    /// that cannot be read decides nothing here: the end is handled as before.
+    async fn superseded(&self, me: &PathName, drive: &Arc<Drive>, id: &BuildId, attempt: u32) -> Option<DriveEnd> {
+        let p = self.builds.read_build(id).await.ok()?;
+        let claimant = p.claimant.clone().or_else(|| p.executor.clone());
+        if p.attempt <= attempt || claimant.as_deref() == Some(me.to_string().as_str()) {
+            return None;
+        }
+        let to = claimant.as_deref().unwrap_or("none");
+        let why = format!("{me}: attempt {attempt} of Build {id} ended after {to} claimed attempt {}: the Build's current attempt is not this admin's, and the end of attempt {attempt} decides nothing", p.attempt);
+        tracing::info_span!("rdm.node_admin.build.reject.via-superseded-attempt", build_id = %id.log(), attempt, current_attempt = p.attempt, node = %me, to = %to, detail = %why)
+            .in_scope(|| tracing::info!("the end of a superseded attempt is not recorded: the drive stops on its read of the Build"));
+        drive.lose_fabric_primary(SeatLoss { why: why.clone(), to: claimant });
+        Some(DriveEnd::SeatLost(why))
+    }
+
     fn stalled(&self, me: &PathName, drive: &Arc<Drive>, why: String) -> DriveEnd {
         if drive.stall_is_new(&why) {
             tracing::info_span!("rdm.node_admin.build.update.via-stalled", build_id = %drive.build_id.log(), node = %me, reason = %why).in_scope(|| tracing::info!("the drive cannot go on until the world changes"));
@@ -1300,6 +1318,16 @@ impl DriveEnv {
             };
             let inner = self.run_inner(&turn, drive, &id, attempt, &executor, context, plan).instrument(dspan.clone()).await;
             drive.clear_stall();
+            // The end of a run is decided only for the Build's current attempt, the folded maximum/winning
+            // claim (build.md §5.2): the Build is read before anything of the end is written (Q109). A later
+            // attempt another admin claimed while this one ran supersedes it: its end decides nothing, and
+            // this admin stops on that read (fabric-recovery.md step 4, Q160).
+            if matches!(inner, Inner::Terminal(_)) {
+                if let Some(end) = self.superseded(&me, drive, &id, attempt).await {
+                    dspan.record("outcome", "superseded");
+                    return end;
+                }
+            }
             match inner {
                 Inner::Terminal(t @ BuildReply::Complete { .. }) => {
                     dspan.record("outcome", "complete");
