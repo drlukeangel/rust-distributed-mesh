@@ -237,7 +237,7 @@ class Verbs(unittest.TestCase):
         self.e.git(self.e.pusher, 'push', '-q', 'origin', 'HEAD:main')
         rc, out = self.land()
         self.assertEqual(rc, 8, out)
-        self.assertIn('prove it again', out)
+        self.assertIn('no GREEN post-land-gate.sh', out)
 
 
 if __name__ == '__main__':

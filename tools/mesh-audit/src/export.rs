@@ -6,7 +6,7 @@
 //! (`tools/mesh-audit/i143-acceptance-jobs.json`, `jobs` and `rshape_jobs`) is an owner, and its
 //! receipt is the one `scripts/i143-acceptance-gate.sh` writes: `target/i143-acceptance/jobs/<job>.json`
 //! for `jobs`, `target/i143-rshape/jobs/<job>.json` for `rshape_jobs`. A receipt certifies only when
-//! its outcome is `ok` with no cell skipped by name (a skip proves nothing), its `source_sha` is the candidate, it ran with no uncommitted path, and every artifact
+//! its outcome is `ok` with no cell skipped by name (a skip proves nothing), it is no learning run's (`learning: true`), its `source_sha` is the candidate, it ran with no uncommitted path, and every artifact
 //! it recorded still hashes to the sha256 it recorded. Anything else is refused by name, and every
 //! refusal is named in one run, never just the first.
 //!
@@ -39,6 +39,10 @@ pub struct Receipt {
     pub source_sha: String,
     pub dirty_paths: u64,
     pub outcome: String,
+    /// Written by a learning soak run (`I143_SOAKS_LEARN=1`): it certifies nothing. A receipt written
+    /// before the field reads as no learning run.
+    #[serde(default)]
+    pub learning: bool,
     pub cells: Vec<ReceiptCell>,
 }
 
@@ -80,6 +84,8 @@ pub enum Refusal {
     ReceiptAtAnotherSha { job: String, source_sha: String },
     /// The receipt was written with uncommitted paths in its checkout.
     ReceiptDirty { job: String, dirty_paths: u64 },
+    /// The receipt was written by a learning soak run (`learning: true`): it certifies nothing.
+    ReceiptLearning { job: String },
     /// A cell of an `ok` receipt was skipped by name: it proved nothing.
     ReceiptCellSkipped { job: String, cell: String, skip: String },
     /// An artifact the receipt recorded is gone.
@@ -124,6 +130,7 @@ impl fmt::Display for Refusal {
             Self::ReceiptNotOk { job, outcome } => write!(f, "{job}: the receipt's outcome is {outcome}, not ok"),
             Self::ReceiptAtAnotherSha { job, source_sha } => write!(f, "{job}: the receipt was written at {source_sha}, not the candidate"),
             Self::ReceiptDirty { job, dirty_paths } => write!(f, "{job}: the receipt was written with {dirty_paths} uncommitted paths in its checkout"),
+            Self::ReceiptLearning { job } => write!(f, "{job}: the receipt was written by a learning run (learning: true); it certifies nothing"),
             Self::ReceiptCellSkipped { job, cell, skip } => write!(f, "{job}/{cell}: skipped by name ({skip}); a skip proves nothing"),
             Self::ArtifactMissing { job, cell, path } => write!(f, "{job}/{cell}: artifact {path} is missing"),
             Self::ArtifactChanged { job, cell, path, recorded, now } => {
@@ -280,6 +287,9 @@ fn check_receipt(job: &str, path: &Path, shown: &str, candidate: &str, root: &Pa
     }
     if receipt.dirty_paths != 0 {
         refusals.push(Refusal::ReceiptDirty { job: job.into(), dirty_paths: receipt.dirty_paths });
+    }
+    if receipt.learning {
+        refusals.push(Refusal::ReceiptLearning { job: job.into() });
     }
     for cell in &receipt.cells {
         if cell.outcome == "skipped" || cell.skip.is_some() {

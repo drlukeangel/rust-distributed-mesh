@@ -26,17 +26,19 @@ SEAT="i143-$ISSUE"; SLUG="i143-$ISSUE-$NAME"
 } > "$s/plan.md.tmp" && mv -f "$s/plan.md.tmp" "$s/plan.md"
 f="$AGENTS_DIR/$SEAT.md"; state=registered; [ -f "$f" ] || state=NEW
 mkdir -p "$AGENTS_DIR"
-# The seat's standing rules: one file in the lane's state, the type's body points at it.
+# The seat's standing rules: one file in the lane's state, the type's body points at it. The agent ends its
+# unit with its own evidence (item 7): its own post-land-gate.sh GREEN, which lane-land.sh needs.
 cat > "$s/seat-rules.md" <<RULES
 You are the seat for rafka-v2 issue #$ISSUE, "$TITLE", in lane $d on branch $B.
 
 1. Read /home/admin/rust-distributed-mesh/CLAUDE.md and /home/admin/rafka-v2/CLAUDE.md and follow them exactly.
 2. Your plan is $s/plan.md. Read every file in $s/inbox/ numbered above the last one you acted on, in order.
-3. Work only in $d, only on $B. Never gate, never land, never push, never switch branch, never \`cargo test -p\`,
+3. Work only in $d, only on $B. Never land, never push, never switch branch, never \`cargo test -p\`,
    never export CARGO_TARGET_DIR, never touch iroh, iroh-base, iroh-gossip or noq.
 4. Run cells only through \`flock -o /tmp/rdm-gate-turn.lock $d/scripts/cells.sh <crate> lib|main -- <filter>\`.
 5. A cause is stated only with its span lines; otherwise it is unattributed.
 6. End every turn with one line: \`STATUS: <done|blocked|working> inbox <NNNN> commits <sha,…>\`, then what you ran and its result.
+7. End the unit with its evidence, which the lead reviews before anything lands: run \`bash $d/scripts/post-land-gate.sh $LANE\` yourself, not under the turn lock (it rebases on origin/main and proves the tip; resolve rebase conflicts yourself: generated docs/reference/rdm/*.md by regenerating with rdm-docgen, INDEX/PRD rows by keeping both sides); report its GREEN line; the cells you ran with their results; and Jaeger links (http://192.168.68.99:16687/trace/<trace id>, found in ClickHouse otel.otel_traces on 192.168.68.99:18123, which the gate exports to) for the traces that show your fix working. A RED is read and fixed in this lane, never re-run to see if it passes; a red that is another known issue's is reported as that issue.
 RULES
 # The type (rafka-v2's format): file name, name and subagent_type are i143-<issue>; the slug
 # i143-<issue>-<name> rides only in its description and in the launch's description.

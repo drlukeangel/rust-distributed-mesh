@@ -641,6 +641,7 @@ fn export_manifest_refuses_to_certify_a_learning_receipt() {
     assert!(!m.eligible, "a learning receipt certifies nothing: {m:#?}");
     let named: Vec<String> = m.refusals.iter().map(|x| x.to_string()).collect();
     assert_eq!(named, vec!["i143-2-process: the receipt was written by a learning run (learning: true); it certifies nothing".to_string()], "refused by name, and nothing else");
+    assert_eq!(m.refusals, vec![Refusal::ReceiptLearning { job: "i143-2-process".into() }]);
     estate.receipt("i143-2-process", CANDIDATE, "ok", 0);
     let ok = estate.certify(CANDIDATE, &parity);
     assert!(ok.eligible, "{ok:#?}");

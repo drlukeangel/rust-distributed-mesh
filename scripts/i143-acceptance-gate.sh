@@ -32,7 +32,8 @@
 # start, finish, outcome). The cell itself writes result.json (and a UNIT cell spans.json) into
 # $I143_ACCEPTANCE_DIR, exported for it with $I143_ACCEPTANCE_CELL. Per job:
 # target/i143-acceptance/jobs/<job-id>.json lists every executed cell, its outcome and every
-# artifact path with its sha256.
+# artifact path with its sha256. The receipt says `learning: true` when I143_SOAKS_LEARN=1 (a learning
+# soak run, scripts/i143-export-run.sh): export-manifest certifies no learning receipt.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -292,8 +293,8 @@ FINISHED=$(now)
 OUTCOME=ok; [ "$FAILED" -eq 0 ] || OUTCOME=refused
 echo "$CELLS_JSON" > "$TMPD/cells.json"
 jq -n --arg job "$JOB" --argjson issue "$ISSUE" --arg layer "$LAYER" --arg sha "$SHA" --argjson dirty "$DIRTY" --arg started "$STARTED" --arg finished "$FINISHED" \
-      --arg outcome "$OUTCOME" --slurpfile cells "$TMPD/cells.json" \
-      '{job:$job, issue:$issue, layer:$layer, source_sha:$sha, dirty_paths:$dirty, started:$started, finished:$finished, outcome:$outcome, cells:$cells[0]}' > "$RECEIPT"
+      --arg outcome "$OUTCOME" --slurpfile cells "$TMPD/cells.json" --argjson learning "$([ "${I143_SOAKS_LEARN:-}" = 1 ] && echo true || echo false)" \
+      '{job:$job, issue:$issue, layer:$layer, source_sha:$sha, dirty_paths:$dirty, started:$started, finished:$finished, outcome:$outcome, learning:$learning, cells:$cells[0]}' > "$RECEIPT"
 if [ ! -s "$RECEIPT" ] || ! jq -e . "$RECEIPT" > /dev/null 2>&1; then
     refuse "$JOB: the receipt $RECEIPT was not written"
     exit 1

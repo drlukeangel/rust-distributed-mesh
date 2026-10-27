@@ -19,6 +19,11 @@
 # and a `gates-<lane>-<short>release.log` whose first line is `[gate] head=<HEAD> dirty=0`, with a DONE
 # line and no FAIL line. Without both, the run is refused by name and nothing runs.
 #
+# `I143_SOAKS_LEARN=1` with `--soaks` is a learning run (Luke 2026-10-27: "we can only learn more
+# things"): the soak jobs run without the green-gate bar, every receipt is marked `learning: true`
+# (scripts/i143-acceptance-gate.sh reads I143_SOAKS_LEARN), and export-manifest refuses to certify a
+# learning receipt. Without `--soaks` the variable is dropped: no other run is a learning run.
+#
 # A tree with an uncommitted path is refused by name, and the run stops by name when HEAD moves or a
 # path changes between batches: every receipt is the one SHA's. Each job runs with the release gate's
 # environment (RDM_CONTAINER_STORE_QUALIFIED=1) and RDM_REQUIRE_NETFAULT=1, so a cell that cannot cut
@@ -88,6 +93,8 @@ for job, layer in held:
 PY
 ) || { echo "i143-export-run: REFUSED no plan could be made from $REG" >&2; exit 2; }
 
+[ "$SOAKS" = 1 ] && [ "${I143_SOAKS_LEARN:-}" = 1 ] && LEARN=1 || { LEARN=0; unset I143_SOAKS_LEARN; }
+
 # The soaks' bar (Luke 2026-10-09): the fast gate and the release suite green at this HEAD.
 green_gate() {
     local suffix=$1 f
@@ -97,7 +104,9 @@ green_gate() {
     done
     return 1
 }
-if [ "$SOAKS" = 1 ]; then
+if [ "$LEARN" = 1 ]; then
+    echo "i143-export-run: learning run at $(git rev-parse --short HEAD) (I143_SOAKS_LEARN=1): the soaks run without the green-gate bar; every receipt is marked learning: true and certifies nothing"
+elif [ "$SOAKS" = 1 ]; then
     for g in fast release; do
         log=$(green_gate $g) || { echo "i143-export-run: REFUSED --soaks at $(git rev-parse --short HEAD): no green $g gate log at this HEAD (no soak runs until the fast gate and the release suite are green on one SHA, Luke 2026-10-09)" >&2; exit 2; }
         echo "i143-export-run: $g gate green at this HEAD: $log"
@@ -116,7 +125,7 @@ dirty=$(git status --porcelain | wc -l | tr -d ' ')
 OUT=target/i143-export/$SHA
 mkdir -p "$OUT"
 : > "$OUT/run.log"
-echo "i143-export-run: $SHA, $(echo "$PLAN" | grep -c '^batch ') batches of at most $N" | tee -a "$OUT/run.log"
+echo "i143-export-run: $SHA, $(echo "$PLAN" | grep -c '^batch ') batches of at most $N$([ "$LEARN" = 1 ] && echo ', a learning run: every receipt learning: true')" | tee -a "$OUT/run.log"
 echo "$PLAN" | grep '^held: ' | tee -a "$OUT/run.log"
 t0=$(date +%s)
 while read -r line; do
