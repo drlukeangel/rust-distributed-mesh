@@ -61,10 +61,11 @@ Cells: `every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_chang
 ## An unavailable provider
 
 **At acceptance.** The fabric-primary refuses by name a provider its wiring does not register,
-`topology-storage-provider-not-registered`, nothing accepted (cell: `an_unsupported_provider_changes_nothing`).
-The check at acceptance is the registration (`crates/rdm-admin/src/control_plane.rs`, the
-`TopologyStorageProviderNotRegistered` refusal): a registered provider that does not open is met at
-the copy.
+`topology-storage-provider-not-registered`, nothing accepted (cell: `an_unsupported_provider_changes_nothing`),
+and opens a registered one other than the Fabric row's on its own scope: one that does not open is
+refused by name, `topology-storage-provider-not-opened`, the detail naming why, nothing accepted and
+no mesh-primary blocked (cell: `a_provider_that_does_not_open_changes_nothing`;
+`crates/rdm-admin/src/control_plane.rs`).
 
 **During the change.** A provider that does not answer never decides anything. The copy and the switch
 read it again, with backoff, until it answers; a mesh-primary's `mesh.unblock` reads the `commit` record
@@ -95,9 +96,10 @@ answer never decides it.
 |---|---|---|
 | a role node, killed while its mesh-primary is blocked | node recovery re-creates it at its `path.name` over the same data dir once its mesh-primary issues commands again; the new birth is launched on, and writes only, the provider the `commit` record decided | `topology_storage_state_survives_role_node_restart` (both a switched change and one failed before its switch), `a_node_restart_keeps_changes_blocked_until_the_commit_record_is_read` |
 | the fabric-primary | a successor fabric-primary resumes the change's Build; its switch step first reads the `commit` record (`via-storage-switch` `outcome = found`, or a copy that appends only the lines the new provider lacks, then the insert) | none |
-| nothing alive: the adoption launch ([fabric recovery, Nothing alive](../../architecture/lifecycles/fabric-recovery.md#nothing-alive)) | the adoption launch opens the provider its environment names | none |
+| a node-admin started again on its own data dir with no launcher | it opens the provider its own row in its data dir names, whatever its environment names; the own row records the provider at the birth's boot and again at each move, before the move answers | `a_restart_without_a_launcher_writes_the_provider_its_own_row_names` |
+| nothing alive: the adoption launch ([fabric recovery, Nothing alive](../../architecture/lifecycles/fabric-recovery.md#nothing-alive)) | on an inherited data dir, the adoption launch opens the provider its own row names; on a data dir holding no own row, the one its environment names | none |
 
-**The adoption launch mid-change.** Before starting it, decide which provider holds the fabric's
+**The adoption launch mid-change, on a data dir holding no own row.** Before starting it, decide which provider holds the fabric's
 latest records by the `commit` record alone:
 
 1. Read the `change_id` of the change: the last `via-block` or `via-storage-switch` span of its

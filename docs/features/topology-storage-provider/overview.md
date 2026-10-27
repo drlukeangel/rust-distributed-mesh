@@ -56,12 +56,16 @@ every cell.
 | when | who sets it | from |
 |---|---|---|
 | Day 0 | the bootstrap admin, on the Fabric row | `RDM_TOPOLOGY_STORAGE_PROVIDER`, `file` when unset |
-| every launch | the launching admin, into the node's environment | the provider the launching admin writes |
+| every launch | the launching admin, into the node's environment | the Fabric row's, and while a storage change is in progress the provider its `commit` record decided |
+| a start with no launcher (the adoption launch) | the node itself | its own row in its data dir; `RDM_TOPOLOGY_STORAGE_PROVIDER` only when the data dir holds none |
 | a change | the application, by `build.create` naming the new value | the Build; a Build that omits it leaves it unchanged (Q166) |
 | the end of a change | the fabric-primary, on the Fabric row | the `commit` record |
 
 Cell: `an_omitted_provider_preserves_the_current_provider` (a fabric started on `test-target` writes
 nothing to the file provider's store dir, and a later Build that omits the property keeps it).
+Cell: `a_restart_without_a_launcher_writes_the_provider_its_own_row_names` (a node-admin started again
+on its own data dir with no launcher and no `RDM_TOPOLOGY_STORAGE_PROVIDER` after a change writes the
+provider its own row names).
 
 ## The request path
 
@@ -70,8 +74,9 @@ same meshes and the new `topology_storage_provider`. A request naming the provid
 writes is no change. Acceptance:
 
 1. refuses by name a provider the fabric-primary's wiring does not register,
-   `topology-storage-provider-not-registered`, nothing accepted (cell:
-   `an_unsupported_provider_changes_nothing`);
+   `topology-storage-provider-not-registered`, or cannot open, `topology-storage-provider-not-opened`,
+   nothing accepted (cells: `an_unsupported_provider_changes_nothing`,
+   `a_provider_that_does_not_open_changes_nothing`);
 2. refuses any other Build while a change is in progress, `build-in-progress` naming the change's
    Build, a change back included; `fabric.delete` alone is admitted (cell:
    `a_build_other_than_fabric_delete_is_refused_during_a_change`);
