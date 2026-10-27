@@ -164,11 +164,9 @@ dev recommendation: A. The progress is already on the operation's stream and the
 Routing does not need it in status, because the node refuses new work by name while its connections
 are being deleted. A sub-status is a second field that every writer must keep in step with the stream.
 
-**Ruled by Luke (2026-10-27, INDEX):** the command is start, stop or delete; the node's acknowledgement of it
-sets starting, stopping or deleting; its completion sets ready, stopped or deleted. A query answers the row's
-status as the node's frames moved it; a command the node has not acknowledged moves it nowhere; `deleted` for
-an exited node comes from the delete's receipt. No sub-status field. states.md's sentence after the table
-states it (landed).
+**Open, in discussion with Luke (2026-10-27).** His view: the command is start, stop or delete; the node's
+acknowledgement sets starting, stopping or deleting; the completion sets started, stopped or deleted, and those
+are the states. No ruling yet; states.md unchanged.
 
 
 ---

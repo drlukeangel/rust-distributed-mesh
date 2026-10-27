@@ -39,8 +39,6 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete receipts; never an op |
 | fabric ready-for-traffic | the fabric-primary | every mesh the accepted Build names ready-for-traffic, its attempt claimed; the fabric-primary then calls [`on_fabric_ready`](../fabric-node-hooks.md#on_fabric_ready) |
 
-A command is start, stop or delete; the node's acknowledgement of it sets starting, stopping or deleting, and its completion sets ready, stopped or deleted (Q233, Luke). A query answers the row's status as the node's frames moved it: a command the node has not acknowledged moves the row's status nowhere, and `deleted` for an exited node comes from the delete's receipt.
-
 The internal report and apply that move a node's status are [node status](node-status.md).
 Which frame carries each state to peers, and who publishes it, is the
 [gossip frame catalog](../gossip.md#31-frame-catalog).
