@@ -63,7 +63,9 @@ the same order starts the workflow again, resuming the attempt from its recorded
    with a new node.id: over the inherited data dir with the same endpoint key when the investigation's
    provider step found the old runtime exited, over a newly allocated data dir, `inherited = false`,
    otherwise (`R-FM2`). An old birth that comes back after that is a deleted birth: every view refuses its
-   Digest by name, its mesh-primary reports it, and the fabric-primary terminates its runtime (Q110).
+   Digest by name, and its mesh-primary decides it by its path.name and its atlas
+   ([node investigation](node-investigation.md), Q207): its re-created birth is there, so it is reported
+   and the fabric-primary terminates its runtime (Q110).
    Nothing holds, and nothing waits for proof. From the backbone the re-create terminates nothing in the
    mesh. On `exited`, `os-stopped` or `unproven`, its node.delete of the exact lost birth writes that
    birth's row deleted with no `TerminateRuntime` and releases the name, then node.create at the

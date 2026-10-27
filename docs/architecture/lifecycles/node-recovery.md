@@ -63,8 +63,9 @@ own:
    command. Any other verdict (`running`, `os-stopped`, `exited`, `unproven`): the recovery below, at
    once. Nothing holds, nothing is inspected again, and nothing waits for a proof of termination
    (Q110, Q111). A birth that comes back after it was re-created is a deleted birth: every view refuses
-   its Digest by name ([gossip.md receiver rules](../gossip.md#31-frame-catalog)), its mesh-primary reports
-   it to the fabric-primary, and the fabric-primary terminates its runtime.
+   its Digest by name ([gossip.md receiver rules](../gossip.md#31-frame-catalog)), and its mesh-primary
+   decides it by its path.name and its atlas ([node investigation](node-investigation.md), Q207): its
+   re-created birth is there, so it is reported to the fabric-primary, which terminates its runtime.
 
 ## Numbered end-to-end sequence
 

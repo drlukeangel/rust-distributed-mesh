@@ -56,7 +56,8 @@ diagnostic spans that open no node.create.
      the verdict is `exited` and over a newly allocated one otherwise (R-FM2). When mesh-x's
      mesh-primary is the fabric-primary, this arm is [fabric recovery](fabric-recovery.md), run by
      the lowest ReadyForTraffic mesh-primary on the backbone, which takes no primary role (Q122). A crash does not end a mesh, so this is never a new mesh. A mesh-x node that
-     comes back after it was re-created is refused at admission and its runtime terminated (Q110).
+     comes back after it was re-created is refused at admission and decided by its path.name and the
+     atlas ([node investigation](node-investigation.md), Q207): it is deleted and its runtime terminated (Q110).
 6. A carrier-edge-lost verdict runs node.create of a node-admin into mesh-x, on the SAME accepted Build
    and mesh-x's own MeshId: a node-admin joining a live mesh. The node.create carries mesh-x's
    MeshId, a seed and the mesh-primary launch mode, and the node-admin never mints a MeshId. It joins

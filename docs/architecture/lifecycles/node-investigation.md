@@ -28,13 +28,22 @@ node.delete or mesh.delete.
 Data dir: if the provider step finds the runtime exited, the re-created node takes the inherited data
 dir; on any other verdict, a newly allocated one (R-FM2).
 
-A node that comes back after it was re-created is a deleted birth, and the view is its door: every
-node refuses its Digest by name ([gossip.md §3.1 receiver rules](../gossip.md#31-frame-catalog)), its
-mesh-primary reports it to the fabric-primary (`rdm.node_admin.node.update.via-returned-reported`), and
-the fabric-primary terminates its runtime under `node.terminate:<path>@<incarnation>`. No admit reason
-exists for it, and none is added. A second birth another executor made at the path.name across a cut is
-made a deleted birth by its mesh-primary, which writes its row deleted ([node.delete](node-delete.md),
-releasing the name) and reports it the same way (Q142).
+A caller birth a primary does not hold (its Digest refused by name under [gossip.md §3.1 receiver
+rules](../gossip.md#31-frame-catalog), or its status declaration refused `SubjectUnknown`) is decided by
+its path.name and the primary's atlas, one decision for the fabric-primary and every mesh-primary
+(Q207): another birth at that path.name now, or an op executing that re-creates it there, deletes the
+caller; nothing there and the topology needing the path re-admits it through
+[node.mesh.join](node-mesh-join.md); nothing there and the topology not needing it deletes it. A
+node-admin's atlas is its topology and its in-flight commands over the meshes it is primary for, its own
+mesh as a mesh-primary and every mesh as the fabric-primary, each filled once from the node records as
+it takes that primary and narrowed off as it hands it away. A node-admin that is not the fabric-primary
+verifies its decision at the root with `fabrics.atlas.get` before it acts, and the root's answer wins. A
+deleted caller is reported to the fabric-primary (`rdm.node_admin.node.update.via-returned-reported`),
+which terminates its runtime under `node.terminate:<path>@<incarnation>`; each decision is one
+`rdm.node_admin.node.update.via-refused-caller` span. A node that comes back after it was re-created is
+such a caller: its re-created birth is at its path.name, and it is deleted. A second birth another
+executor made at the path.name across a cut is made a deleted birth by its mesh-primary, which writes its
+row deleted ([node.delete](node-delete.md), releasing the name) and reports it the same way (Q142).
 
 ## Operation contract
 
