@@ -316,6 +316,29 @@ The accepted topology is the Build's; the observed topology follows the executor
 
 ---
 
+### 4.4 The gates before an operation
+
+Every operation on the topology, a Build or a standalone node.stop, node.start,
+node.connections.delete or node.delete, passes the fabric-primary's gates in this order before
+anything runs. Each gate reads one source. A gate that fails refuses by name and nothing is written.
+
+| Gate | Reads | Refusal |
+|---|---|---|
+| The receiver is the fabric-primary | its own view | `not-primary`, naming the fabric-primary |
+| The current Build is settled | the Build store (R-BI3) | `build-in-progress`, naming the Build; fabric.delete excepted (§1) |
+| The node's mesh holds no attempt of its own | the Build store (R-BI7) | `build-in-progress`, naming the mesh |
+| A node stands at the path | the fabric-primary's view by name; a `.old` path by node id through the row index | `unknown-node` |
+| The node's state admits the action: a start needs a stopped birth, a stop or a connections delete a live one, a delete a stopped one or one whose exit is proven | the fabric-primary's view, which holds a peer mesh's births as that mesh's primary publishes them on the backbone ([gossip §3](gossip.md#3-hierarchical-topology)) | `node-not-live` |
+| The node's mesh is heard | the fabric-primary's view | refused by name, naming the mesh and how long it has gone unheard (R-D1) |
+| A primary's stop, connections delete or delete has a successor | the fabric-primary's view | refused by name, naming the primary |
+| The attempt is claimed | the Build store | `attempt-taken` |
+
+The operation carries the exact birth the gates pinned (node id and incarnation). The mesh-primary
+that runs it verifies that birth again against its own view at execution, so a birth replaced
+between acceptance and execution is refused there, by name.
+
+---
+
 ## 5. BuildStateAdapter
 
 Build mechanics must not depend on one storage technology.

@@ -51,6 +51,9 @@ node what changed and when. The fabric-primary drives every Build through the
 progress; a won claim supplies durable ownership. Gossip carries the recovery evidence, never the
 progress wait.
 
+What an operation is admitted against, gate by gate and the source each reads, is
+[Build §4.4](build.md#44-the-gates-before-an-operation).
+
 ## Fabric workflows
 
 | Workflow | Read when |

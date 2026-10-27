@@ -11,6 +11,7 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
 |---|---|
 | Identity | Same node.id, incarnation, path/name, endpoint key, bound port and bin |
 | Entry | A just-created process or a live process in stopped |
+| Admission | The fabric-primary admits a start from its view, where a stopped node of a peer mesh is the mesh-primary's NodeStopped ([Build §4.4](../build.md#44-the-gates-before-an-operation)); the mesh-primary verifies the exact birth (node id and incarnation) when it runs the start |
 | Stopped reachability | Fresh Node RPC dial to its still-bound endpoint ([stopped nodes](states.md#stopped-nodes)) |
 | Context | `start_kind = FirstStart` or `AfterStop`; the spec says whether the data dir is inherited |
 | Hooks | [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready), blocking, with joined channel, cert and current rafka-time; topology follows the hook. [`on_node_ready`](../fabric-node-hooks.md#on_node_ready), a notice, once after `node.started` |
