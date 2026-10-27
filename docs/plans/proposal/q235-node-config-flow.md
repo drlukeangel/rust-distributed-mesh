@@ -23,8 +23,9 @@ Two flows read the upper copies, and each fails if a node's own change stays on 
   map, the node comes back with an old one and its own update is undone.
 - **Rebuild.** The reconciler "compares each node's entry with what the node's row records and
   applies every property that differs" (build.md §1). If the row does not hold the node's latest map,
-  the diff is computed against a stale value. Reads (`nodes.get`, query.md) answer from the Atlases:
-  a submitter reading the node's config before it composes a Build (Q236) reads a stale value.
+  the diff is computed against a stale value. Reads answer from the atlases (`nodes.get`, query.md)
+  or from the row itself (a node's point read, Q237): a submitter reading the node's config before it
+  composes a Build (Q236) reads a stale value.
 
 ## 2. The flow
 
@@ -185,6 +186,16 @@ mesh, the fabric-primary's for the rest, and the node's own whole row on its own
   the mesh-primary its topology view names, retargeted on a primary change with the rest of its
   queue (Q210); never "the admin it joined through", which after a hand-over may hold no atlas. The
   hop is in process only when that mesh-primary is this process.
+
+- **P5, who writes the row on a node's own update: the mesh-primary, as today (the lead, 2026-10-27;
+  Luke asked).** A node reads any row directly (Q237) but writes none. One writer mints the revision
+  that orders every install; two writers on the row would need compare-and-swap at the store, which no
+  backend has, and a retry for the loser. The row is mostly RDM's (status, primaries, incarnation,
+  endpoint, the runtime handle, written from frames and receipts): a node writing it whole would
+  overwrite them, and writing its one field is a PATCH. The mesh-primary's atlas is current because
+  it is the writer; a direct write would still need the upward hop, after a store watch. A record the
+  application owns outright, keyed by node with no RDM field, could be the node's own to write;
+  nothing asks for one.
 
 The freshness contract: on `Applied` the row and the mesh-primary's atlas hold the map; the
 fabric-primary's atlas holds it once the push is acknowledged, bounded by the owed delivery, and a

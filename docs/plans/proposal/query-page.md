@@ -14,12 +14,20 @@ itself from the topology it holds. Both take the same filter.
 
 ## 1. External: a query to the primaries
 
-A caller outside the node sends the read to the fabric-primary. A node asking for rows it does not
-hold sends it to the node-admin it joined through, its mesh-primary, as it sends its own
-`node.config.update`; the node never names the fabric-primary. Only a primary keeps an Atlas
+A caller outside the node sends the read to the fabric-primary. Only a primary keeps an atlas
 (Q224): a mesh-primary's holds its own mesh and nothing else, the fabric-primary's holds every mesh,
-and a node-admin that is not a primary keeps none. The mesh-primary answers a read of its own mesh
-from its Atlas and carries any other read up to the fabric-primary. No read touches the store (Q227).
+and a node-admin that is not a primary keeps none. The fabric-primary answers from its atlas; a
+mesh-primary answers a read of its own mesh from its atlas and carries any other read up to the
+fabric-primary.
+
+A node reads another node's row from the nodes storage itself (Q237, Luke): a point read by `id` or
+by `name`, the store opened on the node's first read and never at its start, join or create, where
+the hydration sync from its mesh-primary gives it everything it needs (Q227, Q234). The row is the
+record: the mesh-primary writes it and its atlas in one step, so the store is never behind an atlas,
+and the read sees a node's own update as soon as its mesh-primary has written it. A node's filter
+beyond `id` or `name`, "every broker in eu-1", is the primaries' query above, sent to the
+mesh-primary its topology view names and carried up for another mesh: a scan of the store is never a
+node's. The store's reader must not meet a line still being written (#3222 lands first).
 
 One read per entity, each answering a list in a stable order: `fabrics.get`, `meshes.get`,
 `nodes.get`, `connections.get`, `builds.get`. A filter is a list of `[property, [values…]]` pairs.
@@ -38,12 +46,12 @@ builds.get [["current", ["true"]]]                                 the current B
 connections.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
 ```
 
-From a node, the same read:
+From a node:
 
 ```text
-node.nodes_get([["id", [me]]])                                     my whole row
-node.nodes_get([["mesh", [my mesh]], ["kind", ["broker"]]])        my mesh's brokers
-node.nodes_get([["config.zone", ["eu-1"]]])                        every node in eu-1
+node.node_row(id | name)                                           one row, from the nodes storage (Q237)
+node.nodes_get([["mesh", [my mesh]], ["kind", ["broker"]]])        my mesh's brokers, from the mesh-primary's atlas
+node.nodes_get([["config.zone", ["eu-1"]]])                        every node in eu-1, carried up to the fabric-primary
 ```
 
 The matching rules:
@@ -179,9 +187,12 @@ Every read is a query by property, answered in one of two places
 ([query.md](../architecture/query.md)):
 
 - **The primaries** answer `fabrics.get`, `meshes.get`, `nodes.get`, `connections.get` and
-  `builds.get` from their Atlases (the mesh-primary for its own mesh, the fabric-primary for the rest): any property of the row, `config.<key>` and `tags` included. From
-  inside a node it is `node.nodes_get(filter)`, carried up by the node-admin the node joined through
-  ([query.md §1](../architecture/query.md#1-external-a-query-to-the-primaries)).
+  `builds.get` from their atlases (the mesh-primary for its own mesh, the fabric-primary for the rest): any property of the row, `config.<key>` and `tags` included. From
+  inside a node it is `node.nodes_get(filter)`, sent to its mesh-primary and carried up for another
+  mesh ([query.md §1](../architecture/query.md#1-external-a-query-to-the-primaries)).
+- **The nodes storage** answers a node's read of one other node's row, by id or by name:
+  `node.node_row(id | name)`, the record itself, opened on the first read and never at start
+  ([query.md §1](../architecture/query.md#1-external-a-query-to-the-primaries), Q237).
 - **The node itself** answers `node.topology_view.nodes_get(filter)` from the topology it holds,
   locally, with no call: what gossip carries for every node, and its own whole row, synced from its
   mesh-primary's Atlas at join, start and create
