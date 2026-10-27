@@ -324,7 +324,7 @@ anything runs. Each gate reads one source. A gate that fails refuses by name and
 
 | Gate | Reads | Refusal |
 |---|---|---|
-| The receiver is the fabric-primary | its own view | `not-primary`, naming the fabric-primary |
+| The receiver is the fabric-primary | its own view | `not-fabric-primary`, naming the fabric-primary |
 | The current Build is settled | the Build store (R-BI3) | `build-in-progress`, naming the Build; fabric.delete excepted (§1) |
 | The node's mesh holds no attempt of its own | the Build store (R-BI7) | `build-in-progress`, naming the mesh |
 | A node stands at the path | the fabric-primary's view by name; a `.old` path by node id through the row index | `unknown-node` |
