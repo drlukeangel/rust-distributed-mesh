@@ -311,7 +311,11 @@ pub(crate) fn sync_recovery(writer: &ConnectionsWriter) {
     for row in directs {
         if row.state == ConnectionState::Connected {
             if let Some(inc) = row.destination.incarnation.as_ref() {
-                recovery.remove(&(row.destination.node_id.clone(), inc.clone(), row.alpn.clone()));
+                if recovery.remove(&(row.destination.node_id.clone(), inc.clone(), row.alpn.clone())).is_some() {
+                    if let Some(source) = own_source.as_ref() {
+                        spent_span(source, &row.destination, "direct-connected");
+                    }
+                }
             }
         } else if row.state == ConnectionState::Failed && row.recovery.is_some() {
             let superseded_by_active = own_source.as_ref().is_some_and(|src| {
@@ -324,11 +328,16 @@ pub(crate) fn sync_recovery(writer: &ConnectionsWriter) {
             });
             if !superseded_by_active {
                 if let Some(inc) = row.destination.incarnation.clone() {
-                    recovery.retain(|(id, i, a), p| {
-                        p.destination.name != row.destination.name
-                            || a != &row.alpn
-                            || (id == &row.destination.node_id && i == &inc)
-                    });
+                    let superseded: Vec<(NodeId, IncarnationId, Vec<u8>)> = recovery
+                        .iter()
+                        .filter(|((id, i, a), p)| p.destination.name == row.destination.name && a == &row.alpn && !(id == &row.destination.node_id && i == &inc))
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    for key in superseded {
+                        if let (Some(p), Some(source)) = (recovery.remove(&key), own_source.as_ref()) {
+                            spent_span(source, &p.destination, "destination-superseded");
+                        }
+                    }
                     recovery
                         .entry((row.destination.node_id.clone(), inc, row.alpn.clone()))
                         .or_insert_with(|| Pending {
@@ -350,7 +359,17 @@ fn spend(
     destination: &ConnectionEnd,
     reason: &'static str,
 ) {
-    writer.reconnect_state().recovery.lock().unwrap().remove(key);
+    // One span per pending attempt: an attempt a landed Direct Connected already ended
+    // (`sync_recovery`) is not ended again.
+    if writer.reconnect_state().recovery.lock().unwrap().remove(key).is_some() {
+        spent_span(source, destination, reason);
+    }
+}
+
+/// A pending attempt ended without a dial of its own, or after it (`connections.md` §12: the
+/// reconnect attempt span records whether it was superseded before dial or already satisfied by
+/// Direct Connected).
+fn spent_span(source: &PathName, destination: &ConnectionEnd, reason: &'static str) {
     tracing::info_span!(
         "rdm.node_admin.connection.remove.via-recovery-attempt",
         source = %source,
@@ -426,10 +445,17 @@ pub async fn run_due_at(
             continue;
         };
         let source = writer.own().name;
-        let step = {
+        let (step, series) = {
             let held_arc = writer.held();
             let held = held_arc.lock().unwrap();
-            if held.end_superseded(&destination) == Some(true) {
+            // The position this attempt takes in its series: the latest Failed row's round, one
+            // ordinal above it (connections.md §9.3, §12).
+            let series = held
+                .own_latest_directs()
+                .into_iter()
+                .find(|d| d.destination.name == destination.name && d.alpn == alpn && d.state == ConnectionState::Failed && (&d.destination.node_id, &d.destination.incarnation) == (&destination.node_id, &destination.incarnation))
+                .and_then(|d| d.recovery);
+            let step = if held.end_superseded(&destination) == Some(true) {
                 Step::Spent("destination-superseded")
             } else if matches!(
                 held.active_direct_for(&source, &destination.name, &alpn),
@@ -449,7 +475,8 @@ pub async fn run_due_at(
                 } else {
                     Step::Dial(due_ms, basis)
                 }
-            }
+            };
+            (step, series)
         };
         match step {
             Step::Wait => {}
@@ -465,10 +492,15 @@ pub async fn run_due_at(
                     destination_node_id = %destination.node_id,
                     destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
                     due_ms,
+                    recovery_round = tracing::field::Empty,
+                    attempt_ordinal = tracing::field::Empty,
                     outcome = tracing::field::Empty,
                     fact = tracing::field::Empty,
                     entry = tracing::field::Empty,
                 );
+                if let Some(r) = series {
+                    span.record("recovery_round", r.recovery_round).record("attempt_ordinal", r.attempt_ordinal.saturating_add(1));
+                }
                 if let Some(tp) = &traceparent {
                     rdm_transport::set_parent(&span, tp);
                 }

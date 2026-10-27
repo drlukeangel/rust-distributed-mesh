@@ -368,7 +368,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     retirements.sort_by_key(|sp| start(sp));
     let (refused, lands): (Vec<&Value>, Vec<&Value>) = retirements.iter().partition(|sp| sp["attributes"]["outcome"] == "refused");
     assert!(!refused.is_empty(), "the refused write is named on a span: {retirements:?}");
-    assert!(refused.iter().all(|sp| s(&sp["attributes"]["reason"]).contains("testkit fault armed")), "{refused:?}");
+    assert!(refused.iter().all(|sp| s(&sp["attributes"]["detail"]).contains("testkit fault armed")), "{refused:?}");
     assert!(refused.iter().all(|sp| start(sp) >= start(entry)), "every retirement attempt follows the dial's entry");
     assert_eq!((&refused[0]["trace_id"], &refused[0]["parent_span_id"]), (&entry["trace_id"], &entry["span_id"]), "the first retirement attempt is the entry's own settlement: {:?}", refused[0]);
     assert_eq!(lands.len(), 1, "one landing: {retirements:?}");

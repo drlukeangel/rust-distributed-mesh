@@ -519,11 +519,15 @@ impl ConnectionsWriter {
         for row in owed {
             let span = tracing::info_span!(
                 "rdm.node_admin.connection.update.via-retirement",
+                entry = %row.id,
                 source = %row.source.name,
                 destination = %row.destination.name,
                 carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
+                kind = kind_name(row.kind),
+                state = state_name(row.state),
+                reason = %row.reason.clone().unwrap_or_default(),
                 outcome = tracing::field::Empty,
-                reason = tracing::field::Empty,
+                detail = tracing::field::Empty,
             );
             match self.persist(&row).await {
                 Ok(()) => {
@@ -534,7 +538,7 @@ impl ConnectionsWriter {
                 }
                 Err(e) => {
                     span.record("outcome", "refused");
-                    span.record("reason", e.as_str());
+                    span.record("detail", e.as_str());
                     span.in_scope(|| tracing::info!("the owed Proxy retirement write was refused; the Proxy stays effective and the obligation stands"));
                     return Err(e);
                 }
@@ -628,6 +632,8 @@ impl ConnectionsWriter {
                     kind = kind_name(row.kind),
                     state = state_name(row.state),
                     reason = %row.reason.clone().unwrap_or_default(),
+                    recovery_round = tracing::field::Empty,
+                    attempt_ordinal = tracing::field::Empty,
                     origin = *origin,
                     attempts = tracing::field::Empty,
                     outcome = tracing::field::Empty,
@@ -637,7 +643,9 @@ impl ConnectionsWriter {
                     "rdm.node_admin.connection.update.via-connections-delete",
                     source = %row.source.name,
                     destination = %row.destination.name,
+                    carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
                     kind = kind_name(row.kind),
+                    state = state_name(row.state),
                     closed_entry = %closed_entry,
                     entry = %row.id,
                     reason = %reason,
@@ -645,6 +653,9 @@ impl ConnectionsWriter {
                     outcome = tracing::field::Empty,
                 ),
             };
+            if let Some(r) = row.recovery {
+                span.record("recovery_round", r.recovery_round).record("attempt_ordinal", r.attempt_ordinal);
+            }
             let landed = match w.land(&row, &span, gate).await {
                 Some((attempts, gate)) => {
                     span.record("attempts", attempts);

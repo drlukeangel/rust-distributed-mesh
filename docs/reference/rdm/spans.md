@@ -367,7 +367,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.cert.update.via-renewal` | `crates/rdm-admin/src/cert_renewal.rs` | 233 |
 | `rdm.node_admin.config.resolve.via-call` | `crates/rdm-core/src/names.rs` | 83 |
 | `rdm.node_admin.config.update.via-call` | `crates/rdm-core/src/names.rs` | 84 |
-| `rdm.node_admin.connection.create.via-recovery-dial` | `crates/rdm-node/src/connection_reconnect.rs` | 462 |
+| `rdm.node_admin.connection.create.via-recovery-dial` | `crates/rdm-node/src/connection_reconnect.rs` | 489 |
 | `rdm.node_admin.connection.delete.via-call` | `crates/rdm-core/src/names.rs` | 82 |
 | `rdm.node_admin.connection.delete.via-connections-delete` | `crates/rdm-node/src/node_self.rs` | 571 |
 | `rdm.node_admin.connection.delete.via-connections-deleting` | `crates/rdm-node/src/node_self.rs` | 699 |
@@ -376,13 +376,13 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.connection.delete.via-mesh-primary` | `crates/rdm-admin/src/status_rpc.rs` | 1749 |
 | `rdm.node_admin.connection.delete.via-stop` | `crates/rdm-node/src/node_self.rs` | 1107 |
 | `rdm.node_admin.connection.reject.via-refused-write` | `crates/rdm-node/src/connections_writer.rs` | 454 |
-| `rdm.node_admin.connection.remove.via-recovery-attempt` | `crates/rdm-node/src/connection_reconnect.rs` | 355 |
+| `rdm.node_admin.connection.remove.via-recovery-attempt` | `crates/rdm-node/src/connection_reconnect.rs` | 374 |
 | `rdm.node_admin.connection.resolve.via-call` | `crates/rdm-core/src/names.rs` | 81 |
-| `rdm.node_admin.connection.update.via-accept-trigger` | `crates/rdm-node/src/connection_reconnect.rs` | 580 |
-| `rdm.node_admin.connection.update.via-connections-delete` | `crates/rdm-node/src/connections_writer.rs` | 637 |
+| `rdm.node_admin.connection.update.via-accept-trigger` | `crates/rdm-node/src/connection_reconnect.rs` | 612 |
+| `rdm.node_admin.connection.update.via-connections-delete` | `crates/rdm-node/src/connections_writer.rs` | 643 |
 | `rdm.node_admin.connection.update.via-held-name` | `crates/rdm-node/src/connections_writer.rs` | 235 |
 | `rdm.node_admin.connection.update.via-hydrate` | `crates/rdm-node/src/connections_writer.rs` | 280 |
-| `rdm.node_admin.connection.update.via-observed` | `crates/rdm-node/src/connections_writer.rs` | 622 |
+| `rdm.node_admin.connection.update.via-observed` | `crates/rdm-node/src/connections_writer.rs` | 626 |
 | `rdm.node_admin.connection.update.via-observed` | `crates/rdm-transport/src/connections.rs` | 366 |
 | `rdm.node_admin.connection.update.via-retirement` | `crates/rdm-node/src/connections_writer.rs` | 521 |
 | `rdm.node_admin.deployment.delete.via-path-investigation` | `crates/rdm-admin/src/seat_revision.rs` | 38 |
