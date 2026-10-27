@@ -56,10 +56,15 @@ impl NodeProtocol for CgShuffleRecord {
 
 - **Request and reply** are the protocol's own postcard enums. There is no success or error envelope:
   a refusal is a reply variant.
-- **The six refusals** (`peer_unresolved`, `not_ready`, `busy`, `connections_deleting`, `malformed`,
-  `unauthorized`) are variants of your reply. The runtime answers them for you: before your handler
-  runs, while the node is not ready or is deleting its connections, or when the body is too large or
-  does not decode.
+- **The six reserved variants** (`peer_unresolved`, `not_ready`, `busy`, `connections_deleting`,
+  `malformed`, `unauthorized`) are variants of your reply that the codec requires. Four are refusals
+  the receiver's runtime answers before your handler runs: `not_ready` while the node's RPC door is
+  unopened, `busy` at its admission bound, `connections_deleting` while the node deletes its
+  connections, `malformed` when the body is too large or does not decode. `unauthorized` holds its
+  codec position only: a mesh receiver never sends it, since nothing inside the mesh checks who sent
+  a call ([node-rpc.md §25](../architecture/node-rpc.md)). `peer_unresolved` is a receiver's answer
+  after topology convergence; a caller whose resolver names no node sends nothing and gets the
+  `NotSent` outcome, never this reply.
 - **`classify_reply`** maps each variant to its code (`ReplyKind::Success`, `ReplyKind::new(Code::NotFound)`, ...),
   and **`reply_detail`** gives each its name for spans.
 - **`read_only`** (default `false`): return `true` for a request that changes nothing, so a caller may
@@ -87,12 +92,25 @@ pub fn register(b: rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder
 }
 
 async fn serve(peer: rdm_transport::PeerContext, request: ShuffleRequest) -> Result<ShuffleReply, rdm_transport::HandlerFault> {
-    // peer: the caller's endpoint id as the transport proved it, the sanitized CallContext, and the
-    // request's delivery identity. Return the reply; a HandlerFault is the handler's own failure and
-    // reaches the caller as INTERNAL_RPC_FAILURE (423).
+    // peer: the caller's endpoint id as the transport proved it, the sanitized CallContext, the
+    // request's delivery identity, and its acceptance boundary.
+    record_durably(&request).await?;     // the accepted work is now recoverable from your own record
+    peer.acceptance.accepted();          // the runtime acks the request here, not at the reply
+    // ... do the work; return the reply. A HandlerFault is the handler's own failure and reaches
+    // the caller as INTERNAL_RPC_FAILURE (423).
 }
 ```
 
+- **Recoverable acceptance** ([node-rpc.md §43](../architecture/node-rpc.md#43-owed-messages-delivery-is-the-runtimes)):
+  the runtime resends an unacknowledged request and suppresses duplicates by delivery id, but the ack
+  proves receipt, never execution, and it is sent only once the accepted work is recoverable. A
+  handler that mutates anything records what it accepted first, then calls
+  `peer.acceptance.accepted()`; a read-only request is accepted as it is dispatched; a handler that
+  calls nothing is accepted at its first reply frame, so a crash between accepting the work and
+  replying loses it. Delivery identity is not operation identity: a duplicate delivery of the same
+  request is suppressed by the runtime, a second request for the same operation is yours to
+  recognise by its operation id (node-rpc.md §33). You define how your pending work is rebuilt from
+  your record after a restart; the runtime holds no durable queue.
 - **`ServerBuilder::ledger(rows)`** adds your ledger rows. **`ServerBuilder::serve::<P, _, _>(owner, handler)`**
   serves a unary op. **`ServerBuilder::serve_stream::<P, _, _>(owner, handler)`** serves a
   server-streaming op: the handler gets a `ReplySink` for its frames and returns the final reply. A
@@ -123,13 +141,18 @@ let (outcome, _evidence) = client
 - **`target`** is a `NodeTarget`, usually the exact node (`NodeTarget::ExactNode(node_id)`), from the
   node's topology or a read ([query](../architecture/query.md)).
 - **The outcome** is `RpcOutcome<P::Reply>`:
-  - `Reply(variant)`: the handler answered, or the runtime answered one of the six refusals;
+  - `Reply(variant)`: the handler answered, or the receiver's runtime answered one of its four
+    refusals (`not_ready`, `busy`, `connections_deleting`, `malformed`);
   - `NotSent`: provably never delivered; safe to send again;
   - `Indeterminate`: sent, answer unknown; retry only a `read_only` request;
   - `Unserved`: the target does not serve the op (`421`);
   - `RejectedStale`: the caller's resolver stopped naming the node it dialled before the request went; never dispatched.
-- **`CallOptions`** carries the budget: one attempt by default, or `Budget::Owed` for a message owed
-  until acknowledged, with backoff (the one delivery rule).
+- **`CallOptions`** carries the budget. Under every budget the runtime resends the same delivery,
+  with backoff, until it is acknowledged (the one delivery rule, node-rpc.md §43): never add a
+  delivery loop of your own. The default is `Budget::Overall(10 s)`, one deadline over resolve,
+  dial, send and reply. `Budget::Owed` removes the deadline, nothing else: the call ends only on its
+  reply, on the runtime's proof that the receiver is gone, or when you drop it; for a report or
+  completion you owe, never a default. The call waits for the reply, not for the ack.
 - **Trace context** rides the call's `CallContext`; your serve span is the caller's child
   ([telemetry.md §3](../architecture/telemetry.md)).
 
@@ -141,5 +164,8 @@ let (outcome, _evidence) = client
 3. `serve` or `serve_stream` in the builder your `run_with` gets.
 4. Spans named `<owner>.<domain>.<entity>.<action>.via-<reason>` for what the handler does
    ([telemetry.md](../architecture/telemetry.md), the envelope's runtime spans).
-5. A cell: a call answered, a refusal answered by name, the request over its ceiling refused
-   `Malformed(TooLarge)`.
+5. For a mutating handler: the durable record of the accepted work, `peer.acceptance.accepted()`
+   after it, and how that work is rebuilt after a restart (§3).
+6. A cell: a call answered, a refusal answered by name, the request over its ceiling refused
+   `Malformed(TooLarge)`, and for a mutating handler the request accepted then the process restarted
+   with the work still done.
