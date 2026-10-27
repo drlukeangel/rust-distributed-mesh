@@ -165,6 +165,67 @@ async fn a_partial_object_followed_by_another_writers_line_refuses_the_read() {
     assert!(reopen(&path).await.is_err(), "an open is refused the same way");
 }
 
+/// Two lines of writer `a` in the store file at `path`, then the first half of writer `b`'s line held
+/// unended at the end of the file: a write in flight. Answers the line's bytes and the offset of its
+/// object.
+async fn two_lines_then_a_line_still_being_written(path: &Path) -> (StoreLog, Vec<u8>, u64) {
+    let log = reopen(path).await.unwrap();
+    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec/1", "j", &rec("a", 2)).await.unwrap();
+    assert_eq!(current(&log, "k").await, Some(rec("a", 1)));
+    let at = std::fs::metadata(path).unwrap().len() + 1;
+    let line = line_of(&encode_object(&op_of(&writer("b"), 1), "rec/1", "k", br#"{"name":"b","n":3}"#));
+    append_raw(path, &line[..line.len() / 2]);
+    (log, line, at)
+}
+
+/// CONTRACT (R-SR4: "the consumed offset ... advances only over bytes the fold has read whole ... and
+/// an incomplete tail stays unconsumed"): a reader that folded two lines meets another writer's line
+/// standing unended at the end of the file, its write still in flight however long it stands. The
+/// tail read answers the two lines before it as current and leaves the unended object unconsumed, the
+/// consumed offset at its start; the raw log answers the same two lines; once the write ends, the next
+/// tail read folds the line once. Must NOT happen: the read refused while the line is being written,
+/// the unended object answered, or the consumed offset moved past it.
+#[tokio::test]
+async fn a_tail_read_leaves_a_line_still_being_written_unconsumed_and_folds_it_once_it_ends() {
+    let path = file("store-log-line-in-flight");
+    let (log, line, at) = two_lines_then_a_line_still_being_written(&path).await;
+    let latest = log.latest_of("rec").await.unwrap_or_else(|e| panic!("a line another writer is still writing is never refused: {e}"));
+    assert_eq!(latest.iter().map(|l| l.decode::<Rec>(&path).unwrap()).collect::<Vec<_>>(), vec![rec("a", 2), rec("a", 1)], "the lines before it are current");
+    assert_eq!(log.consumed(), at, "the unended object stays unconsumed: the offset stands at its start");
+    assert_eq!(log.lines().await.unwrap().len(), 2, "the raw log answers the lines before it");
+    append_raw(&path, &line[line.len() / 2..]);
+    assert_eq!(current(&log, "k").await, Some(rec("b", 3)), "the line is folded once its write ends");
+    assert_eq!(log.consumed(), std::fs::metadata(&path).unwrap().len(), "the fold read it whole");
+    assert_eq!(log.0.fold.lock().unwrap().lines, 3, "each line folded once");
+}
+
+/// CONTRACT (R-SR4, a look at a file its nodes write, `read_file`): the same unended object at the end
+/// of a file is left out of a look at it: the look answers the lines before it. Must NOT happen: the
+/// look refused while the line is being written.
+#[tokio::test]
+async fn a_look_at_a_file_leaves_out_a_line_still_being_written() {
+    let path = file("store-log-look-in-flight");
+    let _ = two_lines_then_a_line_still_being_written(&path).await;
+    let lines = read_file(&path).unwrap_or_else(|e| panic!("a line another writer is still writing is never refused: {e}"));
+    assert_eq!(lines.iter().map(|l| l.decode::<Rec>(&path).unwrap()).collect::<Vec<_>>(), vec![rec("a", 1), rec("a", 2)]);
+    assert_eq!(latest_in(&path).unwrap().len(), 2);
+}
+
+/// CONTRACT (R-SR3: at open, "An incomplete or invalid object is left untouched and refused"): an open
+/// of the file holding the same unended object is refused by name, naming the file and the object's
+/// offset, and leaves the file's bytes as they are. Must NOT happen: the open answering the lines
+/// before it as current, or a byte added or removed.
+#[tokio::test]
+async fn an_open_refuses_an_unended_object_by_name_and_leaves_the_bytes() {
+    let path = file("store-log-open-unended");
+    let (_log, _, at) = two_lines_then_a_line_still_being_written(&path).await;
+    let bytes = std::fs::read(&path).unwrap();
+    let e = reopen(&path).await.unwrap_err().to_string();
+    assert!(e.contains(&path.display().to_string()) && e.contains(&format!("byte offset {at}")) && e.contains("an unended object"), "refused by name with the file and the offset: {e}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "the file's bytes are unchanged");
+}
+
 /// CONTRACT (R-SR3, the short-write boundary): a write that reported all but its final newline is
 /// indeterminate and reconciled at once by its object, under both schedules: (a) another writer's
 /// line lands first, its opening newline ending the object, and the reconciliation finds it whole and
