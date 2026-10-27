@@ -281,16 +281,17 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
 
     let stream = estate.carrier().await.create(naming_provider(&estate, Some(TOPOLOGY_STORAGE_TARGET)).await).await.unwrap_or_else(|e| panic!("the storage change naming {TOPOLOGY_STORAGE_TARGET} is accepted: {e}"));
     let build_id = stream.build_id().to_string();
-    // A caller's command to mesh2's mesh-primary once it replied `blocked`: admitted, and issued only
-    // once it is unblocked (storage.md §2 step 1).
+    // A caller's node.config.update of a mesh2 node once mesh2's mesh-primary replied `blocked`: sent to
+    // the fabric-primary (node-config-update.md step 1), which sends it down to mesh2's mesh-primary;
+    // admitted there, and issued only once it is unblocked (storage.md §2 step 1).
     let blocked = blocked_at(&estate, &build_id, "mesh2").await;
     let subject = views.iter().find(|v| v.name.to_string() == "mesh2.rpc.1").cloned().expect("mesh2.rpc.1");
-    let primary = views.iter().find(|v| v.mesh == "mesh2" && v.is_primary).cloned().expect("mesh2's primary");
+    let fabric_primary = views.iter().find(|v| v.is_fabric_primary).cloned().expect("the fabric-primary");
     let told: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(subject.node_id.clone()), node_id: subject.node_id.clone(), incarnation: subject.incarnation_id.clone().expect("a live birth") };
     let carrier = estate.carrier().await;
     let (rpc, options) = (rdm_client::NodeRpc::new(carrier.client()), rdm_transport::CallOptions::default());
-    let update = rpc.config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told, &options);
+    let update = rpc.config_update(&fabric_primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told, &options);
     let (done, updated) = tokio::join!(estate.follow(stream), update);
     updated.unwrap_or_else(|e| panic!("node.config.update during the change is answered: {e}"));
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
