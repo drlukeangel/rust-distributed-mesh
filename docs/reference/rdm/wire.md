@@ -491,7 +491,7 @@ The typed result of a Status call.
 | 53.2 | `issuer_expires_at` | `u64` |  |  | When the installed issuing cert expires, rafka-time ms. |
 | 54 | **`RejectedCert`** |  |  | `name() = "rejected-cert"` | A cert or issuing material refused by name (node-cert-renew.md, node-issuer-update.md): it does |
 | 54.0 | `reason` | `String` |  |  | Why, by name; within `MAX_REFUSAL_REASON_BYTES`. |
-| 55 | **`Atlas`** |  |  | `name() = "atlas"` | The answer to a `GetAtlas`: the fabric-primary's `FabricAtlas`. Appended last: no variant |
+| 55 | **`Atlas`** |  |  | `name() = "atlas"` | The answer to a `GetAtlas`: the fabric-primary's atlas. Appended last: no variant |
 | 55.0 | `atlas` | `crate::views::AtlasView` → [`AtlasView`](#t-rdm_core-views-AtlasView) |  |  | The atlas. |
 
 ## 0x1C `build-claim`
@@ -1691,7 +1691,7 @@ One node of the `AtlasView`.
 
 `crates/rdm-core/src/views.rs` · struct · 1 fields · rdm-core
 
-The fabric-primary's `FabricAtlas` (`fabrics.atlas.get`; docs/plans/proposal/fabric-atlas.md):
+The fabric-primary's atlas (`fabrics.atlas.get`; docs/plans/proposal/fabric-atlas.md):
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
