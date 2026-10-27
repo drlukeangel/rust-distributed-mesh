@@ -248,5 +248,8 @@ backend's client. It also keeps the file store's whole-file reads and #3222's ra
 gateway. A is Luke's lean and works with #3222's fix landed. A filter beyond `id` and `path.name` is a
 scan on the file backend.
 
-**Ruled B (the lead, 2026-10-27, INDEX):** Q203 stands until Luke reverses it in his own words; the draft stands.
-A is Luke's to rule, with #3222 landed first.
+**Ruled A (Luke, 2026-10-27, INDEX):** a node reads another node's row from the nodes storage directly at
+runtime, a point read by id or name, the store opened on its first read and never at its start. Q203 and Q227
+rule out the start, join and create reads only: the hydration sync from the mesh-primary makes them needless.
+#3222's reader lands first. §1's "a node asking for rows it does not hold sends it to ... its mesh-primary" is
+rewritten to this before the landing.
