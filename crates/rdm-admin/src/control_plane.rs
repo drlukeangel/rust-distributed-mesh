@@ -485,6 +485,15 @@ impl ControlPlane {
             // An unheard birth is its mesh-primary's to recover on node investigation's verdict
             // (node-recovery.md step 3): it is refused `node-not-live` by name.
             if let TopologyChange::RemoveNode { node } = &change {
+                // The node's mesh held by its own attempt is the gate before the node's own gates
+                // (build.md §4.4): refused naming the mesh, whatever the node's state.
+                if let Some(held) = holding(&current, Some(&node.mesh)) {
+                    outer.in_scope(|| {
+                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %node.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %node)
+                            .in_scope(|| tracing::info!("the node's mesh is held by its own drift attempt: one attempt in flight per mesh"))
+                    });
+                    return Err(Refusal::BuildInProgress(held));
+                }
                 if let Some(n) = self.atlas_row(node, &observed).await?.filter(|n| !n.live && !n.stopped) {
                     return Err(not_live(&outer, route, node, n.status, "a delete needs a live node or a stopped one"));
                 }
@@ -630,11 +639,11 @@ impl ControlPlane {
         };
         span.record("build_id", current.build_id.as_str());
         span.record("attempt", opened.attempt);
-        // The context is on this fabric-primary before the attempt is open to be claimed.
-        self.contexts
-            .put_lane(&opened.build_id, lane, opened.attempt, &crate::build_claim::current_context())
-            .await
-            .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
+        // The attempt is opened, and only then its context put: a refusal (`attempt-taken`, the number
+        // another writer's open holds) writes nothing (build.md §4.4), so the context of the attempt
+        // that holds the number stays its own. The context is put before the drive is woken; a drive
+        // pass already running that claims the attempt between the open and the put claims it with
+        // `for_claim_lane`'s inherited context.
         if let Err(e) = self.builds.open_attempt(&opened).await {
             return Err(match e {
                 BuildStateError::AttemptTaken { .. } => {
@@ -646,6 +655,11 @@ impl ControlPlane {
                 }
                 e => Refusal::State(e),
             });
+        }
+        // The attempt is open whatever the put answers: an unwritten context is said on the span and the
+        // claim takes the inherited one.
+        if let Err(e) = self.contexts.put_lane(&opened.build_id, lane, opened.attempt, &crate::build_claim::current_context()).await {
+            tracing::info!(build_id = %current.build_id.log(), attempt = opened.attempt, error = %e, "the opened attempt's context could not be put: its claim takes the inherited context");
         }
         tracing::info!(build_id = %current.build_id.log(), attempt = opened.attempt, lane = lane.unwrap_or("fabric"), "attempt opened");
         if let Some(action) = &opened.action {
@@ -693,6 +707,15 @@ impl ControlPlane {
             };
             // Each birth as the ops left it (R-FA1): a primary's successor, a step's node.
             self.atlas.apply(&mut t);
+            // A node stands at every path a step acts on, before its mesh is read heard and before a
+            // primary's successor is looked for (build.md §4.4's order).
+            let action = match crate::accepted::recipe_action(steps.clone(), &t) {
+                Ok(a) => a,
+                Err(reject) => {
+                    outer.in_scope(|| reject_span(route, &reject));
+                    return Err(Refusal::Reject(reject));
+                }
+            };
             for step in &steps {
                 let node = step.node();
                 if node.mesh != self.me.mesh {
@@ -702,7 +725,7 @@ impl ControlPlane {
                         return Err(Refusal::Reject(reject));
                     }
                 }
-                let action = match step {
+                let step_action = match step {
                     rdm_core::build::RecipeStep::Stop { .. } => Some("stop"),
                     rdm_core::build::RecipeStep::Delete { .. } => Some("delete"),
                     // A seat holder's seats move at its node.connections.delete { All }, the first step of
@@ -710,18 +733,11 @@ impl ControlPlane {
                     rdm_core::build::RecipeStep::DeleteConnections { .. } => Some("node.connections.delete"),
                     _ => None,
                 };
-                if let Some(reject) = action.and_then(|a| last_admin(node, a, &t)) {
+                if let Some(reject) = step_action.and_then(|a| last_admin(node, a, &t)) {
                     outer.in_scope(|| reject_span(route, &reject));
                     return Err(Refusal::Reject(reject));
                 }
             }
-            let action = match crate::accepted::recipe_action(steps, &t) {
-                Ok(a) => a,
-                Err(reject) => {
-                    outer.in_scope(|| reject_span(route, &reject));
-                    return Err(Refusal::Reject(reject));
-                }
-            };
             drop(t);
             self.open_with(&current, None, AttemptReason::Recipe, action, route, &outer, &summary, span.clone()).await
         }
