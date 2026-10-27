@@ -53,19 +53,19 @@ fn single(own: &ConnectionEnd, row: &NodeConnection) -> ConnectionsHeld {
 }
 
 #[test]
-fn after_a_restart_the_backoff_is_reconstructed_from_the_latest_failed_row_not_reset() {
+fn the_backoff_is_computed_from_the_latest_failed_row_held_not_reset() {
     let (own, dest) = (end(1, "o1"), end(3, "d1"));
     let latest = failing_series(&own, &dest);
     assert_eq!(latest.recovery.map(|r| (r.recovery_round, r.attempt_ordinal)), Some((1, 3)), "one round, ordinal counted from 1");
 
     let before = reconnect_plan(&single(&own, &latest), |_| Some(IncarnationId::parse(&rdm_core::fixture_crockford60("d1")).unwrap()));
-    // A restart: a fresh projection handed the same latest row.
+    // A second projection handed the same latest row computes the same schedule.
     let after = reconnect_plan(&single(&own, &latest), |_| Some(IncarnationId::parse(&rdm_core::fixture_crockford60("d1")).unwrap()));
     assert_eq!(before, after);
     let want = 1000 + reconnect_backoff(3) + deterministic_jitter(&own.name, &dest.name, 3);
     assert_eq!(after[0].due_ms, want);
     assert!(reconnect_backoff(3) > reconnect_backoff(1), "backed off, not reset to the first interval");
-    assert!(due(&after, want - 1).is_empty(), "a restart before the due time never attempts early");
+    assert!(due(&after, want - 1).is_empty(), "no attempt before the due time");
     assert_eq!(due(&after, want).len(), 1);
 }
 

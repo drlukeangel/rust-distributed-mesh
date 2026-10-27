@@ -32,8 +32,9 @@ route such as `gateway -> gateway -> broker` is therefore one use of the generic
 broker table.
 
 The raw topic remains an append-only history. Every event receives its own minted row id. The raw
-history answers what happened; compacted declared indexes answer the latest state required by routing
-and reconnect.
+history answers what happened; compacted declared indexes answer the latest state per pair, which the
+mesh-primary's node investigation reads when it runs. No node reads its rows back to route or reconnect
+(§4.1).
 
 There is no separate `connections.proxies`, `connections.attempts`, `connections.dials`, or reconnect
 job topic. Direct connection state, proxy connection state, and failed direct attempts are all
@@ -226,9 +227,8 @@ Direct -> Connected
 Proxy  -> Disconnected(reason=direct-restored)
 ```
 
-Raw-log retention is therefore not part of reconnect correctness. The latest compacted Direct row carries
-the recovery round, attempt ordinal and time needed to reconstruct backoff even after older raw events age
-out.
+Raw-log retention is therefore not part of reconnect correctness. The latest Direct row a source writes
+carries the recovery round, attempt ordinal and time its next due time is computed from (§9.3).
 
 ### 3.1 Declared indexes
 
@@ -260,40 +260,33 @@ kind=proxy
 
 Existing node-type virtual topics remain available.
 
-This lets consumers ask, conceptually:
+This lets the mesh-primary's node investigation ask, when it runs ([node investigation](lifecycles/node-investigation.md)),
+conceptually:
 
 ```text
-routing:
-    rtable(source,destination).filter(state=active)
-
-reconnect:
-    latest Direct for source,destination
-    where state=failed
-
-carrier discovery:
+leads:
     rtable(destination).filter(state=active).filter(kind=direct)
 ```
+
+Routing, reconnect and the carrier pick read no row: a node holds its own facts from the moment each
+write lands (§4.1). A read of other nodes' facts ahead of a Proxy or an investigation is stale the moment
+it is read (Q227).
 
 ---
 
 ## 4. What is held in memory
 
-The fleet-wide held connections projection is routing state, not a distributed retry ledger.
+Each node's held connections are routing state, not a distributed retry ledger.
 
-### 4.1 Fleet-wide Direct graph
+### 4.1 A node holds its own facts
 
-Every routing node holds only **active Direct** connection facts fleet-wide:
+A node holds the connection facts it writes, each from the moment its write lands: its latest Direct per
+`(destination, alpn)` and its own active Proxy per `(destination, alpn)`. It holds no other node's facts,
+and it reads none from the store on create, start or rejoin, or before a carrier pick (Q227). A node is
+born holding no connection: a restart closes every connection the node held.
 
-```text
-gw2 -> brk2 Direct Active
-gw3 -> brk2 Direct Active
-compute1 -> gw2 Direct Active
-```
-
-That graph is the evidence from which a source discovers possible carriers.
-
-When the latest Direct record becomes Disconnected or Failed, the old active edge is removed from the held
-graph. The Dead/Failed row itself remains durable and indexed but is not retained fleet-wide in memory.
+When the latest Direct record becomes Disconnected or Failed, the old active edge is removed from what the
+node holds. The Dead/Failed row itself remains durable and indexed.
 
 ### 4.2 Source-owned Proxy state
 
@@ -303,13 +296,13 @@ Other nodes do not need `gw1 -> brk2 via gw2` because only gw1 can originate tra
 The effective local routing view is therefore:
 
 ```text
-global active Direct graph
+my latest Direct facts
         +
 my active Proxy overrides
 ```
 
-Failed and Dead Direct history is read from the durable latest-per-kind index by the owning source's
-reconnect reconciler when needed. It is not gossiped into every node's resident routing graph.
+The owning source's reconnect reconciler takes its latest Failed Direct from what it holds (§9.3). No node
+reads it back from the store, and it is not gossiped to any other node.
 
 ---
 
@@ -375,14 +368,18 @@ carriers only, is stated on Rafka's pages.
 
 A non-forwardable protocol never consumes Proxy as a legal route even if one exists.
 
-Carrier candidates are active Direct edges from an eligible carrier to the exact destination. When several
-are eligible, selection is deterministic and spread by source rather than "freshest wins" herd behavior.
-Conceptually:
+Carrier candidates are the live nodes of the source's mesh, from the topology it holds, of a node type the
+protocol lets carry, the source and the destination left out. The source asks them in path order,
+deterministic and spread by source rather than "freshest wins" herd behavior, starting at:
 
 ```text
 stable_hash(source, destination, destination_incarnation)
-    % deterministically_ordered_eligible_carriers.len()
+    % deterministically_ordered_candidates.len()
 ```
+
+and wrapping. The carrier's own Direct to the destination decides: a candidate without an Active one
+refuses by name (`carrier-edge-lost`, §8) and the source asks the next; when every candidate refuses, the
+open ends with no active route. No connection fact is read to choose.
 
 The chosen carrier stays chosen until a named structural event invalidates it. A newly available carrier does
 not reshuffle working routes merely by appearing.
@@ -404,7 +401,8 @@ Sequence:
 
 1. `gw1` writes a `Direct Failed` event for `gw1 -> brk2` with a new recovery round and
    `attempt_ordinal=1`.
-2. It selects an eligible carrier from the active Direct graph.
+2. It asks the candidates of §6 in their order; the first whose own Direct to the destination is Active
+   answers.
 3. It forwards the invocation once through that carrier.
 4. Only a conclusive end-to-end success/refusal proving the carrier path was actually usable may establish
    the proxy route.
@@ -463,8 +461,8 @@ A reply timeout after request commit is not proxy-health evidence and does not i
 Every node runs the same reconnect mechanism internally in `rdm-node`. Node-admin does not monitor
 Proxy routes and does not send reconnect commands.
 
-This is deliberately **not** a normal platform `Job` entity. It is a local durable reconciler whose work is
-reconstructed from `ops.nodes.connections`.
+This is deliberately **not** a normal platform `Job` entity. It is a local reconciler whose work is derived
+from the Direct facts the node writes and holds; it reads none back from `ops.nodes.connections`.
 
 Why: the source node already owns its connection observations, owns its Direct/Proxy rows, has the transport
 context needed to dial, and is the only process that can repair its own source-to-destination direct edge.
@@ -512,7 +510,7 @@ reason          = exact transport refusal/failure
 
 That row replaces the Direct member in the compacted `(source,destination,Direct)` index.
 
-The next due time is reconstructed deterministically from the latest indexed Failed record:
+The next due time is computed deterministically from the latest Failed record the source holds:
 
 ```text
 next_due = event_time
@@ -520,12 +518,12 @@ next_due = event_time
          + deterministic_jitter(source, destination, attempt_ordinal)
 ```
 
-A process restart therefore does not reset exponential backoff. The node reads its latest Direct-per-
-destination index rows and reconstructs only the currently relevant schedule. It never replays the raw log.
+A restart closes every connection the node held, and the restarted node reads no row back (Q227): it
+holds no reconnect series, and its next failed dial toward a destination is a new series at attempt 1.
 
 The exact constants are implementation policy and must be tested, but the schedule is bounded, exponentially
 backed off, jittered, and may continue at its maximum interval while the destination incarnation remains
-relevant. A restart before `next_due` must not trigger an early attempt.
+relevant.
 
 ### 9.4 One scheduler per node
 
@@ -586,7 +584,7 @@ Proxy Disconnected(reason=direct-restored)
 ```
 
 The proxy-retirement write is itself reconciled. If it fails, keep routing over Proxy and retry the write.
-After restart, the same pair of latest indexed rows reconstructs the pending retirement automatically.
+A restarted node owes none: it holds no Proxy.
 
 This gives ordered restoration:
 
@@ -681,7 +679,7 @@ First operation from gw1 proves and writes `Proxy Connected via gw2`. A second o
 different topic that selects the same brk2, must use the Proxy immediately. Forbidden: another full direct
 dial ladder before forwarding.
 
-### B. Proxy survives source restart
+### B. A restarted source holds no Proxy
 
 With latest indexed rows:
 
@@ -690,22 +688,25 @@ Direct -> Failed(E1,N)
 Proxy  -> Connected(via=gw2)
 ```
 
-restart gw1. The first operation after hydration uses the Proxy without rediscovering it.
+restart gw1. The restarted gw1 holds no Direct and no Proxy and reads none back; its first operation dials
+Direct and, on NotSent, proves its carrier again (§7). Forbidden: a route over a Proxy the restarted birth
+did not prove.
 
-### C. Failed reconnect backoff survives restart
+### C. A restart starts reconnect backoff fresh
 
-Write `Direct Failed(E1, attempt=N, event_time=T)` such that `next_due` is in the future, restart the source,
-and assert no attempt occurs before the reconstructed due time. Forbidden: restart at attempt 1.
+Write `Direct Failed(E1, attempt=N, event_time=T)`, restart the source, and assert the restarted source holds
+no reconnect obligation from it and its next failure toward the destination starts a new series at attempt 1.
+Forbidden: the restarted source reading the row back.
 
 ### D. Index stays bounded
 
 Generate many failed reconnect attempts for one pair. Assert the raw log contains the history while the
 current indexes contain at most one Direct member and one Proxy member for that source/destination pair.
 
-### E. Failed/Dead records do not pollute fleet-wide held routing
+### E. Failed/Dead records stay with their source
 
-Generate repeated reconnect failures on gw1. Assert peer nodes' resident connection projection contains only
-active Direct routing edges, never gw1's failed/dead retry history.
+Generate repeated reconnect failures on gw1. Assert no peer node holds any of gw1's facts: a node holds its
+own facts only (§4.1).
 
 ### F. Reconnect success returns to Direct in order
 
@@ -770,15 +771,15 @@ policy; Rafka's, and where its copies lived before i148, are Rafka's pages.
 4. Connected/Disconnected/Failed map to active/dead/failed virtual classifications.
 5. The raw log keeps event history; current indexes keep one latest Direct and one latest Proxy per pair.
 6. The current index never grows one member per retry attempt.
-7. Fleet-wide resident connection state contains active Direct facts only.
+7. A node holds its own connection facts only, from the writes it made; it reads none from the store (Q227).
 8. Active Proxy state is source-owned and consumed by that source's effective route projection.
-9. Failed and Dead retry history is durable/indexed and read on demand, not held fleet-wide.
+9. Failed and Dead retry history is durable and indexed; the mesh-primary's node investigation reads it when it runs, and no other node holds it.
 10. A valid active Proxy overrides Direct until the Proxy is durably retired.
 11. Every node owns repair of its own direct connections in node-base.
 12. Node-admin does not schedule or command local direct reconnect attempts.
 13. Reconnect is an internal durable reconciler, not a normal platform Job entity.
-14. The latest Direct Failed row is sufficient to reconstruct retry round, ordinal and next due time.
-15. Restart never resets reconnect exponential backoff.
+14. The latest Direct Failed row a source holds is sufficient to compute its retry round, ordinal and next due time.
+15. A restart closes every connection the node held; the restarted node reads no row back and its reconnect backoff starts fresh (Q227).
 16. Only the source's own Direct Connected creates the proxy-retirement obligation; an accepted inbound connection from the destination is a recovery trigger (§13 G).
 17. Failed proxy-retirement writes are retried; routing safely remains on Proxy until retirement lands.
 18. Destination and carrier process incarnations make stale route evidence refusable by name.

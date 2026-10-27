@@ -4,9 +4,9 @@
 //! The node's data-plane Node RPC client reports what it observes of the connections it opens
 //! through [`ConnectionObserver`]; this writer turns each observation into one row, applies it to the held projection the route
 //! resolver reads, appends it to the raw log and keeps it as the latest of its pair in the index.
-//! At birth the held projection is hydrated from the index, so a restart keeps its latest Proxy
-//! and the backoff of its latest Direct failure. The writer decides no route and chooses no
-//! carrier: it records facts. Every row names this node as it is when the row is written
+//! A birth holds no connection: a restart closed every connection the node held, so the writer is
+//! born with its held projection complete and empty, and reads nothing back from the store (Q227).
+//! The writer decides no route and chooses no carrier: it records facts. Every row names this node as it is when the row is written
 //! (node-identity-and-state.md §8): the name it holds now (R12, read from the process's one held
 //! name), its node id and its process birth.
 //!
@@ -16,7 +16,7 @@
 //! projection only once the write lands, so new calls keep the proven Proxy until then. A refused
 //! write leaves the obligation standing: it is derived again from the two latest rows at the next
 //! observation, at the next settlement a caller asks for, and every [`RECONCILER_TICK`] while
-//! owed. Nothing is queued for it; a restart reconstructs the same obligation from the same rows.
+//! owed. Nothing is queued for it.
 //!
 //! Every connection write is asynchronous (Q169; connections.md §1): it is owed on the node's one
 //! ordered writer queue, retried with backoff until it lands; no open, dial, accept or read waits
@@ -162,8 +162,15 @@ fn state_name(s: ConnectionState) -> &'static str {
 }
 
 impl ConnectionsWriter {
-    /// A writer for `own`, over its storage, holding `held` (shared with the route resolver).
+    /// A writer for `own`, over its storage, holding `held` (shared with the route resolver). A birth
+    /// holds no connection (Q227): `held` is complete from here, its own source `own`, and nothing is
+    /// read from the storage, now or later.
     pub fn new(own: ConnectionEnd, storage: Arc<dyn ConnectionsStorage>, held: Arc<Mutex<ConnectionsHeld>>) -> Self {
+        {
+            let mut h = held.lock().unwrap();
+            h.set_own_source(own.name.clone());
+            h.mark_complete();
+        }
         let runtime = tokio::runtime::Handle::current();
         let (queue, mut owed) = tokio::sync::mpsc::unbounded_channel::<Owed>();
         let inner = Arc::new(Inner {
@@ -257,54 +264,6 @@ impl ConnectionsWriter {
             }
             notified.await;
         }
-    }
-
-    /// Hydrate the held projection from the index: every latest row this node wrote (its own
-    /// Direct and Proxy facts) is applied, so the first call after a restart resolves over the
-    /// latest Proxy and the reconnect series continues from the latest failure. A retirement the
-    /// two latest rows of a pair owe is settled right after, from those rows (connections.md §10).
-    pub async fn hydrate(&self) -> Result<usize, String> {
-        let rows = self.inner.storage.connections().await.map_err(|e| e.to_string())?;
-        let own = self.own_now();
-        let applied = {
-            let mut held = self.inner.held.lock().unwrap();
-            let mut applied = 0;
-            for row in rows {
-                if held.apply(row).is_ok() {
-                    applied += 1;
-                }
-            }
-            held.mark_complete();
-            applied
-        };
-        tracing::info_span!("rdm.node_admin.connection.update.via-hydrate", node = %own.name, applied)
-            .in_scope(|| tracing::info!("the held projection is hydrated from this node's own index"));
-        let _ = self.refresh_fleet_directs().await;
-        self.sync_recovery();
-        let _ = self.settle_owed().await;
-        Ok(applied)
-    }
-
-    /// Read the fleet-wide resident `Direct` rows from the shared connections store
-    /// (`connections.md` §3.2, §4.1: every source writes under `connections/<node>/`; carrier
-    /// discovery reads the fleet-wide active Direct graph from the store) and fold foreign rows
-    /// into the held projection.
-    pub async fn refresh_fleet_directs(&self) -> Result<usize, String> {
-        let rows = self
-            .inner
-            .storage
-            .fleet_directs()
-            .await
-            .map_err(|e| e.to_string())?;
-        let own = self.own();
-        let mut held = self.inner.held.lock().unwrap();
-        let mut applied = 0;
-        for row in rows {
-            if row.source.name != own.name && held.apply(row).is_ok() {
-                applied += 1;
-            }
-        }
-        Ok(applied)
     }
 
     /// Record one fact: the raw log first, then the index, then the held projection.
@@ -796,10 +755,6 @@ impl rdm_transport::connections::ConnectionsSink for ConnectionsWriter {
 
     fn accepted(&self, peer: &rdm_transport::connections::Birth, alpn: &[u8]) {
         self.accepted_on_alpn(peer, alpn);
-    }
-
-    async fn refresh_fleet_directs(&self) {
-        let _ = self.refresh_fleet_directs().await;
     }
 }
 

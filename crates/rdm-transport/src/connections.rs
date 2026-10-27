@@ -9,7 +9,7 @@ use crate::resolve::{NodeResolver, NodeTarget};
 use rdm_core::connections::{
     CarrierPolicy, ConnectionEnd, ConnectionKind as CoreKind, ConnectionState, ConnectionsHeld,
     DirectRecovery, EffectiveRoute, INVALID_CARRIER_EDGE_LOST, NodeConnection,
-    resolve_for_carriers, select_carrier_for_carriers,
+    carrier_order, resolve_for_carriers,
 };
 use rdm_core::reconnect::first_failure_for;
 use rdm_core::{ConnectionId, IncarnationId, NodeId, NodeKind, PathName};
@@ -250,9 +250,6 @@ pub trait ConnectionsSink: Send + Sync {
     /// Notify the sink that an inbound Direct connection from `peer` on `alpn` was admitted
     /// (`connections.md` §9.4, §10, §13 G: a recovery trigger, never a Direct row).
     fn accepted(&self, _peer: &Birth, _alpn: &[u8]) {}
-    /// Refresh foreign resident `Direct` rows from the shared connections store before carrier
-    /// discovery (`connections.md` §3.2, §4.1).
-    async fn refresh_fleet_directs(&self) {}
 }
 
 /// The source of the pair `route` opened while that pair is still open in `held`, found by the
@@ -1454,32 +1451,36 @@ impl Dialer {
         {
             Ok(conn) => Ok(conn),
             Err(ConnectError::NotSent { reason }) if self.alpn.forwardable => {
-                self.registry.inner.sink.refresh_fleet_directs().await;
-                let choice = {
-                    let held = self.registry.inner.sink.held();
-                    let g = held.lock().unwrap();
-                    select_carrier_for_carriers(
-                        &g,
-                        &own.name,
-                        &destination.name,
-                        &self.alpn.name,
-                        self.alpn.forwardable,
-                        &self.alpn.carriers,
-                    )
-                };
-                if let Ok(Some(choice)) = choice {
-                    if let Some(carrier_inc) = choice.edge.source.incarnation.clone() {
-                        let carrier_birth = Birth {
-                            name: choice.edge.source.name.clone(),
-                            node_id: choice.edge.source.node_id.clone(),
-                            incarnation: carrier_inc,
-                        };
-                        return self
-                            .open_tunnel(&own, &carrier_birth, destination, None, Some(begun), &caller_span, traceparent)
-                            .await;
+                // The carrier is a live node of this node's mesh from the topology it holds (Q227),
+                // asked in the spread order; its own Direct to the destination decides, and one
+                // without it refuses by name, so the next is asked. Nothing was sent to the
+                // destination by a refused or undialled carrier, so asking the next is safe.
+                let live = self.registry.inner.resolver.live_nodes();
+                let order = carrier_order(
+                    &own.name,
+                    &destination.name,
+                    &destination.incarnation,
+                    self.alpn.forwardable,
+                    &self.alpn.carriers,
+                    live.iter().map(|n| n.name.clone()),
+                );
+                if order.is_empty() {
+                    return Err(ConnectError::NotSent { reason });
+                }
+                for name in order {
+                    let Some(node) = live.iter().find(|n| n.name == name) else { continue };
+                    let carrier_birth = Birth { name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
+                    match self
+                        .open_tunnel(&own, &carrier_birth, destination, None, Some(begun), &caller_span, traceparent.clone())
+                        .await
+                    {
+                        Ok(conn) => return Ok(conn),
+                        Err(ConnectError::Refused { reason }) if reason == INVALID_CARRIER_EDGE_LOST => continue,
+                        Err(ConnectError::NotSent { .. }) => continue,
+                        Err(e) => return Err(e),
                     }
                 }
-                Err(ConnectError::NotSent { reason })
+                Err(ConnectError::NoActiveRoute)
             }
             Err(e) => Err(e),
         }
@@ -1692,6 +1693,7 @@ impl Dialer {
                 entry = tracing::field::Empty,
                 kind = tracing::field::Empty,
                 state = tracing::field::Empty,
+                outcome = tracing::field::Empty,
                 effective_route_cold_discovery_ms = tracing::field::Empty,
             )
         });
@@ -1800,6 +1802,7 @@ impl Dialer {
 
         match answer {
             ControlAnswer::Refused { reason } => {
+                tunnel_span.record("outcome", format!("refused: {reason}").as_str());
                 quic_conn.close(
                     iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED),
                     reason.as_bytes(),
@@ -1851,6 +1854,7 @@ impl Dialer {
                 tunnel_span.record("entry", recorded.id.to_string().as_str());
                 tunnel_span.record("kind", "proxy");
                 tunnel_span.record("state", "connected");
+                tunnel_span.record("outcome", "opened");
                 if let Some(begun) = cold_discovery {
                     tunnel_span.record("effective_route_cold_discovery_ms", begun.elapsed().as_millis() as u64);
                 }

@@ -2,7 +2,7 @@
 //! effective route (`rdm_core::connections`).
 
 use rdm_core::connections::{
-    proxy_invalid, resolve, select_carrier, ApplyRefusal, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState,
+    carrier_order, proxy_invalid, resolve, ApplyRefusal, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState,
     ConnectionsHeld, DirectRecovery, EffectiveRoute, NodeConnection, StaticIncarnations, INVALID_CARRIER_SUPERSEDED,
     INVALID_DESTINATION_SUPERSEDED,
 };
@@ -140,7 +140,6 @@ fn an_incomplete_projection_answers_a_direct_dial_it_cannot_vouch_for() {
     let own = path(NodeKind::RpcNode, 1);
     let held = ConnectionsHeld::new();
     assert_eq!(resolve(&held, &own, &path(NodeKind::RpcNode, 3), RPC).route, EffectiveRoute::Direct { known: false });
-    assert!(select_carrier(&held, &own, &path(NodeKind::RpcNode, 3), RPC).unwrap_err().contains("not complete"));
 }
 
 /// The topology view names `own`, `carrier` and `dest` as `estate()` recorded them.
@@ -198,8 +197,7 @@ fn a_proxy_is_valid_without_the_carriers_edge_in_the_sources_held_graph() {
 }
 
 /// CONTRACT: a Direct fact naming a destination process the topology view no longer holds is not the
-/// current edge: routing dials instead of trusting it, it retires no Proxy, and it names no
-/// carrier.
+/// current edge: routing dials instead of trusting it, and it retires no Proxy.
 #[test]
 fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     let (mut held, own, carrier, dest) = estate();
@@ -209,8 +207,7 @@ fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     assert_eq!(held.active_directs_to(&dest.name).unwrap().len(), 2);
     m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "the fact names d1, the topology view holds d2");
-    assert!(held.active_directs_to(&dest.name).unwrap().is_empty(), "no carrier edge names the current destination");
-    assert_eq!(select_carrier(&held, &own.name, &dest.name, RPC), Ok(None));
+    assert!(held.active_directs_to(&dest.name).unwrap().is_empty(), "no edge names the current destination");
 }
 
 /// CONTRACT (connections.md §9.1: "A reconnect series exists when the latest Direct record for this
@@ -282,21 +279,28 @@ fn malformed_entries_are_refused_by_name() {
     assert!(matches!(held.apply(no_recovery), Err(ApplyRefusal::Shape(s)) if s.contains("recovery")));
 }
 
+/// CONTRACT (connections.md §6, Q227): the carriers a source asks are the live nodes of its mesh, from
+/// the topology it holds, of a kind its protocol lets carry, itself and the destination left out, in
+/// path order from `spread(source, destination, destination incarnation) % len`, wrapping; no
+/// connection fact is read. The order is the same at every call, and two sources spread over the
+/// carriers. A protocol that is not forwardable asks none. Must NOT happen: a carrier of another mesh,
+/// of a kind the protocol does not let carry, the source itself or the destination asked.
 #[test]
-fn a_carrier_is_chosen_from_edges_naming_the_current_destination_process_spread_by_source() {
-    let dest = end(NodeKind::RpcNode, 9, Some("d2"));
-    let mut held = ConnectionsHeld::new();
-    held.mark_complete();
-    for (ordinal, dest_incarnation, at) in [(2, "d2", 20), (3, "d2", 21), (4, "d1", 5)] {
-        let d = ConnectionEnd { incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(dest_incarnation)).unwrap()), ..dest.clone() };
-        held.apply(direct(end(NodeKind::RpcNode, ordinal, Some("c")), d, ConnectionState::Connected, at)).unwrap();
-    }
-    held.apply(direct(end(NodeKind::RpcNode, 5, None), dest.clone(), ConnectionState::Connected, 30)).unwrap();
+fn carriers_are_asked_from_the_topology_in_path_order_spread_by_source() {
+    let dest = path(NodeKind::RpcNode, 9);
+    let incarnation = IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap();
     let own = path(NodeKind::RpcNode, 1);
-    let a = select_carrier(&held, &own, &dest.name, RPC).unwrap().unwrap();
-    assert!([2, 3].contains(&a.carrier.ordinal), "a carrier on the current destination process: {}", a.carrier);
-    assert_eq!(select_carrier(&held, &own, &dest.name, RPC).unwrap().unwrap(), a, "the choice is deterministic");
-    assert!(select_carrier(&held, &own, &dest.name, CarrierPolicy::NotForwardable).is_err());
-    let lonely = path(NodeKind::RpcNode, 8);
-    assert_eq!(select_carrier(&held, &own, &lonely, RPC), Ok(None));
+    let topology = vec![path(NodeKind::RpcNode, 4), path(NodeKind::RpcNode, 2), own.clone(), dest.clone(), path(NodeKind::RpcNode, 3), PathName::new("mesh2", NodeKind::RpcNode, 5), path(NodeKind::NodeAdmin, 1)];
+    let order = carrier_order(&own, &dest, &incarnation, true, &[NodeKind::RpcNode], topology.clone());
+    let in_path_order = [path(NodeKind::RpcNode, 2), path(NodeKind::RpcNode, 3), path(NodeKind::RpcNode, 4)];
+    let at = (rdm_core::connections::spread(&own.to_string(), &dest.to_string(), incarnation.as_str()) % 3) as usize;
+    let expected: Vec<PathName> = (0..3).map(|k| in_path_order[(at + k) % 3].clone()).collect();
+    assert_eq!(order, expected, "the mesh's carriers in path order from the spread, wrapping");
+    assert_eq!(carrier_order(&own, &dest, &incarnation, true, &[NodeKind::RpcNode], topology.clone()), order, "the order is deterministic");
+    let firsts: std::collections::BTreeSet<PathName> = (1..=8u32)
+        .map(|o| carrier_order(&PathName::new("mesh1", NodeKind::RpcNode, 100 + o), &dest, &incarnation, true, &[NodeKind::RpcNode], topology.clone())[0].clone())
+        .collect();
+    assert!(firsts.len() > 1, "sources spread over the carriers: {firsts:?}");
+    assert!(carrier_order(&own, &dest, &incarnation, false, &[NodeKind::RpcNode], topology.clone()).is_empty(), "a protocol that is not forwardable asks no carrier");
+    assert!(carrier_order(&own, &dest, &incarnation, true, &[NodeKind::Gateway], topology).is_empty(), "no node of a kind the protocol lets carry");
 }

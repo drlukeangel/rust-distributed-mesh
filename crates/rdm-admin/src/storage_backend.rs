@@ -760,10 +760,6 @@ impl ConnectionsStorage for ConnectionsThrough {
         let rows = self.handle.current.read().stores().connections_at(&self.name)?;
         rows.connections_to(destination).await
     }
-    async fn fleet_directs(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, StorageError> {
-        let rows = self.handle.current.read().stores().connections_at(&self.name)?;
-        rows.fleet_directs().await
-    }
 }
 
 /// One process's rows: every boundary held in memory, written by this admin alone and gone with its

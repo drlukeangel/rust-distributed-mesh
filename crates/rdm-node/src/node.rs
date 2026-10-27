@@ -501,11 +501,11 @@ async fn start_booted(
     drop(step);
     // The process's one client, made before the server is built: the server carries the proof
     // store for others through it (one direct inner call per forward, never a second hop).
-    // This node's own connections: hydrated from its connections storage (the file backend's
-    // `connections/<its path.name>/` of the fabric's store root, R14), then kept by what its client
-    // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
+    // This node's own connections: none at its birth, read from nowhere (Q227), then kept by what its
+    // client observes of its pooled connections (connections.md sections 4.2, 9 and 10), each fact
+    // appended to its connections storage (the file backend's lines of the fabric's store root, R14).
     // The storage fault the originate door arms (testkit only): the backend's storage, decorated.
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name, writes_to = tracing::field::Empty);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-connections-opened", node = %launch.name, writes_to = tracing::field::Empty);
     // The topology storage provider this birth writes, the one its launch names (storage.md §2): one its
     // executable registers, else the start is refused by name. The node reaches it through its one
     // handle, never a store held from here, so a provider change moves every caller ("Each node moves
@@ -521,7 +521,6 @@ async fn start_booted(
     // The topology view's current process births: how the held projection judges a Proxy's recorded
     // destination and carrier, and a Direct fact's destination (connections.md section 8).
     connections.held().lock().unwrap().set_topology_view(resolver.clone());
-    connections.hydrate().await.map_err(|e| anyhow!("connections hydrate: {e}"))?;
     drop(step);
     let (data_connections, alpn_handlers) = rdm_transport::connections::ConnectionsRegistry::new(
         ep0.clone(),

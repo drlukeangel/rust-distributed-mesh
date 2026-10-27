@@ -180,6 +180,12 @@ impl StoreRoot {
         crate::store_log::StoreLog::open(&self.dir.join(file), formats).await
     }
 
+    /// Open the store file `file` of this root to append to it, reading none of it
+    /// ([`crate::store_log::StoreLog::open_append`]).
+    pub async fn log_append(&self, file: &str, formats: crate::store_log::Formats) -> Result<crate::store_log::StoreLog, StorageError> {
+        crate::store_log::StoreLog::open_append(&self.dir.join(file), formats).await
+    }
+
     /// `fabric.jsonl`.
     pub fn fabric(&self) -> PathBuf {
         self.dir.join(FABRIC_FILE)

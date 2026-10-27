@@ -295,7 +295,7 @@ if [ "$GATE" = fast ]; then
     m=$(exe $SCENARIO_PKG main)
     if [ -n "$m" ]; then echo "topology_storage_provider_fast $m --exact topology_storage_provider::every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change" >> $D/jobs; else echo "FAIL topology_storage_provider_fast 0s" | tee -a $O; fi
 fi
-SCENARIO_SKIP=$(for s in $SCENARIOS build_log estate_handover estate_teardown await_attempt seeded operation_ledger driver_reconcile proof_holder_lifecycle manifest_replay restart_canary_seed action_generator failpoint_explorer wedge_detector process_fault_backend container_fault_backend bootstrap_pending primary_loss_takeover supplied_clock delta_gap_recovery held_status_join partition_rejoin proxy_hydration_cutback restarted_member_rejoin stopped_last_admin peer_mesh_topology topology_get container_kill node_connections_delete poc_chaos_kit rshape_burn_in; do printf " --skip %s::" "$s"; done)
+SCENARIO_SKIP=$(for s in $SCENARIOS build_log estate_handover estate_teardown await_attempt seeded operation_ledger driver_reconcile proof_holder_lifecycle manifest_replay restart_canary_seed action_generator failpoint_explorer wedge_detector process_fault_backend container_fault_backend bootstrap_pending primary_loss_takeover supplied_clock delta_gap_recovery held_status_join partition_rejoin proxy_cutback restarted_member_rejoin stopped_last_admin peer_mesh_topology topology_get container_kill node_connections_delete poc_chaos_kit rshape_burn_in; do printf " --skip %s::" "$s"; done)
 # One job per test executable (2026-10-12): a crate's lib, bin and main executables run in parallel, each its tests in
 # parallel threads. Chained in one job they summed: admin-core lib 39.7 s + main 30.4 s ran as one 116 s job under load.
 per_exe(){
@@ -379,7 +379,7 @@ per_exe rdm-transport rdm-transport
 echo "i143-2777-process sh:scripts/i143-acceptance-gate.sh i143-2777-process" >> $D/jobs
 echo "i143-2780-process sh:scripts/i143-acceptance-gate.sh i143-2780-process" >> $D/jobs
 echo "i143-2805-process sh:scripts/i143-acceptance-gate.sh i143-2805-process" >> $D/jobs
-# connections.md §13 B, G, H on the process provider (rpc/proxy_hydration_cutback.rs); its stem stays in
+# connections.md §13 F, G, H on the process provider (rpc/proxy_cutback.rs); its stem stays in
 # SCENARIO_SKIP, so the sharded main job does not run it a second time.
 echo "i143-2938-process sh:scripts/i143-acceptance-gate.sh i143-2938-process" >> $D/jobs
 # R14 item 6: the provider mounts one qualified store namespace in every container.

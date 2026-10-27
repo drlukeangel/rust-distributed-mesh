@@ -298,6 +298,11 @@ impl NodeResolver for LiveNodeResolver {
         LiveNodeResolver::by_endpoint(self, endpoint)
     }
 
+    fn live_nodes(&self) -> Vec<ResolvedNode> {
+        let live = self.live.read().unwrap();
+        live.nodes.values().filter(|n| !live.is_stopped(n) && !live.exited.contains(&(n.node_id.clone(), n.incarnation.clone()))).cloned().collect()
+    }
+
     fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         Some(self.changed.subscribe())
     }

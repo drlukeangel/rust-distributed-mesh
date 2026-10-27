@@ -5,12 +5,12 @@
 //! below the process provider (unit, in-process transport, in-process node); its "process" column
 //! names the process-provider cell (an estate of real node processes, `MESH_SPAWN_TYPE=process`).
 //! A row whose process column is "none" is proved in this section, by the cell named in the last
-//! column, or carries the reason it is not writable here. The one cell that waits out a persisted
-//! reconnect backoff (over a minute) is in `connections/restart.rs`, the release-only stem
-//! `connections_restart`; the rest are this stem's.
+//! column, or carries the reason it is not writable here. The cell that kills and recovers the source
+//! (§13 B and C, Q227) is in `connections/restart.rs`, the release-only stem `connections_restart`;
+//! the rest are this stem's.
 //!
 //! Crate keys: `t:` rdm-transport/tests, `n:` rdm-node/tests, `a:` rdm-admin/tests, `c:` rdm-core/tests,
-//! `p:` rdm-test/tests (a path under it). `p:rpc/proxy_hydration_cutback.rs` runs in the fast gate as
+//! `p:` rdm-test/tests (a path under it). `p:rpc/proxy_cutback.rs` runs in the fast gate as
 //! the job `i143-2938-process` (tools/mesh-audit/i143-acceptance-jobs.json, started by
 //! scripts/rdm-gate-at.sh; its stem is in `SCENARIO_SKIP`, so the sharded main job does not run it twice).
 //!
@@ -21,13 +21,13 @@
 //! | test | any layer | process | this section |
 //! |---|---|---|---|
 //! | A one discovered proxy serves every consumer | `n:connection_reconnect::one_discovered_proxy_serves_every_consumer_of_the_same_destination`; `t:connections::a_held_proxy_is_taken_without_a_direct_dial`; `t:connections_integration::an_active_proxy_is_reused_without_a_fresh_direct_dial_ladder` | none | `one_discovered_proxy_carries_every_later_open_with_no_direct_dial` |
-//! | B Proxy survives source restart | `n:connection_reconnect::a_proxy_survives_source_restart`; `a:connections_writer::a_restart_hydrates_the_latest_proxy_row_and_the_first_resolution_uses_it` | `p:rpc/proxy_hydration_cutback::source_restart_hydrates_proxy_routes_first_call_without_rediscovery` | - |
-//! | C Failed reconnect backoff survives restart | `n:connection_reconnect::a_failed_reconnect_backoff_survives_restart`; `c:reconnect::after_a_restart_the_backoff_is_reconstructed_from_the_latest_failed_row_not_reset`; `a:connections_writer::a_restarted_birth_continues_the_failing_series_naming_its_own_birth` | none | `connections/restart.rs::a_recovered_source_dials_no_earlier_than_its_failed_rows_due_time` (release) |
+//! | B a restarted source holds no Proxy (Q227) | `n:connection_reconnect::a_restarted_source_holds_no_proxy_and_proves_its_carrier_again`; `a:connections_writer::a_restart_holds_none_of_the_previous_births_rows_and_the_first_resolution_dials` | none | `connections/restart.rs::a_recovered_source_holds_no_connection_and_reads_none_back` |
+//! | C a restart starts reconnect backoff fresh (Q227) | `n:connection_reconnect::a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_row_back`; `c:reconnect::the_backoff_is_computed_from_the_latest_failed_row_held_not_reset`; `a:connections_writer::a_restarted_birth_starts_its_own_series_naming_its_own_birth` | none | `connections/restart.rs::a_recovered_source_holds_no_connection_and_reads_none_back` (release) |
 //! | D index stays bounded | `n:connection_reconnect::the_connections_index_stays_bounded_while_the_raw_log_keeps_history`; `a:connections_writer::many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pair`; `a:connections_reconnect::source_reconnect_failures_grow_log_keep_two_current_members` | none | `many_failed_attempts_grow_the_raw_log_and_hold_one_direct_and_one_proxy` |
-//! | E Failed/Dead stay out of fleet-wide held routing | `c:connections::a_disconnected_or_failed_direct_never_stays_resident_and_an_older_connect_never_revives_it`; `c:connections::another_nodes_proxy_is_never_held` | none | `a_peer_holds_none_of_a_sources_failed_history_or_its_proxy` |
-//! | F reconnect success returns to Direct in order | `a:connections_writer::a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_cuts_back`; `t:connections::a_direct_connected_disconnects_the_proxy`; `t:connections_integration::a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_back_only_after_it_is_durable`; `c:reconnect::cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_and_a_failed_write_is_owed_again` | `p:rpc/proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` (its dial is woken by an accept, not by the series' due time) | `a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct` |
-//! | G an inbound accept is a recovery trigger | `a:connections_writer::an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_disconnects_the_proxy`; `a:connections_writer::repeated_accepts_coalesce_into_one_attempt_that_waits_for_the_series_backoff`; `t:connection_observer::an_accepted_connection_is_handed_to_the_accept_trigger_once` | `p:rpc/proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
-//! | H Proxy retirement write failure is safe and retried | `a:connections_writer::a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands`; `n:connection_writes::a_refused_connection_write_is_retried_with_backoff_until_it_lands` | `p:rpc/proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
+//! | E Failed/Dead stay with their source | `c:connections::a_disconnected_or_failed_direct_never_stays_resident_and_an_older_connect_never_revives_it`; `c:connections::another_nodes_proxy_is_never_held` | none | `a_peer_holds_none_of_a_sources_failed_history_or_its_proxy` |
+//! | F reconnect success returns to Direct in order | `a:connections_writer::a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_cuts_back`; `t:connections::a_direct_connected_disconnects_the_proxy`; `t:connections_integration::a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_back_only_after_it_is_durable`; `c:reconnect::cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_and_a_failed_write_is_owed_again` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` (its dial is woken by an accept, not by the series' due time) | `a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct` |
+//! | G an inbound accept is a recovery trigger | `a:connections_writer::an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_disconnects_the_proxy`; `a:connections_writer::repeated_accepts_coalesce_into_one_attempt_that_waits_for_the_series_backoff`; `t:connection_observer::an_accepted_connection_is_handed_to_the_accept_trigger_once` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
+//! | H Proxy retirement write failure is safe and retried | `a:connections_writer::a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands`; `n:connection_writes::a_refused_connection_write_is_retried_with_backoff_until_it_lands` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
 //! | I destination/carrier incarnation | `c:connections::a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call_dials` (added with its fix); `c:connections::a_stale_destination_incarnation_is_superseded`; `c:connections::a_stale_carrier_incarnation_is_superseded`; `c:connections::a_direct_fact_naming_a_superseded_destination_is_not_current`; `t:connections_integration::a_fact_naming_a_superseded_birth_still_dials_the_current_one`; `t:connections::an_open_against_another_incarnation_is_wrong_incarnation_and_never_served`; `a:connections_writer::a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth` | none | `a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries`; `a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries` |
 //! | J carrier edge loss invalidates Proxy | `t:forward::a_carrier_whose_own_edge_to_the_target_is_not_active_refuses_carrier_edge_lost`; `t:forward::a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_to_be_disconnected`; `a:connections_writer::a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connected` | none | `a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects_the_proxy` |
 //! | K sent request is never rerouted | `t:connections_integration::an_indeterminate_alone_never_invalidates_a_proxy`; `t:routing::certainty_stays_downstream_an_indeterminate_is_never_replayed_through_another_route`; `t:certainty::reply_loss_after_a_complete_send_is_indeterminate` | none | not writable here: no process door forces a post-commit answer timeout on a carried call (Decisions) |
@@ -37,23 +37,23 @@
 //!
 //! | # | any layer | process | this section |
 //! |---|---|---|---|
-//! | 1 one durable history | `t:connections::a_direct_open_writes_connected_with_its_alpn_and_the_acceptor_sees_the_same_row_id` | `p:rpc/proxy_hydration_cutback` (its store root's log) | every cell reads the one log (`Estate::connection_history`) |
-//! | 2 generic across node types | `c:connections::a_carrier_is_chosen_from_edges_naming_the_current_destination_process_spread_by_source` | `p:rpc/role_routing::a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_at_all` | - |
-//! | 3 Direct and Proxy kinds | `c:connections::malformed_entries_are_refused_by_name` | `p:rpc/proxy_hydration_cutback` | A, F |
+//! | 1 one durable history | `t:connections::a_direct_open_writes_connected_with_its_alpn_and_the_acceptor_sees_the_same_row_id` | `p:rpc/proxy_cutback` (its store root's log) | every cell reads the one log (`Estate::connection_history`) |
+//! | 2 generic across node types | `c:connections::carriers_are_asked_from_the_topology_in_path_order_spread_by_source` | `p:rpc/role_routing::a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_at_all` | - |
+//! | 3 Direct and Proxy kinds | `c:connections::malformed_entries_are_refused_by_name` | `p:rpc/proxy_cutback` | A, F |
 //! | 4 state to virtual classification | none: RDM declares no virtual classification (§3.2); its file backend is one `connections.jsonl` (§3) | none | page-vs-code difference, reported |
 //! | 5 raw log and one latest per kind | as D | none | D |
 //! | 6 index never one member per retry | as D | none | D |
-//! | 7 fleet-wide held state is active Direct only | as E | none | E |
+//! | 7 a node holds its own facts only, read from no store | as E | none | E |
 //! | 8 active Proxy is source-owned | `c:connections::another_nodes_proxy_is_never_held` | none | E |
-//! | 9 Failed/Dead read on demand, not held fleet-wide | `c:connections::a_disconnected_or_failed_direct_never_stays_resident_and_an_older_connect_never_revives_it` | none | E |
-//! | 10 a valid Proxy overrides Direct until durably retired | `c:connections::the_route_prefers_a_valid_proxy_then_an_active_direct_then_none`; as F, H | `p:rpc/proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | F |
+//! | 9 Failed/Dead durable, read by the node investigation, held by no other node | `c:connections::a_disconnected_or_failed_direct_never_stays_resident_and_an_older_connect_never_revives_it` | none | E |
+//! | 10 a valid Proxy overrides Direct until durably retired | `c:connections::the_route_prefers_a_valid_proxy_then_an_active_direct_then_none`; as F, H | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | F |
 //! | 11 every node repairs its own direct connections | `n:connection_reconnect::one_reconnect_attempt_at_a_time_per_node`; `a:connections_writer::a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts` | none | C, F (the dial is the source process's own span) |
 //! | 12 node-admin schedules no reconnect | none (an absence) | none | C, F (no node-admin process emits a recovery dial) |
 //! | 13 not a platform Job | n/a: a structure, not a behaviour | - | - |
-//! | 14 latest Failed row reconstructs the series | `c:reconnect::after_a_restart_the_backoff_is_reconstructed_from_the_latest_failed_row_not_reset`; `c:reconnect::a_new_incident_starts_a_new_round_at_ordinal_one` | none | C |
-//! | 15 restart never resets backoff | as C | none | C |
-//! | 16 a Direct Connected creates the retirement obligation | as F, G | `p:rpc/proxy_hydration_cutback` | F |
-//! | 17 failed retirement writes are retried | as H | `p:rpc/proxy_hydration_cutback` | - |
+//! | 14 the latest Failed row held computes the series | `c:reconnect::the_backoff_is_computed_from_the_latest_failed_row_held_not_reset`; `c:reconnect::a_new_incident_starts_a_new_round_at_ordinal_one` | none | C |
+//! | 15 a restart starts backoff fresh | as C | none | C |
+//! | 16 a Direct Connected creates the retirement obligation | as F, G | `p:rpc/proxy_cutback` | F |
+//! | 17 failed retirement writes are retried | as H | `p:rpc/proxy_cutback` | - |
 //! | 18 incarnations make stale evidence refusable | as I | none | I |
 //! | 19 a failed attempt is not node-death proof | `c:reconnect::route_resolution_never_creates_or_moves_a_reconnect` | none | A (the destination stays ready-for-traffic in node.get) |
 //! | 20 traffic does not probe Direct while a Proxy is active | as A | none | A |

@@ -600,85 +600,36 @@ pub fn resolve_for_carriers(
     RouteResolution { route, retire }
 }
 
-/// A chosen carrier and the active Direct edge `carrier -> destination` it was chosen by.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CarrierChoice {
-    /// The carrier's `path.name`.
-    pub carrier: PathName,
-    /// The active Direct edge from the carrier to the destination.
-    pub edge: NodeConnection,
-}
-
-/// The carrier `own` forwards to `destination` through on the default ALPN. Eligible carriers are
-/// nodes of the policy's kind holding an active Direct edge to the destination (this node
-/// excluded), each edge naming both processes, all naming the destination process the freshest
-/// such edge names. One is picked by `fnv1a(source, destination, destination incarnation) % len`
-/// over the path order: spread by source, never "freshest wins". `Ok(None)` when no such carrier
-/// exists; `Err` names why none can be chosen.
-pub fn select_carrier(
-    held: &ConnectionsHeld,
+/// The order `own` asks `candidates` to carry its connection to `destination` in (connections.md §6,
+/// Q227): the live nodes of its mesh, from the topology it holds, that its protocol lets carry,
+/// this node and the destination left out, in path order, starting at
+/// `spread(source, destination, destination incarnation) % len` and wrapping. Spread by source,
+/// never "freshest wins", and the same in every process. No connection fact is read: the carrier's
+/// own Direct decides, and a carrier without one refuses by name (`carrier-edge-lost`), the source
+/// then asking the next. Empty when the protocol is not forwardable or no candidate stands.
+pub fn carrier_order(
     own: &PathName,
     destination: &PathName,
-    policy: CarrierPolicy,
-) -> Result<Option<CarrierChoice>, String> {
-    select_carrier_for(held, own, destination, ALPN, policy)
-}
-
-/// [`select_carrier`] on `alpn`.
-pub fn select_carrier_for(
-    held: &ConnectionsHeld,
-    own: &PathName,
-    destination: &PathName,
-    alpn: &[u8],
-    policy: CarrierPolicy,
-) -> Result<Option<CarrierChoice>, String> {
-    match policy {
-        CarrierPolicy::NotForwardable => {
-            select_carrier_for_carriers(held, own, destination, alpn, false, &[])
-        }
-        CarrierPolicy::Forwardable { carrier_kind } => {
-            select_carrier_for_carriers(held, own, destination, alpn, true, &[carrier_kind])
-        }
-    }
-}
-
-/// [`select_carrier_for`] with the protocol's `forwardable` flag and eligible `carriers` kinds.
-pub fn select_carrier_for_carriers(
-    held: &ConnectionsHeld,
-    own: &PathName,
-    destination: &PathName,
-    alpn: &[u8],
+    destination_incarnation: &IncarnationId,
     forwardable: bool,
     carriers: &[NodeKind],
-) -> Result<Option<CarrierChoice>, String> {
+    candidates: impl IntoIterator<Item = PathName>,
+) -> Vec<PathName> {
     if !forwardable || carriers.is_empty() {
-        return Err(format!("the protocol is not forwardable, so {destination} is never reached through a carrier"));
+        return Vec::new();
     }
-    let Some(edges) = held.active_directs_to_for(destination, alpn) else {
-        return Err(format!("the connections projection is not complete, so it does not hold every route to {destination}"));
-    };
-    let (named, blind): (Vec<&NodeConnection>, Vec<&NodeConnection>) = edges
+    let mut eligible: Vec<PathName> = candidates
         .into_iter()
-        .filter(|e| carriers.contains(&e.source.name.kind) && &e.source.name != own)
-        .partition(|e| e.destination.incarnation.is_some() && e.source.incarnation.is_some());
-    let Some(freshest) = named.iter().max_by(|a, b| a.stamp().cmp(&b.stamp()).then(b.source.name.cmp(&a.source.name))) else {
-        if blind.is_empty() {
-            return Ok(None);
-        }
-        let names: Vec<String> = blind.iter().map(|e| e.source.name.to_string()).collect();
-        return Err(format!(
-            "{} carrier edge(s) to {destination} ({}) name no destination process or no carrier process, so none is evidence for a carrier",
-            blind.len(),
-            names.join(",")
-        ));
-    };
-    let current = freshest.destination.incarnation.clone();
-    let mut eligible: Vec<&NodeConnection> = named.into_iter().filter(|e| e.destination.incarnation == current).collect();
-    eligible.sort_by(|a, b| a.source.name.cmp(&b.source.name));
-    let current = current.map(|c| c.to_string()).unwrap_or_default();
-    let at = spread(&own.to_string(), &destination.to_string(), &current) % eligible.len() as u64;
-    let edge = eligible[at as usize].clone();
-    Ok(Some(CarrierChoice { carrier: edge.source.name.clone(), edge }))
+        .filter(|c| c != own && c != destination && c.mesh == own.mesh && carriers.contains(&c.kind))
+        .collect();
+    eligible.sort();
+    eligible.dedup();
+    if eligible.is_empty() {
+        return eligible;
+    }
+    let at = (spread(&own.to_string(), &destination.to_string(), destination_incarnation.as_str()) % eligible.len() as u64) as usize;
+    eligible.rotate_left(at);
+    eligible
 }
 
 /// FNV-1a 64 over `source`, `destination` and `destination_incarnation`, each followed by a 0xff

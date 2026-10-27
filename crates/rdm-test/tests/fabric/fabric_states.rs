@@ -463,7 +463,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     assert_eq!((s(&written["attributes"]["node"]), s(&written["attributes"]["previous_build_id"])), ("mesh1.admin.1".to_string(), first.clone()), "the fabric-primary wrote the growth Build after the Day-0 Build: {written}");
     assert!(accepted.iter().all(|sp| sp["attributes"]["node"] == "mesh1.admin.1"), "only the fabric-primary writes a Build: {:?}", accepted.iter().map(|sp| (&sp["attributes"]["node"], &sp["attributes"]["via"])).collect::<Vec<_>>());
 
-    let opened = named(&spans, "rdm.mesh.node.resolve.via-connections-hydrated").into_iter().find(|sp| sp["attributes"]["node"] == "mesh2.rpc.1").expect("mesh2.rpc.1 opened its connections store");
+    let opened = named(&spans, "rdm.mesh.node.create.via-connections-opened").into_iter().find(|sp| sp["attributes"]["node"] == "mesh2.rpc.1").expect("mesh2.rpc.1 opened its connections store");
     assert_eq!(opened["attributes"]["writes_to"], "store-root", "a node writes to the store root: {opened}");
     let (first_root, _) = change_of(&spans, &first);
     estate.record_trace_url(&s(&first_root["trace_id"]));

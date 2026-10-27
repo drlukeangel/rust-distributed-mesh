@@ -115,8 +115,8 @@ mod channel_member;
 mod held_status_join;
 #[path = "gossip/partition_rejoin.rs"]
 mod partition_rejoin;
-#[path = "rpc/proxy_hydration_cutback.rs"]
-mod proxy_hydration_cutback;
+#[path = "rpc/proxy_cutback.rs"]
+mod proxy_cutback;
 #[path = "node/restarted_member_rejoin.rs"]
 mod restarted_member_rejoin;
 #[path = "node/node_heard_again.rs"]

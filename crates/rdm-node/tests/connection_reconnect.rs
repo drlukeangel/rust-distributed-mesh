@@ -1,7 +1,7 @@
 //! i148 e3 acceptance cells (`connections.md` §9, §10, §13 A–D):
 //! - `one_discovered_proxy_serves_every_consumer_of_the_same_destination` (§13 A)
-//! - `a_proxy_survives_source_restart` (§13 B)
-//! - `a_failed_reconnect_backoff_survives_restart` (§13 C, Demo row 6)
+//! - `a_restarted_source_holds_no_proxy_and_proves_its_carrier_again` (§13 B, Q227)
+//! - `a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_row_back` (§13 C, Q227)
 //! - `the_connections_index_stays_bounded_while_the_raw_log_keeps_history` (§13 D)
 //! - `one_reconnect_attempt_at_a_time_per_node` (§9.4, §9.5)
 
@@ -15,7 +15,6 @@ use rdm_core::connections::{
     ConnectionEnd, ConnectionKind as CoreConnectionKind, ConnectionState, ConnectionsHeld,
     DirectRecovery, NodeConnection,
 };
-use rdm_core::reconnect::{deterministic_jitter, next_due, reconnect_backoff};
 use rdm_core::{ConnectionId, IncarnationId, NodeId, NodeKind};
 use rdm_node::connection_reconnect::{
     AlpnRecoveryDial, Reconciler, ReconnectObligation, obligations, registry_recovery_dial,
@@ -102,7 +101,6 @@ impl DurableNode {
             storage.clone(),
             held.clone(),
         ));
-        writer.hydrate().await.unwrap();
         let (registry, handlers) = ConnectionsRegistry::new(
             ep.clone(),
             resolver.clone(),
@@ -176,7 +174,7 @@ async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
     let dialer_consumer_2 = dialer_consumer_1.clone();
     let (_dialer_brk2, mut acc_brk2) = brk2.registry.connections(ALPN_A).unwrap().split();
 
-    // gw1 can reach gw2, and gw2 opens an active Direct edge to brk2 on the shared store root;
+    // gw1 can reach gw2 (its topology holds it), and gw2 opens its own active Direct edge to brk2;
     // gw1 cannot reach brk2 Direct:
     gw1.know(&gw2);
     gw2.know(&brk2);
@@ -253,10 +251,13 @@ async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// §13 B: a proven Proxy survives a source restart; the first operation after hydration uses the
-/// Proxy without rediscovering it.
+/// §13 B (Q227): a restart closes every connection the node held, so the restarted source holds no
+/// Proxy and reads none back: its first open dials Direct, which provably sends nothing, and proves
+/// its carrier again from the topology it holds, writing a new Direct Failed (round 1, ordinal 1)
+/// and a new Proxy Connected under its own birth. The store keeps the first birth's rows as written.
+/// Must NOT happen: the restarted birth routing over a Proxy it never proved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_proxy_survives_source_restart() {
+async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
     let dir = temp_data_dir("13b");
     let alpns = [forwardable_alpn(ALPN_A)];
     let gw1_first_birth = Birth {
@@ -270,8 +271,6 @@ async fn a_proxy_survives_source_restart() {
     gw2.know(&brk2);
     establish_carrier_direct(&gw2, &brk2, &mut acc_brk2, ALPN_A).await;
 
-    // First birth of gw1 discovers and persists Direct Failed (E1, 1) and Proxy Connected (via=gw2)
-    // from the shared store root without any hand-fed row:
     let mut acc_brk2 = {
         let gw1 = DurableNode::boot(&dir, gw1_first_birth.clone(), &alpns).await;
         gw1.know(&gw2);
@@ -282,44 +281,36 @@ async fn a_proxy_survives_source_restart() {
         });
         let conn = dialer_gw1.open(&brk2.birth).await.unwrap();
         let (_srv, acc_brk2) = accept_task.await.unwrap();
-        assert_eq!(
-            conn.kind(),
-            ConnectionKind::Proxy {
-                via: gw2.birth.clone()
-            }
-        );
+        assert_eq!(conn.kind(), ConnectionKind::Proxy { via: gw2.birth.clone() });
         gw1.writer.observations_landed().await;
         gw1.shutdown().await;
         acc_brk2
     };
 
-    // Restart gw1 at a new incarnation over the same durable store:
     let gw1_restarted_birth = Birth {
         name: gw1_first_birth.name.clone(),
         node_id: gw1_first_birth.node_id.clone(),
         incarnation: IncarnationId::mint(),
     };
-    let gw1 = DurableNode::boot(&dir, gw1_restarted_birth, &alpns).await;
+    let gw1 = DurableNode::boot(&dir, gw1_restarted_birth.clone(), &alpns).await;
     gw1.know(&gw2);
+    assert!(gw1.held.lock().unwrap().own_active_proxies().is_empty(), "the restarted birth holds no Proxy");
+    assert!(gw1.held.lock().unwrap().own_latest_directs().is_empty(), "nor any Direct");
 
-    let history_before_open = gw1.storage.history().await.unwrap().len();
     let (dialer_gw1, _) = gw1.registry.connections(ALPN_A).unwrap().split();
-
     let accept_task = tokio::spawn(async move { acc_brk2.accept().await.unwrap() });
     let conn = dialer_gw1.open(&brk2.birth).await.unwrap();
     let srv = accept_task.await.unwrap();
-    assert_eq!(
-        conn.kind(),
-        ConnectionKind::Proxy {
-            via: gw2.birth.clone()
-        },
-        "first operation after restart uses the hydrated Proxy"
+    assert_eq!(conn.kind(), ConnectionKind::Proxy { via: gw2.birth.clone() }, "the carrier is proved again from the topology");
+    gw1.writer.observations_landed().await;
+    let history = gw1.storage.history().await.unwrap();
+    let mine: Vec<&NodeConnection> = history.iter().filter(|r| r.source == gw1_restarted_birth.to_end()).collect();
+    assert!(
+        mine.iter().any(|r| r.kind == CoreConnectionKind::Direct && r.state == ConnectionState::Failed && r.recovery == Some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 })),
+        "the restarted birth starts its own series at round 1, ordinal 1: {mine:?}"
     );
-    assert_eq!(
-        gw1.storage.history().await.unwrap().len(),
-        history_before_open,
-        "using the hydrated Proxy writes no new Direct Failed or Proxy Connected rediscovery row"
-    );
+    assert!(mine.iter().any(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Connected), "and writes its own Proxy Connected: {mine:?}");
+    assert!(history.iter().any(|r| r.source == gw1_first_birth.to_end() && r.kind == CoreConnectionKind::Proxy), "the store keeps the first birth's rows as written");
 
     let (mut s, mut r) = conn.open_bi().await.unwrap();
     s.write_all(b"after-restart").await.unwrap();
@@ -336,28 +327,20 @@ async fn a_proxy_survives_source_restart() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// §13 C and Demo acceptance row 6: a failed reconnect backoff survives source restart; restarting
-/// before `next_due` makes no early attempt, and when `next_due` arrives the right ALPN resumes
-/// its obligation at the persisted ordinal (never resetting to attempt 1) with no duplicate attempt.
+/// §13 C (Q227): a restarted source's reconnect backoff starts fresh. The first birth's Direct Failed
+/// row (round 1, ordinal 3) stays in the store as written, and the restarted birth holds no reconnect
+/// obligation from it: it reads nothing back. Must NOT happen: a restarted birth arming an attempt from
+/// a row it read from the store.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_failed_reconnect_backoff_survives_restart() {
+async fn a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_row_back() {
     let dir = temp_data_dir("13c");
-    let alpns = [forwardable_alpn(ALPN_A), forwardable_alpn(ALPN_B)];
+    let alpns = [forwardable_alpn(ALPN_A)];
     let gw1_birth_1 = Birth {
         name: "mesh1.gateway.1".parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
-    let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
     let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
-    let (_, mut acc_brk2) = brk2.registry.connections(ALPN_A).unwrap().split();
-    gw2.know(&brk2);
-    establish_carrier_direct(&gw2, &brk2, &mut acc_brk2, ALPN_A).await;
-
-    // Persist Direct Failed(E1, attempt=3, event_time=T) on ALPN_A such that next_due is ~350ms in the future:
-    let ordinal = 3;
-    let jitter = deterministic_jitter(&gw1_birth_1.name, &brk2.birth.name, ordinal);
-    let failed_at = now_ms() - reconnect_backoff(ordinal) - jitter + 350;
     let failed_row = NodeConnection {
         id: ConnectionId::mint(),
         source: gw1_birth_1.to_end(),
@@ -366,139 +349,24 @@ async fn a_failed_reconnect_backoff_survives_restart() {
         alpn: ALPN_A.to_vec(),
         state: ConnectionState::Failed,
         carrier: None,
-        recovery: Some(DirectRecovery {
-            recovery_round: 1,
-            attempt_ordinal: ordinal,
-        }),
+        recovery: Some(DirectRecovery { recovery_round: 1, attempt_ordinal: 3 }),
         reason: Some("unreachable before restart".into()),
-        logged_at_ms: failed_at,
+        logged_at_ms: now_ms(),
     };
-    let due_ms = next_due(&failed_row).unwrap();
     {
         let gw1 = DurableNode::boot(&dir, gw1_birth_1.clone(), &alpns).await;
-        gw1.know(&gw2);
         gw1.writer.record(failed_row.clone()).await.unwrap();
-        gw1.writer
-            .record(NodeConnection {
-                id: ConnectionId::mint(),
-                source: gw1.birth.to_end(),
-                destination: brk2.birth.to_end(),
-                kind: CoreConnectionKind::Proxy,
-                alpn: ALPN_A.to_vec(),
-                state: ConnectionState::Connected,
-                carrier: Some(gw2.birth.to_end()),
-                recovery: None,
-                reason: None,
-                logged_at_ms: failed_at + 1,
-            })
-            .await
-            .unwrap();
+        assert_eq!(obligations(&gw1.writer).len(), 1, "the first birth holds the obligation its own row armed");
         gw1.shutdown().await;
     }
 
-    // Restart gw1 BEFORE due_ms at a new process incarnation:
-    let gw1_birth_2 = Birth {
-        name: gw1_birth_1.name.clone(),
-        node_id: gw1_birth_1.node_id.clone(),
-        incarnation: IncarnationId::mint(),
-    };
-    let gw1 = DurableNode::boot(&dir, gw1_birth_2.clone(), &alpns).await;
-    gw1.know(&gw2);
+    let gw1_birth_2 = Birth { incarnation: IncarnationId::mint(), ..gw1_birth_1.clone() };
+    let gw1 = DurableNode::boot(&dir, gw1_birth_2, &alpns).await;
+    assert!(obligations(&gw1.writer).is_empty(), "the restarted birth holds no obligation: {:?}", obligations(&gw1.writer));
+    assert!(gw1.writer.recovery_pending().is_empty(), "and no pending attempt");
+    assert!(gw1.storage.history().await.unwrap().iter().any(|r| r.id == failed_row.id), "the store keeps the first birth's row as written");
 
-    // 1. Reconstructed schedule has exactly one obligation: on ALPN_A at ordinal 3 with due_ms:
-    let obs = obligations(&gw1.writer);
-    assert_eq!(obs.len(), 1, "one obligation reconstructed from index: {obs:?}");
-    assert_eq!(
-        (
-            obs[0].destination.clone(),
-            obs[0].alpn.as_slice(),
-            obs[0].recovery,
-            obs[0].due_ms,
-        ),
-        (
-            brk2.birth.to_end(),
-            ALPN_A,
-            DirectRecovery {
-                recovery_round: 1,
-                attempt_ordinal: 3,
-            },
-            due_ms,
-        )
-    );
-
-    let dial_log: Arc<Mutex<Vec<(Vec<u8>, u64)>>> = Arc::new(Mutex::new(Vec::new()));
-    let inner_dial = registry_recovery_dial(&gw1.registry, None);
-    let dial_log_clone = dial_log.clone();
-    let tracked_dial: AlpnRecoveryDial = Arc::new(move |dest, alpn| {
-        let dial_log = dial_log_clone.clone();
-        let inner = inner_dial.clone();
-        Box::pin(async move {
-            dial_log.lock().unwrap().push((alpn.clone(), now_ms()));
-            inner(dest, alpn).await
-        })
-    });
-    let reconciler_task =
-        spawn_alpn_reconciler(&gw1.writer, Duration::from_millis(20), tracked_dial.clone());
-
-    // 2. Before due_ms, NO early attempt occurs:
-    tokio::time::sleep(Duration::from_millis(120)).await;
-    if now_ms() + 30 < due_ms {
-        assert!(
-            dial_log.lock().unwrap().is_empty(),
-            "forbidden: early reconnect attempt before persisted next_due ({due_ms})"
-        );
-    }
-
-    // 3. When due_ms arrives (brk2 still unreachable Direct from gw1), ALPN_A dials once (not ALPN_B),
-    // fails, and writes Direct Failed(round=1, attempt_ordinal=4, alpn=ALPN_A):
-    until("the persisted obligation on ALPN_A dials at due_ms", || {
-        !dial_log.lock().unwrap().is_empty()
-    })
-    .await;
-    until("attempt 4's Direct Failed row is persisted", || {
-        gw1.held
-            .lock()
-            .unwrap()
-            .own_latest_directs()
-            .iter()
-            .any(|d| d.alpn == ALPN_A && d.recovery.map(|r| r.attempt_ordinal) == Some(4))
-    })
-    .await;
-
-    let calls = dial_log.lock().unwrap().clone();
-    assert_eq!(calls.len(), 1, "no duplicate attempt: {calls:?}");
-    assert_eq!(calls[0].0, ALPN_A, "only the obligated ALPN dials");
-    assert!(
-        calls[0].1 >= due_ms,
-        "attempt waited for persisted next_due: dialled at {}, due at {due_ms}",
-        calls[0].1
-    );
-
-    let latest_failed = gw1
-        .storage
-        .connections()
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|r| r.kind == CoreConnectionKind::Direct && r.alpn == ALPN_A)
-        .unwrap();
-    assert_eq!(
-        latest_failed.recovery,
-        Some(DirectRecovery {
-            recovery_round: 1,
-            attempt_ordinal: 4
-        }),
-        "forbidden: restart at attempt 1; must continue at attempt 4"
-    );
-    assert_eq!(
-        latest_failed.source,
-        gw1_birth_2.to_end(),
-        "continued row names the restarted birth that wrote it"
-    );
-
-    reconciler_task.abort();
     gw1.shutdown().await;
-    gw2.shutdown().await;
     brk2.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -754,12 +622,12 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Q62 / Demo acceptance row 3 (`connections.md` §4.1, §3.2): register ALPN_A and ALPN_B between
-/// the same births on a shared store root; the carrier's own `ConnectionsWriter` writes its
-/// `Direct Connected` rows to the store root with no hand-fed row on the source; restore ALPN_A
+/// Q62 / Demo acceptance row 3 (`connections.md` §6, Q227): register ALPN_A and ALPN_B between
+/// the same births; the carrier's own `ConnectionsWriter` holds its own `Direct Connected` rows and
+/// the source holds no other node's row, taking its carrier from its topology; restore ALPN_A
 /// while ALPN_B uses its Proxy: ALPN_B's Proxy route and open streams are unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn alpn_interference_restores_a_while_b_keeps_its_proxy_from_the_shared_store() {
+async fn alpn_interference_restores_a_while_b_keeps_its_proxy() {
     let dir = temp_data_dir("row3-shared-store");
     let alpns = [forwardable_alpn(ALPN_A), forwardable_alpn(ALPN_B)];
     let src = DurableNode::bind_fresh(&dir, "mesh1.rpc.1", &alpns).await;
@@ -772,13 +640,13 @@ async fn alpn_interference_restores_a_while_b_keeps_its_proxy_from_the_shared_st
     let (_, mut acc_dst_b) = dst.registry.connections(ALPN_B).unwrap().split();
 
     // src can reach carrier; carrier can reach dst and establishes real Direct edges on both ALPNs
-    // (written by carrier's own ConnectionsWriter to the shared store root; no row is fed by hand):
+    // (held by the carrier's own ConnectionsWriter; no row is fed by hand):
     src.know(&carrier);
     carrier.know(&dst);
     establish_carrier_direct(&carrier, &dst, &mut acc_dst_a, ALPN_A).await;
     establish_carrier_direct(&carrier, &dst, &mut acc_dst_b, ALPN_B).await;
 
-    // Both ALPN_A and ALPN_B discover Proxy via carrier from the shared connections store:
+    // Both ALPN_A and ALPN_B discover Proxy via the carrier their topology holds:
     let accept_a1 = tokio::spawn(async move {
         let c = acc_dst_a.accept().await.unwrap();
         (c, acc_dst_a)

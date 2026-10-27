@@ -102,7 +102,6 @@ async fn a_node_uses_the_replaced_provider_for_every_storage_call() {
     assert_eq!(storage.history().await.unwrap(), vec![after.clone()], "its history likewise");
     assert_eq!(storage.connections_to(&after.destination.node_id).await.unwrap(), vec![after.clone()], "the by-destination read likewise");
     assert!(storage.connections_to(&before.destination.node_id).await.unwrap().is_empty(), "the old provider's row is not read after the change");
-    assert_eq!(storage.fleet_directs().await.unwrap(), vec![after.clone()], "the fleet's Direct rows likewise");
     let index: ConnectionIndex = after.index();
     storage.remove_connection(&index).await.unwrap();
     assert!(storage.connections().await.unwrap().is_empty(), "the removal is the new provider's");

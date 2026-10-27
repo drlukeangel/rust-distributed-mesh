@@ -289,7 +289,4 @@ impl ConnectionsStorage for FaultedConnectionsStorage {
     async fn history(&self) -> Result<Vec<NodeConnection>, StorageError> {
         self.inner.history().await
     }
-    async fn fleet_directs(&self) -> Result<Vec<NodeConnection>, StorageError> {
-        self.inner.fleet_directs().await
-    }
 }

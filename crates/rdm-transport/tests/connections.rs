@@ -1818,7 +1818,8 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
         "destination acceptor must not yield a wrong-incarnation tunnel"
     );
 
-    // Case 3: Carrier cannot reach destination (lapsed / carrier-edge-lost) -> NotSent, no Proxy Connected:
+    // Case 3: Carrier cannot reach destination (carrier-edge-lost): the one carrier refused by name, so
+    // the open ends with no active route (Q227), no Proxy Connected:
     let dead_dest = Birth {
         name: "mesh1.rpc.4".parse().unwrap(),
         node_id: NodeId::mint(),
@@ -1838,10 +1839,7 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
         .open(&dead_dest)
         .await
         .expect_err("tunnel whose destination leg cannot be opened by carrier must fail");
-    assert!(
-        matches!(err3, ConnectError::NotSent { .. } | ConnectError::Refused { .. }),
-        "expected NotSent or Refused, got {err3:?}"
-    );
+    assert_eq!(err3, ConnectError::NoActiveRoute, "every carrier refused by name: no active route");
     assert!(
         !fresh_source2
             .sink

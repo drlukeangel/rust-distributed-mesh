@@ -32,17 +32,6 @@ pub trait ConnectionsStorage: Send + Sync {
     /// (connections.md §3.1). Who holds a connection to a node, never whether it is reachable: a
     /// row nobody marked dropped survives a cut or a crashed source.
     async fn connections_to(&self, destination: &crate::model::NodeId) -> Result<Vec<NodeConnection>, StorageError>;
-    /// Every resident Direct connection fact across the shared connections store (`connections.md`
-    /// §3.2, §4.1: each source writes under `connections/<node>/`; carrier discovery reads the
-    /// fleet-wide active Direct graph from the store).
-    async fn fleet_directs(&self) -> Result<Vec<NodeConnection>, StorageError> {
-        Ok(self
-            .connections()
-            .await?
-            .into_iter()
-            .filter(|r| r.kind == rdm_core::connections::ConnectionKind::Direct)
-            .collect())
-    }
 }
 
 /// A connections store held in memory.
@@ -104,8 +93,9 @@ struct ConnectionLine {
 /// Every connection fact of every source, one line each of the root's `connections.jsonl` (R-SR1,
 /// connections.md §3): the raw log and the current view are one file, the view the fold's latest line
 /// per (source, destination, alpn, kind), and the by-destination index the same fold keyed the other
-/// way. This store is one node's: it writes that node's facts, reads them back as its own (by its writer, or by the path.name it
-/// was opened at), and reads every source's for the fleet's Direct rows and the by-destination index.
+/// way. This store is one node's: its open reads nothing and it appends that node's facts (Q227: no
+/// node reads a connection fact back); the mesh-primary's node investigation reads every source's
+/// through the by-destination index when it runs, and the file is folded then.
 #[derive(Debug)]
 pub struct FileConnectionsStorage {
     log: crate::store_log::StoreLog,
@@ -115,9 +105,10 @@ pub struct FileConnectionsStorage {
 
 #[cfg(feature = "file-backend")]
 impl FileConnectionsStorage {
-    /// Open the store of the node `node`, written by `writer`, on the fabric's store root.
+    /// Open the store of the node `node`, written by `writer`, on the fabric's store root, to append:
+    /// the open reads no line of the file.
     pub async fn open(root: &crate::store_root::StoreRoot, node: &PathName, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
-        let log = root.log(crate::store_root::CONNECTIONS_FILE, crate::store_log::Formats::new().with::<ConnectionLine>(CONNECTION_FORMAT)).await?;
+        let log = root.log_append(crate::store_root::CONNECTIONS_FILE, crate::store_log::Formats::new().with::<ConnectionLine>(CONNECTION_FORMAT)).await?;
         Ok(Self { log, source: node.clone(), writer: writer.clone() })
     }
 
@@ -188,9 +179,6 @@ impl ConnectionsStorage for FileConnectionsStorage {
     /// The raw log is the file: [`Self::put_connection`]'s line is the fact's log line.
     async fn append_history(&self, _fact: &NodeConnection) -> Result<(), StorageError> {
         Ok(())
-    }
-    async fn fleet_directs(&self) -> Result<Vec<NodeConnection>, StorageError> {
-        Ok(self.current(true).await?.into_iter().filter(|r| r.kind == rdm_core::connections::ConnectionKind::Direct).collect())
     }
     /// This source's facts, oldest first.
     async fn history(&self) -> Result<Vec<NodeConnection>, StorageError> {

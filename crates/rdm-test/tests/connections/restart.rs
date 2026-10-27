@@ -1,10 +1,10 @@
-//! Connections across a restart, end to end on the process provider (`connections.md` §13 C): the
-//! cell kills the source's runtime, its mesh-primary recovers it at the same path.name
-//! (node-recovery.md), and the cell waits out the persisted reconnect backoff (64 s at the fifth
-//! attempt), so it is a release-only stem (`connections_restart`). The map of every connections
-//! acceptance test to its cell is `connections/acceptance.rs`.
+//! Connections across a restart, end to end on the process provider (`connections.md` §13 B, C,
+//! Q227): the cell kills the source's runtime and its mesh-primary recovers it at the same path.name
+//! (node-recovery.md); the recovered source holds no connection and reads none back. A release-only
+//! stem (`connections_restart`). The map of every connections acceptance test to its cell is
+//! `connections/acceptance.rs`.
 
-use rdm_test::estate::{named, wait_for, Estate, Owner};
+use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -22,14 +22,6 @@ fn s(v: &Value) -> String {
         Value::Null => String::new(),
         other => other.to_string(),
     }
-}
-
-fn start(sp: &Value) -> u64 {
-    sp["start_unix_nano"].as_u64().unwrap_or(0)
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
 }
 
 /// As `connections_acceptance`'s estate: one mesh of 2 node-admins and 3 rpc nodes.
@@ -68,48 +60,33 @@ async fn recovered(estate: &Estate, node: &str) -> Value {
         .await
 }
 
-/// CONTRACT (connections.md §13 C: "Write `Direct Failed(E1, attempt=N, event_time=T)` such that
-/// `next_due` is in the future, restart the source, and assert no attempt occurs before the
-/// reconstructed due time. Forbidden: restart at attempt 1"; §9.3: "A process restart therefore does not
-/// reset exponential backoff ... A restart before `next_due` must not trigger an early attempt";
-/// §15.14-15): the source writes five Direct Failed facts toward the destination through its own
-/// writer (one round, ordinals 1-5; the fifth's backoff is 64 s and its jitter under 16 s), then its
-/// runtime is killed and its mesh-primary recovers it over the inherited data dir. The recovered
-/// source hydrates the fifth Failed as its latest Direct toward the destination, and its reconnect
-/// dial toward it starts no earlier than the due time the fifth row sets. Must NOT happen: a dial
-/// before that due time, or a hydrated latest Direct at ordinal 1.
+/// CONTRACT (Q227; connections.md §13 B and C: a restart closes every connection the node held, so
+/// the recovered source holds none, its reconnect backoff starts fresh, and it reads no connection
+/// fact back): the source records a Proxy to the destination after five Direct Failed facts (one
+/// round, ordinals 1-5), then its runtime is killed and its mesh-primary recovers it over the inherited
+/// data dir. The recovered source holds no Direct and no Proxy, its boot opens its connections store
+/// and reads nothing back, and the store keeps the first birth's rows as written. Must NOT happen: the
+/// recovered source holding the fifth Failed row, or the Proxy, it read back from the store.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_recovered_source_dials_no_earlier_than_its_failed_rows_due_time() {
-    let cell = "a_recovered_source_dials_no_earlier_than_its_failed_rows_due_time";
+async fn a_recovered_source_holds_no_connection_and_reads_none_back() {
+    let cell = "a_recovered_source_holds_no_connection_and_reads_none_back";
     let mut estate = born(cell).await;
     let seeded = estate.probe(&["record-proxy", "--target", &format!("path:{SOURCE}"), "--destination", &format!("path:{DEST}"), "--carrier", &format!("path:{CARRIER}"), "--failed-attempts", "5", "--key", "x"]);
     assert_eq!(seeded["proxy_recorded"], true, "{seeded}");
     let control = serde_json::json!(rdm_core::connections::ALPN);
     let fifth = rows(&estate.connection_history(SOURCE), DEST, "Direct").into_iter().rev().find(|r| r["state"] == "Failed" && r["alpn"] == control).cloned().expect("the fifth Direct Failed");
     assert_eq!(fifth["recovery"]["attempt_ordinal"], 5, "{fifth}");
-    let row: rdm_core::connections::NodeConnection = serde_json::from_value(fifth.clone()).expect("a connections row decodes");
-    let due_ms = rdm_core::reconnect::next_due(&row).expect("a Failed row carries its due time");
 
     let after = recovered(&estate, SOURCE).await;
-    let recovered_at = now_ms();
-    assert!(recovered_at < due_ms, "the cell restarts the source before the due time ({recovered_at} < {due_ms}): the backoff under test is still running");
-    let hydrated = snapshot(&estate, SOURCE);
-    let latest: Vec<&Value> = hydrated["own_latest_directs"].as_array().into_iter().flatten().filter(|d| d["destination"]["name"] == DEST && d["alpn"] == control).collect();
-    assert_eq!(latest.len(), 1, "{hydrated}");
-    assert_eq!((s(&latest[0]["state"]), latest[0]["recovery"]["attempt_ordinal"].as_u64()), ("Failed".to_string(), Some(5)), "the series continues from its persisted ordinal, never reset to 1: {hydrated}");
+    let held = snapshot(&estate, SOURCE);
+    assert!(held["own_latest_directs"].as_array().is_none_or(|d| d.is_empty()), "the recovered source holds no Direct: {held}");
+    assert!(held["own_active_proxies"].as_array().is_none_or(|p| p.is_empty()), "nor any Proxy: {held}");
+    assert!(estate.connection_history(SOURCE).iter().any(|r| r["id"] == fifth["id"]), "the store keeps the first birth's rows as written");
 
-    // The recovered source's own dial toward the destination, no earlier than the due time.
-    let dial = wait_for("the recovered source's reconnect dial toward the destination", Duration::from_millis(due_ms.saturating_sub(now_ms()) + 30_000), || async {
-        let spans = estate.spans();
-        named(&spans, "rdm.node_admin.connection.create.via-recovery-dial").into_iter().find(|sp| sp["attributes"]["source"] == SOURCE && sp["attributes"]["destination"] == DEST).cloned()
-    })
-    .await;
     estate.stop().await;
     let spans = estate.spans();
-    let dials: Vec<&Value> = named(&spans, "rdm.node_admin.connection.create.via-recovery-dial").into_iter().filter(|sp| sp["attributes"]["source"] == SOURCE && sp["attributes"]["destination"] == DEST).collect();
-    assert!(!dials.is_empty(), "{dial}");
-    assert!(dials.iter().all(|sp| start(sp) >= due_ms * 1_000_000), "no reconnect dial toward the destination before the due time {due_ms} ms: {dials:#?}");
-    assert_eq!(s(&dials[0]["attributes"]["destination_incarnation"]), s(&row.destination.incarnation.as_ref().map(ToString::to_string).map(Value::String).unwrap_or_default()), "the dial is the persisted series' own, toward the birth its Failed row names");
-    let _ = after;
-    estate.record_trace_url(&s(&dials[0]["trace_id"]));
+    let opened = named(&spans, "rdm.mesh.node.create.via-connections-opened").into_iter().filter(|sp| sp["attributes"]["node"] == SOURCE).last().cloned().expect("the recovered source opened its connections store");
+    assert!(named(&spans, "rdm.node_admin.connection.update.via-hydrate").is_empty(), "no node reads its connections back");
+    assert_ne!(after["node_id"], serde_json::Value::Null, "{after}");
+    estate.record_trace_url(&s(&opened["trace_id"]));
 }

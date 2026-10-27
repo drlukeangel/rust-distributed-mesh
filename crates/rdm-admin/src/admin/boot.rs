@@ -706,7 +706,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         }
     };
 
-    // This node's own connections rows: `connections/<its path.name>/` of the store root (R14).
+    // This node's own connections rows, appended to the store root from an open that reads none of them (R14, Q227).
     let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> = topology_storage.connections(name.clone()).await.map_err(storage_err)?;
     boot.record("node", tracing::field::display(&name));
     boot.record("incarnation_id", tracing::field::display(&incarnation.as_str()));
@@ -739,17 +739,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let entry: Arc<std::sync::OnceLock<EntryState>> = Arc::new(std::sync::OnceLock::new());
     // Node RPC on the admin's one endpoint: the status declarations it applies as an authority
     // (`status_rpc`). The authority is filled once this admin holds a view; until then NotReady.
-    // This admin's own connections: hydrated from its storage, then kept by what its client
-    // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
+    // This admin's own connections: none at its birth, read from nowhere (Q227), then kept by what its
+    // client observes of its pooled connections (connections.md sections 4.2, 9 and 10).
     let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
         rdm_core::connections::ConnectionEnd { name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) },
         connections_storage.clone(),
         Arc::new(std::sync::Mutex::new(rdm_core::connections::ConnectionsHeld::new())),
     ));
-    match connections.hydrate().await {
-        Ok(n) => tracing::info!(node = %name, rows = n, "connections hydrated from storage"),
-        Err(e) => return Err(format!("connections storage: {e}")),
-    }
     // The process's one live-node resolver: the client's and the server's (an accepted
     // connection's peer is named by it).
     let node_rpc_resolver = Arc::new(rdm_transport::LiveNodeResolver::default());

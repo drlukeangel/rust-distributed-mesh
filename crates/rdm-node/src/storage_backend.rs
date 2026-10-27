@@ -24,7 +24,7 @@ pub trait NodeStorageBackend: Send + Sync {
 }
 
 /// RDM standalone's backend: the node's connection facts, its lines of the fabric's store root's
-/// `connections.jsonl` (R14, R-SR1), written there from its open. Its place is the launch's store dir
+/// `connections.jsonl` (R14, R-SR1), appended there from an open that reads none of it (Q227). Its place is the launch's store dir
 /// (`RDM_STORE_DIR`), or the one it was registered at ([`Self::at`]).
 #[cfg(feature = "file-backend")]
 #[derive(Debug, Default, Clone)]
@@ -182,9 +182,6 @@ impl ConnectionsStorage for ConnectionsThroughHandle {
     }
     async fn connections_to(&self, destination: &crate::model::NodeId) -> Result<Vec<rdm_core::connections::NodeConnection>, crate::storage_error::StorageError> {
         self.0.current.read().stores().connections.connections_to(destination).await
-    }
-    async fn fleet_directs(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().connections.fleet_directs().await
     }
 }
 

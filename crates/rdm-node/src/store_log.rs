@@ -496,6 +496,9 @@ struct Inner {
     /// Shown every line the fold reads, once each, in file order: an index the store folds beside
     /// the latest line per key.
     observer: Option<Observer>,
+    /// Opened to append ([`StoreLog::open_append`]): its open read nothing, and an append's
+    /// reconciliation reads from the file's end as it stood before the append, never from a fold.
+    appends: bool,
 }
 
 /// What a store folds from each line it reads beside the latest line per key ([`StoreLog::open_observed`]).
@@ -526,14 +529,20 @@ impl StoreLog {
         Self::opened(path, formats, Arc::new(DiskIo), Some(observer), None).await
     }
 
-    async fn opened(path: &Path, formats: Formats, io: Arc<dyn AppendIo>, observer: Option<Observer>, provider: Option<&str>) -> Result<Self, StorageError> {
-        let span = tracing::info_span!("rdm.node.store.resolve.via-fold", file = %path.display(), provider = tracing::field::Empty, bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, duration = tracing::field::Empty, outcome = tracing::field::Empty, invalid_offset = tracing::field::Empty, cause = tracing::field::Empty);
-        if let Some(provider) = provider {
-            span.record("provider", provider);
-        }
-        let began = std::time::Instant::now();
+    /// Open (creating) the store file at `path` to append to it, reading `formats` when it is read
+    /// later: the open reads no line of it, so a line another writer is still writing, or one this
+    /// build cannot read, never refuses it (Q227: a node reads nothing from the store on create, start
+    /// or rejoin). The first read ([`Self::latest_of`] and the reads above it) folds the file then.
+    pub async fn open_append(path: &Path, formats: Formats) -> Result<Self, StorageError> {
+        let file = Arc::new(Self::file(path).await?);
+        Ok(Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io: Arc::new(DiskIo), fold: Mutex::new(Fold::default()), reading: Mutex::new(()), reading_by: Mutex::new(None), append: Arc::new(tokio::sync::Mutex::new(None)), observer: None, appends: true })))
+    }
+
+    /// The store file at `path`, opened to read and append, created (and its directory entry
+    /// fsynced) when absent.
+    async fn file(path: &Path) -> Result<std::fs::File, StorageError> {
         let p = path.to_path_buf();
-        let file = blocking_io(move || -> Result<std::fs::File, StorageError> {
+        blocking_io(move || -> Result<std::fs::File, StorageError> {
             let io = |e: std::io::Error| StorageError::Io { file: p.display().to_string(), reason: e.to_string() };
             let existed = p.try_exists().map_err(io)?;
             let file = std::fs::OpenOptions::new().read(true).append(true).create(true).open(&p).map_err(io)?;
@@ -543,15 +552,23 @@ impl StoreLog {
             }
             Ok(file)
         })
-        .await;
-        let file = match file {
+        .await
+    }
+
+    async fn opened(path: &Path, formats: Formats, io: Arc<dyn AppendIo>, observer: Option<Observer>, provider: Option<&str>) -> Result<Self, StorageError> {
+        let span = tracing::info_span!("rdm.node.store.resolve.via-fold", file = %path.display(), provider = tracing::field::Empty, bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, duration = tracing::field::Empty, outcome = tracing::field::Empty, invalid_offset = tracing::field::Empty, cause = tracing::field::Empty);
+        if let Some(provider) = provider {
+            span.record("provider", provider);
+        }
+        let began = std::time::Instant::now();
+        let file = match Self::file(path).await {
             Ok(f) => Arc::new(f),
             Err(e) => {
                 span.record("outcome", "refused").record("cause", e.to_string());
                 return Err(e);
             }
         };
-        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: Mutex::new(()), reading_by: Mutex::new(None), append: Arc::new(tokio::sync::Mutex::new(None)), observer }));
+        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: Mutex::new(()), reading_by: Mutex::new(None), append: Arc::new(tokio::sync::Mutex::new(None)), observer, appends: false }));
         match log.advance().await {
             Ok(()) => {
                 let f = log.0.fold.lock().unwrap_or_else(|e| e.into_inner());
@@ -853,7 +870,9 @@ impl Inner {
 
     fn write_new(&self, pending: &mut Option<Pending>, op: Op, format: &str, key: &str, record: &[u8]) -> Result<(), StorageError> {
         let obj = encode_object(&op, format, key, record);
-        let from = self.fold.lock().unwrap_or_else(|e| e.into_inner()).consumed;
+        // A store opened to append reconciles from the file's end before this write (O_APPEND puts the
+        // line at or past it), reading no line another writer wrote before it.
+        let from = if self.appends { self.file.metadata().map_err(|e| self.io(e))?.len() } else { self.fold.lock().unwrap_or_else(|e| e.into_inner()).consumed };
         *pending = Some(Pending { op, obj, from, reported: 0 });
         self.write_pending(pending)
     }

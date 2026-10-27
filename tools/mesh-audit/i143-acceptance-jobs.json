@@ -24,15 +24,9 @@
       "layer": "process",
       "cells": [
         {
-          "name": "source_restart_hydrates_proxy_routes_first_call_without_rediscovery",
-          "source": "crates/rdm-test/tests/rpc/proxy_hydration_cutback.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery/estate cargo test -p rdm-test --test main proxy_hydration_cutback::source_restart_hydrates_proxy_routes_first_call_without_rediscovery -- --exact",
-          "dir": "target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery"
-        },
-        {
           "name": "source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback",
-          "source": "crates/rdm-test/tests/rpc/proxy_hydration_cutback.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback/estate cargo test -p rdm-test --test main proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback -- --exact",
+          "source": "crates/rdm-test/tests/rpc/proxy_cutback.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback/estate cargo test -p rdm-test --test main proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback -- --exact",
           "dir": "target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback"
         }
       ]

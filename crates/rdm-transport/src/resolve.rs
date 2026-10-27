@@ -56,6 +56,13 @@ pub trait NodeResolver: Send + Sync {
         None
     }
 
+    /// Every live node this resolver holds now, as the topology it is fed holds them: what a source
+    /// takes a Proxy's carrier from (connections.md §6, Q227). A node stopped, exited or departed is
+    /// none of them. Empty for a resolver that holds no topology.
+    fn live_nodes(&self) -> Vec<ResolvedNode> {
+        Vec::new()
+    }
+
     /// Ticks whenever an answer may have changed: a dial in flight re-resolves
     /// on each tick and is cancelled the moment its exact target moved. `None`:
     /// changes are seen on the next call only.
@@ -117,6 +124,10 @@ impl NodeResolver for StaticResolver {
 
     fn by_endpoint(&self, endpoint: &iroh::PublicKey) -> Option<ResolvedNode> {
         self.nodes.read().unwrap().values().find(|n| &n.endpoint_id == endpoint).cloned()
+    }
+
+    fn live_nodes(&self) -> Vec<ResolvedNode> {
+        self.nodes.read().unwrap().values().cloned().collect()
     }
 
     fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
