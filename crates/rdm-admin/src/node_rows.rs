@@ -93,15 +93,15 @@ pub struct WrittenRows {
     /// open and again each time a storage change moves it: a name claim it writes records it on the
     /// claimed row, the provider the node it launches writes.
     topology_storage_provider: std::sync::RwLock<Option<String>>,
-    /// This admin's `FabricAtlas`: every record the writer holds is written to it (Q203: each op
+    /// This admin's atlas: every record the writer holds is written to it (Q203: each op
     /// writes the atlas), so a node read answers what this writer wrote without reading the store.
-    atlas: std::sync::OnceLock<Arc<crate::fabric_atlas::FabricAtlas>>,
+    atlas: std::sync::OnceLock<Arc<crate::atlas::Atlas>>,
 }
 
 impl WrittenRows {
     /// Write every record this writer holds from now on to `atlas` as well, the ones it holds now
     /// included.
-    pub fn feeds(&self, atlas: Arc<crate::fabric_atlas::FabricAtlas>) {
+    pub fn feeds(&self, atlas: Arc<crate::atlas::Atlas>) {
         for r in self.rows.all() {
             atlas.write_record(&r);
         }
@@ -119,8 +119,8 @@ impl WrittenRows {
         self.topology_storage_provider.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// The `FabricAtlas` this writer feeds, once [`Self::feeds`] named it.
-    pub fn atlas(&self) -> Option<&Arc<crate::fabric_atlas::FabricAtlas>> {
+    /// The atlas this writer feeds, once [`Self::feeds`] named it.
+    pub fn atlas(&self) -> Option<&Arc<crate::atlas::Atlas>> {
         self.atlas.get()
     }
 

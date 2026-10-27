@@ -505,9 +505,9 @@ pub struct StatusAuthority {
     pub wake: Arc<crate::status_declare::DeclareWake>,
     /// This admin's fabric states; filled once the admin holds the handles they act through.
     pub fabric_states: Arc<OnceLock<Arc<crate::fabric_status::FabricStates>>>,
-    /// This admin's `FabricAtlas` (fabric-atlas.md), the one its control plane's Build acceptance reads:
+    /// This admin's atlas (fabric-atlas.md, Q224), the one its control plane's Build acceptance reads:
     /// what `fabrics.atlas.get` answers.
-    pub atlas: Arc<OnceLock<Arc<crate::fabric_atlas::FabricAtlas>>>,
+    pub atlas: Arc<OnceLock<Arc<crate::atlas::Atlas>>>,
     /// Fabric recovery in a view (Q122): while this admin runs it and the target mesh has no mesh-primary,
     /// it takes the declarations of the node re-created at the target's path.name, which its own node.create
     /// waits on (build.md §5.3).
@@ -1097,7 +1097,7 @@ impl StatusAuthority {
             }
             // The reads: answered from what this admin holds, changing nothing.
             StatusRequest::GetNodes { select } => {
-                // Answered from this admin's FabricAtlas, never the node store (Q203).
+                // Answered from this admin's atlas, never the node store (Q203).
                 let Some(atlas) = self.atlas.get() else {
                     return rdm_core::reply::status::not_ready(format!("{me_name} holds no fabric atlas yet; {} is refused", req.op()));
                 };

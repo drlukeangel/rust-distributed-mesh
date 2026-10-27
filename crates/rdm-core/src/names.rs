@@ -131,7 +131,7 @@ pub enum FabricOp {
     NodesGet,
     /// `fabric.meshes.get`: every mesh of the fabric (Q165).
     MeshesGet,
-    /// `fabrics.atlas.get`: the fabric-primary's `FabricAtlas` (fabric-atlas.md R-FA4).
+    /// `fabrics.atlas.get`: the fabric-primary's atlas (fabric-atlas.md R-FA4).
     AtlasGet,
 }
 

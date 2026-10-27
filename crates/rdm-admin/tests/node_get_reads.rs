@@ -1,4 +1,4 @@
-//! `node.get`'s reads (i144, Q203): answered from the node records the admin's `FabricAtlas` holds,
+//! `node.get`'s reads (i144, Q203): answered from the node records the admin's atlas holds,
 //! never the node store. A birth's facts are read on its node's record, by its id, or on the record
 //! its `predecessor` names, or on the record held at its `path.name`; a birth the view no longer holds
 //! is named at a path the current Build plans.
@@ -26,7 +26,7 @@ fn path(name: &str) -> PathName {
 /// The node read over `view`, its records as an atlas filled from `status` holds them (Q204: read once).
 async fn answer(view: &Topology, storage: &MemoryNodesStorage, status: &MemoryNodesStorage, planned: &rdm_admin::views::Planned, select: NodeSelect) -> Vec<rdm_core::views::NodeView> {
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
-    let atlas = rdm_admin::fabric_atlas::FabricAtlas::default();
+    let atlas = rdm_admin::atlas::Atlas::default();
     atlas.fill(status, ["mesh1".to_string()]).await.expect("the records are read");
     match rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin.1"), view, &loads, storage, &atlas, planned, &select).await {
         StatusReply::Nodes { nodes } => nodes,

@@ -85,11 +85,11 @@ pub trait Gate: Send + Sync {
     async fn primaries_updated(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId, _attempt: u32) -> Result<(), String> {
         Ok(())
     }
-    /// Take the completed lifecycle receipts of `build_id` into the fabric-primary's `FabricAtlas`
+    /// Take the completed lifecycle receipts of `build_id` into the fabric-primary's atlas
     /// before `BuildReply::Complete` goes out on the caller's stream (fabric-atlas.md R-FA2).
     async fn attempt_completed(&self, _build_id: &BuildId, _attempt: u32) {}
     /// Take the `Complete` receipt of `operation` of attempt `attempt` of `build_id` into the
-    /// fabric-primary's `FabricAtlas` as its frame streams up `build.attempt.run`, before the frame is
+    /// fabric-primary's atlas as its frame streams up `build.attempt.run`, before the frame is
     /// passed on (fabric-atlas.md R-FA2), whichever admin executed it.
     async fn receipt_streamed(&self, _build_id: &BuildId, _attempt: u32, _operation: &str) {}
     /// Attempt `attempt` of `build_id` ended `Failed`: what it accepted is no longer executing.

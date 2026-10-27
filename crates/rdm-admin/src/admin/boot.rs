@@ -1466,7 +1466,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // The record the writer of this admin's mesh rows holds, shared with its config door: a config
                                 // put through the door is what the node's next row carries (`crate::node_rows::WrittenRows`).
                                 let written = records.caches.nodes.clone();
-                                // Every record the writer holds is this admin's FabricAtlas's too (Q203).
+                                // Every record the writer holds is this admin's atlas's too (Q203).
                                 written.feeds(control.atlas.clone());
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone(), written.clone());
                                 // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).

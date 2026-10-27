@@ -1681,8 +1681,8 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         let mp = mesh_primary(&storage);
         let me: PathName = "mesh1.admin.2".parse().unwrap();
         let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
-        // The admin's FabricAtlas holds every record its writer holds (Q203).
-        let atlas = Arc::new(rdm_admin::fabric_atlas::FabricAtlas::default());
+        // The admin's atlas holds every record its writer holds (Q203).
+        let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
         mp.rows.written().feeds(atlas.clone());
 
         // 1. Create: `mesh1.broker.north` with free-text name `north`, path `mesh1.broker`, node_type `broker`.

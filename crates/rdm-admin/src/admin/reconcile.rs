@@ -109,7 +109,7 @@ impl crate::build_drive::Gate for SeatGate {
         self.handover.records.fabric_state() == crate::fabric_state::FabricState::ReadyForTraffic
     }
 
-    /// The completed lifecycle receipts of the Build, taken into the fabric-primary's `FabricAtlas`
+    /// The completed lifecycle receipts of the Build, taken into the fabric-primary's atlas
     /// before the caller is answered `Complete` (fabric-atlas.md R-FA2): the atlas, never the gossip
     /// view, is what Build acceptance reads them from (Q197).
     async fn attempt_completed(&self, build_id: &crate::build::BuildId, attempt: u32) {

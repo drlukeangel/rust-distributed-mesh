@@ -324,7 +324,7 @@ pub enum StatusRequest {
     },
     /// Upward: a caller asks the fabric-primary to put the exact birth's whole config
     /// (`node.config.update`, node-config-update.md), through a carrier (Forward `0x1A`) when it cannot
-    /// reach it directly; the fabric-primary writes the map to the node in its `FabricAtlas` and sends
+    /// reach it directly; the fabric-primary writes the map to the node in its atlas and sends
     /// the command to the node's mesh-primary, the writer of that mesh's rows, which writes the node's
     /// record and tells the node. [`StatusReply::ConfigUpdated`] (`node.config.updated`) once the node
     /// applied it. A single call, never a Build.
@@ -512,7 +512,7 @@ pub enum StatusRequest {
         cert: String,
     },
     /// `fabrics.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): a caller asks the
-    /// fabric-primary for its `FabricAtlas`, answered [`StatusReply::Atlas`]. A read. Appended last: no
+    /// fabric-primary for its atlas, answered [`StatusReply::Atlas`]. A read. Appended last: no
     /// variant before it moves.
     GetAtlas,
 }
@@ -1351,7 +1351,7 @@ pub enum StatusReply {
         /// Why, by name; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
-    /// The answer to a `GetAtlas`: the fabric-primary's `FabricAtlas`. Appended last: no variant
+    /// The answer to a `GetAtlas`: the fabric-primary's atlas. Appended last: no variant
     /// before it moves.
     Atlas {
         /// The atlas.

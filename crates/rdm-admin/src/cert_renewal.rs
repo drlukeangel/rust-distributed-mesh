@@ -297,7 +297,7 @@ async fn renew_one(r: &Renewals, n: &Node, birth: &BirthIdentity, held: &CertDat
 async fn written(r: &Renewals, n: &Node, birth: &BirthIdentity, dates: &CertDates, writes: bool) -> Outcome {
     if !writes {
         r.issued.lock().unwrap().insert((n.node_id.clone(), birth.incarnation.clone()), dates.clone());
-        // The renewal is this admin's op: its result is its FabricAtlas's at once (Q197, Q203); the
+        // The renewal is this admin's op: its result is its atlas's at once (Q197, Q203); the
         // record is the writer of `n`'s mesh's.
         if let Some(atlas) = r.caches.nodes.atlas() {
             atlas.update_record(&n.node_id, |rec| rec.birth_mut(&birth.incarnation, &birth.name).cert = Some(dates.clone()));

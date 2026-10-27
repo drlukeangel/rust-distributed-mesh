@@ -283,7 +283,7 @@ pub struct FabricView {
     pub previous_topology_storage_providers: Vec<String>,
 }
 
-/// The fabric-primary's `FabricAtlas` (`fabrics.atlas.get`; docs/plans/proposal/fabric-atlas.md):
+/// The fabric-primary's atlas (`fabrics.atlas.get`; docs/plans/proposal/fabric-atlas.md):
 /// one row for every node the current Build's topology names, in `path.name` order. Each row's birth
 /// is the one its node row names current, and its lifecycle is what the ops left it: the
 /// fabric-primary's own (what it accepted and the receipts its attempts returned) and the effects the

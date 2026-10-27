@@ -24,7 +24,7 @@ use tokio::sync::RwLock;
 /// (`sent_by`) at an admin that is not the fabric-primary is carried up to it and its answer handed back
 /// ([`crate::node_config::NodeConfigs::forward_up`]), as `node.config.update` is.
 #[allow(clippy::too_many_arguments)]
-pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, atlas: Option<&crate::fabric_atlas::FabricAtlas>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> StatusReply {
+pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, atlas: Option<&crate::atlas::Atlas>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> StatusReply {
     let (node_id, incarnation, change) = match req {
         StatusRequest::CreateTags { node_id, incarnation, labels } => (node_id, incarnation, Change::Create(labels)),
         StatusRequest::DeleteTags { node_id, incarnation, scope } => (node_id, incarnation, Change::Delete(scope)),

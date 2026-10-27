@@ -383,7 +383,7 @@ impl Fabrics {
     }
 
     /// `fabrics.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): the fabric-primary's
-    /// `FabricAtlas`, one row per node of the current Build's topology: the birth its node row names
+    /// atlas, one row per node of the current Build's topology: the birth its node row names
     /// current, its lifecycle as the ops left it, and the operation accepted on it whose attempt has
     /// not completed. `fabric.get` is unchanged by it.
     pub async fn atlas_get(&self) -> Result<AtlasView, CallEnd> {

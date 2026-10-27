@@ -278,9 +278,9 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
 }
 
 /// CONTRACT (node-config-update.md step 1: "The caller sends `node.config.update` to the
-/// fabric-primary. It writes the map to the node in its `FabricAtlas` and sends the command to the
+/// fabric-primary. It writes the map to the node in its atlas and sends the command to the
 /// node's mesh-primary"; node-rpc-envelope.md node.get: "node.get, mesh.nodes.get and fabric.nodes.get
-/// are answered by the fabric-primary from its `FabricAtlas`, never from the node store: it fills the
+/// are answered by the fabric-primary from its atlas, never from the node store: it fills the
 /// atlas from the node records once, at its start or hand-over, and each op writes it after that";
 /// Q203, Q204): a caller's `node.config.update` of a node of the other mesh, sent to the
 /// fabric-primary, ends `node.config.updated`, and the fabric-primary's `mesh.nodes.get` answers the

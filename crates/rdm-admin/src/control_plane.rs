@@ -91,9 +91,9 @@ pub struct ControlPlane {
     /// The `topology_storage_provider` names this admin's wiring registers (storage.md §2): as the
     /// fabric-primary, a request naming any other is refused by name at acceptance.
     pub topology_storage_providers: Vec<String>,
-    /// The fabric-primary's `FabricAtlas` (fabric-atlas.md): what Build acceptance of a node action
+    /// This admin's atlas (fabric-atlas.md, Q224): what Build acceptance of a node action
     /// reads the node's birth and lifecycle from, never the gossip view.
-    pub atlas: Arc<crate::fabric_atlas::FabricAtlas>,
+    pub atlas: Arc<crate::atlas::Atlas>,
     /// This admin's storage changes: a fabric.delete admitted during a storage change interrupts its
     /// switch (storage.md §2 "Changing it"). Filled once the admin holds them.
     pub storage_changes: std::sync::OnceLock<Arc<crate::storage_change::StorageChanges>>,

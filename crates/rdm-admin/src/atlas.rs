@@ -1,6 +1,7 @@
-//! The fabric-primary's `FabricAtlas` (docs/plans/proposal/fabric-atlas.md, Q194, Q197): the union of
-//! the ops currently executing and the current topology state, read by Build acceptance and answered
-//! by `fabrics.atlas.get`.
+//! A node-admin's atlas, `Atlas` (docs/plans/proposal/fabric-atlas.md, Q194, Q197, Q207, Q224): the
+//! union of the ops currently executing and the current topology state over the meshes the node-admin is
+//! primary for (every mesh at the fabric-primary), read by Build acceptance and answered by
+//! `fabrics.atlas.get` (the fabric's read, the fabric-primary's atlas).
 //!
 //! Its sources are ops, never a gossip frame (Q197: "nothing starts or stops or does any action through
 //! gossip"):
@@ -185,9 +186,9 @@ pub(crate) struct AtlasRow {
     pub(crate) birth_source: &'static str,
 }
 
-/// The fabric-primary's `FabricAtlas`.
+/// A node-admin's atlas (Q224): one per node-admin, over the meshes it is primary for.
 #[derive(Debug, Default)]
-pub struct FabricAtlas {
+pub struct Atlas {
     held: Mutex<Held>,
     /// What a refused caller's decision acts through (Q207), installed once this admin's recovery
     /// submitter and heard-again door exist.
@@ -230,7 +231,7 @@ fn birth_of_step(p: &BuildProjection, attempt: u32, path: &PathName, output: Opt
     }
 }
 
-/// What a streamed receipt wrote in the atlas ([`FabricAtlas::take_receipt`]).
+/// What a streamed receipt wrote in the atlas ([`Atlas::take_receipt`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Taken {
     /// The Build's journal holds no completed receipt of the operation in the attempt.
@@ -293,7 +294,7 @@ fn lifecycle_of(operation: &str) -> Option<(Lifecycle, PathName)> {
     Some((lifecycle, path.parse().ok()?))
 }
 
-impl FabricAtlas {
+impl Atlas {
     /// Install what a refused caller's decision acts through (Q207); the first install stands.
     pub(crate) fn refused_callers(&self, callers: Arc<crate::refused_caller::RefusedCallers>) {
         let _ = self.callers.set(callers);
@@ -599,6 +600,7 @@ impl FabricAtlas {
     }
 
     /// `n`, a birth a node read answers, as this atlas holds it (node-rpc-envelope.md node.get: the
+<<<<<<< HEAD:crates/rdm-admin/src/fabric_atlas.rs
     /// node reads are answered from the `FabricAtlas`): the name its record holds, and the lifecycle the
     /// ops left it in (a completed stop: stopped; a completed start: ready for traffic over every state
     /// its stop and its start pass through, the gossip view's stopped birth and its `Starting` and
@@ -606,6 +608,17 @@ impl FabricAtlas {
     /// published before the start completed never moves it backward, R-FA3). `false` when an op deleted
     /// the birth: it is not answered. The gossip view's status stands where no op moved the birth, and
     /// over a completed start where it is a state after ready for traffic (R-FA3: context).
+||||||| parent of d4722b4f9 (refactor(Q224, #3223): FabricAtlas becomes Atlas (atlas.rs), one atlas per node-admin; prose says a node-admin's atlas, fabrics.atlas.get the fabric-primary's):crates/rdm-admin/src/fabric_atlas.rs
+    /// node reads are answered from the `FabricAtlas`): the name its record holds, and the lifecycle the
+    /// ops left it in (a completed stop: stopped; a completed start of a birth the gossip view still
+    /// holds stopped: ready for traffic). `false` when an op deleted the birth: it is not answered. The
+    /// gossip view's status stands where no op moved the birth (R-FA3: context).
+=======
+    /// node reads are answered by the fabric-primary from its atlas): the name its record holds, and the lifecycle the
+    /// ops left it in (a completed stop: stopped; a completed start of a birth the gossip view still
+    /// holds stopped: ready for traffic). `false` when an op deleted the birth: it is not answered. The
+    /// gossip view's status stands where no op moved the birth (R-FA3: context).
+>>>>>>> d4722b4f9 (refactor(Q224, #3223): FabricAtlas becomes Atlas (atlas.rs), one atlas per node-admin; prose says a node-admin's atlas, fabrics.atlas.get the fabric-primary's):crates/rdm-admin/src/atlas.rs
     pub(crate) fn answer(&self, n: &mut crate::model::Node) -> bool {
         let held = self.held.lock().unwrap();
         if let Some(r) = held.records.get(&n.node_id).filter(|r| r.status != NodeStatus::Withdrawn) {
@@ -723,7 +736,7 @@ impl FabricAtlas {
 impl crate::control_plane::ControlPlane {
     /// The `Complete` receipt of `operation` of attempt `attempt` of `build_id`, as it streams up
     /// `build.attempt.run` to this fabric-primary (read from `builds`, the attempt's own Build journal), taken
-    /// into its `FabricAtlas` before the frame is passed on (fabric-atlas.md R-FA2), whichever admin
+    /// into its atlas before the frame is passed on (fabric-atlas.md R-FA2), whichever admin
     /// executed it; a create's record read once at its path. One
     /// `rdm.node_admin.fabric.update.via-atlas-receipt` span.
     pub(crate) async fn take_streamed_receipt(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, operation: &str) {
@@ -737,7 +750,7 @@ impl crate::control_plane::ControlPlane {
             }
         };
         span.record("outcome", taken.name().as_str());
-        if let crate::fabric_atlas::Taken::Created(path) = &taken {
+        if let crate::atlas::Taken::Created(path) = &taken {
             match self.node_rows.get() {
                 Some(rows) => match self.atlas.take_created(&**rows, path).await {
                     Ok(true) => {}
@@ -792,12 +805,12 @@ mod tests {
     }
 
     /// An atlas primary for `meshes`, filled once from `rows` at the moment it took them.
-    async fn atlas_of(rows: &[&NodeRow], meshes: &[&str]) -> FabricAtlas {
+    async fn atlas_of(rows: &[&NodeRow], meshes: &[&str]) -> Atlas {
         let store = MemoryNodesStorage::default();
         for r in rows {
             store.put_node(r).await.unwrap();
         }
-        let atlas = FabricAtlas::default();
+        let atlas = Atlas::default();
         atlas.scope(&store, meshes.iter().map(|m| m.to_string()).collect()).await.unwrap();
         atlas
     }
@@ -931,7 +944,7 @@ mod tests {
         let store = MemoryNodesStorage::default();
         store.put_node(&a).await.unwrap();
         store.put_node(&b).await.unwrap();
-        let atlas = FabricAtlas::default();
+        let atlas = Atlas::default();
         assert_eq!(atlas.scope(&store, ["mesh2".to_string()].into()).await.unwrap(), (vec!["mesh2".to_string()], vec![]), "a secondary of mesh2 takes its primary");
         assert!(atlas.record(&b.node_id).is_some() && atlas.record(&a.node_id).is_none());
         assert_eq!(atlas.scope(&store, ["mesh1".to_string(), "mesh2".to_string()].into()).await.unwrap(), (vec!["mesh1".to_string()], vec![]), "mesh2's primary takes the fabric-primary: every mesh");

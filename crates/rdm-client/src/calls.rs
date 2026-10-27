@@ -326,7 +326,7 @@ impl<'a> NodeRpc<'a> {
 
     /// `node.config.update`, the caller's single call to the fabric-primary `receiver`
     /// (node-config-update.md step 1): put the birth's whole config. The fabric-primary writes the map
-    /// to the node in its `FabricAtlas` and sends the command to the node's mesh-primary, the writer
+    /// to the node in its atlas and sends the command to the node's mesh-primary, the writer
     /// of that mesh's rows. `route` is the caller's choice: `Direct`, or `ViaPeer` through a carrier
     /// (Forward `0x1A`) when the receiver is not directly reachable, executed exactly as chosen
     /// (`NodeRpcClient::call_routed`). `ConfigUpdated` is `node.config.updated`: the mesh-primary wrote

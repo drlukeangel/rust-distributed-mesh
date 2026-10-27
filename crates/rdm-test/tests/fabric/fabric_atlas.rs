@@ -1,4 +1,4 @@
-//! The fabric-primary's `FabricAtlas` (docs/plans/proposal/fabric-atlas.md, Q194): one view that
+//! The fabric-primary's atlas (docs/plans/proposal/fabric-atlas.md, Q194, Q224): one view that
 //! combines command admission, execution progress and gossip observations, read by Build acceptance
 //! and exposed through `fabrics.atlas.get`.
 
@@ -256,7 +256,7 @@ async fn a_delayed_observation_of_another_meshs_node_never_moves_the_atlas_back(
 /// CONTRACT (fabric-atlas.md R-FA2: "execution progress writes it from each attempt's receipts as they
 /// stream up `build.attempt.run`, before the caller is answered `Complete`"; node-rpc-envelope.md
 /// node.get: "node.get, mesh.nodes.get and fabric.nodes.get are answered by the fabric-primary from its
-/// `FabricAtlas`"): with the other mesh's topology withheld from the backbone (so no gossip observation
+/// atlas"): with the other mesh's topology withheld from the backbone (so no gossip observation
 /// can be the source), the predecessor's half of the replace steps of a mesh2 node (connections
 /// deleted, mesh left, renamed `<path>.old`, stopped; lifecycles/node-replace.md steps 1-2), executed
 /// by mesh2's primary, is read back through `mesh.nodes.get` at the fabric-primary the moment it
@@ -307,7 +307,7 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
 
 /// CONTRACT (node-name-update.md step 1: "an admin that is not the fabric-primary carries it to the
 /// fabric-primary ... The fabric-primary sends the command to the node's mesh-primary ... and, on its
-/// answer that the row moved, writes the new name to the node in its `FabricAtlas`"; Q197, Q203, Q204:
+/// answer that the row moved, writes the new name to the node in its atlas"; Q197, Q203, Q204:
 /// node reads answer from the atlas and each op writes it): a live rpc node of mesh2, its connections
 /// deleted and off its mesh, is renamed `.old` by a caller's `node.name.update` sent directly to mesh2's
 /// primary, answered `NameUpdated`; the fabric-primary's node read, at once and with no wait, lists the

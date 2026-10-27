@@ -1,6 +1,6 @@
 //! The reads over Node RPC (node-rpc-envelope.md "Typed objects mapped to wire and execution
 //! owners"): `node.get`, `mesh.get` and `fabric.get` answered from a node-admin's view (a node's
-//! record, its config and tags among it, from its `FabricAtlas`, never the node store, Q203; and
+//! record, its config and tags among it, from its atlas, never the node store, Q203; and
 //! `node.get`'s tag filter from the node store's tags index, R-TG1), and
 //! `node.connections.get` answered by any node from the connections it holds as its own
 //! (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held connections"). A read changes
@@ -14,7 +14,7 @@ use crate::model::{Node, PathName};
 use crate::topology::Topology;
 use rdm_core::connections::{ConnectionsHeld, NodeConnection};
 use rdm_core::{GossipStats, NodeLoad};
-use crate::fabric_atlas::FabricAtlas;
+use crate::atlas::Atlas;
 use crate::storage::NodesStorage;
 use rdm_core::NodeId;
 use rdm_core::status::{NodeSelect, StatusReply, StatusRequest, TagFilter};
@@ -147,7 +147,7 @@ async fn tagged(me: &PathName, storage: &dyn NodesStorage, filter: &TagFilter) -
 
 /// The `data-dir-lost` fact of the birth `n`: on its own birth's facts, else on the birth its record
 /// names as its predecessor (the exited birth it was recovered over), that record as `records` holds it.
-fn data_dir_lost_of(records: &FabricAtlas, n: &Node, row: Option<&crate::storage::NodeRow>) -> Option<DataDirLost> {
+fn data_dir_lost_of(records: &Atlas, n: &Node, row: Option<&crate::storage::NodeRow>) -> Option<DataDirLost> {
     let row = row?;
     let own = n.incarnation_id.as_ref().and_then(|i| row.birth(i)).and_then(|b| b.data_dir_lost.clone());
     let lost = match own {
@@ -173,7 +173,7 @@ fn data_dir_unreadable_of(n: &Node, row: Option<&crate::storage::NodeRow>) -> Op
 /// data-dir facts): every birth the view holds, replaced predecessors included. A birth the view no
 /// longer holds is answered at a path `planned` names and no birth holds, from the data-dir-unreadable
 /// fact on the record `records` holds there. Nothing reads the node store (Q203).
-fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, records: &FabricAtlas, chosen: &Chosen<'_>, planned: &BTreeMap<String, Vec<PathName>>) -> Vec<NodeView> {
+fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, records: &Atlas, chosen: &Chosen<'_>, planned: &BTreeMap<String, Vec<PathName>>) -> Vec<NodeView> {
     // Each birth as the atlas holds it: the name its record holds and the lifecycle the ops left it
     // in, never the gossip view's word on either (Q197, Q203); a birth an op deleted is not answered.
     let births: Vec<Node> = view
@@ -249,19 +249,19 @@ fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<Gos
 }
 
 /// The node reads (`node.get`, `mesh.nodes.get`, `fabric.nodes.get`; Q165) answered by the node-admin
-/// `me` from its `view`, its nodes' `loads` and the node records its `FabricAtlas` holds (`records`;
+/// `me` from its `view`, its nodes' `loads` and the node records its atlas holds (`records`;
 /// never the node store, Q203): the births `select` selects, each with its record's properties. A tag
 /// filter is read from the tags index of `storage`, one point read per label; a filter that is not a
 /// tag set is `RejectedTags`, named; a read that fails is `RejectedSourceFailed` naming the read. Its
 /// span names what was asked, the filter, its labels, how many index reads were made and how many
 /// nodes were answered.
-pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, records: &FabricAtlas, select: &NodeSelect) -> StatusReply {
+pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, records: &Atlas, select: &NodeSelect) -> StatusReply {
     nodes_answer_with_status(me, view, loads, storage, records, &Ok(BTreeMap::new()), select).await
 }
 
 /// [`nodes_answer`] with `planned`, the current Build's paths, naming where a birth the view no
 /// longer holds is answered from its record (R-FM1, R-FM2).
-pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, records: &FabricAtlas, planned: &Planned, select: &NodeSelect) -> StatusReply {
+pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, records: &Atlas, planned: &Planned, select: &NodeSelect) -> StatusReply {
     let span = tracing::info_span!(
         "rdm.node_admin.node.serve.via-get",
         node = %me,

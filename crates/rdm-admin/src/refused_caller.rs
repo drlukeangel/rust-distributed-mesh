@@ -4,7 +4,7 @@
 //!
 //! One decision for every primary and every door a caller birth it does not hold comes through (a
 //! status declaration refused `SubjectUnknown`, a deleted birth's Digest heard again): decided from
-//! this admin's own atlas ([`crate::fabric_atlas::FabricAtlas::refused_caller`]), and, at an admin that
+//! this admin's own atlas ([`crate::atlas::Atlas::refused_caller`]), and, at an admin that
 //! is not the fabric-primary, verified at the root through `fabrics.atlas.get` before anything acts (the
 //! root's answer wins: this admin may have missed an op). A caller deleted is reported to the
 //! fabric-primary, which terminates its runtime (`RecoverySubmitter::report_terminate`, the
@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use crate::fabric_atlas::{CallerDecision, FabricAtlas};
+use crate::atlas::{CallerDecision, Atlas};
 use crate::model::{IncarnationId, NodeId, NodeStatus, PathName};
 
 /// What a refused caller's decision acts through: this admin's recovery submitter (the terminate
@@ -47,7 +47,7 @@ impl RefusedCallers {
     /// and act on it, once per birth at a time: one `rdm.node_admin.node.update.via-refused-caller`
     /// span naming the decision, whether the fabric-primary verified it, and what was done. The
     /// decision, or `None` when one for the birth is already in flight.
-    pub(crate) async fn decide(&self, atlas: &FabricAtlas, door: &'static str, node_id: &NodeId, incarnation: &IncarnationId) -> Option<(CallerDecision, String)> {
+    pub(crate) async fn decide(&self, atlas: &Atlas, door: &'static str, node_id: &NodeId, incarnation: &IncarnationId) -> Option<(CallerDecision, String)> {
         let key = (node_id.to_string(), incarnation.as_str().to_string());
         if !self.in_flight.lock().unwrap().insert(key.clone()) {
             return None;
@@ -65,7 +65,7 @@ impl RefusedCallers {
         Some(decided)
     }
 
-    async fn decide_and_act(&self, atlas: &FabricAtlas, span: &tracing::Span, node_id: &NodeId, incarnation: &IncarnationId) -> (CallerDecision, String) {
+    async fn decide_and_act(&self, atlas: &Atlas, span: &tracing::Span, node_id: &NodeId, incarnation: &IncarnationId) -> (CallerDecision, String) {
         // The topology's need: the current Build's paths, by mesh.
         let planned: BTreeMap<String, Vec<PathName>> = match self.recovery.builds.current().await {
             Ok(Some(b)) => b.topology.meshes.iter().map(|(m, t)| (m.clone(), t.nodes.iter().cloned().collect())).collect(),
@@ -150,7 +150,7 @@ impl RefusedCallers {
     }
 }
 
-impl FabricAtlas {
+impl Atlas {
     /// The caller birth `(node_id, incarnation)` refused at `door`, decided and acted on by this admin's
     /// [`RefusedCallers`] once they are installed ([`Self::refused_callers`]), on its own task: the
     /// refusal is answered at once, never held on the decision.
@@ -218,7 +218,7 @@ mod tests {
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
             rows.put_node(&r).await.unwrap();
         }
-        let atlas = Arc::new(FabricAtlas::default());
+        let atlas = Arc::new(Atlas::default());
         atlas.scope(&*rows, ["mesh1".to_string()].into()).await.unwrap();
         let recovery = crate::admin::RecoverySubmitter {
             me: admin.name.clone(),

@@ -864,7 +864,7 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
         let door = door_at(&rig.admin.key, &mp).await;
         let (tick, views) = tokio::sync::watch::channel(0u64);
         door.watch_views(views);
-        let atlas = rdm_admin::fabric_atlas::FabricAtlas::default();
+        let atlas = rdm_admin::atlas::Atlas::default();
         atlas.write_record(&rdm_admin::storage::NodeRow::new(m2rpc.node.name.clone(), node_id.clone(), NodeStatus::ReadyForTraffic));
         let told: BTreeMap<String, String> = [("admin_api_base".to_string(), "rdm://mesh2".to_string())].into();
         let req = StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: told.clone() };
@@ -1036,10 +1036,10 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
     SecondAdmin { status, resolved, _router: router }
 }
 
-/// The rig's admin (the fabric-primary and mesh1's primary) with its `FabricAtlas` holding a record of
+/// The rig's admin (the fabric-primary and mesh1's primary) with its atlas holding a record of
 /// each of `births` and its config door telling through a client that resolves each of `resolves`.
-async fn fabric_primary_door(rig: &Rig, births: &[&Birth], resolves: &[ResolvedNode]) -> Arc<rdm_admin::fabric_atlas::FabricAtlas> {
-    let atlas = Arc::new(rdm_admin::fabric_atlas::FabricAtlas::default());
+async fn fabric_primary_door(rig: &Rig, births: &[&Birth], resolves: &[ResolvedNode]) -> Arc<rdm_admin::atlas::Atlas> {
+    let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     for b in births {
         atlas.write_record(&rdm_admin::storage::NodeRow::new(b.node.name.clone(), b.node.node_id.clone(), NodeStatus::ReadyForTraffic));
     }
@@ -1065,7 +1065,7 @@ async fn config_read_from_the_fabric_primary(rig: &Rig, b: &Birth) -> BTreeMap<S
 }
 
 /// CONTRACT (node-config-update.md step 1: "The caller sends `node.config.update` to the
-/// fabric-primary. It writes the map to the node in its `FabricAtlas` and sends the command to the
+/// fabric-primary. It writes the map to the node in its atlas and sends the command to the
 /// node's mesh-primary"; Q197: no action is decided on gossip; D21): mesh1.rpc.1 puts its own config
 /// with the one call a node makes, `own_config_update`, to the node-admin it joined through,
 /// mesh1.admin.2, which is not the fabric-primary; the node names no fabric-primary. mesh1.admin.2

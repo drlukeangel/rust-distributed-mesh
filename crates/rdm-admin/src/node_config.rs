@@ -1,7 +1,7 @@
 //! `node.config.update` (node-config-update.md; ops-naming "Node data: meta, config and exe").
 //!
 //! The caller sends it to the fabric-primary (step 1, Q203): it writes the map to the node in its
-//! `FabricAtlas` and sends the command to the node's mesh-primary (in process when it is that
+//! atlas and sends the command to the node's mesh-primary (in process when it is that
 //! mesh-primary too; Forward `0x1A` through another node-admin of the mesh when the mesh-primary is not
 //! directly reachable). A caller that is not a node-admin (a node putting its own config) sends it to the
 //! node-admin it joined through, and a node-admin's own goes in process to that admin: an admin that is
@@ -165,7 +165,7 @@ impl NodeConfigs {
     /// view next changes, or after the resend schedule's next delay, whichever is first. A command the
     /// mesh-primary refused before writing the row puts the atlas's config back.
     #[allow(clippy::too_many_arguments)]
-    pub async fn serve(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, topology: &tokio::sync::RwLock<Topology>, storage: &dyn crate::storage::NodesStorage, atlas: Option<&crate::fabric_atlas::FabricAtlas>, sent_by: SentBy, req: &StatusRequest) -> StatusReply {
+    pub async fn serve(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, topology: &tokio::sync::RwLock<Topology>, storage: &dyn crate::storage::NodesStorage, atlas: Option<&crate::atlas::Atlas>, sent_by: SentBy, req: &StatusRequest) -> StatusReply {
         let StatusRequest::UpdateNodeConfig { node_id, config, .. } = req else { unreachable!("serve is called for UpdateNodeConfig only") };
         let mut held = None;
         if sent_by == SentBy::Caller && !view.is_fabric_primary(me_id) {
