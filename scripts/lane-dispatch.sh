@@ -40,12 +40,12 @@ You are the seat for rafka-v2 issue #$ISSUE, "$TITLE", in lane $d on branch $B.
 RULES
 # The type (rafka-v2's format): file name, name and subagent_type are i143-<issue>; the slug
 # i143-<issue>-<name> rides only in its description and in the launch's description.
-printf -- '---\nname: %s\ndescription: %s\ntools: Bash, Read, Write, Edit, Glob, Grep, SendMessage\n---\n\n%s\n' \
-  "$SEAT" "i143 #$ISSUE — $SLUG" \
+printf -- '---\nname: %s\ndescription: %s\nmodel: %s\ntools: Bash, Read, Write, Edit, Glob, Grep, SendMessage\n---\n\n%s\n' \
+  "$SEAT" "i143 #$ISSUE — $SLUG" "$MODEL" \
   "Before anything else, read $s/seat-rules.md (the standing seat rules) and follow it for the whole unit. Your launch prompt names your lane and your unit." > "$f"
-# Claude Code adds a new .claude/agents file only at a user-turn boundary, after its watcher sees it
-# (~1-2 min); a launch before its notice fails "Agent type not found". Touch once more, a modify the
-# watcher reliably sees, and name the one real signal.
+# The lead session lists a new .claude/agents file only once it reads the folder again (its notice
+# "New agent types are now available"); a session that does not reload lists it after it resumes.
+# Touch once more, a modify the watcher reliably sees.
 [ "$state" = NEW ] && { sleep 5; touch "$f"; }
 echo "$ISSUE" > "$s/issue"; echo "$SEAT" > "$s/seat"
 gh issue comment "$ISSUE" --repo drlukeangel/rafka-v2 -b "Dispatched to RDM lane $LANE ($d), branch \`$B\`, seat \`$SEAT\` ($MODEL)." >/dev/null
