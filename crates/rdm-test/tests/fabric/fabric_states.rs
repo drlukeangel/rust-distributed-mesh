@@ -502,17 +502,21 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
         .filter(|a| a["attributes"]["seat"] == "rpc_node-primary" && a["attributes"]["via"] == "own" && s(&a["attributes"]["node"]).starts_with("mesh1.admin."))
         .min_by_key(|a| start(a))
         .expect("the mesh-primary announced mesh1's rpc_node primary");
-    // The Day-0 Build: the first Build whose change found every mesh ready, and its attempt's claim.
+    // The Day-0 Build: the first Build whose change found every mesh ready, and its attempt's claim. The
+    // attempt is claimed when the claim decision ends (its in-flight row and its claim written): the
+    // fabric-primary's reaction is measured from there, the claim's own reads and writes are not the wait.
     let day0 = named(&spans, "rdm.node_admin.fabric.update.via-change").into_iter().filter(|r| r["attributes"]["build_id"] != build.as_str()).min_by_key(|r| start(r)).map(|r| s(&r["attributes"]["build_id"])).expect("the Day-0 Build's change");
     let (_, day0_change) = change_of(&spans, &day0);
     let day0_entered = day0_change.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-every-mesh-ready").expect("every mesh was ready under the Day-0 change");
     let day0_claimed = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|c| c["attributes"]["build_id"] == day0.as_str() && c["attributes"]["outcome"] == "won").min_by_key(|c| start(c)).expect("the Day-0 Build's attempt was claimed");
     let ms = |from: &Value, to: &Value| (start(to) as i128 - start(from) as i128) / 1_000_000;
-    let (to_checklist, to_announced, claim_to_checklist) = (ms(ready, entered), ms(ready, announced), ms(day0_claimed, day0_entered));
-    estate.artifact("gaps.json", &json!({ "ready_to_every_mesh_ready_ms": to_checklist, "ready_to_announced_ms": to_announced, "day0_claim_to_every_mesh_ready_ms": claim_to_checklist, "gossip_interval_ms": gossip.as_millis() as u64 }));
-    eprintln!("ready -> every mesh ready {to_checklist} ms, ready -> rpc_node-primary announced {to_announced} ms, Day-0 claim -> every mesh ready {claim_to_checklist} ms (gossip interval {} ms)", gossip.as_millis());
+    let claim_decided = day0_claimed["end_unix_nano"].as_u64().expect("the Day-0 claim decision span carries its end");
+    let claim_decision_ms = (claim_decided as i128 - start(day0_claimed) as i128) / 1_000_000;
+    let (to_checklist, to_announced, claim_to_checklist) = (ms(ready, entered), ms(ready, announced), (start(day0_entered) as i128 - claim_decided as i128) / 1_000_000);
+    estate.artifact("gaps.json", &json!({ "ready_to_every_mesh_ready_ms": to_checklist, "ready_to_announced_ms": to_announced, "day0_claim_to_every_mesh_ready_ms": claim_to_checklist, "day0_claim_decision_ms": claim_decision_ms, "gossip_interval_ms": gossip.as_millis() as u64 }));
+    eprintln!("ready -> every mesh ready {to_checklist} ms, ready -> rpc_node-primary announced {to_announced} ms, Day-0 claim decided -> every mesh ready {claim_to_checklist} ms (the claim decision itself {claim_decision_ms} ms; gossip interval {} ms)", gossip.as_millis());
     let bound = (gossip / 4).as_millis() as i128;
-    assert!(claim_to_checklist < bound, "the Day-0 fabric found every mesh ready {claim_to_checklist} ms after its Build's attempt was claimed, not within {bound} ms: it waited for the gossip interval");
+    assert!(claim_to_checklist < bound, "the Day-0 fabric found every mesh ready {claim_to_checklist} ms after its Build's attempt was claimed (the claim decision ended), not within {bound} ms: it waited for the gossip interval");
     assert!(to_checklist < bound, "the fabric found every mesh ready {to_checklist} ms after mesh1.rpc.1's ready was applied, not within {bound} ms: it waited for the gossip interval");
     assert!(to_announced < bound, "the rpc_node primary was announced {to_announced} ms after mesh1.rpc.1's ready was applied, not within {bound} ms: it waited for the gossip interval");
     estate.record_trace_url(&s(&entered["trace_id"]));
