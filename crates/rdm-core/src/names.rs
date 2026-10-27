@@ -1,8 +1,10 @@
 //! The one canonical name of every `node` and `build` op, and of every step event.
 //!
-//! Each name is written once, here, and rendered mechanically everywhere else: the Rust
-//! variant, the event frame a workflow's stream carries (`node.joined`) and the span
-//! (`rdm.node_admin.node.<verb>.via-…`). No caller writes an op name as a string.
+//! Each name is written once, here: the Rust variant and the event frame a workflow's stream
+//! carries (`node.joined`). Each op and event has one span, a five-segment literal
+//! (telemetry-patterns.md §8): its entity is what the op acts on (`node.connections.delete` spans
+//! `rdm.node_admin.connection.delete.via-call`), its verb from the whitelist (a `get` is `resolve`).
+//! No caller writes an op name as a string.
 
 /// A call on the `node` op family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,25 +70,26 @@ impl NodeOp {
         matches!(self, Self::Create | Self::Stop | Self::Start | Self::Delete)
     }
 
-    /// The span of one call of this op: `rdm.node_admin.node.<verb>.via-call` for a single call,
-    /// `…via-workflow` for a workflow. Every op is spelled out so the name stays a literal.
+    /// The span of one call of this op: `rdm.node_admin.<entity>.<verb>.via-call` for a single call,
+    /// `…via-workflow` for a workflow (`node.update.via-stop-workflow` and `…via-start-workflow` for
+    /// the two that change a node's status). Every op is spelled out so the name stays a literal.
     pub fn span(self) -> tracing::Span {
         match self {
-            Self::Get => tracing::info_span!("rdm.node_admin.node.get.via-call", op = "node.get", outcome = tracing::field::Empty),
-            Self::NameUpdate => tracing::info_span!("rdm.node_admin.node.name.update.via-call", op = "node.name.update", outcome = tracing::field::Empty),
-            Self::TopologyGet => tracing::info_span!("rdm.node_admin.node.topology.get.via-call", op = "node.topology.get", outcome = tracing::field::Empty),
-            Self::ConnectionsGet => tracing::info_span!("rdm.node_admin.node.connections.get.via-call", op = "node.connections.get", outcome = tracing::field::Empty),
-            Self::ConnectionsDelete => tracing::info_span!("rdm.node_admin.node.connections.delete.via-call", op = "node.connections.delete", outcome = tracing::field::Empty),
-            Self::ConfigGet => tracing::info_span!("rdm.node_admin.node.config.get.via-call", op = "node.config.get", outcome = tracing::field::Empty),
-            Self::ConfigUpdate => tracing::info_span!("rdm.node_admin.node.config.update.via-call", op = "node.config.update", outcome = tracing::field::Empty),
-            Self::TagsCreate => tracing::info_span!("rdm.node_admin.node.tags.create.via-call", op = "node.tags.create", outcome = tracing::field::Empty),
-            Self::TagsDelete => tracing::info_span!("rdm.node_admin.node.tags.delete.via-call", op = "node.tags.delete", outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.node.resolve.via-call", op = "node.get", outcome = tracing::field::Empty),
+            Self::NameUpdate => tracing::info_span!("rdm.node_admin.name.update.via-call", op = "node.name.update", outcome = tracing::field::Empty),
+            Self::TopologyGet => tracing::info_span!("rdm.node_admin.topology.resolve.via-call", op = "node.topology.get", outcome = tracing::field::Empty),
+            Self::ConnectionsGet => tracing::info_span!("rdm.node_admin.connection.resolve.via-call", op = "node.connections.get", outcome = tracing::field::Empty),
+            Self::ConnectionsDelete => tracing::info_span!("rdm.node_admin.connection.delete.via-call", op = "node.connections.delete", outcome = tracing::field::Empty),
+            Self::ConfigGet => tracing::info_span!("rdm.node_admin.config.resolve.via-call", op = "node.config.get", outcome = tracing::field::Empty),
+            Self::ConfigUpdate => tracing::info_span!("rdm.node_admin.config.update.via-call", op = "node.config.update", outcome = tracing::field::Empty),
+            Self::TagsCreate => tracing::info_span!("rdm.node_admin.tag.create.via-call", op = "node.tags.create", outcome = tracing::field::Empty),
+            Self::TagsDelete => tracing::info_span!("rdm.node_admin.tag.delete.via-call", op = "node.tags.delete", outcome = tracing::field::Empty),
             Self::Create => tracing::info_span!("rdm.node_admin.node.create.via-workflow", op = "node.create", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
-            Self::Stop => tracing::info_span!("rdm.node_admin.node.stop.via-workflow", op = "node.stop", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
-            Self::Start => tracing::info_span!("rdm.node_admin.node.start.via-workflow", op = "node.start", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
+            Self::Stop => tracing::info_span!("rdm.node_admin.node.update.via-stop-workflow", op = "node.stop", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
+            Self::Start => tracing::info_span!("rdm.node_admin.node.update.via-start-workflow", op = "node.start", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Delete => tracing::info_span!("rdm.node_admin.node.delete.via-workflow", op = "node.delete", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
-            Self::PrimaryUpdate => tracing::info_span!("rdm.node_admin.node.primary.update.via-call", op = "node.primary.update", outcome = tracing::field::Empty),
-            Self::FabricPrimaryUpdate => tracing::info_span!("rdm.node_admin.node.fabric-primary.update.via-call", op = "node.fabric-primary.update", outcome = tracing::field::Empty),
+            Self::PrimaryUpdate => tracing::info_span!("rdm.node_admin.primary.update.via-call", op = "node.primary.update", outcome = tracing::field::Empty),
+            Self::FabricPrimaryUpdate => tracing::info_span!("rdm.node_admin.primary.update.via-fabric-primary-call", op = "node.fabric-primary.update", outcome = tracing::field::Empty),
         }
     }
 }
@@ -109,11 +112,11 @@ impl MeshOp {
         }
     }
 
-    /// The span of one call: `rdm.node_admin.mesh.<verb>.via-call`.
+    /// The span of one call: `rdm.node_admin.mesh.resolve.via-…call`.
     pub fn span(self) -> tracing::Span {
         match self {
-            Self::Get => tracing::info_span!("rdm.node_admin.mesh.get.via-call", op = "mesh.get", outcome = tracing::field::Empty),
-            Self::NodesGet => tracing::info_span!("rdm.node_admin.mesh.get.via-nodes-call", op = "mesh.nodes.get", outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.mesh.resolve.via-call", op = "mesh.get", outcome = tracing::field::Empty),
+            Self::NodesGet => tracing::info_span!("rdm.node_admin.mesh.resolve.via-nodes-call", op = "mesh.nodes.get", outcome = tracing::field::Empty),
         }
     }
 }
@@ -143,13 +146,13 @@ impl FabricOp {
         }
     }
 
-    /// The span of one call: `rdm.node_admin.fabric.<verb>.via-call`.
+    /// The span of one call: `rdm.node_admin.fabric.resolve.via-…call`.
     pub fn span(self) -> tracing::Span {
         match self {
-            Self::Get => tracing::info_span!("rdm.node_admin.fabric.get.via-call", op = "fabric.get", outcome = tracing::field::Empty),
-            Self::NodesGet => tracing::info_span!("rdm.node_admin.fabric.get.via-nodes-call", op = "fabric.nodes.get", outcome = tracing::field::Empty),
-            Self::MeshesGet => tracing::info_span!("rdm.node_admin.fabric.get.via-meshes-call", op = "fabric.meshes.get", outcome = tracing::field::Empty),
-            Self::AtlasGet => tracing::info_span!("rdm.node_admin.fabric.get.via-atlas-call", op = "fabrics.atlas.get", outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.fabric.resolve.via-call", op = "fabric.get", outcome = tracing::field::Empty),
+            Self::NodesGet => tracing::info_span!("rdm.node_admin.fabric.resolve.via-nodes-call", op = "fabric.nodes.get", outcome = tracing::field::Empty),
+            Self::MeshesGet => tracing::info_span!("rdm.node_admin.fabric.resolve.via-meshes-call", op = "fabric.meshes.get", outcome = tracing::field::Empty),
+            Self::AtlasGet => tracing::info_span!("rdm.node_admin.fabric.resolve.via-atlas-call", op = "fabrics.atlas.get", outcome = tracing::field::Empty),
         }
     }
 }
@@ -179,7 +182,7 @@ impl BuildOp {
     pub fn span(self) -> tracing::Span {
         match self {
             Self::Create => tracing::info_span!("rdm.node_admin.build.create.via-call", op = "build.create", outcome = tracing::field::Empty),
-            Self::Get => tracing::info_span!("rdm.node_admin.build.get.via-call", op = "build.get", outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.build.resolve.via-call", op = "build.get", outcome = tracing::field::Empty),
             Self::Delete => tracing::info_span!("rdm.node_admin.build.delete.via-call", op = "build.delete", outcome = tracing::field::Empty),
         }
     }
@@ -222,17 +225,17 @@ impl NodeEvent {
         }
     }
 
-    /// The span of the frame that carried this event: `rdm.node_admin.node.<event>.via-reply-frame`.
+    /// The span of the frame that carried this event: `rdm.node_admin.<entity>.<verb>.via-<event>-frame`.
     pub fn span(self) -> tracing::Span {
         match self {
-            Self::Created => tracing::info_span!("rdm.node_admin.node.created.via-reply-frame", event = "node.created"),
-            Self::Started => tracing::info_span!("rdm.node_admin.node.started.via-reply-frame", event = "node.started"),
-            Self::Joined => tracing::info_span!("rdm.node_admin.node.joined.via-reply-frame", event = "node.joined"),
-            Self::ConnectionsDeleted => tracing::info_span!("rdm.node_admin.node.connections.deleted.via-reply-frame", event = "node.connections.deleted"),
-            Self::Stopped => tracing::info_span!("rdm.node_admin.node.stopped.via-reply-frame", event = "node.stopped"),
-            Self::Deleted => tracing::info_span!("rdm.node_admin.node.deleted.via-reply-frame", event = "node.deleted"),
-            Self::Updated => tracing::info_span!("rdm.node_admin.node.updated.via-reply-frame", event = "node.updated"),
-            Self::MeshLeft => tracing::info_span!("rdm.node_admin.node.mesh.left.via-reply-frame", event = "node.mesh.left"),
+            Self::Created => tracing::info_span!("rdm.node_admin.node.create.via-created-frame", event = "node.created"),
+            Self::Started => tracing::info_span!("rdm.node_admin.node.update.via-started-frame", event = "node.started"),
+            Self::Joined => tracing::info_span!("rdm.node_admin.node.update.via-joined-frame", event = "node.joined"),
+            Self::ConnectionsDeleted => tracing::info_span!("rdm.node_admin.connection.delete.via-deleted-frame", event = "node.connections.deleted"),
+            Self::Stopped => tracing::info_span!("rdm.node_admin.node.update.via-stopped-frame", event = "node.stopped"),
+            Self::Deleted => tracing::info_span!("rdm.node_admin.node.delete.via-deleted-frame", event = "node.deleted"),
+            Self::Updated => tracing::info_span!("rdm.node_admin.node.update.via-updated-frame", event = "node.updated"),
+            Self::MeshLeft => tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-frame", event = "node.mesh.left"),
         }
     }
 }

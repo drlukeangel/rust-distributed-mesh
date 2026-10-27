@@ -3837,7 +3837,7 @@ fn stop_evidence(spans: &[Value], rec: &Value) -> Value {
     let node = s(&rec["node"]);
     let id = s(&rec["node_id"]);
     let served: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-stop-node").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect();
-    let all: Vec<&Value> = named(spans, "rdm.node_admin.node.connections.delete.via-stop").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str() && sp["attributes"]["operation"] != "signal").collect();
+    let all: Vec<&Value> = named(spans, "rdm.node_admin.connection.delete.via-stop").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str() && sp["attributes"]["operation"] != "signal").collect();
     let cut: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str() && sp["attributes"]["operation"] != "signal").collect();
     let probes = named(spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).count();
     let mut decls: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| sp["attributes"]["sender"] == node.as_str()).collect();

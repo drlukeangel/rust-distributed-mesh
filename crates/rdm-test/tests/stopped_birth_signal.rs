@@ -141,7 +141,7 @@ fn a_stopped_births_signal_runs_no_second_stop() {
         let of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> {
             spans.0.lock().unwrap().values().filter(|(n, _, f)| n == name && f.get("node").map(String::as_str) == Some("mesh1.rpc.1")).map(|(_, _, f)| f.clone()).collect()
         };
-        let alls = of("rdm.node_admin.node.connections.delete.via-stop");
+        let alls = of("rdm.node_admin.connection.delete.via-stop");
         assert_eq!(alls.len(), 1, "its node.connections.delete {{ All }} ran once, at the command: {alls:#?}");
         let owed = of("rdm.node_rpc.status.update.via-owed-on-signal");
         assert!(owed.is_empty(), "a stopped birth owes nothing on its signal: {owed:#?}");

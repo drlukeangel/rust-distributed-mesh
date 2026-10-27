@@ -63,7 +63,7 @@ fn a_running_nodes_own_config_update_goes_to_the_node_admin_it_joined_through_an
         running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
     });
-    let calls: Vec<_> = cap.spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.config.update.via-call").map(|(_, _, f)| f.clone()).collect();
+    let calls: Vec<_> = cap.spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.config.update.via-call").map(|(_, _, f)| f.clone()).collect();
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0].get("outcome").map(String::as_str), Some("config-updated"), "{calls:?}");
 }

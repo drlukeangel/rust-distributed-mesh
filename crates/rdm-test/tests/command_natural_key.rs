@@ -262,7 +262,7 @@ fn an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receip
             matches!(&reply, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Deadline { last_in_flight: 1, .. }), .. }),
             "the Deadline receipt names the one call it last observed in flight, never zero: {reply:?}"
         );
-        let decided = spans_named(&spans, "rdm.node_admin.node.connections.delete.via-delete-connections");
+        let decided = spans_named(&spans, "rdm.node_admin.connection.delete.via-delete-connections");
         assert!(
             decided.iter().any(|f| f.get("deadline_ms").map(String::as_str) == Some("500") && f.get("receipt").map(String::as_str) == Some("deadline")),
             "the birth's node.connections.delete span names the bound it ran under and the Deadline receipt: {decided:?}"

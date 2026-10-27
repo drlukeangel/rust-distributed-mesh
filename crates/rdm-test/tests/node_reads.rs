@@ -302,11 +302,11 @@ fn node_tags_create_and_delete_set_a_nodes_tags_and_the_nodes_reads_answer_it_by
     });
     let named = |name: &str| spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, parent, f)| (parent.clone(), f.clone())).collect::<Vec<_>>();
     let at = |f: &std::collections::BTreeMap<String, String>, k: &str| f.get(k).cloned().unwrap_or_default();
-    let creates: Vec<(String, String, String)> = named("rdm.node_admin.node.tags.create.via-writer").iter().map(|(_, f)| (at(f, "outcome"), at(f, "arrived"), at(f, "already_carried"))).collect();
+    let creates: Vec<(String, String, String)> = named("rdm.node_admin.tag.create.via-writer").iter().map(|(_, f)| (at(f, "outcome"), at(f, "arrived"), at(f, "already_carried"))).collect();
     assert!(creates.contains(&("tags-created".into(), "rabbit,red".into(), "".into())), "the first create's labels arrived: {creates:?}");
     assert!(creates.contains(&("tags-created".into(), "".into(), "red".into())), "the second create wrote nothing new: {creates:?}");
     assert!(creates.iter().any(|(o, _, _)| o == "rejected-tags"), "the non-label create was refused: {creates:?}");
-    let deletes: Vec<(String, String, String)> = named("rdm.node_admin.node.tags.delete.via-writer").iter().map(|(_, f)| (at(f, "outcome"), at(f, "left"), at(f, "not_carried"))).collect();
+    let deletes: Vec<(String, String, String)> = named("rdm.node_admin.tag.delete.via-writer").iter().map(|(_, f)| (at(f, "outcome"), at(f, "left"), at(f, "not_carried"))).collect();
     assert!(deletes.contains(&("tags-deleted".into(), "rabbit".into(), "green".into())), "the named delete removed rabbit: {deletes:?}");
     assert!(deletes.contains(&("tags-deleted".into(), "red".into(), "".into())), "the All delete removed red: {deletes:?}");
     let reads = named("rdm.node_admin.node.serve.via-get");

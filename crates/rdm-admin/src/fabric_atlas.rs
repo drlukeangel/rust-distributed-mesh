@@ -591,7 +591,7 @@ impl crate::control_plane::ControlPlane {
     /// The atlas row of `path` Build acceptance reads (fabric-atlas.md R-FA1): from this admin's node
     /// rows once its nodes.storage is open, else from `observed` alone.
     pub(crate) async fn atlas_row(&self, path: &PathName, observed: &Topology) -> Result<Option<AtlasRow>, crate::control_plane::Refusal> {
-        let span = tracing::info_span!("rdm.node_admin.fabric.get.via-atlas-row", node = %path, birth_source = tracing::field::Empty, status = tracing::field::Empty, stopped = tracing::field::Empty, accepted = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.fabric.resolve.via-atlas-row", node = %path, birth_source = tracing::field::Empty, status = tracing::field::Empty, stopped = tracing::field::Empty, accepted = tracing::field::Empty);
         let row = match self.node_rows.get() {
             Some(rows) => self.atlas.row(path, &**rows, &*self.builds, observed).await.map_err(crate::control_plane::Refusal::Unavailable)?,
             None => self.atlas.observed_row(path, observed),

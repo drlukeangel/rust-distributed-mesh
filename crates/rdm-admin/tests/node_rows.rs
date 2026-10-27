@@ -434,7 +434,7 @@ fn a_take_over_on_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_on
 /// `renamed_from: mesh1.rpc.1` and never released `mesh1.rpc.1`. An admin taking mesh1's seat, whose
 /// view still lists the node at `mesh1.rpc.1`, rebuilds: it reads the node's row through the id index
 /// at `mesh1.rpc.9`, releases `mesh1.rpc.1`, and writes no row at the view's name. One
-/// `rdm.node_admin.node.name.update.via-pending-release` span says `released` with `moment=rebuild`;
+/// `rdm.node_admin.name.update.via-pending-release` span says `released` with `moment=rebuild`;
 /// the rebuild's `via-node-row` span for the node says `row-held-by-node`. What must NOT happen: the old
 /// key left held by the node, or a row put back at `mesh1.rpc.1`.
 #[test]
@@ -462,13 +462,13 @@ fn a_take_over_rebuild_finishes_a_lost_writers_pending_release() {
     });
     assert_eq!(old, None, "the rebuild released the old key the lost writer left held");
     assert_eq!(new.map(|r| r.renamed_from), Some(Some("mesh1.rpc.1".parse().unwrap())), "the row at the new key stands as written");
-    let releases = cap.spans_named("rdm.node_admin.node.name.update.via-pending-release");
+    let releases = cap.spans_named("rdm.node_admin.name.update.via-pending-release");
     let seen: Vec<_> = releases.iter().map(|s| (s["attributes"]["from"].as_str().unwrap_or("").to_string(), s["attributes"]["moment"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
     assert_eq!(seen, vec![("mesh1.rpc.1".to_string(), "rebuild".to_string(), "released".to_string())], "{releases:#?}");
     let rows = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let outcome = |name: &str| rows.iter().filter(|s| s["attributes"]["subject"] == name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
     assert_eq!(outcome("mesh1.rpc.1"), vec!["row-held-by-node"], "{rows:#?}");
-    println!("trace {}: rdm.node_admin.node.name.update.via-pending-release from=mesh1.rpc.1 to=mesh1.rpc.9 moment=rebuild outcome=released", releases[0]["trace_id"].as_str().unwrap_or(""));
+    println!("trace {}: rdm.node_admin.name.update.via-pending-release from=mesh1.rpc.1 to=mesh1.rpc.9 moment=rebuild outcome=released", releases[0]["trace_id"].as_str().unwrap_or(""));
 }
 
 type Rebuilt = (BTreeMap<String, Option<NodeRow>>, Option<NodeStatus>, NodeId, NodeId, NodeId, NodeId, String);

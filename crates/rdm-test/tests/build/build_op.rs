@@ -188,7 +188,7 @@ async fn a_stop_over_the_build_family_is_one_call_that_pushes_every_step_frame_a
     assert_eq!(s(&dispatch["attributes"]["node"]), "mesh1.admin.1");
     assert_eq!(s(&dispatch["attributes"]["executor"]), "mesh2.admin.1");
     assert_eq!(dispatch["trace_id"], reconcile["trace_id"], "the run is in the call's trace");
-    assert!(spans_named(&spans, "rdm.node_admin.build.get.via-call").is_empty(), "nothing read a Build to learn a step");
+    assert!(spans_named(&spans, "rdm.node_admin.build.resolve.via-call").is_empty(), "nothing read a Build to learn a step");
     assert!(
         spans_named(&spans, "rdm.node_admin.build.update.via-rest").into_iter().chain(spans_named(&spans, "rdm.node_admin.build.create.via-rest")).all(|sp| s(&sp["attributes"]["build_id"]) != *build),
         "the Build was not accepted through a route"
@@ -964,7 +964,7 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
         assert_eq!(after["status"], "connections-deleting", "a completed closure leaves connections-deleting");
         estate.stop().await;
         let spans = estate.spans();
-        let executions: Vec<_> = named(&spans, "rdm.node_admin.node.connections.delete.via-delete-connections").into_iter().filter(|s| s["attributes"]["node"] == node.to_string()).collect();
+        let executions: Vec<_> = named(&spans, "rdm.node_admin.connection.delete.via-delete-connections").into_iter().filter(|s| s["attributes"]["node"] == node.to_string()).collect();
         assert_eq!(executions.len(), if cut == "DeleteConnections" { 2 } else { 1 }, "an uncertain closure runs again; a receipted closure never runs again: {executions:?}");
         let records: Vec<_> = named(&spans, "rdm.node_admin.node.update.via-connections-deleting").into_iter().filter(|s| s["attributes"]["node"] == node.to_string()).collect();
         assert_eq!(records.len(), executions.len());

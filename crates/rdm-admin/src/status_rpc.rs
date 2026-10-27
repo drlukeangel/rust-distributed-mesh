@@ -851,13 +851,13 @@ impl StatusAuthority {
     /// `node.mesh.left` for its rename (node-name-update.md Precondition). The birth's own answer is returned whatever it is
     /// (`BusyHoldingConnections` naming what it still holds, a stale incarnation); a refusal this
     /// mesh-primary decides is its own reply, and nothing is sent; a call that ended in no reply is
-    /// `Err` naming how it ended. One `rdm.node_admin.node.mesh.update.via-mesh-primary` span.
+    /// `Err` naming how it ended. One `rdm.node_admin.node.remove.via-mesh-leave` span.
     pub async fn carry_mesh_leave(&self, node_id: &NodeId, incarnation: &IncarnationId, build_id: &str, attempt: u32, operation: &str) -> Result<StatusReply, String> {
         use tracing::Instrument;
         let view = self.topology.read().await.clone();
         let me_name = self.held_name_in(&view);
         let span = tracing::info_span!(
-            "rdm.node_admin.node.mesh.update.via-mesh-primary",
+            "rdm.node_admin.node.remove.via-mesh-leave",
             node = %me_name, subject_id = %node_id, subject = tracing::field::Empty, operation = %operation,
             left = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
         );
@@ -1741,7 +1741,7 @@ impl StatusAuthority {
         use tracing::Instrument;
         let me_name = self.held_name_in(view);
         let span = tracing::info_span!(
-            "rdm.node_admin.node.connections.delete.via-mesh-primary",
+            "rdm.node_admin.connection.delete.via-mesh-primary",
             node = %me_name, subject_id = %node_id, subject = tracing::field::Empty, sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(),
             scope = scope.name(), status_at_cut = tracing::field::Empty, carried = tracing::field::Empty, closed = tracing::field::Empty, held = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
         );

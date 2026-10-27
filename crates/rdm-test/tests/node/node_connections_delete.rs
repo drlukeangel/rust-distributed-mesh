@@ -136,7 +136,7 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
     let early: Vec<&&Value> = records.iter().filter(|sp| start(sp) < first_call).collect();
     assert!(early.is_empty(), "nothing is recorded for {NODE} before its command leaves: {early:#?}");
     let command = calls.iter().find(|sp| s(&sp["attributes"]["op"]) == "34").unwrap_or_else(|| panic!("the command rides NodeCommand op 0x22 (34): {calls:#?}"));
-    let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.connections.delete.via-connections-deleting").expect("the node reports its admission on the stream");
+    let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.connection.delete.via-connections-deleting").expect("the node reports its admission on the stream");
     let recorded = records.iter().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting").expect("the mesh-primary records connections-deleting");
     assert!(!s(&recorded["attributes"]["invocation_id"]).is_empty(), "the record names the invocation that reported it: {recorded}");
     assert_eq!(s(&recorded["attributes"]["seq"]), "1", "the 0x22 progress position, not a state-derived duplicate decision: {recorded}");
@@ -186,7 +186,7 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
     let spans = estate.spans();
     let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     for scope in ["connections", "all"] {
-        let carried = named(&spans, "rdm.node_admin.node.connections.delete.via-mesh-primary")
+        let carried = named(&spans, "rdm.node_admin.connection.delete.via-mesh-primary")
             .into_iter()
             .find(|sp| s(&sp["attributes"]["node"]) == me && s(&sp["attributes"]["subject"]) == me && s(&sp["attributes"]["scope"]) == scope)
             .cloned()
@@ -194,12 +194,12 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
         assert_eq!((s(&carried["attributes"]["carried"]).as_str(), s(&carried["attributes"]["outcome"]).as_str()), ("in-process", "connections-deleted"), "{carried}");
         let trace = s(&carried["trace_id"]);
         let run: Vec<&Value> = spans.iter().filter(|sp| s(&sp["trace_id"]) == trace).collect();
-        let executed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.connections.delete.via-delete-connections" && s(&sp["attributes"]["node"]) == me).unwrap_or_else(|| panic!("{me}'s own birth runs the {scope} command: trace {trace}"));
+        let executed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.connection.delete.via-delete-connections" && s(&sp["attributes"]["node"]) == me).unwrap_or_else(|| panic!("{me}'s own birth runs the {scope} command: trace {trace}"));
         assert_eq!(s(&executed["attributes"]["scope"]), scope, "{executed}");
         let dialled: Vec<&&Value> = run.iter().filter(|sp| sp["name"] == "rdm.node_rpc.request.update.via-call" && s(&sp["attributes"]["op"]) == "34").collect();
         assert!(dialled.is_empty(), "no op 0x22 call leaves {me} for its own birth: {dialled:#?}");
         if scope == "all" {
-            let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.connections.delete.via-connections-deleting" && s(&sp["attributes"]["node"]) == me).expect("the primary's own birth reports its admission");
+            let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.connection.delete.via-connections-deleting" && s(&sp["attributes"]["node"]) == me).expect("the primary's own birth reports its admission");
             let recorded = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting" && s(&sp["attributes"]["node"]) == me).expect("the primary records its own connections-deleting");
             assert_eq!((s(&recorded["attributes"]["recorder"]).as_str(), s(&recorded["attributes"]["reported_by"]).as_str()), (me.as_str(), "node"), "{recorded}");
             let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleted" && s(&sp["attributes"]["node"]) == me).expect("the primary holds its own completion");

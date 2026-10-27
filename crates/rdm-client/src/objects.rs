@@ -474,41 +474,57 @@ impl Builds {
 mod tests {
     use super::*;
 
-    /// CONTRACT: each op has one canonical name, rendered the same way everywhere: the name is
-    /// `node.<verb>`, the span of a single call is `rdm.node_admin.<name>.via-call` and of a
-    /// workflow `…via-workflow`, and an event's frame span is `…<event>.via-reply-frame`.
+    /// CONTRACT: each op and each step event has one canonical name and one span, a literal of five
+    /// segments (telemetry-patterns.md §8): the op `node.connections.delete` spans
+    /// `rdm.node_admin.connection.delete.via-call`, a workflow `…via-workflow` (or
+    /// `node.update.via-<op>-workflow` for stop and start), and an event's frame
+    /// `…via-<event>-frame`. Every op and event opens exactly the span this table names.
     #[test]
-    fn one_name_per_op_renders_the_same_in_the_name_and_the_span() {
+    fn one_name_per_op_opens_its_one_literal_span() {
         use rdm_core::names::NodeEvent;
         let (_g, spans) = capture_spans();
-        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Delete, NodeOp::PrimaryUpdate, NodeOp::FabricPrimaryUpdate] {
-            drop(op.span());
-        }
-        for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted] {
-            drop(e.span());
-        }
-        for b in [BuildOp::Create, BuildOp::Get, BuildOp::Delete] {
-            drop(b.span());
-        }
-        drop(MeshOp::Get.span());
-        drop(FabricOp::Get.span());
+        let ops: [(tracing::Span, &str); 15] = [
+            (NodeOp::Get.span(), "rdm.node_admin.node.resolve.via-call"),
+            (NodeOp::NameUpdate.span(), "rdm.node_admin.name.update.via-call"),
+            (NodeOp::TopologyGet.span(), "rdm.node_admin.topology.resolve.via-call"),
+            (NodeOp::ConnectionsGet.span(), "rdm.node_admin.connection.resolve.via-call"),
+            (NodeOp::ConnectionsDelete.span(), "rdm.node_admin.connection.delete.via-call"),
+            (NodeOp::ConfigGet.span(), "rdm.node_admin.config.resolve.via-call"),
+            (NodeOp::ConfigUpdate.span(), "rdm.node_admin.config.update.via-call"),
+            (NodeOp::TagsCreate.span(), "rdm.node_admin.tag.create.via-call"),
+            (NodeOp::TagsDelete.span(), "rdm.node_admin.tag.delete.via-call"),
+            (NodeOp::Create.span(), "rdm.node_admin.node.create.via-workflow"),
+            (NodeOp::Stop.span(), "rdm.node_admin.node.update.via-stop-workflow"),
+            (NodeOp::Start.span(), "rdm.node_admin.node.update.via-start-workflow"),
+            (NodeOp::Delete.span(), "rdm.node_admin.node.delete.via-workflow"),
+            (NodeOp::PrimaryUpdate.span(), "rdm.node_admin.primary.update.via-call"),
+            (NodeOp::FabricPrimaryUpdate.span(), "rdm.node_admin.primary.update.via-fabric-primary-call"),
+        ];
+        let events: [(tracing::Span, &str); 8] = [
+            (NodeEvent::Created.span(), "rdm.node_admin.node.create.via-created-frame"),
+            (NodeEvent::Joined.span(), "rdm.node_admin.node.update.via-joined-frame"),
+            (NodeEvent::Started.span(), "rdm.node_admin.node.update.via-started-frame"),
+            (NodeEvent::ConnectionsDeleted.span(), "rdm.node_admin.connection.delete.via-deleted-frame"),
+            (NodeEvent::Stopped.span(), "rdm.node_admin.node.update.via-stopped-frame"),
+            (NodeEvent::Deleted.span(), "rdm.node_admin.node.delete.via-deleted-frame"),
+            (NodeEvent::Updated.span(), "rdm.node_admin.node.update.via-updated-frame"),
+            (NodeEvent::MeshLeft.span(), "rdm.node_admin.node.remove.via-mesh-left-frame"),
+        ];
+        let reads: [(tracing::Span, &str); 9] = [
+            (BuildOp::Create.span(), "rdm.node_admin.build.create.via-call"),
+            (BuildOp::Get.span(), "rdm.node_admin.build.resolve.via-call"),
+            (BuildOp::Delete.span(), "rdm.node_admin.build.delete.via-call"),
+            (MeshOp::Get.span(), "rdm.node_admin.mesh.resolve.via-call"),
+            (MeshOp::NodesGet.span(), "rdm.node_admin.mesh.resolve.via-nodes-call"),
+            (FabricOp::Get.span(), "rdm.node_admin.fabric.resolve.via-call"),
+            (FabricOp::NodesGet.span(), "rdm.node_admin.fabric.resolve.via-nodes-call"),
+            (FabricOp::MeshesGet.span(), "rdm.node_admin.fabric.resolve.via-meshes-call"),
+            (FabricOp::AtlasGet.span(), "rdm.node_admin.fabric.resolve.via-atlas-call"),
+        ];
+        let want: Vec<&str> = ops.iter().chain(&events).chain(&reads).map(|(_, n)| *n).collect();
+        drop((ops, events, reads));
         let names = spans.lock().unwrap().clone();
-        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Delete, NodeOp::PrimaryUpdate, NodeOp::FabricPrimaryUpdate] {
-            let via = if op.is_workflow() { "via-workflow" } else { "via-call" };
-            let want = format!("rdm.node_admin.{}.{via}", op.name());
-            assert!(names.contains(&want), "{want} missing from {names:?}");
-        }
-        for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted] {
-            let want = format!("rdm.node_admin.{}.via-reply-frame", e.name());
-            assert!(names.contains(&want), "{want} missing from {names:?}");
-        }
-        for b in [BuildOp::Create, BuildOp::Get, BuildOp::Delete] {
-            let want = format!("rdm.node_admin.{}.via-call", b.name());
-            assert!(names.contains(&want), "{want} missing from {names:?}");
-        }
-        for want in [format!("rdm.node_admin.{}.via-call", MeshOp::Get.name()), format!("rdm.node_admin.{}.via-call", FabricOp::Get.name())] {
-            assert!(names.contains(&want), "{want} missing from {names:?}");
-        }
+        assert_eq!(names, want, "each op and event opens exactly its one span, in order");
     }
 
     /// A subscriber that records the name of every span created while the guard lives.

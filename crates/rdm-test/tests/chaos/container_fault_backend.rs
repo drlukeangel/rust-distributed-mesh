@@ -798,6 +798,15 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let silent_by = |route: &str| silent_resolves.iter().filter(|sp| sp["attributes"]["route"] == route).count();
     let reads_n = silence.len();
     let isolated_set: BTreeSet<&str> = isolated_names.iter().map(String::as_str).collect();
+    // node.connections.delete's spans, each a mutation of an isolated node as the node's own spans are.
+    const CONNECTIONS_DELETE: [&str; 6] = [
+        "rdm.node_admin.connection.delete.via-call",
+        "rdm.node_admin.connection.delete.via-connections-deleting",
+        "rdm.node_admin.connection.delete.via-delete-connections",
+        "rdm.node_admin.connection.delete.via-mesh-primary",
+        "rdm.node_admin.connection.delete.via-stop",
+        "rdm.node_admin.connection.delete.via-deleted-frame",
+    ];
     let mutations: Vec<Value> = spans
         .iter()
         .filter(|sp| start(sp) > cut_at && start(sp) < healed_at)
@@ -807,6 +816,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
             // A node-row step that found the row held wrote nothing: a read, never a create.
             let wrote = sp["attributes"]["outcome"] != "row-held-by-node";
             (n.starts_with("rdm.node_admin.node.") && (n.contains(".create.") || n.contains(".delete.") || n.contains(".retire.") || n.contains(".update.via-build")) && on_isolated && wrote)
+                || (CONNECTIONS_DELETE.contains(&n) && on_isolated && wrote)
                 || (n == "rdm.node_admin.deployment.update.via-pipeline" && on_isolated)
                 || (n == "rdm.node_admin.build.update.via-reconcile" && sp["attributes"]["build_id"] == fabric_build.as_str())
         })

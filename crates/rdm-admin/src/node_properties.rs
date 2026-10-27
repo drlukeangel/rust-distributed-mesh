@@ -72,12 +72,12 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
     }
     let span = match &change {
         Change::Create(labels) => tracing::info_span!(
-            "rdm.node_admin.node.tags.create.via-writer",
+            "rdm.node_admin.tag.create.via-writer",
             node = %me, subject = tracing::field::Empty, node_id = %node_id, incarnation_id = %incarnation.as_str(), labels = %crate::node_rows::labels(labels),
             arrived = tracing::field::Empty, already_carried = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
         ),
         Change::Delete(scope) => tracing::info_span!(
-            "rdm.node_admin.node.tags.delete.via-writer",
+            "rdm.node_admin.tag.delete.via-writer",
             node = %me, subject = tracing::field::Empty, node_id = %node_id, incarnation_id = %incarnation.as_str(), scope = scope.name(), labels = %match scope { TagScope::All => String::new(), TagScope::Labels(l) => crate::node_rows::labels(l) },
             left = tracing::field::Empty, not_carried = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
         ),

@@ -553,8 +553,8 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
     assert_eq!(call.len(), 1, "{spans:?}");
     assert_eq!(call[0]["attributes"]["outcome"], "failed");
     assert_eq!(call[0]["attributes"]["failed_step"], "node.create");
-    for never in ["created", "joined", "started"] {
-        assert!(spans_named(&spans, &format!("rdm.node_admin.node.{never}.via-reply-frame")).is_empty(), "node.{never} is never emitted");
+    for (never, span) in [("created", "rdm.node_admin.node.create.via-created-frame"), ("joined", "rdm.node_admin.node.update.via-joined-frame"), ("started", "rdm.node_admin.node.update.via-started-frame")] {
+        assert!(spans_named(&spans, span).is_empty(), "node.{never} is never emitted");
     }
     let bind_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForBind").collect();
     assert_eq!(bind_step.len(), 1, "the pipeline ran the bind wait once");
@@ -1258,7 +1258,7 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
     let lost: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["outcome"] == "executor-lost").collect();
     assert_eq!(lost.len(), 1, "the first attempt's executor was lost: {spans:?}");
     assert_eq!(spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").len(), 1, "its departure was proven before the successor's attempt");
-    assert_eq!(spans_named(&spans, "rdm.node_admin.node.connections.deleted.via-reply-frame").len(), 1, "node.connections.deleted was delivered once");
+    assert_eq!(spans_named(&spans, "rdm.node_admin.connection.delete.via-deleted-frame").len(), 1, "node.connections.deleted was delivered once");
 }
 
 /// CONTRACT: a Build call asked of a node-admin that does not hold the fabric-primary seat is refused

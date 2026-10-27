@@ -1382,7 +1382,7 @@ pub(crate) async fn finish_release(storage: &dyn NodesStorage, _written: &Writte
 }
 
 /// `node_id`, holding `to`, lets go of `from` when `from`'s claim still names it: one
-/// `rdm.node_admin.node.name.update.via-pending-release` span when it did or could not.
+/// `rdm.node_admin.name.update.via-pending-release` span when it did or could not.
 async fn release_source(storage: &dyn NodesStorage, me: &PathName, node_id: &NodeId, to: &PathName, from: &PathName, moment: &'static str) -> Result<bool, String> {
     let still = match storage.name_claim(from).await {
         Ok(held) => held.as_ref() == Some(node_id),
@@ -1408,7 +1408,7 @@ fn pending_release_span(me: &PathName, node_id: &NodeId, to: &PathName, from: &P
         Ok(false) => ("not-held", format!("{node_id} no longer held {from} when its release was made")),
         Err(why) => ("release-refused", why.clone()),
     };
-    tracing::info_span!("rdm.node_admin.node.name.update.via-pending-release", node = %me, node_id = %node_id, to = %to, from = %from, moment, outcome, detail = %detail, "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.name.update.via-pending-release", node = %me, node_id = %node_id, to = %to, from = %from, moment, outcome, detail = %detail, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("a rename's pending release was met by its writer"));
     detail
 }

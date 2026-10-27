@@ -191,7 +191,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.update.via-apply-node-name").map(|(_, _, f)| f.clone()).collect();
     assert_eq!(applies.iter().map(|f| f.get("outcome").cloned().unwrap_or_default()).collect::<std::collections::BTreeSet<_>>(), ["applied".to_string(), "busy".to_string()].into(), "{applies:#?}");
     let cuts: Vec<std::collections::BTreeMap<String, String>> =
-        spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.connections.delete.via-delete-connections").map(|(_, _, f)| f.clone()).collect();
+        spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.connection.delete.via-delete-connections").map(|(_, _, f)| f.clone()).collect();
     assert!(cuts.iter().any(|f| f.get("scope").map(String::as_str) == Some("all") && f.get("held").map(String::as_str) == Some("0") && f.get("outcome").map(String::as_str) == Some("connections-deleted")), "{cuts:#?}");
 }
 

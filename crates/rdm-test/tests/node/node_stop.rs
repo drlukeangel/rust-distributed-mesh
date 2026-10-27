@@ -147,7 +147,7 @@ async fn stop_then_start(test: &str, node: &str) {
     let of_stop = |name: &str| -> Vec<&Value> { of_node(name).into_iter().filter(|sp| sp["attributes"]["operation"] != "signal").collect() };
     let stop_span = of_node("rdm.node_admin.status.update.via-stop-node");
     assert_eq!(stop_span.len(), 1, "{stop_span:?}");
-    assert_eq!(of_stop("rdm.node_admin.node.connections.delete.via-stop").len(), 1, "the stop runs its node.connections.delete {{ All }} once");
+    assert_eq!(of_stop("rdm.node_admin.connection.delete.via-stop").len(), 1, "the stop runs its node.connections.delete {{ All }} once");
     assert_eq!(of_stop("rdm.node_admin.node.update.via-stop-transport-cut").len(), 1, "then cuts its transport once");
     assert_eq!(of_node("rdm.node_admin.node.update.via-node-stopped").len(), 1, "the mesh primary publishes NodeStopped once");
     // i146 Q36, the control: the stop answered within its bound is recorded in the birth's declared
@@ -319,7 +319,7 @@ async fn a_stop_of_a_node_already_connections_deleted_and_left_answers_each_prim
     );
     let leaving: Vec<String> = named(&spans, "rdm.node.mesh.update.via-leaving").into_iter().filter(|sp| attr(sp, "node") == NODE).map(|sp| attr(sp, "operation")).collect();
     assert_eq!(leaving, [leave.clone()], "the node left its mesh once, at the leave; the stop leaves nothing again");
-    let closures: Vec<String> = named(&spans, "rdm.node_admin.node.connections.delete.via-stop").into_iter().filter(|sp| attr(sp, "node") == NODE && attr(sp, "operation") == stop).map(|sp| attr(sp, "outcome")).collect();
+    let closures: Vec<String> = named(&spans, "rdm.node_admin.connection.delete.via-stop").into_iter().filter(|sp| attr(sp, "node") == NODE && attr(sp, "operation") == stop).map(|sp| attr(sp, "outcome")).collect();
     assert_eq!(closures, ["already-deleted"], "the stop closes nothing again: it answers the receipt its connections delete established");
 }
 
@@ -386,7 +386,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
 
     estate.stop().await;
     let spans = estate.spans();
-    let update = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).expect("the mesh-primary decided the node.name.update");
+    let update = named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).expect("the mesh-primary decided the node.name.update");
     assert_eq!(
         (s(&update["attributes"]["outcome"]), s(&update["attributes"]["traffic"]), s(&update["attributes"]["connections"]), s(&update["attributes"]["from"])),
         ("rejected-admitting-connections".into(), "Stopped".into(), "stopped".into(), path.to_string()),
@@ -938,7 +938,7 @@ async fn a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_mo
     let spans = estate.spans();
     let rejected: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().filter(|sp| attr(sp, "detail") == q7).collect();
     assert_eq!(rejected.len(), 1, "one refusal per call: {rejected:#?}");
-    for name in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.node.connections.delete.via-stop", "rdm.node_admin.primary.update.via-command", "rdm.node_admin.primary.update.via-update-primary"] {
+    for name in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.connection.delete.via-stop", "rdm.node_admin.primary.update.via-command", "rdm.node_admin.primary.update.via-update-primary"] {
         // The estate's teardown runs the stop workflow on its signal (`signal`): not the refused stop.
         let ran: Vec<&Value> = named(&spans, name).into_iter().filter(|sp| attr(sp, "operation") != "signal").collect();
         assert!(ran.is_empty(), "the refused stop ran {name}: {ran:#?}");
@@ -1259,7 +1259,7 @@ async fn a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped() {
     // The signalled admin's spans are its birth's, before its process ended: a recovery at the same
     // name is another birth.
     let of = |name: &str, node: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "node") == node && start_ns(sp) <= ended).collect() };
-    let deleted = of("rdm.node_admin.node.connections.delete.via-stop", &member);
+    let deleted = of("rdm.node_admin.connection.delete.via-stop", &member);
     assert_eq!(deleted.len(), 1, "{member}'s signal ran node.connections.delete {{ All }} once as the stop's: {deleted:#?}");
     assert_eq!(attr(deleted[0], "operation"), "signal", "{:#?}", deleted[0]);
     let owed = of("rdm.node_rpc.status.update.via-owed-on-signal", &member);
@@ -1332,7 +1332,7 @@ fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps()
         let of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans_of(&spans, name, NODE).into_iter().filter(|f| f.get("operation").map(String::as_str) == Some(NODE_START)).collect() };
         let served = spans_of(&spans, "rdm.node_admin.status.update.via-start-node", NODE);
         assert!(served.iter().any(|f| f.get("outcome").map(String::as_str) == Some("start-failed") && f.get("failed_step").map(String::as_str) == Some("node.pre-node-ready")), "the start is served once, failed at node.pre-node-ready: {served:#?}");
-        let deleted = of("rdm.node_admin.node.connections.delete.via-stop");
+        let deleted = of("rdm.node_admin.connection.delete.via-stop");
         assert_eq!(deleted.len(), 1, "the failed start ran node.connections.delete {{ All }} as the stop's, naming the start: {deleted:#?}");
         let leaving = of("rdm.node.mesh.update.via-leaving");
         assert_eq!(leaving.len(), 1, "the failed start left the mesh once, naming the start: {leaving:#?}");

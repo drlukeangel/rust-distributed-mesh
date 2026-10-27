@@ -124,8 +124,8 @@ fn each_status_object_sends_todays_request_and_returns_the_typed_reply() {
         ]
     );
     assert!(replies.iter().all(|r| *r == StatusReply::Applied));
-    for verb in ["get"] {
-        let spans = cap.spans(&format!("rdm.node_admin.node.{verb}.via-call"));
+    for (verb, span) in [("get", "rdm.node_admin.node.resolve.via-call")] {
+        let spans = cap.spans(span);
         assert_eq!(spans.len(), 1, "node.{verb} left one span");
         assert_eq!(spans[0]["attributes"]["outcome"], "applied");
     }
@@ -152,9 +152,9 @@ fn a_status_object_distinguishes_a_refusal_from_not_sent_and_indeterminate() {
         let indeterminate = NodeRpc::new(&slow.client).get(&slow.birth, &opts).await.unwrap_err();
         assert!(matches!(indeterminate, CallEnd::Indeterminate { .. }), "{indeterminate:?}");
     });
-    let refused = cap.spans("rdm.node_admin.node.get.via-call");
+    let refused = cap.spans("rdm.node_admin.node.resolve.via-call");
     assert!(refused.iter().any(|s| s["attributes"]["outcome"] == "rejected-invalid-node-transition"), "{refused:?}");
-    let get: Vec<String> = cap.spans("rdm.node_admin.node.get.via-call").iter().map(|s| s["attributes"]["outcome"].as_str().unwrap().to_string()).collect();
+    let get: Vec<String> = cap.spans("rdm.node_admin.node.resolve.via-call").iter().map(|s| s["attributes"]["outcome"].as_str().unwrap().to_string()).collect();
     assert!(get.contains(&"not-sent".to_string()) && get.contains(&"indeterminate".to_string()), "{get:?}");
 }
 
@@ -172,5 +172,5 @@ fn the_topology_object_returns_every_frame_of_the_read() {
     assert_eq!(asked, vec![TopologyRequest::GetTopology { mesh: Some("mesh1".into()), since: None }]);
     assert_eq!(frames.len(), 3, "{frames:?}");
     assert!(matches!(frames[0], TopologyReply::Started) && matches!(frames[2], TopologyReply::End { meshes: 1 }));
-    assert_eq!(cap.spans("rdm.node_admin.node.topology.get.via-call")[0]["attributes"]["outcome"], "read");
+    assert_eq!(cap.spans("rdm.node_admin.topology.resolve.via-call")[0]["attributes"]["outcome"], "read");
 }

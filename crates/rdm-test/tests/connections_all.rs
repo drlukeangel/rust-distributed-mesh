@@ -252,7 +252,7 @@ fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_a
         assert_eq!(seams.connections.held_routes().await.into_iter().map(|r| r.id).collect::<Vec<_>>(), held, "the node's connection is still held");
         let again = ping_admin(&seams, &admin, &CallOptions::default()).await;
         assert!(matches!(again, RpcOutcome::Reply(_)), "no block on new application work is set: {again:?}");
-        for name in ["rdm.node_admin.node.connections.delete.via-delete-connections", "rdm.node_admin.node.connections.delete.via-connections-deleting", "rdm.node_rpc.connection.reject.via-admission-block"] {
+        for name in ["rdm.node_admin.connection.delete.via-delete-connections", "rdm.node_admin.connection.delete.via-connections-deleting", "rdm.node_rpc.connection.reject.via-admission-block"] {
             assert_eq!(named(&spans, name), 0, "nothing of a closure ran: {name}");
         }
         // No recorded state: the node's next digest, published after the request, still says ReadyForTraffic.

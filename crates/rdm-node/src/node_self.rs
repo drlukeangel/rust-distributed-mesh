@@ -695,7 +695,7 @@ impl NodeSelf {
             move || async move {
                 // The span opens before the report leaves, so it starts before whatever the report causes
                 // (an in-process recorder may take it before the send returns).
-                let span = tracing::info_span!("rdm.node_admin.node.connections.delete.via-connections-deleting", node = %node, commander = %commander_name, outcome = tracing::field::Empty, "otel.kind" = "internal");
+                let span = tracing::info_span!("rdm.node_admin.connection.delete.via-connections-deleting", node = %node, commander = %commander_name, outcome = tracing::field::Empty, "otel.kind" = "internal");
                 let sent = sink.lock().await.progress(rdm_core::reply::node_command::connections_deleting(node_id, incarnation)).instrument(span.clone()).await;
                 let outcome = match &sent {
                     Ok(()) => "sent".to_string(),
@@ -706,7 +706,7 @@ impl NodeSelf {
             }
         };
         let span = tracing::info_span!(
-            "rdm.node_admin.node.connections.delete.via-delete-connections",
+            "rdm.node_admin.connection.delete.via-delete-connections",
             node = %self.held_name(), commander = %named(commander), scope = scope.name(), named = match scope { ConnectionScope::All => 0, ConnectionScope::Connections(ids) => ids.len() },
             deadline_ms = tracing::field::Empty, closed = tracing::field::Empty, not_open = tracing::field::Empty, held = tracing::field::Empty, receipt = tracing::field::Empty,
             outcome = tracing::field::Empty, reason = tracing::field::Empty, "otel.kind" = "internal"
@@ -1096,7 +1096,7 @@ impl NodeSelf {
         // `StopConnectionsDeleted` (Q205). A birth already connections-deleted (an `All` completed
         // `Established` since it last started) answers both at once with that receipt and closes
         // nothing again.
-        let closure = tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %operation, commander = %named(commander), outcome = tracing::field::Empty);
+        let closure = tracing::info_span!("rdm.node_admin.connection.delete.via-stop", node = %self.held_name(), operation = %operation, commander = %named(commander), outcome = tracing::field::Empty);
         let already = self.completed.lock().unwrap().deleted.clone();
         let deleting = Mutex::new(None);
         let ack = |progress: &Option<CommandProgress>| {

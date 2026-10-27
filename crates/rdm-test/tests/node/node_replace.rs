@@ -1036,10 +1036,10 @@ async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
     let spans = estate.spans();
     let of = |name: &str, id: &rdm_core::NodeId| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == id.to_string()).cloned().collect() };
     // The predecessor: its connections deleted and its mesh left, then renamed live, then stopped.
-    let left = named(&spans, "rdm.node_admin.node.mesh.update.via-mesh-primary").into_iter().filter(|sp| s(&sp["attributes"]["subject_id"]) == before.node_id.to_string()).cloned().collect::<Vec<_>>();
+    let left = named(&spans, "rdm.node_admin.node.remove.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["subject_id"]) == before.node_id.to_string()).cloned().collect::<Vec<_>>();
     assert_eq!(left.len(), 1, "the mesh-primary carried the predecessor's leave once: {left:#?}");
     assert_eq!((s(&left[0]["attributes"]["subject"]), s(&left[0]["attributes"]["outcome"])), (NODE.to_string(), "mesh-left".to_string()), "{:#}", left[0]);
-    let renames1 = of("rdm.node_admin.node.name.update.via-writer", &before.node_id);
+    let renames1 = of("rdm.node_admin.name.update.via-writer", &before.node_id);
     assert_eq!(renames1.len(), 1, "{renames1:#?}");
     let r1 = &renames1[0];
     assert_eq!(
@@ -1061,7 +1061,7 @@ async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
     assert!(end(&stopped1[0]) <= start(&claim), "the successor is created once the predecessor is stopped as .old");
     let join = of("rdm.node_admin.node.update.via-join", &successor.node_id).into_iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "installed").collect::<Vec<_>>();
     assert!(join.iter().all(|j| s(&j["attributes"]["admitted_as"]) == NODE) && !join.is_empty(), "the successor's join is admitted under {NODE} and no other name: {join:#?}");
-    assert!(of("rdm.node_admin.node.name.update.via-writer", &successor.node_id).is_empty(), "the successor is never renamed");
+    assert!(of("rdm.node_admin.name.update.via-writer", &successor.node_id).is_empty(), "the successor is never renamed");
     // The predecessor's delete at `.old`: the provider's exit proof, NodeDeleted once, the Deleted row.
     let deleted = of("rdm.node_admin.node.delete.via-node-deleted", &before.node_id);
     assert_eq!(deleted.len(), 1, "NodeDeleted once for the predecessor: {deleted:#?}");
@@ -1133,7 +1133,7 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
         (mesh_primary.clone(), node_path.to_string(), "row-seeded".to_string(), s(&before["node_id"]), "1".to_string(), "rabbit".to_string()),
         "the mesh-primary puts the successor at {node_path} with the retained row's config and tag: {claim}"
     );
-    assert!(named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().all(|sp| sp["attributes"]["node_id"] != after["node_id"]), "the successor is never renamed");
+    assert!(named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().all(|sp| sp["attributes"]["node_id"] != after["node_id"]), "the successor is never renamed");
     let mark = named(&spans, "rdm.node_admin.node.update.via-inherited-row").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).expect("the retained row's mark").clone();
     let m = &mark["attributes"];
     assert_eq!((s(&m["subject"]), s(&m["inherited_by"]), s(&m["tags"]), s(&m["outcome"])), (old_name.clone(), s(&after["node_id"]), "rabbit".to_string(), "inherited".to_string()), "the retained row says who inherited it and keeps its tag: {mark}");
@@ -1226,13 +1226,13 @@ async fn a_replace_rolled_back_by_its_recipe_ends_with_the_predecessor_ready_und
 
     estate.stop().await;
     let spans = estate.spans();
-    let renames: Vec<Value> = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).cloned().collect();
+    let renames: Vec<Value> = named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).cloned().collect();
     assert_eq!(
         renames.iter().map(|sp| (s(&sp["attributes"]["to"]), s(&sp["attributes"]["connections"]), s(&sp["attributes"]["mesh"]), s(&sp["attributes"]["outcome"]))).collect::<Vec<_>>(),
         vec![(old.clone(), "deleted".to_string(), "left".to_string(), "name-updated".to_string()), (NODE.to_string(), "deleted".to_string(), "left".to_string(), "name-updated".to_string())],
         "the predecessor is renamed twice, each time live and off its mesh: {renames:#?}"
     );
-    assert!(named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().all(|sp| s(&sp["attributes"]["traffic"]) != "Stopped"), "no rename of a stopped node is decided");
+    assert!(named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().all(|sp| s(&sp["attributes"]["traffic"]) != "Stopped"), "no rename of a stopped node is decided");
     let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").map(|sp| s(&sp["attributes"]["admitted_as"])).collect::<Vec<_>>();
     assert_eq!(join, vec![NODE.to_string(), old.clone(), NODE.to_string()], "the predecessor joined at its birth, then as .old at its start, then as {NODE} at its last start: {join:?}");
     let deleted = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == successor.node_id.to_string()).count();
@@ -1447,7 +1447,7 @@ async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
     estate.stop().await;
     let spans = estate.spans();
     let stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().expect("the predecessor's NodeStopped");
-    let rename = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().expect("the predecessor's rename");
+    let rename = named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().expect("the predecessor's rename");
     assert!(end(&rename) <= start(&stopped), "the predecessor gives up its name before it is stopped");
     assert_eq!((s(&rename["attributes"]["mesh"]), s(&rename["attributes"]["outcome"])), ("left".to_string(), "name-updated".to_string()), "the predecessor is renamed off its mesh: {rename:#}");
     estate.record_trace_url(rename["trace_id"].as_str().unwrap_or(""));
@@ -2080,7 +2080,7 @@ async fn a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refuse
     let refused = named(&spans, "rdm.node_admin.build.reject.via-last-admin");
     assert_eq!(refused.len(), 1, "one refusal: {refused:?}");
     assert_eq!(s(&refused[0]["attributes"]["detail"]), q7, "the refusal span carries Q7's exact text: {refused:?}");
-    assert!(named(&spans, "rdm.node_admin.node.connections.delete.via-mesh-primary").is_empty(), "no connection was deleted");
+    assert!(named(&spans, "rdm.node_admin.connection.delete.via-mesh-primary").is_empty(), "no connection was deleted");
     assert!(named(&spans, "rdm.node_admin.primary.update.via-update-primary").is_empty(), "no node.primary.update ran");
     estate.record_trace_url(refused[0]["trace_id"].as_str().unwrap_or(""));
     for n in &before {

@@ -189,7 +189,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
     });
     // The trace: one cut naming its scope, what it closed and what was not open.
     let cuts: Vec<std::collections::BTreeMap<String, String>> =
-        spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.connections.delete.via-delete-connections").map(|(_, _, f)| f.clone()).collect();
+        spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.connection.delete.via-delete-connections").map(|(_, _, f)| f.clone()).collect();
     assert!(
         cuts.iter().any(|f| f.get("scope").map(String::as_str) == Some("connections") && f.get("closed").map(String::as_str) == Some("1") && f.get("not_open").map(String::as_str) == Some("1") && f.get("outcome").map(String::as_str) == Some("connections-deleted")),
         "one cut of the named connections: {cuts:#?}"

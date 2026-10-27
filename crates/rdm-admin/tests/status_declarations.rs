@@ -1581,7 +1581,7 @@ fn update_name(b: &Birth, name: &str) -> StatusRequest {
 }
 
 /// The span of a mesh-primary's `node.name.update`.
-const NAME_SPAN: &str = "rdm.node_admin.node.name.update.via-writer";
+const NAME_SPAN: &str = "rdm.node_admin.name.update.via-writer";
 
 /// `b` stopped in the mesh-primary's view (`Leaving`), its row at its name carrying `tags`.
 async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
@@ -1636,7 +1636,7 @@ fn outcomes_and_connections(spans: &[(String, BTreeMap<String, String>)]) -> Vec
 /// ready-for-traffic successor `mesh1.rpc.8` to the name `3` at mesh1's primary is refused
 /// `RejectedAdmittingConnections { status: ReadyForTraffic, held_connections: [] }`. Nothing is claimed
 /// (no row at `mesh1.rpc.3`), the view keeps the birth at `mesh1.rpc.8`, and the birth is told nothing. One
-/// `rdm.node_admin.node.name.update.via-writer` span says `rejected-admitting-connections` with
+/// `rdm.node_admin.name.update.via-writer` span says `rejected-admitting-connections` with
 /// `traffic=ReadyForTraffic` and `connections=none-deleted`. What must NOT happen: the row written, the
 /// birth told `ApplyNodeName`, or `NameUpdated`.
 #[test]
@@ -1726,13 +1726,13 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_i
         "{spans:?}"
     );
     assert_eq!(spans[2].1.get("answered").map(String::as_str), Some("applied"), "{spans:?}");
-    let carried = cap.spans("rdm.node_admin.node.connections.delete.via-mesh-primary");
+    let carried = cap.spans("rdm.node_admin.connection.delete.via-mesh-primary");
     assert_eq!(carried.len(), 1, "{carried:?}");
     assert_eq!((carried[0].1.get("scope").map(String::as_str), carried[0].1.get("status_at_cut").map(String::as_str), carried[0].1.get("outcome").map(String::as_str)), (Some("all"), Some("ConnectionsDeleting"), Some("connections-deleted")), "{carried:?}");
-    let leaves = cap.spans("rdm.node_admin.node.mesh.update.via-mesh-primary");
+    let leaves = cap.spans("rdm.node_admin.node.remove.via-mesh-leave");
     assert_eq!(leaves.iter().map(|(_, a)| (a.get("subject").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![(s("mesh1.rpc.8"), s("mesh-left"))], "{leaves:?}");
-    eprintln!("trace {}: rdm.node_admin.node.connections.delete.via-mesh-primary scope=all status_at_cut=ConnectionsDeleting outcome=connections-deleted", carried[0].0);
-    eprintln!("trace {}: rdm.node_admin.node.mesh.update.via-mesh-primary subject=mesh1.rpc.8 outcome=mesh-left", leaves[0].0);
+    eprintln!("trace {}: rdm.node_admin.connection.delete.via-mesh-primary scope=all status_at_cut=ConnectionsDeleting outcome=connections-deleted", carried[0].0);
+    eprintln!("trace {}: rdm.node_admin.node.remove.via-mesh-leave subject=mesh1.rpc.8 outcome=mesh-left", leaves[0].0);
     for (trace, attrs) in &spans {
         eprintln!("trace {trace}: {NAME_SPAN} outcome={:?} connections={:?} mesh={:?} traffic={:?} to={:?} answered={:?}", attrs.get("outcome"), attrs.get("connections"), attrs.get("mesh"), attrs.get("traffic"), attrs.get("to"), attrs.get("answered"));
     }
@@ -1971,9 +1971,9 @@ fn a_rename_whose_release_fails_ends_incomplete_with_both_keys_held_and_its_retr
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("answered").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("name-not-applied".to_string(), "release-pending".to_string()), ("name-updated".to_string(), "applied".to_string())], "{spans:?}");
-    let releases = cap.spans("rdm.node_admin.node.name.update.via-pending-release");
+    let releases = cap.spans("rdm.node_admin.name.update.via-pending-release");
     assert_eq!(releases.iter().map(|(_, a)| (a.get("from").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("mesh1.rpc.2".to_string(), "released".to_string())], "{releases:?}");
-    eprintln!("trace {}: {NAME_SPAN} to=mesh1.rpc.2.old outcome=name-not-applied answered=release-pending; trace {}: rdm.node_admin.node.name.update.via-pending-release from=mesh1.rpc.2 outcome=released", spans[0].0, releases[0].0);
+    eprintln!("trace {}: {NAME_SPAN} to=mesh1.rpc.2.old outcome=name-not-applied answered=release-pending; trace {}: rdm.node_admin.name.update.via-pending-release from=mesh1.rpc.2 outcome=released", spans[0].0, releases[0].0);
 }
 
 /// CONTRACT (proposal §2.1 "Claim and move": "a row whose `renamed_from` key still holds the same node
@@ -1983,7 +1983,7 @@ fn a_rename_whose_release_fails_ends_incomplete_with_both_keys_held_and_its_retr
 /// held; the next `node.config.update` of the node releases `mesh1.rpc.2` before its put. Renamed back
 /// to `2` under a second refused release, `mesh1.rpc.2.old` is held twice over the same way, and the
 /// next `node.tags.create` releases it before its put. One
-/// `rdm.node_admin.node.name.update.via-pending-release` span names each release, `moment=config-put`
+/// `rdm.node_admin.name.update.via-pending-release` span names each release, `moment=config-put`
 /// and `moment=tags-put`. What must NOT happen: a config or tags put leaving the old key held until the
 /// next rename or a successor's rebuild.
 #[test]
@@ -2016,10 +2016,10 @@ fn a_config_or_tags_put_that_meets_a_pending_release_finishes_it() {
         assert_eq!(holds(old.clone()).await, None, "the tags put released {old}");
         assert_eq!(rig.nodes.record_at(&base).await.unwrap().map(|r| r.tags), Some(labels(&["red"])), "the tags put wrote the row at {base}");
     });
-    let releases = cap.spans("rdm.node_admin.node.name.update.via-pending-release");
+    let releases = cap.spans("rdm.node_admin.name.update.via-pending-release");
     let seen: Vec<(String, String, String)> = releases.iter().map(|(_, a)| (a.get("moment").cloned().unwrap_or_default(), a.get("from").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect();
     assert_eq!(seen, vec![("config-put".to_string(), "mesh1.rpc.2".to_string(), "released".to_string()), ("tags-put".to_string(), "mesh1.rpc.2.old".to_string(), "released".to_string())], "{releases:?}");
-    eprintln!("trace {}: rdm.node_admin.node.name.update.via-pending-release moment=config-put from=mesh1.rpc.2 outcome=released; trace {}: moment=tags-put from=mesh1.rpc.2.old outcome=released", releases[0].0, releases[1].0);
+    eprintln!("trace {}: rdm.node_admin.name.update.via-pending-release moment=config-put from=mesh1.rpc.2 outcome=released; trace {}: moment=tags-put from=mesh1.rpc.2.old outcome=released", releases[0].0, releases[1].0);
 }
 
 /// CONTRACT (proposal §2.1 Idempotency: "A repeat naming the name the row already holds ... for a
@@ -2155,10 +2155,10 @@ fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_
         assert!(node.seen.lock().unwrap().is_empty(), "no tags command tells the node anything");
     });
     let outcomes = |name: &str| cap.spans(name).iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>();
-    assert_eq!(outcomes("rdm.node_admin.node.tags.create.via-writer"), vec!["tags-created", "tags-created", "rejected-tags"]);
-    assert_eq!(outcomes("rdm.node_admin.node.tags.delete.via-writer"), vec!["tags-deleted", "tags-deleted"]);
-    let created = cap.spans("rdm.node_admin.node.tags.create.via-writer");
-    eprintln!("trace {}: rdm.node_admin.node.tags.create.via-writer outcome=tags-created arrived=rabbit", created[0].0);
+    assert_eq!(outcomes("rdm.node_admin.tag.create.via-writer"), vec!["tags-created", "tags-created", "rejected-tags"]);
+    assert_eq!(outcomes("rdm.node_admin.tag.delete.via-writer"), vec!["tags-deleted", "tags-deleted"]);
+    let created = cap.spans("rdm.node_admin.tag.create.via-writer");
+    eprintln!("trace {}: rdm.node_admin.tag.create.via-writer outcome=tags-created arrived=rabbit", created[0].0);
 }
 
 /// CONTRACT (R-TG1; proposal §3: tags and config: "Neither has a precondition ..., neither touches the
@@ -2207,11 +2207,11 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("answered").cloned())).collect::<Vec<_>>(), vec![("name-updated".to_string(), Some("applied".to_string()))], "{spans:?}");
-    let creates = cap.spans("rdm.node_admin.node.tags.create.via-writer");
+    let creates = cap.spans("rdm.node_admin.tag.create.via-writer");
     assert_eq!(creates.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["tags-created".to_string()], "{creates:?}");
     let configs = cap.spans("rdm.node_admin.node.update.via-config");
     assert_eq!(configs.iter().map(|(_, a)| a.get("tags").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["rabbit,red".to_string()], "the config put wrote the tags it holds: {configs:?}");
-    eprintln!("trace {}: rdm.node_admin.node.tags.create.via-writer arrived=rabbit,red outcome=tags-created (no apply sent)", creates[0].0);
+    eprintln!("trace {}: rdm.node_admin.tag.create.via-writer arrived=rabbit,red outcome=tags-created (no apply sent)", creates[0].0);
     eprintln!("trace {}: rdm.node_admin.node.update.via-config tags=rabbit,red outcome=config-updated; trace {}: {NAME_SPAN} to=mesh1.rpc.2.old outcome=name-updated", configs[0].0, spans[0].0);
 }
 
@@ -2587,7 +2587,7 @@ fn a_forwarded_callers_connections_delete_of_named_ids_is_carried_to_the_birth_o
         assert_eq!(reply, StatusReply::ConnectionsDeleted { closed: vec![id.clone()], not_open: vec![], held: vec![], receipt: None });
         assert_eq!(node.seen.lock().unwrap().clone(), vec![StatusRequest::DeleteConnections { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), scope }], "the birth received the request once, on its command op");
     });
-    let carried = cap.spans("rdm.node_admin.node.connections.delete.via-mesh-primary");
+    let carried = cap.spans("rdm.node_admin.connection.delete.via-mesh-primary");
     assert_eq!(carried.len(), 1, "{carried:?}");
     let (trace_id, attrs) = &carried[0];
     let attr = |k: &str| attrs.get(k).map(String::as_str);
@@ -2597,7 +2597,7 @@ fn a_forwarded_callers_connections_delete_of_named_ids_is_carried_to_the_birth_o
     let leg: Vec<_> = routes.iter().filter(|(t, a)| t == trace_id && a.get("route").map(String::as_str) == Some("via-peer")).collect();
     assert_eq!(leg.len(), 1, "the caller's one carried leg is in the primary's carrying trace: {routes:?}");
     assert_eq!((leg[0].1.get("carrier").map(String::as_str), leg[0].1.get("protocol").map(String::as_str)), (Some("mesh2.admin.1"), Some("status")), "{leg:?}");
-    eprintln!("trace {trace_id}: rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh2.admin.1 > rdm.node_admin.node.connections.delete.via-mesh-primary node=mesh1.admin.1 carried=dialled outcome=connections-deleted");
+    eprintln!("trace {trace_id}: rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh2.admin.1 > rdm.node_admin.connection.delete.via-mesh-primary node=mesh1.admin.1 carried=dialled outcome=connections-deleted");
 }
 
 

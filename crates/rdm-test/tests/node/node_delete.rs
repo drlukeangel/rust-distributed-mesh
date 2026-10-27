@@ -178,7 +178,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let stopped_at = start(&stop_span);
     assert_eq!(s(&stop_span["attributes"]["receipt"]), "established", "the victim's All let its in-flight work reach zero: {stop_span}");
     // The victim's stop, never the signal stop the estate's teardown runs on a node born later at its path.
-    let all = named(&spans, "rdm.node_admin.node.connections.delete.via-stop")
+    let all = named(&spans, "rdm.node_admin.connection.delete.via-stop")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["operation"] != "signal")
         .cloned()

@@ -314,7 +314,7 @@ async fn a_recipe_another_meshs_primary_executed_is_read_back_at_the_fabric_prim
 /// birth at the new name and none at the old. mesh2's primary carried the call up
 /// (`rdm.node_admin.node.update.via-forward`, op node.name.update), the fabric-primary sent it down and
 /// renamed the node in its atlas (`rdm.node_admin.node.update.via-fabric-primary`, atlas=renamed), and
-/// mesh2's primary wrote the row once (`rdm.node_admin.node.name.update.via-writer`). Must NOT happen:
+/// mesh2's primary wrote the row once (`rdm.node_admin.name.update.via-writer`). Must NOT happen:
 /// the fabric-primary answering the old name after the rename was answered, until a fill or gossip.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_primary_at_once() {
@@ -347,7 +347,7 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     assert_eq!(forwarded.iter().map(|sp| attr(sp, "outcome")).collect::<Vec<_>>(), vec!["name-updated".to_string()], "mesh2's primary carried the caller's rename up to the fabric-primary once: {forwarded:#?}");
     let down: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().filter(|sp| attr(sp, "op") == "node.name.update").collect();
     assert_eq!(down.iter().map(|sp| (attr(sp, "outcome"), attr(sp, "atlas"))).collect::<Vec<_>>(), vec![("name-updated".to_string(), "renamed".to_string())], "the fabric-primary sent it down and renamed the node in its atlas: {down:#?}");
-    let written: Vec<&Value> = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().filter(|sp| attr(sp, "node_id") == id(&targets[0], "node_id")).collect();
+    let written: Vec<&Value> = named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().filter(|sp| attr(sp, "node_id") == id(&targets[0], "node_id")).collect();
     assert_eq!(written.iter().map(|sp| (attr(sp, "node"), attr(sp, "outcome"))).collect::<Vec<_>>(), vec![(mp.clone(), "name-updated".to_string())], "mesh2's primary wrote the row once: {written:#?}");
 }
 
