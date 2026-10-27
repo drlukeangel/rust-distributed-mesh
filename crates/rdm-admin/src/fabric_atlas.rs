@@ -345,7 +345,7 @@ impl FabricAtlas {
                 Some(AttemptAction::Recipe { pinned, .. }) => pinned.iter().find(|(at, _)| *at == path).map(|(_, b)| b.node_id.clone()),
                 _ => None,
             };
-            pinned.or_else(|| held.records.values().find(|r| r.name == path).map(|r| r.node_id.clone()))
+            pinned.or_else(|| held.records.values().find(|r| r.name == path && !matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn)).map(|r| r.node_id.clone()))
         };
         match op {
             "node.stop" | "node.delete" => {
@@ -406,7 +406,7 @@ impl FabricAtlas {
     /// The record a completed node.create at `path` wrote (its mesh-primary's write, the op's result,
     /// Q197): one point read at the path, held from now on. `false` when no record is written there.
     pub(crate) async fn take_created(&self, rows: &dyn NodesStorage, path: &PathName) -> Result<bool, String> {
-        match rows.node_at(path).await.map_err(|e| format!("nodes.storage: the node row at {path} could not be read: {e}"))? {
+        match rows.node_at(path).await.map_err(|e| format!("nodes.storage: the node row at {path} could not be read: {e}"))?.filter(|r| r.name == *path) {
             Some(r) => {
                 self.write_record(&r);
                 Ok(true)
