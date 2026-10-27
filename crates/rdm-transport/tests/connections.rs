@@ -24,7 +24,7 @@ const ALPN_UNREGISTERED: &[u8] = b"test-unregistered/1";
 fn alpn(name: &[u8]) -> Alpn {
     Alpn {
         name: name.to_vec(),
-        forwardable: true,
+        proxy: true,
         carriers: vec![NodeKind::RpcNode],
     }
 }
@@ -1215,16 +1215,18 @@ async fn a_callers_span_closes_while_its_direct_and_proxy_connections_live() {
 fn gateway_alpn(name: &[u8]) -> Alpn {
     Alpn {
         name: name.to_vec(),
-        forwardable: true,
+        proxy: true,
         carriers: vec![NodeKind::Gateway],
     }
 }
 
-fn non_forwardable_alpn(name: &[u8]) -> Alpn {
+/// A protocol that never travels over a Proxy, though its carrier list names the gateway kind: only
+/// its `proxy: false` keeps a gateway from carrying it.
+fn no_proxy_alpn(name: &[u8]) -> Alpn {
     Alpn {
         name: name.to_vec(),
-        forwardable: false,
-        carriers: vec![],
+        proxy: false,
+        carriers: vec![NodeKind::Gateway],
     }
 }
 
@@ -1365,7 +1367,7 @@ async fn a_held_proxy_is_taken_without_a_direct_dial() {
 }
 
 #[tokio::test]
-async fn a_not_sent_direct_on_a_forwardable_alpn_goes_once_through_the_hashed_carrier() {
+async fn a_not_sent_direct_on_a_proxy_alpn_goes_once_through_the_hashed_carrier() {
     let alpns = [gateway_alpn(ALPN_A)];
     let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
     let gw1 = TestPeer::bind("mesh1.gateway.1", &alpns).await;
@@ -1422,7 +1424,7 @@ async fn a_not_sent_direct_on_a_forwardable_alpn_goes_once_through_the_hashed_ca
     let conn_s = dialer_s
         .open(&dest.birth)
         .await
-        .expect("NotSent Direct on forwardable ALPN must succeed via hashed carrier");
+        .expect("NotSent Direct on a proxy ALPN must succeed via hashed carrier");
     let conn_d = accept_task.await.unwrap();
 
     assert_eq!(
@@ -2233,18 +2235,26 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
     assert_eq!(ended, vec![vec![tunnel_id, names.0, names.1, names.2, String::from_utf8_lossy(ALPN_A).to_string()]], "the tunnel's end is one span naming it");
 }
 
+/// CONTRACT (connections.md §6): a protocol whose `Alpn` says `proxy: false` never consumes a Proxy as a
+/// legal route even when one is held, and a Direct that sent nothing asks no carrier, though its carrier
+/// list names the carrier's kind and the carrier holds an Active Direct to the destination. Must NOT
+/// happen: the held Proxy taken, or the gateway asked to carry the connection.
 #[tokio::test]
-async fn a_non_forwardable_alpn_never_takes_a_proxy_even_when_one_is_held() {
-    let alpns = [non_forwardable_alpn(ALPN_A)];
+async fn a_protocol_with_proxy_false_never_consumes_a_proxy_even_when_one_is_held() {
+    let alpns = [no_proxy_alpn(ALPN_A)];
     let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
     let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
     let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let fresh = TestPeer::bind("mesh1.rpc.3", &alpns).await;
 
     source.know(&carrier);
+    fresh.know(&carrier);
     carrier.know(&dest);
-    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_edge(&[&source.sink, &carrier.sink, &fresh.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    let carrier_admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(true), calls: AtomicUsize::new(0) });
+    carrier.registry.set_admitter(carrier_admitter.clone());
 
-    // Seed both a Failed Direct and a Connected Proxy on ALPN_A in source's sink:
+    // Seed both a Failed Direct and a Connected Proxy through the gateway on ALPN_A in source's sink:
     let failed_direct = NodeConnection {
         id: ConnectionId::mint(),
         source: source.birth.to_end(),
@@ -2279,12 +2289,66 @@ async fn a_non_forwardable_alpn_never_takes_a_proxy_even_when_one_is_held() {
     let err = dialer_s
         .open(&dest.birth)
         .await
-        .expect_err("non-forwardable ALPN must refuse with NoActiveRoute when Direct is Failed");
-    assert_eq!(err, ConnectError::NoActiveRoute);
+        .expect_err("a protocol with proxy false must refuse with NoActiveRoute when Direct is Failed");
+    assert_eq!(err, ConnectError::NoActiveRoute, "the held Proxy is not a route for a protocol with proxy false");
+
+    // A source holding nothing, whose direct dial sends nothing (it does not know the destination):
+    // the dial's NotSent is the answer, and no carrier is asked.
+    let (dialer_f, _) = fresh.registry.connections(ALPN_A).unwrap().split();
+    let err = dialer_f.open(&dest.birth).await.expect_err("the destination is unknown to the fresh source");
+    assert!(matches!(err, ConnectError::NotSent { .. }), "a Direct that sent nothing ends NotSent, no carrier asked: {err:?}");
+    assert_eq!(carrier_admitter.calls.load(Ordering::SeqCst), 0, "the gateway was never asked to carry a protocol with proxy false");
 
     source.shutdown().await;
     carrier.shutdown().await;
     dest.shutdown().await;
+    fresh.shutdown().await;
+}
+
+/// CONTRACT (connections.md §6): the carriers a source asks are of a node type its protocol's carrier list
+/// names. An rpc node holding an Active Direct to the destination is never picked for a protocol whose
+/// list names only the gateway kind: beside a gateway the gateway carries, and alone it leaves the
+/// source's NotSent standing. Must NOT happen: the rpc node asked to carry the connection.
+#[tokio::test]
+async fn a_carrier_outside_the_protocols_list_is_never_picked() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let outside = TestPeer::bind("mesh1.rpc.3", &alpns).await;
+    let gw = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let lone = TestPeer::bind("mesh1.rpc.4", &alpns).await;
+
+    // Neither source knows the destination, so its Direct is provably NotSent:
+    source.know(&outside);
+    source.know(&gw);
+    lone.know(&outside);
+    outside.know(&dest);
+    gw.know(&dest);
+    seed_carrier_direct_edge(&[&source.sink, &outside.sink, &gw.sink, &lone.sink], &outside.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_edge(&[&source.sink, &outside.sink, &gw.sink, &lone.sink], &gw.birth, &dest.birth, ALPN_A).await;
+    let outside_admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(true), calls: AtomicUsize::new(0) });
+    let gw_admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(true), calls: AtomicUsize::new(0) });
+    outside.registry.set_admitter(outside_admitter.clone());
+    gw.registry.set_admitter(gw_admitter.clone());
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+    let accept_task = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+    let conn_s = dialer_s.open(&dest.birth).await.expect("the gateway carries the connection");
+    let _conn_d = accept_task.await.unwrap();
+    assert_eq!(conn_s.kind(), ConnectionKind::Proxy { via: gw.birth.clone() }, "the gateway, the one kind the list names, carries");
+    assert_eq!(gw_admitter.calls.load(Ordering::SeqCst), 1);
+
+    let (dialer_l, _) = lone.registry.connections(ALPN_A).unwrap().split();
+    let err = dialer_l.open(&dest.birth).await.expect_err("no node of a kind the list names stands for this source");
+    assert!(matches!(err, ConnectError::NotSent { .. }), "with no eligible carrier the Direct's NotSent stands: {err:?}");
+    assert_eq!(outside_admitter.calls.load(Ordering::SeqCst), 0, "the rpc node, outside the protocol's list, was never asked to carry");
+
+    source.shutdown().await;
+    outside.shutdown().await;
+    gw.shutdown().await;
+    dest.shutdown().await;
+    lone.shutdown().await;
 }
 
 #[tokio::test]

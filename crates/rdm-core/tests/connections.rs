@@ -37,7 +37,7 @@ fn proxy(source: ConnectionEnd, carrier: ConnectionEnd, destination: ConnectionE
     }
 }
 
-const RPC: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
+const RPC: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
 /// own = rpc.1, carrier = rpc.2, destination = rpc.3; the carrier's edge to the destination
 /// names destination process `d1` and carrier process `c1`.
@@ -94,9 +94,9 @@ fn the_route_prefers_a_valid_proxy_then_an_active_direct_then_none() {
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::ViaPeer { carrier: carrier.name.clone(), proxy: p });
 
     assert_eq!(
-        resolve(&held, &own.name, &dest.name, CarrierPolicy::NotForwardable).route,
+        resolve(&held, &own.name, &dest.name, CarrierPolicy::NoProxy).route,
         EffectiveRoute::Direct { known: true },
-        "a protocol that is not forwardable never takes the Proxy"
+        "a protocol that does not proxy never takes the Proxy"
     );
 }
 
@@ -283,7 +283,7 @@ fn malformed_entries_are_refused_by_name() {
 /// the topology it holds, of a kind its protocol lets carry, itself and the destination left out, in
 /// path order from `spread(source, destination, destination incarnation) % len`, wrapping; no
 /// connection fact is read. The order is the same at every call, and two sources spread over the
-/// carriers. A protocol that is not forwardable asks none. Must NOT happen: a carrier of another mesh,
+/// carriers. A protocol with proxy false asks none. Must NOT happen: a carrier of another mesh,
 /// of a kind the protocol does not let carry, the source itself or the destination asked.
 #[test]
 fn carriers_are_asked_from_the_topology_in_path_order_spread_by_source() {
@@ -301,6 +301,6 @@ fn carriers_are_asked_from_the_topology_in_path_order_spread_by_source() {
         .map(|o| carrier_order(&PathName::new("mesh1", NodeKind::RpcNode, 100 + o), &dest, &incarnation, true, &[NodeKind::RpcNode], topology.clone())[0].clone())
         .collect();
     assert!(firsts.len() > 1, "sources spread over the carriers: {firsts:?}");
-    assert!(carrier_order(&own, &dest, &incarnation, false, &[NodeKind::RpcNode], topology.clone()).is_empty(), "a protocol that is not forwardable asks no carrier");
+    assert!(carrier_order(&own, &dest, &incarnation, false, &[NodeKind::RpcNode], topology.clone()).is_empty(), "a protocol with proxy false asks no carrier");
     assert!(carrier_order(&own, &dest, &incarnation, true, &[NodeKind::Gateway], topology).is_empty(), "no node of a kind the protocol lets carry");
 }
