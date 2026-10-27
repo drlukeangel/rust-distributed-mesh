@@ -1382,8 +1382,8 @@ A declare probe answer.
 | `NAME` | `"originate"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | trait default `false` |
-| `REQUEST_VARIANTS` | `8` |
-| `REPLY_VARIANTS` | `16` |
+| `REQUEST_VARIANTS` | `9` |
+| `REPLY_VARIANTS` | `17` |
 | `MAX_REQUEST_FRAME_BYTES` | `4096` |
 | `MAX_REPLY_FRAME_BYTES` | `65536` |
 
@@ -1391,7 +1391,7 @@ A declare probe answer.
 
 ### `OriginateRequest`
 
-`crates/rdm-test/src/originate.rs` · enum · 8 variants · rdm-test
+`crates/rdm-test/src/originate.rs` · enum · 9 variants · rdm-test
 
 An originate door call.
 
@@ -1417,12 +1417,15 @@ An originate door call.
 | 6.1 | `payload` | `Vec<u8>` |  | The bytes written. |
 | 7 | **`StopTransport`** |  |  | Mark this process's mesh transport stopped, exactly as iroh-gossip refusing a subscription |
 | 7.0 | `reason` | `String` |  | The reason the transport stopped. |
+| 8 | **`BlockDirect`** |  |  | Block (`blocked: true`) or release this node's Direct dials toward `destination` on its one |
+| 8.0 | `destination` | `String` |  | The `path.name` whose Direct dials are blocked or released. |
+| 8.1 | `blocked` | `bool` |  | Block when true, release when false. |
 
 <a id="t-rdm_test-originate-OriginateReply"></a>
 
 ### `OriginateReply`
 
-`crates/rdm-test/src/originate.rs` · enum · 16 variants · rdm-test
+`crates/rdm-test/src/originate.rs` · enum · 17 variants · rdm-test
 
 An originate door answer.
 
@@ -1449,8 +1452,9 @@ An originate door answer.
 | 3.1 | `own_active_proxies` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | The node's active Proxy entries. |
 | 3.2 | `own_latest_directs` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | The node's latest Direct entry per destination. |
 | 3.3 | `active_len` | `usize` |  | The number of active Direct facts held that name a destination process still current. |
-| 3.4 | `owed` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | The Proxy retirements the node owes now. |
-| 3.5 | `fault_refused` | `u32` |  | The number of writes the fault has refused. |
+| 3.4 | `active_directs` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | Every active Direct fact held, whatever its source (connections.md §4.1: the fleet-wide |
+| 3.5 | `owed` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | The Proxy retirements the node owes now. |
+| 3.6 | `fault_refused` | `u32` |  | The number of writes the fault has refused. |
 | 4 | **`BadDestination`** |  |  | The destination does not parse or does not resolve on this node. |
 | 4.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who answered. |
 | 4.1 | `reason` | `String` |  | Why the destination is refused. |
@@ -1489,6 +1493,10 @@ An originate door answer.
 | 15 | **`TransportStopMarked`** |  |  | The transport stop is marked; the process is exiting. |
 | 15.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who marked the stop. |
 | 15.1 | `reason` | `String` |  | The reason recorded. |
+| 16 | **`DirectBlocked`** |  |  | The Direct dial block toward `destination` is set as asked. |
+| 16.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who set it. |
+| 16.1 | `destination` | `String` |  | The `path.name` the block names. |
+| 16.2 | `blocked` | `bool` |  | Whether Direct dials toward it are now blocked. |
 
 ## 0x74 `pre-node-ready-pull`
 
@@ -2179,7 +2187,7 @@ The call a cut held first, as the decorator offered it.
 | 6 | **`TopologyRead`** |  |  | A joining admin's topology read, about to be made. |
 | 6.0 | `node` | `String` |  | The joining admin. |
 | 6.1 | `reads_from` | `String` |  | The admin the read goes to: the one that answered the join. |
-| 7 | **`Announcement`** |  |  | A final aggregate or leadership announcement about to be sent on a channel. |
+| 7 | **`Announcement`** |  |  | A final mesh topology or leadership announcement about to be sent on a channel. |
 | 7.0 | `node` | `String` |  | The announcing node. |
 | 7.1 | `announcement` | `String` |  | The announcement (`rdm_transport::topology::Withhold`). |
 | 7.2 | `channel` | `String` |  | The channel it is sent on. |

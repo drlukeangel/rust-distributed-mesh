@@ -206,12 +206,12 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node.connections.create.via-admitted` | `crates/rdm-transport/src/connections/admit.rs` | 230 |
 | `rdm.node.connections.create.via-no-certs-configured` | `crates/rdm-transport/src/connections/admit.rs` | 227 |
 | `rdm.node.connections.create.via-tunnel` | `crates/rdm-transport/src/connections.rs` | 998 |
-| `rdm.node.connections.create.via-tunnel` | `crates/rdm-transport/src/connections.rs` | 1700 |
+| `rdm.node.connections.create.via-tunnel` | `crates/rdm-transport/src/connections.rs` | 1703 |
 | `rdm.node.connections.delete.via-tunnel-ended` | `crates/rdm-transport/src/connections.rs` | 723 |
 | `rdm.node.connections.reject.via-refused` | `crates/rdm-transport/src/connections/admit.rs` | 274 |
 | `rdm.node.connections.update.via-presented` | `crates/rdm-transport/src/connections.rs` | 1114 |
-| `rdm.node.connections.update.via-presented` | `crates/rdm-transport/src/connections.rs` | 1563 |
-| `rdm.node.connections.update.via-presented` | `crates/rdm-transport/src/connections.rs` | 1756 |
+| `rdm.node.connections.update.via-presented` | `crates/rdm-transport/src/connections.rs` | 1565 |
+| `rdm.node.connections.update.via-presented` | `crates/rdm-transport/src/connections.rs` | 1760 |
 | `rdm.node.disk_call.update.via-shutdown` | `crates/rdm-node/src/blocking.rs` | 39 |
 | `rdm.node.mesh.reject.via-busy-holding-connections` | `crates/rdm-node/src/node_self.rs` | 815 |
 | `rdm.node.mesh.update.via-joined` | `crates/rdm-admin/src/admin/boot.rs` | 1021 |
