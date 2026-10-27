@@ -237,10 +237,18 @@ impl TopologyDoor {
                 span.record("own_row", row.as_ref().map_or(String::new(), |r| r.name.to_string()).as_str());
                 if let Some(node) = row {
                     let r = TopologyReply::OwnRow { node };
-                    bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
-                    if let Err(e) = sink.data(r).await {
-                        span.record("outcome", format!("caller-gone: {e:?}").as_str());
-                        return TopologyReply::End { meshes: answered };
+                    let len = rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
+                    match sink.data(r).await {
+                        Ok(()) => bytes += len,
+                        // A row over the reply-frame ceiling is named on the span and not sent: the read
+                        // still ends whole, and the reader holds the config its join handed it.
+                        Err(rdm_transport::stream::SinkError::TooLarge { size, max }) => {
+                            span.record("own_row", format!("too-large: {size} bytes over the {max}-byte reply frame").as_str());
+                        }
+                        Err(e) => {
+                            span.record("outcome", format!("caller-gone: {e:?}").as_str());
+                            return TopologyReply::End { meshes: answered };
+                        }
                     }
                 }
             }
