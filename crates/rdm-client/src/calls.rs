@@ -330,8 +330,10 @@ impl<'a> NodeRpc<'a> {
     /// of that mesh's rows. `route` is the caller's choice: `Direct`, or `ViaPeer` through a carrier
     /// (Forward `0x1A`) when the receiver is not directly reachable, executed exactly as chosen
     /// (`NodeRpcClient::call_routed`). `ConfigUpdated` is `node.config.updated`: the mesh-primary wrote
-    /// the node's row and the birth applied the config. An admin holding neither the fabric-primary
-    /// nor the node's mesh-primary refuses `RejectedNotPrimary`, naming the fabric-primary.
+    /// the node's row and the birth applied the config. A caller that is not a node-admin may send it to
+    /// any node-admin: one that is not the fabric-primary carries it up and hands the answer back
+    /// ([`Self::own_config_update`]). A node-admin's call at an admin holding neither the fabric-primary
+    /// nor the node's mesh-primary is refused `RejectedNotPrimary`, naming the fabric-primary.
     pub async fn config_update(&self, receiver: &NodeId, route: &RouteChoice, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
         let span = NodeOp::ConfigUpdate.span();
