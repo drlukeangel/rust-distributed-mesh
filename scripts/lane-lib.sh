@@ -34,3 +34,15 @@ lane_target_at_path() {
   (cd "$d" && cargo clean $members >/dev/null 2>&1) || { echo "REFUSED: cargo clean failed in $d"; return 1; }
   echo "$d" > "$t/.lane-path"
 }
+# A seat is never launched into a cold lane (Luke 2026-10-27): build the gate's graph (every workspace
+# member's bins and tests, rdm-gate-at.sh step 1) under the box's turn lock before the lane is handed
+# out. Vendor crates come from sccache; only the lane's own crates compile.
+lane_warm() {
+  local d members; d=$(lane_dir "$1")
+  members=$(cd "$d" && cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c 'import json,sys; print(" ".join("-p "+p["name"] for p in json.load(sys.stdin)["packages"]))')
+  [ -n "$members" ] || { echo "REFUSED: cargo metadata failed in $d"; return 1; }
+  local s=$(date +%s)
+  (cd "$d" && flock -o /tmp/rdm-gate-turn.lock env CARGO_BUILD_INCREMENTAL=true cargo build --tests --bins $members >/dev/null 2>&1) \
+    || { echo "REFUSED: lane $1 does not build at $(git -C "$d" rev-parse --short HEAD)"; return 1; }
+  echo "lane $1: warm at $(git -C "$d" rev-parse --short HEAD) in $(( $(date +%s)-s ))s"
+}
