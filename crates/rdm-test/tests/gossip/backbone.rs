@@ -385,13 +385,25 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
             None => Ok(()),
         }
     };
+    let fp_name = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).unwrap_or_else(|| panic!("the pre-cut view names a fabric-primary: {nodes:?}"))["name"]);
     let cut_at = now_ns();
     let isolation = Partition::start(&udp_ports(&nodes, &[lone_name.clone()]), &udp_ports(&nodes, &others)).expect("the host dropped traffic above");
-    wait_for(&format!("{lone_name} no longer hears its mesh"), rdm_transport::topology::staleness_floor() + Duration::from_secs(20), || {
+    // The isolated admin's own pruner marks the fabric-primary stale, and its election of mesh1 then names
+    // no primary: only from then does its view name no fabric-primary. Another member's stale mark comes
+    // first and is not this: a refusal before it names the fabric-primary the admin still holds (build.md:
+    // `not-fabric-primary`, naming the fabric-primary in its own view), and the carrier follows it there.
+    wait_for(&format!("{lone_name} marks the fabric-primary {fp_name} stale and its view names no primary of mesh1"), rdm_transport::topology::staleness_floor() + Duration::from_secs(20), || {
         let spans = estate.spans();
-        let lone_name = lone_name.clone();
+        let (lone_name, fp_name) = (lone_name.clone(), fp_name.clone());
         async move {
-            named(&spans, "rdm.mesh.topology.update.via-member-stale").iter().any(|sp| attr(sp, "node") == lone_name).then_some(())
+            // The two spans come in either order (the election may read the mark before the stale span closes).
+            let marked = named(&spans, "rdm.mesh.topology.update.via-member-stale").iter().any(|sp| attr(sp, "node") == lone_name && attr(sp, "member") == fp_name && start(sp) >= cut_at);
+            let elected = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
+                .into_iter()
+                .filter(|sp| attr(sp, "observer") == lone_name && attr(sp, "mesh") == "mesh1" && start(sp) >= cut_at)
+                .max_by_key(|sp| start(sp))
+                .map(|sp| attr(sp, "winner_path"));
+            (marked && elected.is_some_and(|w| w.is_empty())).then_some(())
         }
     })
     .await;
