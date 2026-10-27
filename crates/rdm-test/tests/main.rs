@@ -191,6 +191,8 @@ mod node_delete;
 mod node_connections_delete;
 #[path = "connections/acceptance.rs"]
 mod connections_acceptance;
+#[path = "connections/restart.rs"]
+mod connections_restart;
 #[path = "node/node_replace.rs"]
 mod node_replace;
 #[path = "node/node_restart.rs"]
