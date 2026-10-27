@@ -154,22 +154,25 @@ node-admin it joined through…").
 query.md (new, its draft with the architects) states the reads: the mesh-primary's Atlas for its own
 mesh, the fabric-primary's for the rest, and the node's own whole row on its own entry.
 
-## 5. Open points for the architects
+## 5. Open points, decided (the lead, 2026-10-27)
 
-- **P1, the order of two writers.** A caller's update writes the fabric-primary's Atlas first and goes
-  down. A node's own writes the mesh-primary first and goes up. If both run at once, each Atlas could
-  end on a different map. Dev recommendation: the mesh-primary's row write is the one order. Each
-  write returns the row's version, and an Atlas takes a map only over an older version. This is the
-  Atlas's existing "nothing moves backward" rule (`atlas.rs`). A caller's update completes only once
-  the mesh-primary's write returns.
-- **P2, when the node holds its own map.** Luke's words were "push it up". Two options: the node
-  holds the map when it sends it, or on the mesh-primary's `Applied`. Dev recommendation: on
-  `Applied`, because the mesh-primary can refuse it (the config cap), and a node holding a refused map
-  would disagree with its row.
-- **P3, a node that restarts with its update still owed.** The owed queue is in memory (Q210's), so
-  an unsent update is lost at a restart, and the node is re-hydrated with the old map. Dev
-  recommendation: accept it and name it in a span at the stop (as Q210's signal-stop bound). The
-  application re-sends after its start if it still wants the change.
-- **P4, a node-admin's own config.** A node-admin's own update goes in process to the admin it joined
-  through (today's step 1). Under the up flow, a mesh-primary's own update writes its own row and its
-  Atlas, then pushes up. Dev recommendation: no special case beyond the in-process hop.
+- **P1, the order of two writers: the mesh-primary's row write is the one order; no version field.**
+  `NodeRow` has no version and `put_node` takes none. The fabric-primary's atlas takes a map only as
+  the mesh-primary reports it: a caller's update keeps today's write-ahead with the put-back on a
+  refusal (`atlas.rs:356`), and takes the row as written from the down command's completion; a node's
+  own update reaches it as the mesh-primary's push, owed in order (Q210's queue, one in flight). Both
+  atlases end on what the row holds.
+- **P2, when the node holds its own map: when it sends it (Q235, Luke: the node holds the map it sent
+  and its own entry takes it at once).** On the mesh-primary's refusal by name the node puts back the
+  map it held before, the atlas's own put-back. There is no "config cap": the refusal is whichever
+  the mesh-primary names (`node_config.rs`).
+- **P3, an update still owed at a restart: Q210.** The update is one declaration in the node's owed
+  queue; a signal stop waits for the queue within Q206's bound and names the outcome in its span; an
+  update unsent past the bound is named there, the next start's hydration sync hands the node the
+  row's map, and the application sends again if it still wants the change. No new machinery.
+- **P4, a node-admin's own config: no special case.** In process to the admin it joined through; a
+  mesh-primary's own update writes its row and its atlas, then pushes up.
+
+Words: pages say "atlas" in prose (Q224), "hydration sync" (Q234), and "PUT, never PATCH" (the Node
+properties section's casing). The Topology op 0x1E reply's text, which Q234 also owes, is missing
+from §4 and goes in before the landing.
