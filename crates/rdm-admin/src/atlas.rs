@@ -388,13 +388,16 @@ impl Atlas {
     }
 
     /// The record a join at `path` of the node `node_id` is reconciled to (Q234; never the store,
-    /// Q227): the node's own record when it is at `path`, else another node's live record there, else a
-    /// `Deleted` one there; a `Withdrawn` record names nothing (a withdrawn claim, as the store's
-    /// `path.name` index holds it).
+    /// Q227): the live record at `path` (the node's own first), else a `Deleted` one there (the node's
+    /// own first): a live claim of another node at the name stands over the joiner's deleted record, as
+    /// the store's `path.name` index names the last record written there. A `Withdrawn` record names
+    /// nothing (a withdrawn claim).
     pub fn record_for_join(&self, path: &PathName, node_id: &NodeId) -> Option<NodeRow> {
         let held = self.held.lock().unwrap();
         let at: Vec<&NodeRow> = held.records.values().filter(|r| r.name == *path && r.status != NodeStatus::Withdrawn).collect();
-        at.iter().find(|r| r.node_id == *node_id).or_else(|| at.iter().find(|r| r.status != NodeStatus::Deleted)).or_else(|| at.first()).map(|r| (*r).clone())
+        let (live, deleted): (Vec<&NodeRow>, Vec<&NodeRow>) = at.into_iter().partition(|r| r.status != NodeStatus::Deleted);
+        let own_first = |rows: &[&NodeRow]| rows.iter().find(|r| r.node_id == *node_id).or_else(|| rows.first()).map(|r| (*r).clone());
+        own_first(&live).or_else(|| own_first(&deleted))
     }
 
     /// Every record the atlas holds, in node id order.
