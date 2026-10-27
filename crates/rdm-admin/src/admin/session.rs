@@ -351,13 +351,13 @@ impl crate::node_self::Session for AdminSession {
         crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
     }
 
-    async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
+    async fn cut(&self, spare: &[iroh::PublicKey], mesh_primary: Option<iroh::PublicKey>) -> crate::node_self::CutReport {
         // The stop held this admin's tasks before it (`hold_tasks`): nothing it was doing goes out on
         // the connections cut below.
         let turns_in_progress = self.gate.state().borrow().in_progress();
         let neighbours = self.topology_view.neighbours();
         self.leave_channels().await;
-        let pooled = self.client.close_pooled("node.connections.delete");
+        let pooled = self.client.close_pooled_except(mesh_primary.as_slice(), "node.connections.delete");
         let accepted = self.server.close_connections_except(spare, "node.connections.delete");
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
     }

@@ -165,18 +165,15 @@ impl Running {
     /// Then the whole `node.connections.delete { All }` under the birth's bound, its connections-deleting
     /// owed to its mesh-primary; its tasks held; its last mesh topology before the cut carrying itself
     /// Leaving when it is its mesh's primary; `node.mesh.leave`, its own mesh and the backbone left and
-    /// its Node RPC pool cut; its `Stopped` owed to its mesh-primary (node-rpc.md §43), waited on by
-    /// nothing. Then the process end ([`Self::leave_with`]): every task aborted, each call this node
-    /// answered settled with its caller, the transport closed; the owed declarations end with the
-    /// process (node-rpc.md §34).
+    /// its Node RPC pool cut but for the connection to its mesh-primary; its `Stopped` owed to its
+    /// mesh-primary (node-rpc.md §43); then the wait until each owed declaration is answered or its
+    /// receiver proven gone (Q206). Then the process end ([`Self::leave_with`]): every task aborted,
+    /// each call this node answered settled with its caller, the transport closed.
     pub async fn leave(self) {
         self.pre_node_ready_cancel.cancel();
         self.executor.abort();
-        let stopped = self.node_self.stop_on_signal().await;
+        let _ = self.node_self.stop_on_signal().await;
         self.leave_with(false).await;
-        for owed in stopped.declarations {
-            owed.abort();
-        }
     }
 
     /// End a stopped birth (a `stop-node` completed): it says nothing and closes. Its stop already

@@ -212,10 +212,11 @@ impl RunningNode {
     /// process ends as [`Self::stop_commanded`] ends it, once every reply it owes is settled. A live birth runs node-stop.md steps 2-4 as its own subject (i146 Q55,
     /// [`crate::node_self::NodeSelf::stop_on_signal`]): the whole `node.connections.delete { All }`
     /// under the birth's bound, its connections-deleting owed to its mesh-primary; the leave step
-    /// (its gossip neighbours left, its Node RPC pool cut, nothing published); its stopped state owed
-    /// to its mesh-primary. Nothing waits on an answer. Then each router shuts down:
+    /// (its gossip neighbours left, its Node RPC pool cut but for the connection to its mesh-primary,
+    /// nothing published); its stopped state owed to its mesh-primary; then the wait until each owed
+    /// declaration is answered or its receiver proven gone (Q206). Then each router shuts down:
     /// `Router::shutdown` shuts every protocol it serves down, gossip included, once, and then closes
-    /// the endpoint; the owed declarations end with the process (node-rpc.md §34).
+    /// the endpoint.
     pub async fn stop(self) {
         if self.own.stop_admitted() {
             return Box::pin(self.stop_commanded()).await;
@@ -225,17 +226,22 @@ impl RunningNode {
     }
 
     async fn stop_inner(self) {
+        use tracing::Instrument;
         self.cancel.cancel();
-        let stopped = self.own.stop_on_signal().await;
+        let _ = self.own.stop_on_signal().await;
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
+        let me = self.own.held_name().to_string();
+        let started = std::time::Instant::now();
+        let span = tracing::info_span!("rdm.mesh.node.update.via-leave-shutdown", node = %me, routers = self.routers.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+        let mut refused = false;
         for r in self.routers {
-            let _ = r.shutdown().await;
+            refused |= r.shutdown().instrument(span.clone()).await.is_err();
         }
-        for owed in stopped.declarations {
-            owed.abort();
-        }
+        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        span.record("outcome", if refused { "refused" } else { "closed" });
+        span.in_scope(|| tracing::info!("the transport closed"));
     }
 }
 
@@ -960,10 +966,10 @@ impl crate::node_self::Session for NodeSession {
         crate::node_self::leave_channels(&self.topology_view, None, &self.node_id).await;
     }
 
-    async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
+    async fn cut(&self, spare: &[iroh::PublicKey], mesh_primary: Option<iroh::PublicKey>) -> crate::node_self::CutReport {
         let neighbours = self.topology_view.neighbours();
         self.leave_channels().await;
-        let pooled = self.client.close_pooled("node.connections.delete");
+        let pooled = self.client.close_pooled_except(mesh_primary.as_slice(), "node.connections.delete");
         let accepted = self.server.close_connections_except(spare, "node.connections.delete");
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }

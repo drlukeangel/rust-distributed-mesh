@@ -168,10 +168,10 @@ fn exported(dir: &std::path::Path) -> Vec<serde_json::Value> {
 /// declaration delivered, with no `CANCELLED` `caller-gone` tail): a live rpc node's signal stop runs
 /// node-stop.md's steps as its own subject (Q55), owes `ConnectionsDeleting` and then `Stopped` to its
 /// mesh-primary (node-stop.md step 4: "an owed message ... sent whether or not the stop call's stream is
-/// still open"), and ends; each declaration is applied by the mesh-primary and its call answered, the
-/// last within a second of the stop's `node.connections.delete { All }`, and the process ends within a
-/// second of the signal. RED pending a ruling: Q55 has the owed declarations "dropped by the process
-/// exit (§34). No wait on any answer.", and node-rpc.md §34 ends an Owed call "when its owner drops it".
+/// still open"), over the connection to its mesh-primary its transport cut spares (node-stop.md
+/// "Transport cut", Q206), and ends once each is answered or its receiver is proven gone (Q206): each
+/// declaration is applied by the mesh-primary and its call answered, the last within a second of the
+/// stop's `node.connections.delete { All }`, and the process ends within a second of the signal.
 /// Must NOT happen: a declaration's call ending `CANCELLED` `caller-gone` at the process's end, its
 /// reply's connection cut under it by the stop's own transport cut (Rafka 141, trace
 /// 447b70d402fa6dc7c3f601b684d6d8f4: ConnectionsDeleting applied at 6.4 ms, its reply's write

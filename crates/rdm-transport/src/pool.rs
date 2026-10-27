@@ -262,10 +262,23 @@ impl Pool {
     /// connections and close them with `reason`. A call riding one ends where the connection ends;
     /// the next call dials afresh. Returns how many pooled connections were closed.
     pub fn close_all(&self, reason: &'static [u8]) -> usize {
-        for (_, d) in self.inner.dials.lock().unwrap().iter() {
-            let _ = d.cancel.send(true);
+        self.close_all_except(&[], reason)
+    }
+
+    /// [`Self::close_all`], sparing every connection and dial to a peer in `spare`, whatever its
+    /// scope or birth: a stop's cut keeps the connection to its mesh-primary its owed declarations
+    /// ride (node-stop.md "Transport cut").
+    pub fn close_all_except(&self, spare: &[iroh::PublicKey], reason: &'static [u8]) -> usize {
+        for (k, d) in self.inner.dials.lock().unwrap().iter() {
+            if !spare.contains(&k.peer) {
+                let _ = d.cancel.send(true);
+            }
         }
-        let closed: Vec<(PoolKey, Pooled)> = self.inner.conns.lock().unwrap().drain().collect();
+        let closed: Vec<(PoolKey, Pooled)> = {
+            let mut conns = self.inner.conns.lock().unwrap();
+            let keys: Vec<PoolKey> = conns.keys().filter(|k| !spare.contains(&k.peer)).cloned().collect();
+            keys.into_iter().filter_map(|k| conns.remove(&k).map(|p| (k, p))).collect()
+        };
         for (key, p) in &closed {
             p.conn.close(0u32.into(), reason);
             tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.birth())

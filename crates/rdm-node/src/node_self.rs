@@ -163,8 +163,10 @@ pub trait Session: Send + Sync {
     }
     /// Hard-cut the mesh connections: leave the gossip topics, close the pooled peer connections and
     /// the connections peers made, sparing the connections from `spare` (the commanders whose calls
-    /// are in flight and answered on their connections). The endpoint stays bound.
-    async fn cut(&self, spare: &[iroh::PublicKey]) -> CutReport;
+    /// are in flight and answered on their connections) and, a stop's, the pooled connection to
+    /// `mesh_primary` its owed declarations ride (node-stop.md "Transport cut"). The endpoint stays
+    /// bound.
+    async fn cut(&self, spare: &[iroh::PublicKey], mesh_primary: Option<iroh::PublicKey>) -> CutReport;
     /// Rejoin as the same birth: join the authority, rejoin the mesh channel, take the topology and
     /// run the `pre_node_ready` hook with `AfterStop` in its context under `retire`, the new cycle's token.
     /// `commander` holds the endpoint key of the call that commanded the start last: each join
@@ -206,13 +208,11 @@ enum StopBy<'a> {
 }
 
 /// What a stop by this process's own signal leaves behind (i146 Q55): the receipt of its
-/// `node.connections.delete { All }`, and each declaration it owes its mesh-primary, one owed call
-/// apiece that the process's exit drops (node-rpc.md §34).
+/// `node.connections.delete { All }`. Each declaration it owed its mesh-primary has ended by then
+/// (Q206, [`NodeSelf::stop_on_signal`]).
 pub struct SignalStopped {
     /// The `All`'s receipt.
     pub receipt: ConnectionsReceipt,
-    /// The owed declarations: connections-deleting, then stopped.
-    pub declarations: Vec<tokio::task::JoinHandle<()>>,
 }
 
 /// The operation `op` names, as a declaration carries it (i146 Q36).
@@ -863,7 +863,7 @@ impl NodeSelf {
         }
         let left = match already {
             Some(left) => left,
-            None => self.leave_mesh(spare.as_slice(), operation).await.1,
+            None => self.leave_mesh(spare.as_slice(), None, operation).await.1,
         };
         NodeCommandReply::MeshLeft { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), left }
     }
@@ -871,8 +871,8 @@ impl NodeSelf {
     /// The `node.mesh.leave` primitive (node-mesh-leave.md): shared by standalone `LeaveMesh` and
     /// `node.stop` step 3. Emits `rdm.node.mesh.update.via-leaving`, leaves the mesh channel (and
     /// the backbone for a node-admin, each emitting `rdm.node.mesh.update.via-left`), and cuts the
-    /// Node RPC pool while sparing `spare`.
-    async fn leave_mesh(&self, spare: &[iroh::PublicKey], operation: &str) -> (CutReport, Vec<WhichMesh>) {
+    /// Node RPC pool while sparing `spare`, and a stop's pooled connection to `mesh_primary`.
+    async fn leave_mesh(&self, spare: &[iroh::PublicKey], mesh_primary: Option<iroh::PublicKey>, operation: &str) -> (CutReport, Vec<WhichMesh>) {
         use tracing::Instrument;
         let leaving_span = tracing::info_span!(
             "rdm.node.mesh.update.via-leaving",
@@ -889,7 +889,7 @@ impl NodeSelf {
             let _ = (self.set_status)(MemberStatus::Leaving);
             let session = self.session.lock().unwrap().clone();
             let report = match &session {
-                Some(session) => session.cut(spare).await,
+                Some(session) => session.cut(spare, mesh_primary).await,
                 None => {
                     leave_channels(&self.topology_view, self.backbone.as_ref(), &self.node_id).await;
                     CutReport::default()
@@ -1066,7 +1066,7 @@ impl NodeSelf {
     /// the node's own tasks held, `node.mesh.leave`, then `Stopped` to the mesh-primary. A command's stop
     /// answers on its stream and declares `Stopped` naming its operation; a signal's stop owes
     /// connections-deleting at the block and `Stopped` after the leave, waits on no answer, and hands
-    /// each owed declaration back for the process's exit to drop (node-rpc.md §34); a failed start's
+    /// each owed declaration back for its process end to wait on (Q206); a failed start's
     /// stop declares `Stopped` naming the start's operation and puts nothing on the start's stream. The
     /// receipt is the All's.
     async fn stop_steps(&self, by: StopBy<'_>) -> (ConnectionsReceipt, Vec<tokio::task::JoinHandle<()>>) {
@@ -1182,7 +1182,8 @@ impl NodeSelf {
         }
         // 5. node.mesh.leave, called after its connections are deleted (node-stop.md step 3;
         // node-mesh-leave.md): leave the mesh and cut its transport, its gossip neighbours and its
-        // Node RPC pool, sparing the commander's connection the stop call rides. Never its endpoint.
+        // Node RPC pool, sparing the commander's connection the stop call rides and the connection to
+        // its mesh-primary its owed declarations ride (Q206). Never its endpoint.
         // A command's stop streams its acknowledgement, `Leaving`, and its completion, `StopMeshLeft`
         // (Q205). A birth already left since it last started leaves nothing again and answers both.
         if let Some(progress) = &progress {
@@ -1192,18 +1193,24 @@ impl NodeSelf {
         let left = match already_left {
             Some(left) => left,
             None => {
+                let mesh_primary = self
+                    .topology_view
+                    .primaries()
+                    .mesh(&self.held_name().mesh)
+                    .filter(|p| p.node_id != self.node_id)
+                    .and_then(|p| self.client.endpoint_of(&p.node_id));
                 let cut = tracing::info_span!(
                     "rdm.node_admin.node.update.via-stop-transport-cut",
                     node = %self.held_name(), operation = %operation,
-                    spared = spare.len(), neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty, turns_in_progress = tracing::field::Empty
+                    spared = spare.len(), mesh_primary_spared = mesh_primary.is_some(), neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty, turns_in_progress = tracing::field::Empty
                 );
-                let (report, left) = self.leave_mesh(spare.as_slice(), operation).instrument(cut.clone()).await;
+                let (report, left) = self.leave_mesh(spare.as_slice(), mesh_primary, operation).instrument(cut.clone()).await;
                 cut.record("neighbours", report.neighbours);
                 cut.record("pooled", report.pooled);
                 cut.record("accepted", report.accepted);
                 cut.record("turns_in_progress", report.turns_in_progress);
                 // The cut's span ends with the cut: what follows is the declaration, not the cut.
-                cut.in_scope(|| tracing::info!("the stop cut its transport: gossip neighbours and the Node RPC pool; the endpoint stays bound and the commander's connection stays open"));
+                cut.in_scope(|| tracing::info!("the stop cut its transport: gossip neighbours and the Node RPC pool; the endpoint stays bound, and the commander's connection and the mesh-primary's stay open"));
                 left
             }
         };
@@ -1211,8 +1218,9 @@ impl NodeSelf {
             let _ = progress.lock().await.progress(NodeCommandReply::StopMeshLeft { left }).await;
         }
         // 6. This birth declares `Stopped` to its mesh-primary (i146 Q29, Q36, Q55; node-stop.md step 4): an
-        // owed message whose delivery is the runtime's (node-rpc.md §43), never waited on, so the stop's
-        // receipt and reply never wait for the mesh-primary's answer. A command's names its stop: the owed
+        // owed message whose delivery is the runtime's (node-rpc.md §43), riding the connection the cut
+        // spared. The stop's receipt and reply never wait for the mesh-primary's answer; a signal's
+        // process ends once each is answered or its receiver is proven gone (Q206). A command's names its stop: the owed
         // twin of the reply's `stopped`; whichever of the two reaches the mesh-primary first is applied and
         // the other answers AlreadyApplied (node-stop.md step 5, Q49). A signal's names no operation.
         owed.extend(self.owe(NodeState::Stopped, op.map(declared)));
@@ -1220,8 +1228,8 @@ impl NodeSelf {
     }
 
     /// Owe `state` to the mesh-primary without waiting for its answer (node-rpc.md §43: an owed message's
-    /// delivery is the runtime's): one owed call, handed back for the process's exit to drop (node-rpc.md
-    /// §34). A command's stop names its operation; a signal's names none (i146 Q55).
+    /// delivery is the runtime's): one owed call, handed back for a signal's process end to wait on
+    /// (Q206). A command's stop names its operation; a signal's names none (i146 Q55).
     fn owe(&self, state: NodeState, operation: Option<rdm_core::status::DeclaredOperation>) -> Option<tokio::task::JoinHandle<()>> {
         let declare = self.declare.clone()?;
         match &operation {
@@ -1234,10 +1242,41 @@ impl NodeSelf {
     }
 
     /// The stop this process's own signal runs: node.stop's steps with the node its own subject
-    /// ([`Self::stop_steps`], i146 Q55).
+    /// ([`Self::stop_steps`], i146 Q55), then the wait its process end follows (Q206): each owed
+    /// declaration's call ends on its answer or on the proof its receiver is gone, over the
+    /// connection to the mesh-primary the cut spared. A mesh-primary exiting beside this node
+    /// leaves no proof this node can hear once its mesh is left, so the wait is bounded by the
+    /// birth's `RDM_CONNECTIONS_DELETE_DEADLINE_MS`; a call still open at the bound ends with the
+    /// process, and the span names it.
     pub async fn stop_on_signal(&self) -> SignalStopped {
-        let (receipt, declarations) = self.stop_steps(StopBy::Signal).await;
-        SignalStopped { receipt, declarations }
+        let (receipt, mut declarations) = self.stop_steps(StopBy::Signal).await;
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.update.via-stop-declarations",
+            node = %self.held_name(), operation = SIGNAL_STOP, declarations = declarations.len(),
+            deadline_ms = self.connections_delete_deadline.as_millis() as u64, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty
+        );
+        let began = std::time::Instant::now();
+        let ended = {
+            let each = async {
+                for d in declarations.iter_mut() {
+                    let _ = d.await;
+                }
+            };
+            tokio::time::timeout(self.connections_delete_deadline, each).await.is_ok()
+        };
+        for d in &declarations {
+            d.abort();
+        }
+        span.record("elapsed_ms", began.elapsed().as_millis() as u64);
+        span.record("outcome", if ended { "ended" } else { "deadline" });
+        span.in_scope(|| {
+            if ended {
+                tracing::info!("each owed declaration's call ended: answered, or its receiver proven gone");
+            } else {
+                tracing::info!("a declaration's call was still open at the birth's bound: it ends with the process");
+            }
+        });
+        SignalStopped { receipt }
     }
 
     /// The start: a stopped birth rejoins as itself through its session. A birth that is not stopped

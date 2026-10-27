@@ -458,6 +458,13 @@ impl NodeRpcClient {
         self.pool.close_all(reason.as_bytes())
     }
 
+    /// [`Self::close_pooled`], sparing every connection and dial to a peer in `spare`: a stop's cut
+    /// keeps the connection to its mesh-primary its owed declarations ride, and the connections of
+    /// the callers it answers (node-stop.md "Transport cut").
+    pub fn close_pooled_except(&self, spare: &[iroh::PublicKey], reason: &'static str) -> usize {
+        self.pool.close_all_except(spare, reason.as_bytes())
+    }
+
     /// Invoke protocol `P` on `target`.
     pub async fn call<P: NodeProtocol>(
         &self,
