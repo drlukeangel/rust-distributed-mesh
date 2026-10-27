@@ -73,7 +73,7 @@ Every RDM test under `crates/` and `tools/` checked against `docs/eng/testing-na
 | `crates/rdm-transport/tests/delivery.rs` | `an_owed_call_ends_on_its_receivers_proven_exit_unavailable` | `an_owed_call_ends_on_its_receivers_removal_from_the_view_unavailable` |
 | `crates/rdm-test/tests/mesh/mesh_delete_resume.rs` | `a_leave_whose_primary_is_lost_after_a_members_exit_proof_finishes_that_members_delete_under_the_surviving_admin` | `a_leave_whose_primary_is_lost_after_a_members_terminate_runtime_receipt_finishes_that_members_delete_under_the_surviving_admin` |
 | `crates/rdm-test/tests/node/node_replace.rs` | `a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_over_mesh_primary` | `a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_that_takes_over_mesh_primary` |
-| `crates/rdm-test/tests/node/node_replace.rs` | `a_replace_rolled_back_by_its_recipe_ends_with_the_predecessor_ready_under_its_name` | `a_replace_whose_rollback_recipe_ends_with_the_predecessor_ready_under_its_name` |
+| `crates/rdm-test/tests/node/node_replace.rs` | `a_replace_rolled_back_by_its_recipe_ends_with_the_predecessor_ready_under_its_name` | `a_replace_rollback_ends_with_the_predecessor_ready_under_its_name` (Q211's rename, on main) |
 | `crates/rdm-test/tests/gossip/recovery_receive.rs` | `a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back` | `a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_installed` |
 | `tools/mesh-audit/tests/connections_parity.rs` | `unmapped_clause_fails` | `a_clause_with_no_row_fails_naming_the_clause` |
 | `tools/mesh-audit/tests/connections_parity.rs` | `duplicate_clause_fails` | `a_clause_listed_twice_fails_naming_both_lines` |
