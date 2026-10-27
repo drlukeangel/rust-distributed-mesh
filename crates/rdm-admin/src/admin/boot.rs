@@ -146,9 +146,12 @@ impl Running {
 
     /// Stop executing and reconciling: no Build attempt and no drift
     /// recovery starts after this. A fabric shutdown does this first, so the
-    /// runtimes it stops are not recovered as proven drift.
+    /// runtimes it stops are not recovered as proven drift. The reconcile loop ends, and so does
+    /// every Build's drive it started, whose own passes would otherwise plan and begin the Build's
+    /// next attempt.
     pub fn stop_reconciling(&self) {
         self.executor.abort();
+        self.runner.drives.stop();
     }
 
     /// Stop on this process's signal (i146 Q55; node-stop.md steps 2-4), this admin its own subject: the

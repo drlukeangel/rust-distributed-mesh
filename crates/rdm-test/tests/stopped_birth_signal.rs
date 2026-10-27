@@ -20,7 +20,7 @@ use std::time::Duration;
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 const WRONG: Duration = Duration::from_secs(60);
 
-fn day0_config(dir: &std::path::Path) -> AdminConfig {
+pub(crate) fn day0_config(dir: &std::path::Path) -> AdminConfig {
     let dir = dir.display().to_string();
     AdminConfig::from_env(|k| match k {
         "RDM_DATA_DIR" | "RDM_STORE_DIR" => Some(dir.clone()),
@@ -33,7 +33,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 }
 
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
+pub(crate) fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -59,7 +59,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
 }
 
 /// What `root` verifies the join of `launch`'s birth against.
-fn deployed(launch: &Launch) -> Deployed {
+pub(crate) fn deployed(launch: &Launch) -> Deployed {
     let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
     Deployed {
         name: launch.name.clone(),
@@ -75,7 +75,7 @@ fn deployed(launch: &Launch) -> Deployed {
     }
 }
 
-async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
+pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     let waited = async {
         while digest().status != MemberStatus::ReadyForTraffic {
             tokio::time::sleep(Duration::from_millis(20)).await;

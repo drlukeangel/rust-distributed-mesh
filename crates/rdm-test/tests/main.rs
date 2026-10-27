@@ -265,6 +265,7 @@ mod node_start_sequence;
 mod admin_top_up;
 mod admin_start_declares;
 mod stopped_birth_signal;
+mod stop_reconciling;
 mod admin_boot_name;
 mod process_env;
 mod role_process;

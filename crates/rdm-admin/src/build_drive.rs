@@ -678,6 +678,9 @@ pub struct DriveEnv {
 #[derive(Default)]
 pub struct Drives {
     drives: Mutex<HashMap<BuildId, Arc<Drive>>>,
+    /// The task making each drive's frames, by Build, and whether this admin drives Builds no longer
+    /// ([`Self::stop`]): one lock, so no drive's task starts after the stop.
+    tasks: Mutex<(HashMap<BuildId, tokio::task::AbortHandle>, bool)>,
 }
 
 impl Drives {
@@ -702,10 +705,14 @@ impl Drives {
             }
             drives.entry(build_id.clone()).or_insert_with(|| Drive::new(build_id.clone())).clone()
         };
+        let mut tasks = self.tasks.lock().unwrap();
+        if tasks.1 {
+            return drive;
+        }
         if !drive.running.swap(true, Ordering::SeqCst) {
             let (env, d, drives) = (env.clone(), drive.clone(), self.clone());
             let parent = tracing::Span::current();
-            tokio::spawn(
+            let task = tokio::spawn(
                 async move {
                     let end = env.run(&d).await;
                     d.running.store(false, Ordering::SeqCst);
@@ -721,8 +728,21 @@ impl Drives {
                 .instrument(parent)
                 .with_current_subscriber(),
             );
+            tasks.0.insert(drive.build_id.clone(), task.abort_handle());
         }
         drive
+    }
+
+    /// This admin drives Builds no longer (`Running::stop_reconciling`): every drive's task ends where
+    /// it is, and none starts after this, so no attempt of any Build begins here. Returns how many
+    /// drives' tasks were ended.
+    pub fn stop(&self) -> usize {
+        let mut tasks = self.tasks.lock().unwrap();
+        tasks.1 = true;
+        let ended = tasks.0.drain().filter(|(_, t)| !t.is_finished()).map(|(_, t)| t.abort()).count();
+        tracing::info_span!("rdm.node_admin.build.update.via-reconciling-stopped", drives = ended as u64)
+            .in_scope(|| tracing::info!("this admin drives no Build from now on: every drive's task is ended and none starts"));
+        ended
     }
 
     /// The drive a re-submit of a Build that ended at `attempt` is answered from: the drive this
