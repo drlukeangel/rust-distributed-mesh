@@ -788,7 +788,7 @@ async fn settled_two_meshes(estate: Estate, admins: u32) -> (Estate, Vec<NodeVie
 ///    at P, successor NA2, outcome `updated`, under the command), and P finishes the writes it has
 ///    issued (`primary.update.via-issued-writes-finished`) before it calls NA2.
 /// 4. P calls node.primary.update on NA2's exact birth; NA2 installs the election's result the call
-///    carries and answers node.primary.updated (`seat.update.via-primary-updated` at NA2, outcome
+///    carries and answers node.primary.updated (`primary.update.via-primary-updated` at NA2, outcome
 ///    `held`, the mesh-primary entry P -> NA2, under P's update).
 /// 5. NA2, the mesh's writer from that moment, records `is_primary` on its own row ("The write records
 ///    the role; it does not grant it").
@@ -836,7 +836,7 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
     assert_eq!((attr(&upd, "moving"), attr(&upd, "successor"), attr(&upd, "outcome")), ("mesh-primary".to_string(), na2_name.clone(), "updated".to_string()), "{upd:#?}");
     assert!(descends_from(&spans, &upd, &cmd), "P's update runs under the fabric-primary's command: {upd:#?}");
     let finished = one("rdm.node_admin.primary.update.via-issued-writes-finished", &|sp| attr(sp, "node") == p_name);
-    let installed_at_na2 = one("rdm.node_admin.seat.update.via-primary-updated", &|sp| attr(sp, "node") == na2_name && attr(sp, "outcome") == "held");
+    let installed_at_na2 = one("rdm.node_admin.primary.update.via-primary-updated", &|sp| attr(sp, "node") == na2_name && attr(sp, "outcome") == "held");
     let entry = attr(&installed_at_na2, "primaries");
     assert!(entry.starts_with("node-admin ") && entry.contains(&p_id) && entry.contains(&format!("-> {na2_id}/")), "NA2 installed the mesh-primary entry P -> NA2 and answered node.primary.updated: {installed_at_na2:#?}");
     assert!(descends_from(&spans, &installed_at_na2, &upd), "NA2 installs under P's node.primary.update call: {installed_at_na2:#?}");
@@ -999,10 +999,10 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
     let stopped_of = |node: &str| -> Vec<&Value> { named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr(sp, "node") == node).collect() };
     let stopped_published = stopped_of(&stopped_s);
     assert_eq!(stopped_published.len(), 1, "NodeStopped for the stopped birth is published once across the seat move: {stopped_published:#?}");
-    let installed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "node") == successor_s).collect();
+    let installed: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "node") == successor_s).collect();
     assert!(!installed.is_empty(), "{successor_s} installed itself as mesh2's primary");
     assert!(start_ns(stopped_published[0]) < start_ns(installed[0]), "the stopped birth's NodeStopped came from the holder before the move");
-    let folded: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-seat-fold").into_iter().filter(|sp| attr(sp, "node") == successor_s && attr(sp, "member") == stopped_s).collect();
+    let folded: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-successor-fold").into_iter().filter(|sp| attr(sp, "node") == successor_s && attr(sp, "member") == stopped_s).collect();
     // The stopped birth's Stopped naming its stop, declared to the new holder (the estate's teardown
     // owes every node's own Stopped too, naming no operation).
     let stopped_operation = format!("node.stop:{stopped_s}");
@@ -1042,7 +1042,7 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
 /// declaration cut): the restart's wait for the node's readiness fails naming the node.started its
 /// primary never took, the node live and its declaration owed. Then mesh2's primary is stopped,
 /// which moves mesh2's seat to mesh2's other admin first. The node hears the move: its call to the
-/// old holder is cancelled (`via-seat-moved`) and it declares to the new holder, which applies it
+/// old holder is cancelled (`via-primary-changed`) and it declares to the new holder, which applies it
 /// once; the old holder decides nothing of it (its cut holds the one call it took). The create's
 /// failure leaves the node surplus to the accepted topology, so the fabric-primary's drift pass is held
 /// at its drift seam until the declaration is delivered; released, drift's attempt deletes the surplus
@@ -1133,10 +1133,10 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     assert!(ready.iter().all(|sp| attr(sp, "to") == holder_s || attr(sp, "to") == successor_s), "addressed only to the seat's holders: {ready:#?}");
     // Before the seat moved, the declaration went to its holder alone: never to an admin that did not
     // yet hold the seat.
-    let installed = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "node") == successor_s).map(start_ns).min().expect("the successor installed itself");
+    let installed = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "node") == successor_s).map(start_ns).min().expect("the successor installed itself");
     let early: Vec<&&Value> = ready.iter().filter(|sp| attr(sp, "to") == successor_s && start_ns(sp) < installed).collect();
     assert!(early.is_empty(), "no declaration to {successor_s} before it held the seat: {early:#?}");
-    let cancelled: Vec<&Value> = named(&spans, "rdm.node_rpc.status.remove.via-seat-moved").into_iter().filter(|sp| attr(sp, "node") == node_s).collect();
+    let cancelled: Vec<&Value> = named(&spans, "rdm.node_rpc.status.remove.via-primary-changed").into_iter().filter(|sp| attr(sp, "node") == node_s).collect();
     // One call carried the declaration across the hold, in flight at the old holder's door until the
     // seat moved: the node runs no declaration loop of its own (Q52).
     assert_eq!(cancelled.len(), 1, "one call to the old holder, cancelled once when the seat moved: {cancelled:#?}");

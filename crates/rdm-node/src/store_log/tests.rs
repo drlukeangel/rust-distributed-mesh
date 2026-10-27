@@ -445,7 +445,7 @@ async fn a_restart_never_reuses_an_earlier_op() {
 }
 
 /// CONTRACT (proposal §4 "What open costs": "The open records one span per file,
-/// rdm.store.open.via-fold, with the file's bytes, lines, the latest op per writer and the fold's
+/// rdm.node.store.resolve.via-fold, with the file's bytes, lines, the latest op per writer and the fold's
 /// duration; a refused fold names its invalid offset and cause"): an open of a populated file records
 /// its bytes, lines, writers and fold duration; an open of a damaged file records `refused` with the
 /// offset and the cause. Must NOT happen: an open with no span, or a refusal with no offset.

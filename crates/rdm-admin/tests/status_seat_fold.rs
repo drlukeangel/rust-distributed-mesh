@@ -116,13 +116,13 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
 /// folds none of them while A holds the seat: what B holds is only what B applied. When B takes the
 /// seat, the view naming it mesh1's primary is installed with A's rows folded in, merged with what
 /// B applied: the greatest state per key (B's own later state stands over A's earlier row), the
-/// union of the events. One span, `rdm.node_admin.status.resolve.via-seat-taken`, names the mesh
+/// union of the events. One span, `rdm.node_admin.status.resolve.via-successor-fold`, names the mesh
 /// and the counts folded.
 #[test]
 fn a_new_mesh_primary_folds_the_mesh_status_rows_and_a_secondary_folds_none() {
     let cap = crate::mesh_delete_resume::capture();
     let t = cap.run(async {
-        let root_span = tracing::info_span!("rdm.test.status.resolve.via-seat-taken");
+        let root_span = tracing::info_span!("rdm.test.status.resolve.via-successor-fold");
         let trace_id = crate::mesh_delete_resume::trace_id(&root_span);
         tracing::Instrument::instrument(taken_over_one_root(trace_id), root_span).await
     });
@@ -137,7 +137,7 @@ fn a_new_mesh_primary_folds_the_mesh_status_rows_and_a_secondary_folds_none() {
     let mut events = t.after.fabric.get(&t.fabric_id).cloned().unwrap_or_default();
     events.sort();
     assert_eq!(events, vec!["b-own".to_string(), "shutdown-initiated:mesh1.admin.1".to_string()], "the union of the events, each once");
-    let spans: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.status.resolve.via-seat-taken").collect();
+    let spans: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.status.resolve.via-successor-fold").collect();
     assert_eq!(spans.len(), 1, "one fold, at the seat take: {spans:#?}");
     let s = &spans[0];
     assert_eq!(s["trace_id"], t.trace_id.as_str(), "the fold is the cell's own story: {s:#}");
@@ -183,7 +183,7 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
 /// the seat. The fold of A's rows reaches B's view: both births are ReadyForTraffic there and in B's
 /// member projection. `mesh1.rpc.1` declaring ReadyForTraffic to its new primary (R-S2: a declaration is
 /// owed again when the authority moved) is AlreadyApplied, and the view still says ReadyForTraffic. One
-/// `rdm.node_admin.status.update.via-seat-fold` per adopted birth names it, its prior and its status.
+/// `rdm.node_admin.status.update.via-successor-fold` per adopted birth names it, its prior and its status.
 /// Must NOT happen (i143_acceptance_2803, fabric recovery): the successor's projection says a surviving
 /// member Pending while its record says ReadyForTraffic, so the member's declaration is AlreadyApplied
 /// and the member stays Pending under the new primary for good.
@@ -194,7 +194,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
     use rdm_core::status::{StatusReply, StatusRequest};
     let cap = crate::mesh_delete_resume::capture();
     let (trace_id, after_take, rpc2_heard, projected, declared, after_declare) = cap.run(async {
-        let root_span = tracing::info_span!("rdm.test.status.update.via-seat-fold");
+        let root_span = tracing::info_span!("rdm.test.status.update.via-successor-fold");
         let trace_id = crate::mesh_delete_resume::trace_id(&root_span);
         tracing::Instrument::instrument(
             async move {
@@ -290,7 +290,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
     assert_eq!(projected, vec![("mesh1.rpc.1".to_string(), MemberStatus::ReadyForTraffic), ("mesh1.rpc.2".to_string(), MemberStatus::ReadyForTraffic)], "the successor's member projection carries the adopted statuses");
     assert_eq!(declared, StatusReply::AlreadyApplied, "the member's re-declaration to its new primary is already held");
     assert_eq!(after_declare, Some(MemberStatus::ReadyForTraffic), "and the view agrees with the record");
-    let adopted: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-seat-fold").collect();
+    let adopted: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-successor-fold").collect();
     let mut members: Vec<String> = adopted.iter().map(|s| s["attributes"]["member"].as_str().unwrap_or_default().to_string()).collect();
     members.sort();
     assert_eq!(members, vec!["mesh1.rpc.1".to_string(), "mesh1.rpc.2".to_string()], "one adoption per folded birth of the mesh: {adopted:#?}");

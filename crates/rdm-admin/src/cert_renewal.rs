@@ -400,7 +400,7 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
 
 /// Mint the next issuing key of `mesh` after the one expiring at `previous_expiry`, held here.
 fn mint_next(r: &Renewals, mesh: &str, previous_expiry: u64) -> Option<IssuerMint> {
-    let span = tracing::info_span!("rdm.fabric.issuer.update.via-renewal", mesh, issuer_expires_at = tracing::field::Empty, previous_issuer_expires_at = previous_expiry, admins = tracing::field::Empty, reason = tracing::field::Empty, outcome = tracing::field::Empty);
+    let span = tracing::info_span!("rdm.node_admin.issuer.create.via-renewal", mesh, issuer_expires_at = tracing::field::Empty, previous_issuer_expires_at = previous_expiry, admins = tracing::field::Empty, reason = tracing::field::Empty, outcome = tracing::field::Empty);
     match r.issuer.renew_issuer(mesh) {
         Ok((_, mint)) => {
             span.record("issuer_expires_at", mint.expires_at);

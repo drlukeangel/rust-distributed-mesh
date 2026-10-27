@@ -18,7 +18,7 @@
 //! start), each step after the one before it closed; the accepting
 //! authority issues it a fresh member cert at that join (`cert.create.via-join` after the release);
 //! the view holds the birth Pending and then ReadyForTraffic again, the same NodeId and incarnation.
-//! What must NOT happen: a new birth at the path, a terminate (`via-fence outcome=terminated`), a
+//! What must NOT happen: a new birth at the path, a terminate (`via-path-investigation outcome=unreached`: the previous birth is deleted, its runtime terminated), a
 //! `node.create` for it, a start step missing, outside its root or out of order, or a ready-for-traffic
 //! with no hook attempt before it.
 use rdm_client::NodeStatus;
@@ -206,7 +206,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         let certs = after(&spans, "rdm.node_admin.cert.create.via-join", node, since);
         assert!(!certs.is_empty(), "{node}: the accepting authority issues a fresh member cert at the heard-again join");
         // Must NOT: a terminate, a new birth, a create.
-        let terminated = named(&spans, "rdm.node_admin.deployment.delete.via-fence").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && s(&sp["attributes"]["outcome"]) == "terminated").count();
+        let terminated = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && s(&sp["attributes"]["outcome"]) == "unreached").count();
         assert_eq!(terminated, 0, "{node}: a held runtime is never terminated");
         let created = after(&spans, "rdm.node_admin.node.create.via-build", node, since);
         assert!(created.is_empty(), "{node}: no new birth at the path: {created:?}");

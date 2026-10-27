@@ -610,7 +610,7 @@ impl BuildDoor {
                 while let Some(f) = reader.next().await {
                     if !held_at_start && self.is_fabric_primary() {
                         let me = self.held_name().await;
-                        tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %id.log(), attempt, node = %me, to = %me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
+                        tracing::info_span!("rdm.node_admin.build.update.via-fabric-primary-changed", build_id = %id.log(), attempt, node = %me, to = %me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
                             .in_scope(|| tracing::info!("the inner stream ends with the new seat"));
                         return Ok(BuildReply::FabricPrimaryMoved { build_id: id.to_string(), fabric_primary: Some(me.to_string()) });
                     }
@@ -642,7 +642,7 @@ async fn stream_frames(mut sink: ReplySink<Build, rdm_transport::stream::Streami
             Read::Frame(f) => sink.data(f).await.map_err(gone)?,
             Read::Terminal(t) => return Ok(t),
             Read::SeatLost(loss) => {
-                tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %reader.build_id().log(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new seat"));
+                tracing::info_span!("rdm.node_admin.build.update.via-fabric-primary-changed", build_id = %reader.build_id().log(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new seat"));
                 return Ok(BuildReply::FabricPrimaryMoved { build_id: reader.build_id().to_string(), fabric_primary: loss.to });
             }
         }

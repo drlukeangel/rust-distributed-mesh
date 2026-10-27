@@ -80,7 +80,7 @@ fn the_day_zero_root_runs_the_hook_with_no_mesh_primary_and_completes_from_local
 /// CONTRACT: an admin launched by another admin runs the same hook against its accepting authority.
 /// The Day-0 admin's own hook is held, so its pull gate is closed: the joining admin's pull is
 /// answered typed `NotReady`, its hook is `Blocked { PrimaryReady }`, the Ready check names that
-/// blocker (`rdm.node_admin.runtime.reject.via-not-authority-capable`) and it publishes Pending.
+/// blocker (`rdm.node_admin.runtime.reject.via-not-ready`) and it publishes Pending.
 /// Its executor's `ready_blocker` (a `ProbeNodeState` to the exact birth) is answered Status
 /// `Blocked` carrying that blocker, named with no attempt counter (node-start.md step 3). When the Day-0 admin's hook returns and it publishes ReadyForTraffic, the joining admin's hook
 /// runs again, pulls the rows and it publishes ReadyForTraffic after its authority. What must NOT
@@ -218,7 +218,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
                     .lock()
                     .unwrap()
                     .values()
-                    .filter(|(n, _, f)| n == "rdm.node_admin.runtime.reject.via-not-authority-capable" && f.get("node").is_some_and(|n| n.contains("mesh1.admin.2")))
+                    .filter(|(n, _, f)| n == "rdm.node_admin.runtime.reject.via-not-ready" && f.get("node").is_some_and(|n| n.contains("mesh1.admin.2")))
                     .filter_map(|(_, _, f)| f.get("detail").cloned())
                     .collect();
                 if found.iter().any(|d| d.contains("pre_node_ready is blocked")) {

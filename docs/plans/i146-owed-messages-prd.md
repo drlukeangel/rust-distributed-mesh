@@ -529,7 +529,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   once (`route` on `via-declare-own`: `direct` or `carried:<peer>`); with no holder held nothing is
   sent and it stays owed. Every declaration path (the stop's, the start's node.started, the declare
   loop) runs under `declare_until_seat_moves`: the mesh's seat record naming another birth cancels the
-  call in flight (`rdm.node_rpc.status.remove.via-seat-moved`) and the declaration stays owed to the new
+  call in flight (`rdm.node_rpc.status.remove.via-primary-changed`) and the declaration stays owed to the new
   holder. The fault door gains a declaration cut (`CutSpec::Declaration`, through the status door's
   `wiring::DeclarationSeam`). Cells: the never-admitted cell asserts the stop's declaration addressed to
   mesh1's primary only and applied by it (its red occurrence: trace

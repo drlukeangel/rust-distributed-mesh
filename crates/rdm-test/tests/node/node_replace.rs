@@ -888,7 +888,7 @@ async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_t
 /// The fence spans of the exited birth `old` (node-recovery.md "Delete fences the old instance
 /// before the new join"): its resolver entry and the direct paths of its endpoint key retired.
 fn exited_birth_spans<'a>(spans: &'a [Value], old: &Value) -> Vec<&'a Value> {
-    named(spans, "rdm.node_admin.node.update.via-exit-paths-retired").into_iter().filter(|sp| sp["attributes"]["node_id"] == old["node_id"] && sp["attributes"]["kind"] == "recovery").collect()
+    named(spans, "rdm.node_admin.node.update.via-exit-paths-removed").into_iter().filter(|sp| sp["attributes"]["node_id"] == old["node_id"] && sp["attributes"]["kind"] == "recovery").collect()
 }
 
 /// Whether the boot span of `node`'s birth is exported (its own process exports it, on its own cadence).
@@ -2387,7 +2387,7 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_t
         SETTLE,
         || async {
             let spans = estate.spans();
-            let at_door = named(&spans, "rdm.node_admin.build.update.via-departed-claimant")
+            let at_door = named(&spans, "rdm.node_admin.build.update.via-claimant-departure")
                 .into_iter()
                 .find(|sp| {
                     sp["attributes"]["node"] == fp.as_str()

@@ -70,7 +70,7 @@ gossip.
 | `rdm.node_admin.cert.create.via-join` | the accepting authority | node, node_id, incarnation_id, issued_at, expires_at, issuer_expires_at | e3 |
 | `rdm.node_admin.cert.update.via-renewal` | the issuing authority | node, node_id, incarnation_id, issued_at, expires_at, previous_expires_at, outcome ∈ {`installed`, `not-sent`, `refused`} | e3 |
 | `rdm.node.cert.update.via-installed` | the node | node, node_id, incarnation_id, expires_at | e3 |
-| `rdm.fabric.issuer.update.via-renewal` | the fabric-primary | mesh, issuer_expires_at, previous_issuer_expires_at, admins, outcome | e3 |
+| `rdm.node_admin.issuer.create.via-renewal` | the fabric-primary | mesh, issuer_expires_at, previous_issuer_expires_at, admins, outcome | e3 |
 | `rdm.node_admin.issuer.update.via-renewal` | the fabric-primary, per admin | node, node_id, incarnation_id, mesh, issuer_expires_at, previous_issuer_expires_at, outcome | e3 |
 | `rdm.node_admin.issuer.update.via-installed` | the admin | node, mesh, issuer_expires_at | e3 |
 | `rdm.fabric.ca.update.via-renewal` | the fabric-primary | ca_expires_at, previous_ca_expires_at, meshes, outcome | e5 |

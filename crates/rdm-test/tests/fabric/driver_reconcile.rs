@@ -154,7 +154,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     }
     let own = cap.spans();
     let fault_spans = named(&own, "rdm.testkit.fault.update.via-process-signal");
-    let verdicts = named(&own, "rdm.scenario.wedge.resolve.via-detector");
+    let verdicts = named(&own, "rdm.testkit.wedge.resolve.via-detector");
     if provider == "process" {
         for (action, faults) in [("kill", vec!["kill"]), ("wedge", vec!["stop", "continue"])] {
             if report.actions.get(action).copied().unwrap_or(0) > 0 {

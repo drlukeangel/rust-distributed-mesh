@@ -1599,7 +1599,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     }
     let refused_spans = fault_spans.iter().filter(|sp| ["not_this_container", "wrong_node", "wrong_fabric", "no_such_container"].iter().any(|r| attr(sp, "outcome").contains(r))).count();
     assert!(refused_spans >= 4, "the four refusals left spans: {refused_spans}");
-    let verdict_span = named(&own, "rdm.scenario.wedge.resolve.via-detector");
+    let verdict_span = named(&own, "rdm.testkit.wedge.resolve.via-detector");
     assert!(!verdict_span.is_empty(), "the detector's verdict span was emitted");
 
     let result = json!({

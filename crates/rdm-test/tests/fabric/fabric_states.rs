@@ -497,7 +497,7 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
         .expect("mesh1.rpc.1's ready-for-traffic was applied by its mesh-primary");
     let (_, change) = change_of(&spans, &build);
     let entered = change.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-every-mesh-ready").unwrap_or_else(|| panic!("every mesh was ready under {build}"));
-    let announced = named(&spans, "rdm.mesh.seat.update.via-announcement")
+    let announced = named(&spans, "rdm.mesh.primary.update.via-announcement")
         .into_iter()
         .filter(|a| a["attributes"]["seat"] == "rpc_node-primary" && a["attributes"]["via"] == "own" && s(&a["attributes"]["node"]).starts_with("mesh1.admin."))
         .min_by_key(|a| start(a))

@@ -239,7 +239,7 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == mesh_name.as_str()).collect();
     let mesh_ids: std::collections::BTreeSet<String> = handoffs.iter().map(|h| s(&h["attributes"]["mesh_id"])).collect();
     assert_eq!(mesh_ids.len(), 1, "one MeshId for {mesh_name} in every hand-off, none minted: {mesh_ids:?}");
-    let blocked: Vec<&Value> = named(&spans, "rdm.node_admin.runtime.reject.via-not-authority-capable")
+    let blocked: Vec<&Value> = named(&spans, "rdm.node_admin.runtime.reject.via-not-ready")
         .into_iter()
         .filter(|b| b["attributes"]["node"] == target.as_str() && s(&b["attributes"]["detail"]).contains("Pending has not been applied"))
         .collect();

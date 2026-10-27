@@ -2431,7 +2431,7 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
         // fabric-primary ReadyForTraffic after the successor installed: the install's order and the
         // decider's winner decide, never the inputs.
         let new_name = s(&ev["new_fabric_primary"]);
-        let installed = named(spans, "rdm.node_admin.seat.update.via-primary-updated")
+        let installed = named(spans, "rdm.node_admin.primary.update.via-primary-updated")
             .into_iter()
             .filter(|sp| {
                 let primaries = s(&sp["attributes"]["primaries"]);
@@ -5286,7 +5286,7 @@ fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
                 || n.contains(".deployment.delete.")
                 || n.contains(".deployment.update.")
                 || n.contains("topology.remove.")
-                || n.contains("topology.reject.via-departed-birth")
+                || n.contains("topology.reject.via-deleted-birth")
                 || n.contains("node.create.via-deployment")
         })
         .collect()
@@ -5526,7 +5526,7 @@ async fn one_live_birth_per_path(f: &Formed, admins: &[String], paths: &[String]
 /// Recovery follows node investigation's verdict (Q111; fabric-recovery.md step 3): every recovery submitted
 /// between `from` and `to`, and every create's fence, names a verdict other than `reached`.
 fn recovery_follows_the_verdict(spans: &[Value], from: u64, to: u64) {
-    for sp in spans.iter().filter(|sp| start_ns(sp) >= from && start_ns(sp) <= to && (sp["name"] == "rdm.node_admin.build.update.via-node-recovery" || (sp["name"] == "rdm.node_admin.deployment.delete.via-fence" && sp["attributes"]["outcome"] == "unreached"))) {
+    for sp in spans.iter().filter(|sp| start_ns(sp) >= from && start_ns(sp) <= to && (sp["name"] == "rdm.node_admin.build.update.via-node-recovery" || (sp["name"] == "rdm.node_admin.deployment.delete.via-path-investigation" && sp["attributes"]["outcome"] == "unreached"))) {
         assert_ne!(sp["attributes"]["verdict"], "reached", "a recovery follows node investigation's verdict, never `reached`: {sp}");
     }
 }

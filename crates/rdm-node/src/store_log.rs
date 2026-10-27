@@ -56,7 +56,7 @@ use std::sync::{Arc, Mutex};
 /// The span every open of a store file records: the file, its provider when the opener names it, its
 /// bytes and lines, the latest `op` of each writer and the fold's `duration` in milliseconds; a refused
 /// fold its `invalid_offset` and cause (i149 plan, "OTLP span-assertion bar").
-pub const OPEN_SPAN: &str = "rdm.store.open.via-fold";
+pub const OPEN_SPAN: &str = "rdm.node.store.resolve.via-fold";
 
 /// The bytes every object ends with after its checksummed bytes: `,"crc32":"xxxxxxxx"}`.
 const CRC_SUFFIX: usize = 20;
@@ -520,7 +520,7 @@ impl StoreLog {
     }
 
     async fn opened(path: &Path, formats: Formats, io: Arc<dyn AppendIo>, observer: Option<Observer>, provider: Option<&str>) -> Result<Self, StorageError> {
-        let span = tracing::info_span!("rdm.store.open.via-fold", file = %path.display(), provider = tracing::field::Empty, bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, duration = tracing::field::Empty, outcome = tracing::field::Empty, invalid_offset = tracing::field::Empty, cause = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node.store.resolve.via-fold", file = %path.display(), provider = tracing::field::Empty, bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, duration = tracing::field::Empty, outcome = tracing::field::Empty, invalid_offset = tracing::field::Empty, cause = tracing::field::Empty);
         if let Some(provider) = provider {
             span.record("provider", provider);
         }

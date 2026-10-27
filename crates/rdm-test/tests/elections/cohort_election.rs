@@ -156,7 +156,7 @@ fn next_lowest(nodes: &[Value], c: &Cohort, holder: &str) -> (String, String) {
 /// start), if it did.
 fn primary_updated(spans: &[Value], c: &Cohort, operation_suffix: &str, successor: &str) -> Option<u64> {
     let entry = format!("{} ", c.1.replace('_', "-"));
-    named(spans, "rdm.node_admin.seat.update.via-primary-updated")
+    named(spans, "rdm.node_admin.primary.update.via-primary-updated")
         .iter()
         .filter(|sp| {
             let a = &sp["attributes"];

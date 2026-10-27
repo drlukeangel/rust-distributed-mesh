@@ -754,7 +754,7 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     assert_eq!(s(&cmd["attributes"]["outcome"]), "updated", "{cmd:#?}");
     let upd = one("rdm.node_admin.primary.update.via-update-primary", &|sp| s(&sp["attributes"]["node"]) == p_name);
     assert_eq!((s(&upd["attributes"]["successor"]), s(&upd["attributes"]["outcome"])), (na2_name.clone(), "updated".to_string()), "{upd:#?}");
-    let answered = one("rdm.node_admin.seat.update.via-primary-updated", &|sp| s(&sp["attributes"]["node"]) == na2_name && s(&sp["attributes"]["outcome"]) == "held");
+    let answered = one("rdm.node_admin.primary.update.via-primary-updated", &|sp| s(&sp["attributes"]["node"]) == na2_name && s(&sp["attributes"]["outcome"]) == "held");
     let step = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| s(&sp["attributes"]["node"]) == p_name && s(&sp["attributes"]["step"]) == "DeleteConnections").cloned().expect("the DeleteConnections step on P");
     assert_eq!(s(&step["attributes"]["outcome"]), "complete", "{step}");
     assert!(start(&step) >= answered["end_unix_nano"].as_u64().unwrap_or(u64::MAX), "the All ran after NA2 answered node.primary.updated: {step} {answered}");

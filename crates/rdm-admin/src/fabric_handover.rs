@@ -210,7 +210,7 @@ impl HandoverDoor {
             return r;
         }
         // The span covers the install: its start is the moment the successor begins to install.
-        let span = tracing::info_span!("rdm.node_admin.seat.update.via-primary-updated", node = %self.held_name(), fabric = %self.fabric, operation = %operation, build_id = %build_id, run, primaries = %entries_named(&primaries), outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-primary-updated", node = %self.held_name(), fabric = %self.fabric, operation = %operation, build_id = %build_id, run, primaries = %entries_named(&primaries), outcome = tracing::field::Empty);
         let outcome = self.take(&primaries).instrument(span.clone()).await;
         span.record("outcome", outcome);
         span.in_scope(|| tracing::info!("the successor installed the election's result the call carries and answers node.primary.updated"));

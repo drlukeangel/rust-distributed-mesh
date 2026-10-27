@@ -235,8 +235,8 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     assert_eq!(seen.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1);
     let spans: Vec<Value> = estate.spans();
     assert!(
-        named(&spans, "rdm.node_admin.seat.update.via-primary-updated").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "outcome") == "held" && attr(sp, "primaries").contains("fabric ") && attr(sp, "primaries").contains(&format!("-> {heir_id}/")))
-            || named(&spans, "rdm.mesh.seat.update.via-announcement").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "seat") == "fabric-primary" && attr(sp, "holder").contains(&heir_id)),
+        named(&spans, "rdm.node_admin.primary.update.via-primary-updated").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "outcome") == "held" && attr(sp, "primaries").contains("fabric ") && attr(sp, "primaries").contains(&format!("-> {heir_id}/")))
+            || named(&spans, "rdm.mesh.primary.update.via-announcement").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "seat") == "fabric-primary" && attr(sp, "holder").contains(&heir_id)),
         "the heir installed the fabric-primary from the update's call or from its own election (the other mesh's primary id is {} the heir's: {})",
         if discriminating { "below" } else { "above" },
         other_primary.1
@@ -267,7 +267,7 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     assert!(lo > -1_000 && hi < 1_000, "every node's rafka-time stands within 1 s of the host clock (the skewed node's OS clock was {OS_CLOCK_SKEW_MS} ms ahead): {lo}..{hi} ms over {} heartbeats", beats.len());
     // The fabric-primary moved to the heir: the other mesh's primary pulled once from it and adopted
     // its time under the mesh-primary rule.
-    let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-seat-moved").into_iter().filter(|sp| attr(sp, "node") == other_primary.0).collect();
+    let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-primary-changed").into_iter().filter(|sp| attr(sp, "node") == other_primary.0).collect();
     assert_eq!(moved.len(), 1, "the other mesh's primary pulled once when the fabric-primary moved: {moved:?}");
     assert_eq!((attr(moved[0], "outcome").as_str(), attr(moved[0], "to").as_str()), ("adopted", heir_id.as_str()), "{:?}", moved[0]);
     let child = adopted.iter().find(|a| rdm_test::estate::descends_from(&spans, a, moved[0])).expect("the adoption is a child of the pull");
@@ -486,7 +486,7 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
 ///    `updated`, and P finishes the writes it has issued (`primary.update.via-issued-writes-finished`)
 ///    before it calls H.
 /// 2. H installs the election's result the call carries, both entries naming H, and answers
-///    node.primary.updated (`seat.update.via-primary-updated` at H, outcome `held`, under P's update).
+///    node.primary.updated (`primary.update.via-primary-updated` at H, outcome `held`, under P's update).
 /// 3. The commanding Build continues on H's direct answer (step 6): P's attempt ends handed off, H claims
 ///    the next attempt and dispatches the recipe, and every step on P runs in H's attempt after H
 ///    answered. The caller's stream attached at P ends `FabricPrimaryMoved` naming H, and the caller
@@ -558,7 +558,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     let transfer_attempt = num(&updating, "attempt").expect("the update's attempt");
     let finished = one("rdm.node_admin.primary.update.via-issued-writes-finished", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build);
     // Step 4: H installs the election's result and answers node.primary.updated, under P's call.
-    let installed = one("rdm.node_admin.seat.update.via-primary-updated", &|sp| attr(sp, "node") == h_name && attr(sp, "build_id") == build && attr(sp, "outcome") == "held");
+    let installed = one("rdm.node_admin.primary.update.via-primary-updated", &|sp| attr(sp, "node") == h_name && attr(sp, "build_id") == build && attr(sp, "outcome") == "held");
     let entries = attr(&installed, "primaries");
     assert!(
         entries.contains(&format!("node-admin {p_id}/")) && entries.contains(&format!("fabric {p_id}/")) && entries.matches(&format!("-> {h_id}/")).count() == 2,

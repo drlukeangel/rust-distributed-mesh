@@ -505,7 +505,7 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
 /// Build retires `mesh1`: before the retire is claimed, the fabric-primary moves the fabric seat alone
 /// to `mesh2`'s primary by node.fabric-primary.update (op `0x21`, mesh-delete.md step 1), and the Build
 /// goes on at the new fabric-primary. The successor installs the election's result the call carries
-/// (`seat.update.via-primary-updated` at the new fabric-primary, `held`) before the old fabric-primary's drive refuses in its
+/// (`primary.update.via-primary-updated` at the new fabric-primary, `held`) before the old fabric-primary's drive refuses in its
 /// span and names the new seat, so the caller's re-submit by the Build id at the seat the frame names
 /// is accepted and streams to `Complete`.
 /// Must NOT happen: the new seat named to the caller before it installed (its re-submit refused
@@ -548,10 +548,10 @@ async fn a_planned_handover_mid_build_ends_the_outer_stream_with_the_new_fabric_
     let build = &build_id.as_str();
     let handover_calls = spans_named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| sp["attributes"]["op"].as_str().and_then(|o| o.parse::<u64>().ok()).or_else(|| sp["attributes"]["op"].as_u64()) == Some(0x21)).count();
     assert!(handover_calls >= 1, "the seat moved by the fabric-primary handover, op 0x21");
-    let yielded: Vec<_> = spans_named(&spans, "rdm.node_admin.build.reject.via-seat-yielded").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
+    let yielded: Vec<_> = spans_named(&spans, "rdm.node_admin.build.reject.via-fabric-primary-changed").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
     assert!(!yielded.is_empty(), "the old fabric-primary's dispatch after its seat moved was refused, SeatYielded in its span");
     assert!(yielded.iter().all(|sp| s(&sp["attributes"]["node"]) == old_seat), "{yielded:?}");
-    let installed: Vec<_> = spans_named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["node"]) == new_seat && s(&sp["attributes"]["outcome"]) == "held").collect();
+    let installed: Vec<_> = spans_named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["node"]) == new_seat && s(&sp["attributes"]["outcome"]) == "held").collect();
     assert_eq!(installed.len(), 1, "the new fabric-primary installed the election's result once: {installed:?}");
     let installed_at = installed[0]["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
     let early: Vec<_> = yielded.iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) <= installed_at).collect();

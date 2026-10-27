@@ -1706,7 +1706,7 @@ impl Driver {
         let mut hold_rt: Option<ExactRuntime> = None;
         let held_from = Instant::now();
         // A terminate of the held birth during the hold would be death from silence: read as it is written.
-        let mut terminates = SpanTail::from_now(self.estate.evidence.clone(), |sp| sp["name"] == "rdm.node_admin.deployment.delete.via-fence" && sp["attributes"]["outcome"] == "terminated");
+        let mut terminates = SpanTail::from_now(self.estate.evidence.clone(), |sp| sp["name"] == "rdm.node_admin.deployment.delete.via-path-investigation" && sp["attributes"]["outcome"] == "unreached");
         if container {
             let id = self.estate.container_of(&path).await.ok_or_else(|| broken("fault-names-an-exact-runtime", format!("{path}: no running container")))?;
             container_faults::pause(&id).map_err(|e| broken("fault-applies", e))?;

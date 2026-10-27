@@ -788,7 +788,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, BUILD_FACTS_SOURCE, &["encode_chunks", "BuildMessage::from_bytes", "rdm.node_admin.build.serve.via-fetch-facts"], ratchet, &mut out);
             require(root, FETCH_BUILD, &["absorb_facts", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
             require(root, BUILD_FACTS_CELLS, &["fn replies_match_the_frozen_eleven_variant_wire_schema"], ratchet, &mut out);
-            require(root, HANDOVER_SOURCE, &["rdm.node_admin.seat.update.via-primary-updated", "rdm.node_admin.primary.reject.via-primary-update", "call_successor"], ratchet, &mut out);
+            require(root, HANDOVER_SOURCE, &["rdm.node_admin.primary.update.via-primary-updated", "rdm.node_admin.primary.reject.via-primary-update", "call_successor"], ratchet, &mut out);
             require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_two_variant_wire_schema", "fn replies_match_the_frozen_thirteen_variant_wire_schema"], ratchet, &mut out);
             require(root, SEAT_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);

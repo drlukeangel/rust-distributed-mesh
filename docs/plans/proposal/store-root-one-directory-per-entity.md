@@ -195,7 +195,7 @@ R14 item 9, "before state-commit nothing changes", is superseded by Q171 (§5.3)
 record's size and count (142 nodes in the largest estate in the record) a long run's `nodes.jsonl` is
 thousands of lines and a few megabytes. `connections.jsonl` is the largest by far: every connect,
 disconnect and reconnect attempt of every node of the fabric, so a fresh open's time grows with the
-fabric's whole history. The open records one span per file, `rdm.store.open.via-fold`, with the
+fabric's whole history. The open records one span per file, `rdm.node.store.resolve.via-fold`, with the
 file's bytes, lines, the latest `op` per writer and the fold's duration; a refused fold names
 its invalid offset and cause. The trigger for
 the retention ruling, which is Luke's, is the first fold recorded over one second or the first file

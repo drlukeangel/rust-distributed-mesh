@@ -96,7 +96,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 /// takes it and holds X's exact fact to adopt. The same answer at mesh2.rpc.1, where no live birth holds
 /// the name, is taken too: a status is never refused for its publisher. Once Y's heartbeat reaches the
 /// member, the same answer again is a repeat of the change held and is not taken again. Must NOT
-/// happen: a status refused for its publisher's name (`via-departed-birth` with `frame=mesh-status`).
+/// happen: a status refused for its publisher's name (`via-deleted-birth` with `frame=mesh-status`).
 #[test]
 fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_entry_answer_before_its_first_heartbeat() {
     let dir = crate::evidence_dir();
@@ -153,7 +153,7 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         let taken_at_y = taken.iter().find(|s| attr(s, "node") == "mesh2.admin.1").unwrap_or_else(|| panic!("Y opened its status span: {taken:#?}"));
         assert_eq!((attr(taken_at_y, "publisher"), attr(taken_at_y, "forwarded_by"), attr(taken_at_y, "changed_at_rafka_ms"), attr(taken_at_y, "taken")), ("mesh2.admin.1".to_string(), "mesh2.admin.2".to_string(), "5".to_string(), "true".to_string()));
         assert!(deleted_at_y["start_unix_nano"].as_u64() < taken_at_y["start_unix_nano"].as_u64(), "the departure was held at Y before the status");
-        let refused: Vec<&Value> = named(&spans, "rdm.mesh.topology.reject.via-departed-birth").into_iter().filter(|s| attr(s, "frame") == "mesh-status").collect();
+        let refused: Vec<&Value> = named(&spans, "rdm.mesh.topology.reject.via-deleted-birth").into_iter().filter(|s| attr(s, "frame") == "mesh-status").collect();
         assert!(refused.is_empty(), "no status is refused for its publisher's name: {refused:#?}");
         let heard_at_m: Vec<(String, String)> = taken.iter().filter(|s| attr(s, "node") == "mesh2.rpc.1").map(|s| (attr(s, "publisher"), attr(s, "taken"))).collect();
         assert_eq!(heard_at_m, vec![("mesh2.admin.1".to_string(), "true".to_string()), ("mesh2.admin.1".to_string(), "false".to_string())], "the member takes it at the first answer, and the repeat is not taken again");

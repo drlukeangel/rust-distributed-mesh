@@ -112,8 +112,8 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     // The holder's own record: the election named it mesh-primary again after its restart's update.
     let spans = spans_of(&estate, holder_pid);
     let start = |x: &Value| x["start_unix_nano"].as_u64().unwrap_or_default();
-    let election = named(&spans, "rdm.mesh.seat.update.via-announcement").into_iter().filter(|x| start(x) > start(&handed) && x["attributes"]["seat"] == "mesh-primary" && x["attributes"]["via"] == "own" && x["attributes"]["outcome"] == "held").cloned().collect::<Vec<_>>();
-    assert!(!election.is_empty(), "{holder} holds itself {away}'s mesh-primary again by the election after its restart's update: {}", serde_json::to_string(&named(&spans, "rdm.mesh.seat.update.via-announcement")).unwrap_or_default());
+    let election = named(&spans, "rdm.mesh.primary.update.via-announcement").into_iter().filter(|x| start(x) > start(&handed) && x["attributes"]["seat"] == "mesh-primary" && x["attributes"]["via"] == "own" && x["attributes"]["outcome"] == "held").cloned().collect::<Vec<_>>();
+    assert!(!election.is_empty(), "{holder} holds itself {away}'s mesh-primary again by the election after its restart's update: {}", serde_json::to_string(&named(&spans, "rdm.mesh.primary.update.via-announcement")).unwrap_or_default());
     let trace_id = s(&election[0]["trace_id"]);
     estate.record_trace_url(&trace_id);
     eprintln!("SEATED-AGAIN-TRACE {trace_id} holder={holder} successor={successor} reborn={} recovered_ms={recovered_ms}", s(&recovered["node_id"]));

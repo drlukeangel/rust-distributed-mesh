@@ -9,7 +9,7 @@
 //! host cannot run `nft` (no root, no `sudo -n`) every fault answers [`LinkRefusal::Unavailable`]
 //! with the reason: a test skips by that name, or fails with it when `RDM_REQUIRE_NETFAULT=1`.
 //!
-//! Each application is one span: `rdm.testkit.fault.update.via-partition-subset`,
+//! Each application is one span: `rdm.testkit.fault.update.via-subset-cut`,
 //! `rdm.testkit.fault.update.via-link-flap` or `rdm.testkit.fault.update.via-inbound-drop`, with
 //! the typed outcome; its heal is `rdm.testkit.fault.remove.via-heal` carrying the fault.
 
@@ -122,7 +122,7 @@ pub struct PartitionSubset {
 impl PartitionSubset {
     /// Cut `subset` from every other node of `nodes`.
     pub fn start(nodes: &[Value], subset: &[String], protected: &[String]) -> Result<Self, LinkRefusal> {
-        let span = tracing::info_span!("rdm.testkit.fault.update.via-partition-subset", subset = %subset.join(","), nodes = nodes.len(), outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.testkit.fault.update.via-subset-cut", subset = %subset.join(","), nodes = nodes.len(), outcome = tracing::field::Empty);
         let _g = span.enter();
         let out = Self::start_inner(nodes, subset, protected);
         span.record("outcome", tracing::field::display(match &out {

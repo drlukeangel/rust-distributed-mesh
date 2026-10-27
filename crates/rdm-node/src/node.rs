@@ -1345,7 +1345,7 @@ async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &Topolog
     tokio::select! {
         _ = declare_once(me, topology_view, client, owed, held) => Declared::Attempted,
         () = moved => {
-            tracing::info_span!("rdm.node_rpc.status.remove.via-seat-moved", node = %topology_view.held_name(&me.name), from = %from.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default())
+            tracing::info_span!("rdm.node_rpc.status.remove.via-primary-changed", node = %topology_view.held_name(&me.name), from = %from.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default())
                 .in_scope(|| tracing::info!("the mesh's primary seat moved while the declaration was in flight: its call to the old holder is cancelled"));
             Declared::FabricPrimaryMoved
         }

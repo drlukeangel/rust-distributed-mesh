@@ -22,8 +22,8 @@
 //! The detector holds no clock. How long a scenario observed is the scenario's affair; what the
 //! observation showed is the detector's.
 //!
-//! Each judgment is one span: `rdm.scenario.wedge.resolve.via-detector` when every consequence
-//! holds, `rdm.scenario.wedge.reject.via-<invariant>` for each one that does not.
+//! Each judgment is one span: `rdm.testkit.wedge.resolve.via-detector` when every consequence
+//! holds, `rdm.testkit.wedge.reject.via-<invariant>` for each one that does not.
 
 use crate::ledger::Ledger;
 use serde::Serialize;
@@ -342,24 +342,19 @@ pub struct Verdict {
     pub proved: Vec<&'static str>,
 }
 
-/// The one span a rejection emits. The names are literals: a span name is static.
+/// The one span a rejection emits. Each name is a literal at its own call, so the census reads it.
 fn reject_span(invariant: &'static str, family: &str, cut: &str, detail: &str) {
-    macro_rules! s {
-        ($name:literal) => {
-            tracing::info_span!($name, invariant, family, cut, detail).in_scope(|| {})
-        };
-    }
     match invariant {
-        PRIMITIVE_SUCCESS_ALONE => s!("rdm.scenario.wedge.reject.via-primitive-success-alone"),
-        NO_ACTIVE_FAULT_ACK => s!("rdm.scenario.wedge.reject.via-missing-fault-ack"),
-        NO_PROGRESS_CONSEQUENCE => s!("rdm.scenario.wedge.reject.via-missing-progress-consequence"),
-        NO_ROUTING_CONSEQUENCE => s!("rdm.scenario.wedge.reject.via-missing-routing-consequence"),
-        NO_CONTROL_CONSEQUENCE => s!("rdm.scenario.wedge.reject.via-missing-control-consequence"),
-        SILENT_RUNTIME_JUDGED_DEAD => s!("rdm.scenario.wedge.reject.via-silent-runtime-judged-dead"),
-        NO_RELEASE => s!("rdm.scenario.wedge.reject.via-missing-release"),
-        NO_RECOVERY => s!("rdm.scenario.wedge.reject.via-missing-recovery"),
-        NO_RECONCILIATION => s!("rdm.scenario.wedge.reject.via-missing-reconciliation"),
-        SUPERSEDED_BIRTH_DISPATCHED => s!("rdm.scenario.wedge.reject.via-superseded-birth-dispatch"),
+        PRIMITIVE_SUCCESS_ALONE => tracing::info_span!("rdm.testkit.wedge.reject.via-primitive-success-alone", invariant, family, cut, detail).in_scope(|| {}),
+        NO_ACTIVE_FAULT_ACK => tracing::info_span!("rdm.testkit.wedge.reject.via-missing-fault-ack", invariant, family, cut, detail).in_scope(|| {}),
+        NO_PROGRESS_CONSEQUENCE => tracing::info_span!("rdm.testkit.wedge.reject.via-missing-progress-consequence", invariant, family, cut, detail).in_scope(|| {}),
+        NO_ROUTING_CONSEQUENCE => tracing::info_span!("rdm.testkit.wedge.reject.via-missing-routing-consequence", invariant, family, cut, detail).in_scope(|| {}),
+        NO_CONTROL_CONSEQUENCE => tracing::info_span!("rdm.testkit.wedge.reject.via-missing-control-consequence", invariant, family, cut, detail).in_scope(|| {}),
+        SILENT_RUNTIME_JUDGED_DEAD => tracing::info_span!("rdm.testkit.wedge.reject.via-silent-runtime-judged-dead", invariant, family, cut, detail).in_scope(|| {}),
+        NO_RELEASE => tracing::info_span!("rdm.testkit.wedge.reject.via-missing-release", invariant, family, cut, detail).in_scope(|| {}),
+        NO_RECOVERY => tracing::info_span!("rdm.testkit.wedge.reject.via-missing-recovery", invariant, family, cut, detail).in_scope(|| {}),
+        NO_RECONCILIATION => tracing::info_span!("rdm.testkit.wedge.reject.via-missing-reconciliation", invariant, family, cut, detail).in_scope(|| {}),
+        SUPERSEDED_BIRTH_DISPATCHED => tracing::info_span!("rdm.testkit.wedge.reject.via-superseded-birth-dispatch", invariant, family, cut, detail).in_scope(|| {}),
         other => unreachable!("an invariant the detector does not name: {other}"),
     }
 }
@@ -496,7 +491,7 @@ pub fn judge(e: &Evidence) -> Result<Verdict, Refusal> {
 fn finish(e: &Evidence, out: Vec<Rejection>, proved: Vec<&'static str>) -> Result<Verdict, Refusal> {
     let family = e.family.name();
     if out.is_empty() {
-        tracing::info_span!("rdm.scenario.wedge.resolve.via-detector", family, cut = %e.cut, proved = %proved.join(",")).in_scope(|| {});
+        tracing::info_span!("rdm.testkit.wedge.resolve.via-detector", family, cut = %e.cut, proved = %proved.join(",")).in_scope(|| {});
         return Ok(Verdict { family, cut: e.cut.clone(), proved });
     }
     for r in &out {

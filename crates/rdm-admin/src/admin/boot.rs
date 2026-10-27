@@ -2257,7 +2257,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     break;
                                                 }
                                                 if reported.as_ref() != Some(&blocked) {
-                                                    tracing::info_span!("rdm.node_admin.runtime.reject.via-not-authority-capable", node = %me, blocked = blocked.len(), detail = %blocked.join("; "))
+                                                    tracing::info_span!("rdm.node_admin.runtime.reject.via-not-ready", node = %me, blocked = blocked.len(), detail = %blocked.join("; "))
                                                         .in_scope(|| tracing::info!("not ready: a held birth's runtime cannot be managed from here"));
                                                     reported = Some(blocked);
                                                 }

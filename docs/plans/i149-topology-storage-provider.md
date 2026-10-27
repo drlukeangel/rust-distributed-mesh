@@ -171,7 +171,7 @@ existing Build execution context across fabric-primary → mesh-primary → node
 | `rdm.node_admin.build.update.via-storage-switch` | build_id, change_id, provider, commit_found, outcome | a lost commit answer resolved by reading the record |
 | `rdm.node_admin.mesh.update.via-unblock` | build_id, change_id, mesh, node_id, provider, moved, left, outcome (`unblocked`) | a mesh-primary moves its nodes onto the provider the `commit` record decided and replies `unblocked`; a node that does not answer its move is a lost node |
 | `rdm.node.build.update.via-storage-move` | build_id, change_id, node_id, provider, outcome (`moved`, `rejected-stale-change`) | a node refuses by name a command of an older change |
-| `rdm.store.open.via-fold` | provider, bytes, lines, duration, invalid_offset when refused | reopen and history checks |
+| `rdm.node.store.resolve.via-fold` | provider, bytes, lines, duration, invalid_offset when refused | reopen and history checks |
 
 Absence assertions require a successful control span for the request under test. In particular,
 attempt a write while changes are blocked, verify it waits, and verify its durable result after

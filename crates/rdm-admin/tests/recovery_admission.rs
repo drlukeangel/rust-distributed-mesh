@@ -735,12 +735,12 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
     assert_eq!((held.attempt, held.lane.as_deref(), held.claimant.as_str()), (2, Some("mesh2"), "mesh2.admin.2"), "the row names attempt 2 and its claimant");
     let owed = builds.exits_owed(&b0, "mesh2").await.unwrap();
     assert!(owed.iter().any(|o| o.path == member && o.node_id == exited.node_id && o.attempt == 1), "the member's exited birth is owed a submit from attempt 1's verdict: {owed:?}");
-    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.update.via-departed-claimant", "rdm.node_admin.build.update.via-claim-decision"] {
+    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.update.via-claimant-departure", "rdm.node_admin.build.update.via-claim-decision"] {
         for (trace_id, attrs) in capture.spans(name) {
             eprintln!("span {name} trace_id={trace_id} {attrs:?}");
         }
     }
-    let taken = capture.spans("rdm.node_admin.build.update.via-departed-claimant");
+    let taken = capture.spans("rdm.node_admin.build.update.via-claimant-departure");
     assert_eq!(taken.len(), 1, "the take-over is spanned once: {taken:?}");
     let (_, t) = &taken[0];
     assert_eq!((t["lane"].as_str(), t["attempt"].as_str(), t["claimant"].as_str(), t["node"].as_str()), ("mesh2", "1", "mesh2.admin.1", "mesh2.admin.2"), "{t:?}");
@@ -918,7 +918,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     };
     assert_eq!((other_after["mesh"].as_str(), other_after["held_by"].as_str()), (Some("mesh2"), Some("mesh2.admin.2")), "{other_after}");
 
-    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.update.via-departed-claimant", "rdm.node_admin.build.update.via-claim-decision"] {
+    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.update.via-claimant-departure", "rdm.node_admin.build.update.via-claim-decision"] {
         for (trace_id, attrs) in capture.spans(name) {
             eprintln!("span {name} trace_id={trace_id} {attrs:?}");
         }
@@ -927,7 +927,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     assert_eq!(decided.len(), 1, "one claim decided: {decided:?}");
     let (_, d) = &decided[0];
     assert_eq!((d["lane"].as_str(), d["attempt"].as_str(), d["node"].as_str(), d["outcome"].as_str()), ("mesh2", "1", "mesh2.admin.2", "won"), "{d:?}");
-    assert!(!capture.spans("rdm.node_admin.build.update.via-departed-claimant").is_empty(), "the departed opener's row is released on its departure (Q142: the row is its claim)");
+    assert!(!capture.spans("rdm.node_admin.build.update.via-claimant-departure").is_empty(), "the departed opener's row is released on its departure (Q142: the row is its claim)");
     let recovery = capture.spans("rdm.node_admin.build.update.via-recovery").into_iter().find(|(_, a)| a["node"] == member.to_string() && a["outcome"] == "admitted").expect("the member's admitted recovery span");
     assert_eq!((recovery.1["attempt"].as_str(), recovery.1["outcome"].as_str(), recovery.1["open_attempt"].as_str()), ("1", "admitted", "held-open"), "{recovery:?}");
     // The refusal before the claim named the opener the row names: an open attempt's holder.
@@ -1050,14 +1050,14 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     assert!(!facts.iter().any(|f| matches!(f, BuildFact::Attempt(a) if a.mesh.as_deref() == Some("mesh2") && a.attempt == 2)), "no verdict for an attempt no one ran");
     assert!(builds.exits_owed(&b0, "mesh2").await.unwrap().is_empty(), "nothing is owed once the member's recovery is the running attempt");
 
-    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.update.via-departed-claimant", "rdm.node_admin.build.update.via-claim-decision"] {
+    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.update.via-claimant-departure", "rdm.node_admin.build.update.via-claim-decision"] {
         for (trace_id, attrs) in capture.spans(name) {
             eprintln!("span {name} trace_id={trace_id} {attrs:?}");
         }
     }
     let recovery = capture.spans("rdm.node_admin.build.update.via-recovery").into_iter().find(|(_, a)| a["node"] == member.to_string() && a["attempt"] == "2").expect("the owed submit's recovery span");
     assert_eq!((recovery.1["outcome"].as_str(), recovery.1["open_attempt"].as_str()), ("admitted", "held-open"), "{recovery:?}");
-    assert!(!capture.spans("rdm.node_admin.build.update.via-departed-claimant").is_empty(), "the departed opener's row, its claim on the store (Q142), is released on its departure before the owed submit claims attempt 2");
+    assert!(!capture.spans("rdm.node_admin.build.update.via-claimant-departure").is_empty(), "the departed opener's row, its claim on the store (Q142), is released on its departure before the owed submit claims attempt 2");
 }
 
 /// CONTRACT (node-investigation.md: "A node that comes back after it was re-created is a deleted birth

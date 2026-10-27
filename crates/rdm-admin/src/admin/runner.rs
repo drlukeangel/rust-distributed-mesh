@@ -940,7 +940,7 @@ impl AdminRunner {
         }
         if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
             ep.replace_direct_addrs(key, []).await;
-            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-retired", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "recovery", reason = "proven-exit")
+            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-removed", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "recovery", reason = "proven-exit")
                 .in_scope(|| tracing::info!("the exited birth's direct paths are retired before the new birth with its key is launched"));
         }
     }
@@ -963,7 +963,7 @@ impl AdminRunner {
             // retire does not wait for a dead peer's actor (the same call the topology view spawns).
             let ep = ep.clone();
             tokio::spawn(async move { ep.replace_direct_addrs(key, []).await });
-            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-retired", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "removal", reason = "proven-exit")
+            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-removed", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "removal", reason = "proven-exit")
                 .in_scope(|| tracing::info!("the exited birth's direct paths are retired: nothing aims at its old socket"));
         }
     }
@@ -1638,26 +1638,40 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
     };
     // A new mesh's bootstrap admin is handed Pending; the admin created for an existing mesh is
     // handed the mesh's current state (states.md: a mesh's state only moves forward).
-    macro_rules! handoff_span {
-        ($name:literal) => {
-            tracing::info_span!(
-                $name,
-                node = %me,
-                node_id = %me_id,
-                incarnation = %me_inc,
-                target = %target.name,
-                target_node_id = %target.node_id,
-                target_incarnation = %target.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default(),
-                mesh = %mesh,
-                mesh_id = %mesh_id,
-                key = %key,
-                state = ?state,
-                attempt = 1u32,
-                outcome = %outcome,
-            )
-        };
-    }
-    let span = if state == MeshState::Pending { handoff_span!("rdm.node_admin.mesh.update.via-pending-handoff") } else { handoff_span!("rdm.node_admin.mesh.update.via-state-handoff") };
+    // Each name a literal at its own call, so the census reads it.
+    let span = if state == MeshState::Pending {
+        tracing::info_span!(
+            "rdm.node_admin.mesh.update.via-pending-handoff",
+            node = %me,
+            node_id = %me_id,
+            incarnation = %me_inc,
+            target = %target.name,
+            target_node_id = %target.node_id,
+            target_incarnation = %target.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default(),
+            mesh = %mesh,
+            mesh_id = %mesh_id,
+            key = %key,
+            state = ?state,
+            attempt = 1u32,
+            outcome = %outcome,
+        )
+    } else {
+        tracing::info_span!(
+            "rdm.node_admin.mesh.update.via-state-handoff",
+            node = %me,
+            node_id = %me_id,
+            incarnation = %me_inc,
+            target = %target.name,
+            target_node_id = %target.node_id,
+            target_incarnation = %target.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default(),
+            mesh = %mesh,
+            mesh_id = %mesh_id,
+            key = %key,
+            state = ?state,
+            attempt = 1u32,
+            outcome = %outcome,
+        )
+    };
     span.in_scope(|| tracing::info!("the fabric primary applies its mesh's state at the mesh's first admin"));
     verdict
 }

@@ -264,18 +264,18 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
     // Spans: one resolve per pass, one reject per rejection, each rejection naming its invariant.
     let spans = cap.spans();
     let named = |n: &str| spans.iter().filter(|s| s["name"] == n).count();
-    let resolves = named("rdm.scenario.wedge.resolve.via-detector");
-    let rejects = spans.iter().filter(|s| s["name"].as_str().unwrap().starts_with("rdm.scenario.wedge.reject.via-")).count();
+    let resolves = named("rdm.testkit.wedge.resolve.via-detector");
+    let rejects = spans.iter().filter(|s| s["name"].as_str().unwrap().starts_with("rdm.testkit.wedge.reject.via-")).count();
     let planted = Family::ALL.len() * plants().len();
     assert_eq!(resolves, Family::ALL.len() + 1, "one resolve span per passing control, and the seat going home");
     assert_eq!(rejects, planted + 1 + all.rejections.len(), "one reject span per rejection");
     for s in &spans {
         let n = s["name"].as_str().unwrap();
-        if n.starts_with("rdm.scenario.wedge.reject.via-") {
+        if n.starts_with("rdm.testkit.wedge.reject.via-") {
             assert!(INVARIANTS.contains(&s["attributes"]["invariant"].as_str().unwrap()), "the reject span names its invariant: {s}");
         }
     }
-    assert_eq!(named("rdm.scenario.wedge.reject.via-missing-progress-consequence") as usize, Family::ALL.len() * 4 + 1);
+    assert_eq!(named("rdm.testkit.wedge.reject.via-missing-progress-consequence") as usize, Family::ALL.len() * 4 + 1);
 
     let result = json!({
         "cell": cell,

@@ -113,7 +113,7 @@ fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
                 || n.contains(".deployment.update.")
                 || n.contains("proven-drift")
                 || n.contains("topology.remove.")
-                || n.contains("topology.reject.via-departed-birth")
+                || n.contains("topology.reject.via-deleted-birth")
                 || n.contains("runtime.update.via-adopt")
                 || n.contains("node.create.via-deployment")
         })

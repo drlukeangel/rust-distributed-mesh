@@ -367,7 +367,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     }
     let refused_spans = fault_spans.iter().filter(|sp| attr(sp, "outcome").contains("not_this_runtime") || attr(sp, "outcome").contains("foreign_domain")).count();
     assert!(refused_spans >= 2, "the refusals left spans");
-    let verdict_span = named(&own, "rdm.scenario.wedge.resolve.via-detector");
+    let verdict_span = named(&own, "rdm.testkit.wedge.resolve.via-detector");
     assert!(!verdict_span.is_empty(), "the detector's verdict span was emitted");
 
     let result = json!({

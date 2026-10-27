@@ -276,7 +276,7 @@ impl SeatFold {
     /// published from: each folded birth of the mesh whose state is ahead of what the view holds for
     /// it is adopted there ([`DigestView::adopt_status`]), before the view naming this admin primary is
     /// installed and so before its first projection (fabric-authority.md §7: hydration, not
-    /// transition). One `rdm.node_admin.status.update.via-seat-fold` per birth adopted or refused.
+    /// transition). One `rdm.node_admin.status.update.via-successor-fold` per birth adopted or refused.
     pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, digest_view: Option<&rdm_transport::topology::DigestView>) {
         let holds = now.is_mesh_primary(&self.mesh, &self.me);
         {
@@ -291,7 +291,7 @@ impl SeatFold {
         }
         let me_name = digest_view.and_then(|b| b.held_path_name()).or_else(|| now.own(&self.me).map(|n| n.name.clone())).unwrap_or_else(|| self.name.clone());
         let span = tracing::info_span!(
-            "rdm.node_admin.status.resolve.via-seat-taken",
+            "rdm.node_admin.status.resolve.via-successor-fold",
             node = %me_name,
             node_id = %self.me,
             mesh = %self.mesh,
@@ -358,7 +358,7 @@ impl SeatFold {
                 Err(why) => why,
             };
             tracing::info_span!(
-                "rdm.node_admin.status.update.via-seat-fold",
+                "rdm.node_admin.status.update.via-successor-fold",
                 node = %me_name,
                 member = %name,
                 node_id = %node_id,

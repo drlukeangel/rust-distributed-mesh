@@ -70,7 +70,7 @@ pub async fn run_seat_move_pull(
         if Puller::of(&seats, &me.mesh, &me_id) != Puller::MeshPrimary {
             continue;
         }
-        let span = tracing::info_span!("rdm.mesh.entry.resolve.via-fabric-seat-moved", node = %me, from = %from_node, to = %holder.node_id, to_mesh = %holder.mesh, revision = holder.revision, outcome = tracing::field::Empty, attempts = tracing::field::Empty, adopted_from_revision = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.mesh.entry.resolve.via-fabric-primary-changed", node = %me, from = %from_node, to = %holder.node_id, to_mesh = %holder.mesh, revision = holder.revision, outcome = tracing::field::Empty, attempts = tracing::field::Empty, adopted_from_revision = tracing::field::Empty);
         let (outcome, attempts, adopted_from) = pull_from_fabric_primary(&time, &me, &me_id, &client, &topology_view, holder).instrument(span.clone()).await;
         span.record("outcome", outcome.as_str());
         span.record("attempts", attempts);

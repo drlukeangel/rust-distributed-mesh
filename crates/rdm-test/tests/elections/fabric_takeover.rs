@@ -314,7 +314,7 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &str, node_id: &str) 
 /// birth deleted; nothing is opened for it; and within a floor of the heal every admin's view names
 /// mesh1's members ready and mesh1.admin.1, the same birth, mesh1's one primary and the one
 /// fabric-primary, with no wait on any view's retention. Must NOT happen: the fabric-primary's row
-/// written deleted or its name released, a `via-departed-birth` / `via-node-deleted` for its birth, a
+/// written deleted or its name released, a `via-deleted-birth` / `via-node-deleted` for its birth, a
 /// re-create Build of it, or a view without it after the heal.
 ///
 /// The cut admin is kept to its decision step by the testkit's claimed-attempt cut on the fabric-primary:
@@ -434,7 +434,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     assert!(rows.is_empty(), "no row of the running fabric-primary was written deleted: {rows:#?}");
     let marks: Vec<&Value> = spans
         .iter()
-        .filter(|sp| sp["name"].as_str().is_some_and(|n| n.ends_with(".via-departed-birth") || n.ends_with(".via-node-deleted") || n.ends_with(".via-node-deleting")))
+        .filter(|sp| sp["name"].as_str().is_some_and(|n| n.ends_with(".via-deleted-birth") || n.ends_with(".via-node-deleted") || n.ends_with(".via-node-deleting")))
         .filter(|sp| sp["attributes"].to_string().contains(&fp_id) || sp["attributes"].to_string().contains(&fp_inc))
         .collect();
     assert!(marks.is_empty(), "no view marks the running fabric-primary's birth: {marks:#?}");

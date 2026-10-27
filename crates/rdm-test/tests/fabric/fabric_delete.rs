@@ -848,7 +848,7 @@ async fn a_fabric_primary_paused_through_the_transfer_is_ignored_refused_stale_a
     let read = spans
         .iter()
         .filter(returned)
-        .find(|sp| ["rdm.mesh.entry.resolve.via-fabric-seat-moved", "rdm.node_admin.build.update.via-seat-hand-over", "rdm.node_admin.build.reject.via-seat-yielded", "rdm.node_admin.build.reject.via-not-fabric-primary"].contains(&sp["name"].as_str().unwrap_or_default()))
+        .find(|sp| ["rdm.mesh.entry.resolve.via-fabric-primary-changed", "rdm.node_admin.build.update.via-seat-hand-over", "rdm.node_admin.build.reject.via-fabric-primary-changed", "rdm.node_admin.build.reject.via-not-fabric-primary"].contains(&sp["name"].as_str().unwrap_or_default()))
         .unwrap_or_else(|| panic!("the returned fabric-primary reads the transfer after it resumes"));
     let read_ns = start(&read);
     let claimed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(returned).filter(|sp| sp["attributes"]["outcome"] == "won").collect();

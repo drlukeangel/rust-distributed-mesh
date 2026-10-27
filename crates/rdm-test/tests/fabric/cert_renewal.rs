@@ -613,7 +613,7 @@ async fn wait_for_renewal(estate: &rdm_test::estate::Estate, moved_at_ns: u64, w
 /// CONTRACT (mesh-issuer-renew.md; node-issuer-update.md; node-cert-renew.md "members renewed from then
 /// on carry the new issuer, and members not yet due keep the old one until their own turn";
 /// fabric-certs.md §chain): under a 24 s issuing TTL the fabric-primary re-mints mesh1's issuer at its
-/// row's point (`rdm.fabric.issuer.update.via-renewal`) and carries it to mesh1.admin.2
+/// row's point (`rdm.node_admin.issuer.create.via-renewal`) and carries it to mesh1.admin.2
 /// (`UpdateIssuer`, its `via-renewal` `installed`, the admin's `via-installed`). A member that admin
 /// deploys afterwards is signed by the new issuer; a member that joined before holds the old one's
 /// cert (its renewal does not reach it), and admits the new member's dial on the fabric's root set.
@@ -640,7 +640,7 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         let holder = member(&root, &dir, "mesh1.rpc.1").await;
         assert_eq!(signed(&holder.member_cert).issuer, old, "it joined under the old issuer");
 
-        let rotated = until("the fabric-primary re-mints mesh1's issuer", BOUND, async || named(&spans, "rdm.fabric.issuer.update.via-renewal").into_iter().find(|f| f.get("mesh").map(String::as_str) == Some("mesh1") && f.contains_key("outcome"))).await;
+        let rotated = until("the fabric-primary re-mints mesh1's issuer", BOUND, async || named(&spans, "rdm.node_admin.issuer.create.via-renewal").into_iter().find(|f| f.get("mesh").map(String::as_str) == Some("mesh1") && f.contains_key("outcome"))).await;
         assert_eq!(num(&rotated, "previous_issuer_expires_at"), old.cert.expiry_ms, "{rotated:?}");
         until("mesh1.admin.2 installs the new issuer", BOUND, async || named(&spans, "rdm.node_admin.issuer.update.via-installed").into_iter().find(|f| f.get("node").map(String::as_str) == Some("mesh1.admin.2"))).await;
         // From here the old issuer's holder is not reached by its own renewal.
@@ -837,7 +837,7 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     let (primary_name, secondary_name) = (primary.name.to_string(), secondary.name.to_string());
     let (primary_id, secondary_id) = (primary.node_id.to_string(), secondary.node_id.to_string());
 
-    let rotated = estate_span(&estate, "rdm.fabric.issuer.update.via-renewal", "the fabric-primary re-mints mesh2's issuer", Duration::from_secs(90), |sp| attr(sp, "mesh") == "mesh2" && attr(sp, "outcome") == "minted").await;
+    let rotated = estate_span(&estate, "rdm.node_admin.issuer.create.via-renewal", "the fabric-primary re-mints mesh2's issuer", Duration::from_secs(90), |sp| attr(sp, "mesh") == "mesh2" && attr(sp, "outcome") == "minted").await;
     let expiry = attr(&rotated, "issuer_expires_at");
     let installed = |node: String, sender: String| {
         let expiry = expiry.clone();

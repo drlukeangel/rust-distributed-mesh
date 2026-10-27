@@ -486,7 +486,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let updating = one("rdm.node_admin.primary.update.via-update-primary");
     assert_eq!((attr_s(&updating, "node"), attr_s(&updating, "moving"), attr_s(&updating, "successor"), attr_s(&updating, "outcome")), (final_name.clone(), "fabric-primary".to_string(), fabric_primary.clone(), "updated".to_string()), "mesh1's primary moved the fabric-primary alone to the outside successor: {updating}");
     let finished = one("rdm.node_admin.primary.update.via-issued-writes-finished");
-    let installed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| attr_s(sp, "operation") == operation && attr_s(sp, "node") == fabric_primary && attr_s(sp, "outcome") == "held").collect();
+    let installed: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| attr_s(sp, "operation") == operation && attr_s(sp, "node") == fabric_primary && attr_s(sp, "outcome") == "held").collect();
     assert_eq!(installed.len(), 1, "the outside successor installed the fabric-primary once and answered node.primary.updated: {installed:?}");
     let installed = installed[0].clone();
     assert!(attr_s(&installed, "primaries").starts_with("fabric ") && !attr_s(&installed, "primaries").contains("node-admin "), "the fabric-primary alone moves; mesh1's mesh-primary stays: {installed}");
@@ -513,7 +513,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     assert!(["mesh2.admin.1", "mesh3.admin.1"].contains(&holder.as_str()), "the seat left the retired mesh1 for a remaining mesh primary: {holder}");
     let other = if holder == "mesh2.admin.1" { "mesh3.admin.1" } else { "mesh2.admin.1" };
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
-    let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-seat-moved").into_iter().filter(|sp| attr(sp, "node") == other && attr(sp, "to") == holder_id).collect();
+    let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-primary-changed").into_iter().filter(|sp| attr(sp, "node") == other && attr(sp, "to") == holder_id).collect();
     assert_eq!(moved.len(), 1, "{other} pulled once from {holder} when the fabric seat moved to it: {moved:?}");
     assert_eq!(attr(moved[0], "outcome"), "adopted", "{:?}", moved[0]);
     let adopted = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted");

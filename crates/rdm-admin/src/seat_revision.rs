@@ -35,7 +35,7 @@ pub trait PathProbe: Send + Sync {
 /// Fence `path` before a new birth, given the birth this view holds there (`prev`).
 pub async fn investigate_path(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -> FenceOutcome {
     let Some(prev) = prev.filter(|p| p.incarnation_id.is_some()) else {
-        tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-birth-held")
+        tracing::info_span!("rdm.node_admin.deployment.delete.via-path-investigation", node = %path, incarnation = "", outcome = "no-birth-held")
             .in_scope(|| tracing::info!("the view holds no birth at this path: nothing to fence"));
         return FenceOutcome::Clear { gone: None };
     };
@@ -43,7 +43,7 @@ pub async fn investigate_path(path: &PathName, prev: Option<Node>, probe: &dyn P
     // The plan was made on an older view: the path's birth is live here now (heard again as the
     // attempt ran). It keeps the path; a create over it is a duplicate.
     if prev.status.is_live() {
-        tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "predecessor-live")
+        tracing::info_span!("rdm.node_admin.deployment.delete.via-path-investigation", node = %path, incarnation = %incarnation, outcome = "predecessor-live")
             .in_scope(|| tracing::info!("the view holds a live birth at this path: it stays, never created over"));
         return FenceOutcome::Alive;
     }
@@ -51,12 +51,12 @@ pub async fn investigate_path(path: &PathName, prev: Option<Node>, probe: &dyn P
     // and never created over; any other verdict, it is deleted and the path re-created.
     let finding = probe.investigate(&prev).await;
     if let Finding::Reached { .. } = finding {
-        tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "answers", verdict = "reached")
+        tracing::info_span!("rdm.node_admin.deployment.delete.via-path-investigation", node = %path, incarnation = %incarnation, outcome = "answers", verdict = "reached")
             .in_scope(|| tracing::info!("the previous birth is unheard but reached: it stays"));
         return FenceOutcome::Alive;
     }
     let verdict = finding.name();
-    tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "unreached", verdict)
+    tracing::info_span!("rdm.node_admin.deployment.delete.via-path-investigation", node = %path, incarnation = %incarnation, outcome = "unreached", verdict)
         .in_scope(|| tracing::info!("the previous birth at this path is unreached: it is deleted and the path re-created"));
     FenceOutcome::Clear { gone: Some(prev) }
 }

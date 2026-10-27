@@ -549,7 +549,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
                 // Held inside its own start: it has not bound its control listener, published or evaluated a gate.
                 return json!({"cut": cut, "hold_span_id": hold["span_id"], "held_calls": held_calls, "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000});
             }
-            let blocked: Vec<&Value> = named(spans, "rdm.node_admin.runtime.reject.via-not-authority-capable")
+            let blocked: Vec<&Value> = named(spans, "rdm.node_admin.runtime.reject.via-not-ready")
                 .into_iter()
                 .filter(|s| attr(s, "node") == node && attr(s, "detail").contains(want))
                 .collect();

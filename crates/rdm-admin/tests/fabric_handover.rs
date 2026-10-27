@@ -109,7 +109,7 @@ impl Spans {
 /// The primary finished the writes it issued, before its call (node-primary-update.md step 3).
 const WRITES_FINISHED: &str = "rdm.node_admin.primary.update.via-issued-writes-finished";
 /// The successor installed the election's result and answered node.primary.updated (step 4).
-const UPDATED: &str = "rdm.node_admin.seat.update.via-primary-updated";
+const UPDATED: &str = "rdm.node_admin.primary.update.via-primary-updated";
 /// A refusal of the primitive.
 const REJECTED: &str = "rdm.node_admin.primary.reject.via-primary-update";
 /// node investigation on a successor that did not answer the call.

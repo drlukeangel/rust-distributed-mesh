@@ -189,7 +189,7 @@ fn partition_subset_cuts_a_node_set_from_the_rest_until_healed() {
         back_ready(&estate, "mesh1.rpc.2", &ids[1]).await;
         finish(estate).await;
         let spans = capture.spans().expect("the cell's spans can be read");
-        assert!(named(&spans, "rdm.testkit.fault.update.via-partition-subset").iter().any(|sp| attr(sp, "outcome").starts_with("cut:")));
+        assert!(named(&spans, "rdm.testkit.fault.update.via-subset-cut").iter().any(|sp| attr(sp, "outcome").starts_with("cut:")));
         assert!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().any(|sp| attr(sp, "fault") == "partition-subset"));
     });
 }

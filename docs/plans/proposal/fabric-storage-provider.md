@@ -163,7 +163,7 @@ measured, never used as a safety timeout.
 - **R-SP14. Spans.** Each step spans its node, the provider it opens, switches to or closes, the step,
   the lines copied per writer and the last `op`, and its outcome, under the Build's step spans; the
   names follow the Build's span families and are listed in the landing. The open span of the
-  store-root proposal (`rdm.store.open.via-fold`) carries the provider's name.
+  store-root proposal (`rdm.node.store.resolve.via-fold`) carries the provider's name.
 - **R-SP15. Record formats.** The Fabric record and the journal's topology record each gain a field; a
   record without them reads as `file` and no previous provider. No row, topic address or field moves,
   so no `durable format moved` marker applies (the marker's rule is a move; the dev's correction on

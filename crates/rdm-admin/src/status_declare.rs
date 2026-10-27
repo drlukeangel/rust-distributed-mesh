@@ -477,7 +477,7 @@ impl Declarer {
             if let Some(f) = self.inflight.lock().unwrap().remove(&key) {
                 f.task.abort();
             }
-            tracing::info_span!("rdm.node_admin.status.remove.via-seat-moved", node = %me, key = ?key, held_by = %held_by)
+            tracing::info_span!("rdm.node_admin.status.remove.via-primary-changed", node = %me, key = ?key, held_by = %held_by)
                 .in_scope(|| tracing::info!("the seat that owes this declaration is another admin's: withdrawn"));
         }
     }

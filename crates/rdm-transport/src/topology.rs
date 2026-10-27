@@ -179,7 +179,7 @@ pub fn register_location(marks: &LocationMarks, lookup: &MemoryLookup, d: &MeshD
     let key = addr.id;
     if incarnation_deleted(&d.node.node_id, &d.node.incarnation) {
         tracing::info_span!(
-            "rdm.mesh.connection.reject.via-fenced-incarnation",
+            "rdm.mesh.connection.reject.via-deleted-incarnation",
             node = %d.node.name,
             node_id = %d.node.node_id,
             incarnation_id = %d.node.incarnation.as_str(),
@@ -1655,7 +1655,7 @@ impl Channel {
                         me.location_view.forget(*key);
                         me.peers.lock().unwrap().remove(key);
                         me.joined.lock().unwrap().remove(key);
-                        tracing::info_span!("rdm.mesh.connection.update.via-restart-address-retired", node = %node, channel = %channel, peer = %key.fmt_short())
+                        tracing::info_span!("rdm.mesh.connection.update.via-restart-address-removed", node = %node, channel = %channel, peer = %key.fmt_short())
                             .in_scope(|| tracing::info!("a birth under an open removal: its address is dropped from this channel; its paths stay until the exit is proven"));
                     }
                 }
@@ -2475,7 +2475,7 @@ impl View {
     fn note_primary(&self, seat: Seat, holder: &Primary, via: &'static str) -> bool {
         let SeatTaken::Held { previous } = self.digest_view.seats.take(seat, holder) else { return false };
         let previous = previous.as_ref().map(ToString::to_string).unwrap_or_default();
-        tracing::info_span!("rdm.mesh.seat.update.via-announcement", node = %self.current_name(), seat = seat.name(), holder = %holder, via, outcome = "held", previous = %previous)
+        tracing::info_span!("rdm.mesh.primary.update.via-announcement", node = %self.current_name(), seat = seat.name(), holder = %holder, via, outcome = "held", previous = %previous)
             .in_scope(|| tracing::info!("a primary record was held"));
         true
     }
@@ -4041,7 +4041,7 @@ impl RoutingWatch {
 /// `NodeDeleted`) and resurrects nothing.
 fn reject_deleted_overlay(observer: &str, op: &LifecycleOp, frame: &'static str) {
     tracing::info_span!(
-        "rdm.mesh.topology.reject.via-departed-birth",
+        "rdm.mesh.topology.reject.via-deleted-birth",
         observer,
         node = %op.name,
         node_id = %op.node_id,
@@ -4057,7 +4057,7 @@ fn reject_deleted_overlay(observer: &str, op: &LifecycleOp, frame: &'static str)
 /// Why a digest was not taken.
 fn reject_deleted(d: &MeshDigest, via: &'static str) {
     tracing::info_span!(
-        "rdm.mesh.topology.reject.via-departed-birth",
+        "rdm.mesh.topology.reject.via-deleted-birth",
         node = %d.node.name,
         node_id = %d.node.node_id,
         incarnation_id = %d.node.incarnation.as_str(),
@@ -7086,7 +7086,7 @@ mod tests {
     /// where no live birth holds the name, by a birth its row renamed off the name, and by a node that
     /// holds Y's live birth under the name. The held status orders it: a change older than the one
     /// held is not taken, a repeat of it is not taken again. Must NOT happen: a status refused for its
-    /// publisher's name (`via-departed-birth` with `frame=mesh-status`).
+    /// publisher's name (`via-deleted-birth` with `frame=mesh-status`).
     #[test]
     fn a_mesh_status_is_taken_whatever_its_publishers_name_resolves_to_and_an_older_change_is_not() {
         let spans = OpenedSpans::default();
@@ -7113,7 +7113,7 @@ mod tests {
             view.take(&status_at(3, "pending"), &fabric, via);
             assert_eq!(view.digest_view.statuses.mesh("mesh2"), held, "{}: an older change is not taken", view.node);
         }
-        let refused: Vec<_> = spans.named("rdm.mesh.topology.reject.via-departed-birth").into_iter().filter(|f| f.get("frame").map(String::as_str) == Some("mesh-status")).collect();
+        let refused: Vec<_> = spans.named("rdm.mesh.topology.reject.via-deleted-birth").into_iter().filter(|f| f.get("frame").map(String::as_str) == Some("mesh-status")).collect();
         assert!(refused.is_empty(), "no status is refused for its publisher's name: {refused:?}");
         let heard: Vec<(String, String)> = spans.named("rdm.mesh.topology.update.via-mesh-status").into_iter().map(|f| (f["node"].clone(), f["changed_at_rafka_ms"].clone())).collect();
         assert_eq!(heard.len(), 8, "each status heard at each node opens its span, none is refused before it: {heard:?}");
@@ -7143,7 +7143,7 @@ mod tests {
         assert!(!digest_view.depart(late_delete.clone()), "a late NodeDeleted departs nothing again");
         let held = digest_view.deleted().into_iter().next().unwrap();
         assert!(!digest_view.depart(held), "a copy of the departure held");
-        let refused = spans.named("rdm.mesh.topology.reject.via-departed-birth");
+        let refused = spans.named("rdm.mesh.topology.reject.via-deleted-birth");
         assert_eq!(refused.len(), 2, "one refusal per late frame, none for the copy: {refused:?}");
         assert_eq!((refused[0]["frame"].as_str(), refused[0]["operation"].as_str(), refused[0]["build_id"].as_str()), ("node-stopped", "node.stop:mesh1.admin.1", "b0"));
         assert_eq!((refused[1]["frame"].as_str(), refused[1]["operation"].as_str()), ("node-deleted", "node.delete:mesh1.admin.1"));
@@ -7171,13 +7171,13 @@ mod tests {
         for copy in 0..3 {
             assert!(!digest_view.depart(replaced.clone()), "copy {copy} of the refused departure departs nothing again");
         }
-        let refused = spans.named("rdm.mesh.topology.reject.via-departed-birth");
+        let refused = spans.named("rdm.mesh.topology.reject.via-deleted-birth");
         assert_eq!(refused.len(), 1, "one refusal by name, its copies silent: {refused:?}");
         assert_eq!((refused[0]["frame"].as_str(), refused[0]["operation"].as_str(), refused[0]["build_id"].as_str()), ("node-deleted", "node.delete:mesh2.admin.2", "b2"));
         // Another departure of the same birth is a fact of its own: refused by name once.
         let retired = LifecycleOp { build_id: "b3".into(), ..op_at("mesh2.admin.2", &id, &inc, "node.delete:mesh2.admin.2") };
         assert!(!digest_view.depart(retired.clone()) && !digest_view.depart(retired));
-        assert_eq!(spans.named("rdm.mesh.topology.reject.via-departed-birth").len(), 2, "each refused departure once");
+        assert_eq!(spans.named("rdm.mesh.topology.reject.via-deleted-birth").len(), 2, "each refused departure once");
     }
 
     /// A birth of `path` with a fresh NodeId and incarnation, ready, heartbeat `seq`.
@@ -7406,7 +7406,7 @@ mod tests {
         assert_eq!(held(&gone, Side::Backbone), Some((publisher_of(&p), 8)), "a departed publisher's newer version of the held epoch is taken");
         assert!(gone.digest_view.in_flight().contains(&stop_x) && !gone.digest_view.routable(x.node.node_id.as_str()), "the stop it carries is held");
         assert!(gone.digest_view.is_deleted(p.node.node_id.as_str()) && gone.digest_view.get(p.node.node_id.as_str()).is_none(), "the departed publisher is not held again");
-        let departed = spans.named("rdm.mesh.topology.reject.via-departed-birth");
+        let departed = spans.named("rdm.mesh.topology.reject.via-deleted-birth");
         assert!(departed.iter().any(|f| f["node"] == "mesh1.admin.1" && f["via"] == "forwarded"), "the departed publisher's own entry is refused by name: {departed:#?}");
 
         let in_projection = spans.named("rdm.mesh.topology.reject.via-stopped-birth");

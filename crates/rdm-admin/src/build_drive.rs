@@ -969,7 +969,7 @@ impl DriveEnv {
                     BuildStateError::SeatYielded { to, .. } => to,
                     _ => None,
                 };
-                tracing::info_span!("rdm.node_admin.build.reject.via-seat-yielded", build_id = %drive.build_id.log(), node = %me, seat_yielded = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
+                tracing::info_span!("rdm.node_admin.build.reject.via-fabric-primary-changed", build_id = %drive.build_id.log(), node = %me, seat_yielded = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
                 drive.lose_fabric_primary(SeatLoss { why: why.clone(), to });
                 return Some(DriveEnd::SeatLost(why));
             }

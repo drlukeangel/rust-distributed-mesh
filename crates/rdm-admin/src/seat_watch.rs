@@ -262,7 +262,7 @@ pub async fn run(w: Watch) {
         let triggers = plan.investigate.into_iter().map(|n| (n, "silence")).chain(plan.unanswered.into_iter().map(|n| (n, "command-unanswered")));
         for (node, trigger) in triggers {
             let span = tracing::info_span!(
-                "rdm.node_admin.seat.update.via-investigation",
+                "rdm.node_admin.primary.update.via-investigation",
                 node = %me,
                 suspect = %node.name,
                 suspect_node_id = %node.node_id,

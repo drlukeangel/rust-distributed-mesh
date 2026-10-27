@@ -38,7 +38,7 @@ use serde_json::json;
 use rdm_node::storage_copy::{copy, Claim, ClaimTaken, CopyError, CopyRun, FileProviderLines, ProviderLines, Store};
 
 const COPY_SPAN: &str = "rdm.node_admin.build.update.via-storage-copy";
-const OPEN_SPAN: &str = "rdm.store.open.via-fold";
+const OPEN_SPAN: &str = "rdm.node.store.resolve.via-fold";
 const SOURCE: &str = "file";
 const DESTINATION: &str = "target";
 /// An application setting a node record carries: never in a refusal or a span.

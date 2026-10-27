@@ -172,7 +172,7 @@ impl ControlPlane {
         let me = self.held_name().await;
         let primary = self.topology.read().await.fabric_primary().map(|n| n.name.clone());
         if primary.as_ref() != Some(&me) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-not-authority", route, node = %me, fabric_primary = %primary.as_ref().map(|p| p.to_string()).unwrap_or_default())
+            tracing::info_span!("rdm.node_admin.build.reject.via-fabric-primary-required", route, node = %me, fabric_primary = %primary.as_ref().map(|p| p.to_string()).unwrap_or_default())
                 .in_scope(|| tracing::info!("topology is changed only by the fabric-primary"));
             return Err(Refusal::NotPrimary(primary.map(|p| p.to_string())));
         }
@@ -322,7 +322,7 @@ impl ControlPlane {
             .map(|i| i.as_str().to_string())
             .unwrap_or_default();
         let reason = format!("{executor} ({} at {incarnation}) departed with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven; {me} takes the lane over", n.node_id);
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, executor = %executor, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, executor = %executor, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
         let verdict = crate::build_state::BuildAttemptReceipt {
             mesh: Some(mesh.to_string()),
             build_id: current.build_id.clone(),
@@ -367,7 +367,7 @@ impl ControlPlane {
         let attempt = current.attempt;
         let incarnation = n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default();
         let reason = format!("{claimant} ({} at {incarnation}) departed with attempt {attempt} of the fabric lane unfinished, acting in mesh {mesh}: its departure is proven; {me} starts the workflow again", n.node_id);
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id.log(), lane = "fabric", attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %current.build_id.log(), lane = "fabric", attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
         let verdict = crate::build_state::BuildAttemptReceipt { mesh: None, build_id: current.build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Failed { reason, code: rdm_core::outcome::Code::FailedPrecondition } };
         if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
             span.record("outcome", "verdict-unwritten");
@@ -1034,7 +1034,7 @@ impl ControlPlane {
                     _ => None,
                 };
                 if let Some((claimant, n)) = departed {
-                    let release = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %held.build_id.log(), lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default(), node = %me, outcome = tracing::field::Empty);
+                    let release = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %held.build_id.log(), lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default(), node = %me, outcome = tracing::field::Empty);
                     if let Err(e) = self.claims.release_in_flight(&path.mesh, &held).await {
                         release.record("outcome", "in-flight-unreleased");
                         return Err(Refusal::Unavailable(format!("{me}: mesh {}'s in-flight row names attempt {} of {} by {claimant}, which departed; the row could not be released: {e}", path.mesh, held.attempt, held.build_id)));
@@ -1247,41 +1247,33 @@ fn not_live(outer: &tracing::Span, route: &'static str, path: &PathName, status:
 }
 
 pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
-    // One honest name per reason (PRD §16): rdm.node_admin.build.reject.via-<reason>.
-    macro_rules! emit {
-        ($($reason:literal),*) => {
-            match reject.reason() {
-                $( $reason => tracing::info_span!(concat!("rdm.node_admin.build.reject.via-", $reason), route, detail = %reject)
-                    .in_scope(|| tracing::info!(%reject, "build refused")), )*
-                _ => tracing::info_span!("rdm.node_admin.build.reject.via-invalid-intent", route, detail = %reject)
-                    .in_scope(|| tracing::info!(%reject, "build refused")),
-            }
-        };
-    }
-    emit!(
-        "invalid-mesh-name",
-        "duplicate-mesh",
-        "mesh-without-admin",
-        "unknown-mesh",
-        "unknown-node",
-        "node-not-live",
-        "would-leave-mesh-without-admin",
-        "mesh-already-exists",
-        "fabric-mismatch",
-        "empty-fabric",
-        "provider-mismatch",
-        "unheard-mesh",
-        "node-admin-not-node-recovered",
-        "last-admin",
-        "no-secondary",
-        "node-not-stopped",
-        "referenced-by-open-build",
-        "empty-recipe",
-        "recipe-step-repeated",
-        "recipe-node-unknown",
-        "topology-storage-provider-not-registered",
-        "topology-storage-provider-not-opened"
-    );
+    // One honest name per reason (PRD §16), each a literal at its own arm: rdm.node_admin.build.reject.via-<reason>.
+    let span = match reject.reason() {
+        "invalid-mesh-name" => tracing::info_span!("rdm.node_admin.build.reject.via-invalid-mesh-name", route, detail = %reject),
+        "duplicate-mesh" => tracing::info_span!("rdm.node_admin.build.reject.via-duplicate-mesh", route, detail = %reject),
+        "mesh-without-admin" => tracing::info_span!("rdm.node_admin.build.reject.via-mesh-without-admin", route, detail = %reject),
+        "unknown-mesh" => tracing::info_span!("rdm.node_admin.build.reject.via-unknown-mesh", route, detail = %reject),
+        "unknown-node" => tracing::info_span!("rdm.node_admin.build.reject.via-unknown-node", route, detail = %reject),
+        "node-not-live" => tracing::info_span!("rdm.node_admin.build.reject.via-node-not-live", route, detail = %reject),
+        "would-leave-mesh-without-admin" => tracing::info_span!("rdm.node_admin.build.reject.via-would-leave-mesh-without-admin", route, detail = %reject),
+        "mesh-already-exists" => tracing::info_span!("rdm.node_admin.build.reject.via-mesh-already-exists", route, detail = %reject),
+        "fabric-mismatch" => tracing::info_span!("rdm.node_admin.build.reject.via-fabric-mismatch", route, detail = %reject),
+        "empty-fabric" => tracing::info_span!("rdm.node_admin.build.reject.via-empty-fabric", route, detail = %reject),
+        "provider-mismatch" => tracing::info_span!("rdm.node_admin.build.reject.via-provider-mismatch", route, detail = %reject),
+        "unheard-mesh" => tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh", route, detail = %reject),
+        "node-admin-not-node-recovered" => tracing::info_span!("rdm.node_admin.build.reject.via-node-admin-not-node-recovered", route, detail = %reject),
+        "last-admin" => tracing::info_span!("rdm.node_admin.build.reject.via-last-admin", route, detail = %reject),
+        "no-secondary" => tracing::info_span!("rdm.node_admin.build.reject.via-no-secondary", route, detail = %reject),
+        "node-not-stopped" => tracing::info_span!("rdm.node_admin.build.reject.via-node-not-stopped", route, detail = %reject),
+        "referenced-by-open-build" => tracing::info_span!("rdm.node_admin.build.reject.via-referenced-by-open-build", route, detail = %reject),
+        "empty-recipe" => tracing::info_span!("rdm.node_admin.build.reject.via-empty-recipe", route, detail = %reject),
+        "recipe-step-repeated" => tracing::info_span!("rdm.node_admin.build.reject.via-recipe-step-repeated", route, detail = %reject),
+        "recipe-node-unknown" => tracing::info_span!("rdm.node_admin.build.reject.via-recipe-node-unknown", route, detail = %reject),
+        "topology-storage-provider-not-registered" => tracing::info_span!("rdm.node_admin.build.reject.via-topology-storage-provider-not-registered", route, detail = %reject),
+        "topology-storage-provider-not-opened" => tracing::info_span!("rdm.node_admin.build.reject.via-topology-storage-provider-not-opened", route, detail = %reject),
+        _ => tracing::info_span!("rdm.node_admin.build.reject.via-invalid-intent", route, detail = %reject),
+    };
+    span.in_scope(|| tracing::info!(%reject, "build refused"));
 }
 
 /// A refused request, rendered with every non-leaking detail.
