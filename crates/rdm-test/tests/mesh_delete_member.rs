@@ -90,7 +90,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
         assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (first.node.node_id.as_str(), first.node.incarnation_id.as_ref().map(|i| i.as_str())), "the terminal receipt names the member's exact birth");
 
         let frames: std::collections::BTreeMap<_, _> = spans.0.lock().unwrap().iter().filter(|(_, (n, _, f))| n == "rdm.node_admin.node.update.via-command-frame" && f.get("node").map(String::as_str) == Some("mesh1.rpc.1")).map(|(n, (_, _, f))| (*n, f["frame"].clone())).collect();
-        assert_eq!(frames.values().map(String::as_str).collect::<Vec<_>>(), vec!["command-accepted", "stop-connections-deleted", "node-stopped"], "the stream owner records admission before the stopped completion");
+        assert_eq!(frames.values().map(String::as_str).collect::<Vec<_>>(), vec!["command-accepted", "connections-deleting", "stop-connections-deleted", "leaving", "stop-mesh-left", "node-stopped"], "the stream owner records admission, each primitive's acknowledgement and completion, then the stopped completion (Q205)");
         let events = recorder.1.lock().unwrap().clone();
         assert_eq!(
             events,

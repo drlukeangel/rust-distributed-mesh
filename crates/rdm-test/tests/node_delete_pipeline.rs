@@ -121,7 +121,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let mut reported: Vec<_> = all.values().filter(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-frame" && f.get("operation").map(String::as_str) == Some(operation))
             .map(|(_, _, f)| (f.get("seq").and_then(|s| s.parse::<u32>().ok()).expect("a transport position"), f.get("frame").cloned().expect("a named frame"))).collect();
         reported.sort_by_key(|(seq, _)| *seq);
-        assert_eq!(reported, vec![(0, "command-accepted".into()), (1, "stop-connections-deleted".into()), (2, "node-stopped".into())], "the directed stop reports its admission, closure and completion once");
+        assert_eq!(reported, vec![(0, "command-accepted".into()), (1, "connections-deleting".into()), (2, "stop-connections-deleted".into()), (3, "leaving".into()), (4, "stop-mesh-left".into()), (5, "node-stopped".into())], "the directed stop reports its admission, each primitive's acknowledgement and completion, and its completion once (Q205)");
         assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-completion-awaited" && f.get("operation").map(String::as_str) == Some(operation) && f.get("received").map(String::as_str) == Some("true") && f.get("completion").map(String::as_str) == Some("node-left")), "the pipeline receives the stop completion");
 
         // Create again on the same node.
