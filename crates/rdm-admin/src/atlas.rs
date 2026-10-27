@@ -600,25 +600,13 @@ impl Atlas {
     }
 
     /// `n`, a birth a node read answers, as this atlas holds it (node-rpc-envelope.md node.get: the
-<<<<<<< HEAD:crates/rdm-admin/src/fabric_atlas.rs
-    /// node reads are answered from the `FabricAtlas`): the name its record holds, and the lifecycle the
+    /// node reads are answered by the fabric-primary from its atlas): the name its record holds, and the lifecycle the
     /// ops left it in (a completed stop: stopped; a completed start: ready for traffic over every state
     /// its stop and its start pass through, the gossip view's stopped birth and its `Starting` and
     /// `Pending` before the mesh-primary's ReadyForTraffic, node-start.md "Completion", so a projection
     /// published before the start completed never moves it backward, R-FA3). `false` when an op deleted
     /// the birth: it is not answered. The gossip view's status stands where no op moved the birth, and
     /// over a completed start where it is a state after ready for traffic (R-FA3: context).
-||||||| parent of d4722b4f9 (refactor(Q224, #3223): FabricAtlas becomes Atlas (atlas.rs), one atlas per node-admin; prose says a node-admin's atlas, fabrics.atlas.get the fabric-primary's):crates/rdm-admin/src/fabric_atlas.rs
-    /// node reads are answered from the `FabricAtlas`): the name its record holds, and the lifecycle the
-    /// ops left it in (a completed stop: stopped; a completed start of a birth the gossip view still
-    /// holds stopped: ready for traffic). `false` when an op deleted the birth: it is not answered. The
-    /// gossip view's status stands where no op moved the birth (R-FA3: context).
-=======
-    /// node reads are answered by the fabric-primary from its atlas): the name its record holds, and the lifecycle the
-    /// ops left it in (a completed stop: stopped; a completed start of a birth the gossip view still
-    /// holds stopped: ready for traffic). `false` when an op deleted the birth: it is not answered. The
-    /// gossip view's status stands where no op moved the birth (R-FA3: context).
->>>>>>> d4722b4f9 (refactor(Q224, #3223): FabricAtlas becomes Atlas (atlas.rs), one atlas per node-admin; prose says a node-admin's atlas, fabrics.atlas.get the fabric-primary's):crates/rdm-admin/src/atlas.rs
     pub(crate) fn answer(&self, n: &mut crate::model::Node) -> bool {
         let held = self.held.lock().unwrap();
         if let Some(r) = held.records.get(&n.node_id).filter(|r| r.status != NodeStatus::Withdrawn) {

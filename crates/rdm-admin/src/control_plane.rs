@@ -1610,8 +1610,8 @@ mod tests {
             claimant: None,
             lanes: Default::default(),
         };
-        let atlas = crate::fabric_atlas::FabricAtlas::default();
-        assert_eq!(atlas.take_receipt(&p, 16, &operation), crate::fabric_atlas::Taken::Effect(Some("started")), "the start's Complete receipt is the atlas's");
+        let atlas = crate::atlas::Atlas::default();
+        assert_eq!(atlas.take_receipt(&p, 16, &operation), crate::atlas::Taken::Effect(Some("started")), "the start's Complete receipt is the atlas's");
         let viewed = |status: NodeStatus, stopped: bool| {
             let mut view = t.clone();
             for n in view.nodes.iter_mut().filter(|n| n.name == started) {
