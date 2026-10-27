@@ -115,7 +115,7 @@ fn the_consumers_day0_admin_and_a_gateway_exchange_streams_on_the_data_plane_pro
     rt.block_on(async {
         let dir = std::env::temp_dir().join(format!("demo-admin-app-{}", NodeId::mint()));
         let root = start_with(config(&dir), Wiring { alpns: vec![rshape_consumer::data_alpn()], certs: rdm_test::test_certs::root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.unwrap();
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         let (admin_dialer, mut admin_acceptor) = root.connections(b"demo/echo").expect("the admin's demo/echo handle").split();
         let gw = gateway(&root, &dir.join("mesh1.gateway.1"), &dir).await;
         let (gw_dialer, mut gw_acceptor) = gw.connections(b"demo/echo").expect("the gateway's demo/echo handle").split();

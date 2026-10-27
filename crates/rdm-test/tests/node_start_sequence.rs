@@ -186,7 +186,7 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         // The authority: a Day-0 node-admin. Its accepted Build names only itself, and a reconciling
         // root would retire the nodes this cell launches in its own process: it does not reconcile.
         let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
         // A node-admin's first start: launched by the root.
@@ -356,7 +356,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
             ..Wiring::no_certs()
         };
         let root = start_with(day0_config(&root_dir), wiring).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         held.store(true, Ordering::SeqCst);
 

@@ -680,7 +680,7 @@ pub struct Drives {
     drives: Mutex<HashMap<BuildId, Arc<Drive>>>,
     /// The task making each drive's frames, by Build, and whether this admin drives Builds no longer
     /// ([`Self::stop`]): one lock, so no drive's task starts after the stop.
-    tasks: Mutex<(HashMap<BuildId, tokio::task::AbortHandle>, bool)>,
+    tasks: Mutex<(HashMap<BuildId, tokio::task::JoinHandle<()>>, bool)>,
 }
 
 impl Drives {
@@ -728,18 +728,28 @@ impl Drives {
                 .instrument(parent)
                 .with_current_subscriber(),
             );
-            tasks.0.insert(drive.build_id.clone(), task.abort_handle());
+            tasks.0.insert(drive.build_id.clone(), task);
         }
         drive
     }
 
     /// This admin drives Builds no longer (`Running::stop_reconciling`): every drive's task ends where
-    /// it is, and none starts after this, so no attempt of any Build begins here. Returns how many
-    /// drives' tasks were ended.
-    pub fn stop(&self) -> usize {
-        let mut tasks = self.tasks.lock().unwrap();
-        tasks.1 = true;
-        let ended = tasks.0.drain().filter(|(_, t)| !t.is_finished()).map(|(_, t)| t.abort()).count();
+    /// it is, and none starts after this, so no attempt of any Build begins here. It returns once each
+    /// task it ended has ended (an abort lands at the task's next await, so a task in the middle of a
+    /// poll runs that poll to its end first). Returns how many drives' tasks were ended.
+    pub async fn stop(&self) -> usize {
+        let ending: Vec<tokio::task::JoinHandle<()>> = {
+            let mut tasks = self.tasks.lock().unwrap();
+            tasks.1 = true;
+            tasks.0.drain().map(|(_, t)| t).filter(|t| !t.is_finished()).collect()
+        };
+        let ended = ending.len();
+        for t in &ending {
+            t.abort();
+        }
+        for t in ending {
+            let _ = t.await;
+        }
         tracing::info_span!("rdm.node_admin.build.update.via-reconciling-stopped", drives = ended as u64)
             .in_scope(|| tracing::info!("this admin drives no Build from now on: every drive's task is ended and none starts"));
         ended

@@ -160,7 +160,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         // The primary: a Day-0 node-admin. Its accepted Build names only itself, and a reconciling root
         // would retire the admin this cell launches in its own process: it does not reconcile.
         let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         let root_digest = root.digest.lock().unwrap().clone();
         let root_name = root_digest.node.name.to_string();

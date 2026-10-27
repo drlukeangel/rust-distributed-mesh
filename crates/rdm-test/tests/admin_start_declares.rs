@@ -131,7 +131,7 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         // The mesh's primary: a Day-0 node-admin that does not reconcile (it would retire the admin this
         // cell launches in its own process).
         let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(WRONG, async {
             while root.topology_view.primaries().mesh("mesh1").is_none() {

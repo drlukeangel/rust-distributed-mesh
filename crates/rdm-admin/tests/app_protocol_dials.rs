@@ -70,7 +70,7 @@ async fn day0_root(dir: &std::path::Path) -> Running {
     let running = start_with(day0_config(dir), Wiring { alpns: vec![app_alpn()], certs: CertChoice::Ca { secret: root(), issuing: None }, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() })
         .await
         .expect("the Day-0 admin comes up");
-    running.stop_reconciling();
+    running.stop_reconciling().await;
     running
 }
 
@@ -271,7 +271,7 @@ fn a_launched_admin_holds_its_joins_member_cert_and_its_app_protocol_dials_are_a
         )
         .await
         .expect("the launched admin comes up");
-        admin.stop_reconciling();
+        admin.stop_reconciling().await;
         let end = End::of_admin(&admin);
         assert_holds_chained_cert(&end);
         assert_both_directions_with_a_peer(end).await;

@@ -211,7 +211,7 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         )
         .await
         .unwrap();
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         assert_eq!(root.topology_view.held_types(), ALL_KINDS.iter().map(|k| k.to_string()).collect());
         for kind in ALL_KINDS {
             feed(&cache, root.topology_view.join_channel(kind).await.unwrap());

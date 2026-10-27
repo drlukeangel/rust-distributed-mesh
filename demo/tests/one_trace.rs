@@ -118,7 +118,7 @@ async fn a_call_from_the_node_admin_to_the_gateway_is_one_trace_under_the_consum
     })
     .await
     .expect("the Day-0 change finds every mesh ready");
-    root.stop_reconciling();
+    root.stop_reconciling().await;
     let (g, gateway_id) = gateway(&root, &dir.join("gateway.1"), &root_dir).await;
 
     // The consumer's span, and the node-admin's call to the gateway inside it.

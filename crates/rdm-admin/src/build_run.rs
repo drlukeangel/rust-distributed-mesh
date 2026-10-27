@@ -218,7 +218,9 @@ impl RunReader {
 #[derive(Default)]
 pub struct AttemptRuns {
     runs: Mutex<HashMap<(String, Option<String>, u32), Arc<RunLog>>>,
-    tasks: Mutex<Vec<tokio::task::AbortHandle>>,
+    /// Each run's task, and whether this admin executes attempts no longer ([`Self::stop`]): one lock,
+    /// so no run's task starts after the stop.
+    tasks: Mutex<(Vec<tokio::task::JoinHandle<()>>, bool)>,
 }
 
 impl AttemptRuns {
@@ -245,18 +247,38 @@ impl AttemptRuns {
         self.runs.lock().unwrap().remove(&(build_id.to_string(), lane.map(str::to_string), attempt));
     }
 
-    fn track(&self, task: tokio::task::AbortHandle) {
+    /// Run `run` as a task of its own, unless this admin executes attempts no longer ([`Self::stop`]):
+    /// `false`, and nothing is spawned.
+    fn spawn(&self, run: impl std::future::Future<Output = ()> + Send + 'static) -> bool {
         let mut tasks = self.tasks.lock().unwrap();
-        tasks.retain(|t| !t.is_finished());
-        tasks.push(task);
+        if tasks.1 {
+            return false;
+        }
+        tasks.0.retain(|t| !t.is_finished());
+        tasks.0.push(tokio::spawn(run));
+        true
     }
 
-    /// A fabric shutdown froze reconciliation: every run this admin holds stops where it is, as the
-    /// executor loop's own abort stopped it before runs were tasks of their own.
-    pub fn abort_all(&self) {
-        for t in self.tasks.lock().unwrap().drain(..) {
+    /// This admin executes attempts no longer (`Running::stop_reconciling`): every run it holds ends
+    /// where it is, a run a drive dispatched before the stop included, and none starts after this. It
+    /// returns once each run it ended has ended (an abort lands at the run's next await, so a run in
+    /// the middle of a poll runs that poll to its end first). Returns how many runs were ended.
+    pub async fn stop(&self) -> usize {
+        let ending: Vec<tokio::task::JoinHandle<()>> = {
+            let mut tasks = self.tasks.lock().unwrap();
+            tasks.1 = true;
+            tasks.0.drain(..).filter(|t| !t.is_finished()).collect()
+        };
+        let ended = ending.len();
+        for t in &ending {
             t.abort();
         }
+        for t in ending {
+            let _ = t.await;
+        }
+        tracing::info_span!("rdm.node_admin.build.update.via-runs-stopped", runs = ended as u64)
+            .in_scope(|| tracing::info!("this admin executes no attempt from now on: every run's task is ended and none starts"));
+        ended
     }
 }
 
@@ -821,9 +843,10 @@ impl RunDoor {
         let gated = tracing::info_span!("rdm.node_admin.build.serve.via-run-turn", node = %me, build_id = %build_id.log(), lane = lane.unwrap_or("fabric"), attempt, turn = tracing::field::Empty);
         let held = under.map(|t| t.under("build-run"));
         let gate = self.gate.clone();
+        let of_run = (build_id.clone(), lane.map(str::to_string));
         let (exec, runs, build_id, context, plan, lane) = (self.exec.clone(), self.runs.clone(), build_id.clone(), context.clone(), plan.clone(), lane.map(str::to_string));
         let run = log.clone();
-        let task = tokio::spawn(
+        let spawned = self.runs.spawn(
             {
                 let runs = runs.clone();
                 async move {
@@ -850,7 +873,10 @@ impl RunDoor {
             }
             .with_current_subscriber(),
         );
-        runs.track(task.abort_handle());
+        if !spawned {
+            runs.end(&of_run.0, of_run.1.as_deref(), attempt);
+            return Attached::Refused(rdm_core::reply::build::not_ready(format!("{me}: this admin stopped reconciling: it executes no attempt of Build {}", of_run.0)));
+        }
         Attached::Live { disposition: Disposition::Started, replay: Vec::new(), reader }
     }
 

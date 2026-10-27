@@ -120,7 +120,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         // The accepted Build names only the root: the launched admin is surplus to it, and a reconciling
         // root would retire it, which for an in-process admin is signalling this test process. The cell
         // is about the hook, so the root does not reconcile.
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         tokio::time::timeout(WRONG, started.notified()).await.expect("the Day-0 admin's hook began");
         assert_eq!(root.digest.lock().unwrap().status, MemberStatus::Pending, "the Day-0 admin is Pending while its hook runs");
 

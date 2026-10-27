@@ -90,7 +90,7 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
         // The mesh's primary: a Day-0 node-admin that does not reconcile (it would retire the admin this
         // cell launches in its own process).
         let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
         // The process boots under `mesh1.admin.2`, the name last accepted for its birth; its row stands

@@ -150,7 +150,7 @@ fn on_fabric_ready_drives_work_on_the_gateway() {
         })
         .await
         .expect("the Day-0 fabric reaches ready-for-traffic");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
 
         // The gateway comes up; the notice gets where to send.
         let served = Arc::new(AtomicU64::new(0));

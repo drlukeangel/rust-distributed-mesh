@@ -106,7 +106,7 @@ fn a_node_admin_joins_its_wiring_types_before_its_pre_node_ready_hook_and_node_g
         )
         .await
         .unwrap();
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         tokio::time::timeout(BOUND, root.pre_node_ready().unwrap().settled())
             .await
             .unwrap();
@@ -143,7 +143,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
         )
         .await
         .unwrap();
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         let root_digest = root.digest.lock().unwrap().clone();
         std::fs::create_dir_all(&joiner_dir).unwrap();
         let runtime =
@@ -202,7 +202,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
         )
         .await
         .unwrap();
-        joiner.stop_reconciling();
+        joiner.stop_reconciling().await;
         assert!(
             root.topology_view.held_types().contains(LATE),
             "the launching admin joined the new type before returning JoinNode"
@@ -268,7 +268,7 @@ fn a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receive
         let dir = std::env::temp_dir().join(format!("app-held-watch-{}", NodeId::mint()));
         let member_dir = dir.join("member");
         let root = start_with(config(&dir), Wiring { types: vec![BASE.into()], fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.unwrap();
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         let mut held = root.topology_view.held_type_changes();
         assert_eq!(*held.borrow_and_update(), BTreeSet::from([BASE.to_string()]), "the watch starts at the set held now");
 

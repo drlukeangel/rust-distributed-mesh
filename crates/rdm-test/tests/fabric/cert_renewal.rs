@@ -87,7 +87,7 @@ async fn boot_root(dir: &Path, policy: &[(&'static str, String)]) -> Running {
     })
     .await
     .expect("the Day-0 admin writes the fabric identity");
-    root.stop_reconciling();
+    root.stop_reconciling().await;
     root
 }
 
@@ -158,7 +158,7 @@ async fn launched_admin(root: &Running, store: &Path) -> (Running, BTreeMap<Stri
     let cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
     let certs = CertChoice::from_material(&dir, "mesh1", false, |k| env.get(k).cloned()).expect("the launch carries the admin's cert material");
     let admin = start_with(cfg, Wiring { certs, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("mesh1.admin.2 comes up");
-    admin.stop_reconciling();
+    admin.stop_reconciling().await;
     (admin, env)
 }
 

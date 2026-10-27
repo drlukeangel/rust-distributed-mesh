@@ -84,7 +84,7 @@ async fn boot_admin_with_committed_store_root(root_dir: &Path) -> (Running, Path
     })
     .await
     .expect("the Day-0 admin appends the Fabric record's line to fabric.jsonl so StoreRoot opens on the shared store-root");
-    root.stop_reconciling();
+    root.stop_reconciling().await;
     (root, fabric_root)
 }
 

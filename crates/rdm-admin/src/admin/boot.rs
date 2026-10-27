@@ -33,6 +33,8 @@ pub struct Running {
     /// stopped first on leave.
     pub(crate) publisher: tokio::task::JoinHandle<()>,
     pub(crate) executor: tokio::task::JoinHandle<()>,
+    /// The attempt runs this admin executes, each a task of its own: stopped with the reconciling.
+    pub(crate) runs: Arc<crate::build_run::AttemptRuns>,
     pub(crate) hierarchy: tokio::task::JoinHandle<()>,
     /// The mesh topology anti-entropy: this admin's mesh topology on the backbone, on its own timer.
     pub(crate) anti_entropy: tokio::task::JoinHandle<()>,
@@ -148,10 +150,13 @@ impl Running {
     /// recovery starts after this. A fabric shutdown does this first, so the
     /// runtimes it stops are not recovered as proven drift. The reconcile loop ends, and so does
     /// every Build's drive it started, whose own passes would otherwise plan and begin the Build's
-    /// next attempt.
-    pub fn stop_reconciling(&self) {
+    /// next attempt, and every attempt run this admin executes, a run a drive dispatched before the
+    /// stop included, whose executor would otherwise begin its operations after it. It returns once
+    /// each of them has ended.
+    pub async fn stop_reconciling(&self) {
         self.executor.abort();
-        self.runner.drives.stop();
+        self.runner.drives.stop().await;
+        self.runs.stop().await;
     }
 
     /// Stop on this process's signal (i146 Q55; node-stop.md steps 2-4), this admin its own subject: the
@@ -3233,7 +3238,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         }));
                                     }
-                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), pre_node_ready_cancel, pre_node_ready: pre_node_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone(), authority_set: authority_set.clone(), data_connections: data_connections.clone() });
+                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, runs: runs.clone(), hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), pre_node_ready_cancel, pre_node_ready: pre_node_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone(), authority_set: authority_set.clone(), data_connections: data_connections.clone() });
                                     Ok::<_, String>(())
                                 })
                             });

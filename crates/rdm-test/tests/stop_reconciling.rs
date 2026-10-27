@@ -40,7 +40,7 @@ fn an_admin_that_stopped_reconciling_starts_no_build_attempt() {
         tokio::time::timeout(WRONG, spans.recorded("rdm.node_admin.fabric.update.via-state-entered", |f| f.get("to").map(String::as_str) == Some("ready-for-traffic")))
             .await
             .expect("the Day-0 fabric reaches ready-for-traffic");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         // Every span opened from here on is keyed above the last one opened before.
         let stopped_at = spans.0.lock().unwrap().keys().copied().max().unwrap_or(0);
 

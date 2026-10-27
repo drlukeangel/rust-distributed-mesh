@@ -67,7 +67,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         let root_cfg = day0_config(&root_dir);
         let (fabric, fabric_id) = (root_cfg.fabric.clone(), root_cfg.fabric_id.clone());
         let root = start_with(root_cfg, Wiring { node_hooks: NodeHooks::new(root_pre_node_ready.clone()), certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         tokio::time::timeout(WRONG, root.pre_node_ready().unwrap().settled()).await.expect("the root's hook returns");
         let own = root.member_cert.clone().expect("the Day-0 root, its own maker, holds a member cert of its own");
         let own_signed = certs::cert_from_bytes(&own).expect("the root's own issuer signed it");
@@ -164,7 +164,7 @@ fn the_day_zero_roots_dial_on_an_app_alpn_presents_its_own_member_cert_and_is_ad
         let dir = std::env::temp_dir().join(format!("member-cert-day0-dial-{}", NodeId::mint()));
         let alpn = app_alpn();
         let root = start_with(day0_config(&dir), Wiring { alpns: vec![alpn.clone()], certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         let (opener, _) = root.connections(&alpn.name).expect("the app takes its protocol's Connections from the admin").split();
 
         // A node of mesh1 serving the app ALPN, admitting on the fabric's root.

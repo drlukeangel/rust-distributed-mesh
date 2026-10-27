@@ -165,7 +165,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
         )
         .await
         .unwrap();
-        root.stop_reconciling();
+        root.stop_reconciling().await;
         assert!(root.topology_view.held_types().is_empty());
         let node = broker(&root, &dir.join("broker"), &root_dir).await;
         assert!(root.topology_view.app_types().is_empty());
