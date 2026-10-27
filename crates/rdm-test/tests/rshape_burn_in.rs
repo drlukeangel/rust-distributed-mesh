@@ -5607,6 +5607,7 @@ async fn control_run(cell: &str, shape: Shape) {
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
     let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let formed = st.nodes.clone();
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
     let fabric_view = fabric_now(&f.estate).await;
@@ -5687,26 +5688,47 @@ async fn control_run(cell: &str, shape: Shape) {
     assert!(stale < requested && requested < healed_at, "C14: the restart is requested under stale coverage while the cut holds: re-fed at {stale}, requested at {requested}, the cut dropped at {healed_at}");
     events.push(json!({"event": "control-lost", "victim": vname, "stale_after_ms": (stale - cut_at) / 1_000_000, "restart": restart}));
     st = a.stable(&mut f, "C14: healed", &both(2), &mut inv).await;
-    let restarted = st.nodes.iter().find(|n| n["name"] == restart_target.as_str()).cloned().unwrap();
-    wait_for("the victim holds every member ready, the restarted broker under the incarnation it kept", Duration::from_secs(60), || async {
-        let v = f.estate.node_values_at(&vname).await;
-        (holds_all_ready(&v, &everyone) && v.iter().any(|n| n["name"] == restart_target.as_str() && n["incarnation_id"] == restarted["incarnation_id"])).then_some(())
-    })
-    .await;
+    // While it hears no node the victim is the lowest ReadyForTraffic node-admin of mesh2 in its own view and
+    // becomes mesh2's primary there (elections §4.1); it investigates the nodes it cannot hear, the restarted
+    // broker among them. A node its investigation does not reach is re-created at once at its path.name with
+    // a new node.id (node-recovery.md step 3: "Any other verdict (`running`, `os-stopped`, `exited`,
+    // `unproven`): the recovery below, at once"; node-investigation.md; Q188, Q195). Which nodes, if any, is
+    // not pinned: it is the race of the victim's tickles with the drop of the cut, and a recovery may still run
+    // when the healed checkpoint is stable (the old birth is held until its delete ends). Each re-created path is
+    // read from the fabric-primary's view once the closing quiet window is over, and its re-creation is held to
+    // the verdict below.
+    wait_for("the victim holds every node ready", Duration::from_secs(60), || async { holds_all_ready(&f.estate.node_values_at(&vname).await, &everyone).then_some(()) }).await;
     // And once converged a quiet fabric is quiet again.
     tokio::time::sleep(Duration::from_secs(6)).await;
     let after0 = now_ns();
     tokio::time::sleep(window * 2).await;
     let after1 = now_ns();
-    events.push(json!({"event": "healed", "victim": vname, "healed_at_ns": healed_at, "quiet_after": [after0, after1]}));
+    let settled: Vec<Value> = f.estate.node_values_at(&st.fp_name()).await.into_iter().filter(|n| n["status"] == "ready-for-traffic").collect();
+    let renewed: BTreeSet<String> = formed.iter().filter(|n| settled.iter().any(|m| m["name"] == n["name"] && m["node_id"] != n["node_id"])).map(|n| s(&n["name"])).collect();
+    let renewed_ids: Vec<(String, String)> = formed.iter().filter(|n| renewed.contains(&s(&n["name"]))).map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+    let restarted = settled.iter().find(|n| n["name"] == restart_target.as_str()).cloned().unwrap_or_else(|| panic!("the fabric-primary holds {restart_target} ready-for-traffic once the fabric is quiet"));
+    events.push(json!({"event": "healed", "victim": vname, "healed_at_ns": healed_at, "quiet_after": [after0, after1], "re_created_after_a_verdict": renewed_ids}));
     a.events.extend(events.iter().cloned());
     let seen = observer.seen.lock().unwrap().clone();
     let final_seats: BTreeSet<String> = st.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
     let marks = (cut_at, healed_at, after0, after1, quiet0, quiet1);
     // A restart, node.stop then node.start, keeps the node's id and incarnation (node-stop.md, "Kept":
-    // "node.id, incarnation, ..."): the observer hears the restarted broker under that one birth only.
-    let kept_incarnation = s(&restarted["incarnation_id"]);
-    close_run(f, a, inv, nodes, launches, primaries, connections, &["C14"], json!({"events": events}), move |_f, spans, inv| {
+    // "node.id, incarnation, ..."): the observer hears the restarted broker under the birth it was formed
+    // with, and under one more only when the victim's investigation re-created it (its current birth).
+    let formed_broker = formed.iter().find(|n| n["name"] == restart_target.as_str()).cloned().expect("the restarted broker in the formed view");
+    let (kept_incarnation, current_incarnation) = (s(&formed_broker["incarnation_id"]), s(&restarted["incarnation_id"]));
+    if !renewed.contains(&restart_target) {
+        assert_eq!(current_incarnation, kept_incarnation, "{restart_target}: a restart that no recovery followed keeps its birth (node-stop.md, Kept)");
+    }
+    let verified_at = after1;
+    close_run_with(f, a, inv, nodes, launches, primaries, connections, &["C14"], json!({"events": events}), renewed, move |_f, spans, inv| {
+        // Every recovery the cut opened follows node investigation's verdict, and every path re-created in the
+        // run was re-created on a verdict other than `reached` about the birth it was formed with.
+        recovery_follows_the_verdict(spans, marks.0, verified_at);
+        for (path, old_id) in &renewed_ids {
+            let verdicts: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == old_id.as_str() && sp["attributes"]["disposition"] == "created").collect();
+            assert!(!verdicts.is_empty() && verdicts.iter().all(|sp| sp["attributes"]["verdict"] != "reached"), "{path} ({old_id}) holds a new node.id only after a recovery opened on a verdict other than `reached` (node-recovery.md step 3): {verdicts:?}");
+        }
         // Status frames are event-driven: every message is five identical sends (one changed_at) and nothing else.
         let sends = named(spans, "rdm.mesh.fabric.update.via-status-send");
         // A message is five sends of one change. The sender may stop early only by losing the seat it publishes
@@ -5742,9 +5764,9 @@ async fn control_run(cell: &str, shape: Shape) {
             assert!(!seq.is_empty() && sorted.first() >= Some(&1), "{birth:?}: a birth's digest_seq starts at 1: {seq:?}");
         }
         let broker_births: BTreeSet<&String> = digests.keys().filter(|(n, _)| n == "mesh2.broker.1").map(|(_, i)| i).collect();
-        assert_eq!(broker_births, BTreeSet::from([&kept_incarnation]), "the observer heard the restarted broker under the one incarnation it kept ({kept_incarnation}), and no other");
+        assert_eq!(broker_births, BTreeSet::from([&kept_incarnation, &current_incarnation]), "the observer heard the restarted broker under the incarnation its restart kept ({kept_incarnation}) and, when a recovery re-created it, its current birth ({current_incarnation}), and no other");
         inv.holds(
-            "C14: with a node-admin's control traffic lost and a role node restarted under its stale coverage, every status message is exactly five sends, none in the quiet windows before or after, topology_version never goes backward, every birth's digest_seq starts at 1 and the restarted node is heard under the one birth it kept",
+            "C14: with a node-admin's control traffic lost and a role node restarted under its stale coverage, every status message is exactly five sends, none in the quiet windows before or after, topology_version never goes backward, every birth's digest_seq starts at 1, the restarted node is heard under the birth its restart kept and every re-created path followed a verdict other than reached",
             true,
             json!({"status_messages": status_messages, "publishers": tv.len(), "births_heard": digests.len(), "status_frames_heard": status_frames, "quiet_before_ms": (marks.5 - marks.4) / 1_000_000}),
         );
@@ -5802,13 +5824,17 @@ fn odd_status_messages(spans: &[Value], sends: &[&Value], seats: &BTreeSet<Strin
 /// CONTRACT: in the formed estate, once the formation's status reinforcement is over, a quiet fabric sends no
 /// status frame for two repair windows. A mesh2 node-admin that is neither primary is then cut from every other
 /// node (acknowledged by the host's rule install): its coverage goes stale and is re-fed; while it is, a mesh2
-/// broker is restarted by the Build rectifier. The cut is dropped: the fabric settles on the computed seats with
-/// one writer, the node-admin holds every member ready with the broker under its new incarnation, and a quiet
-/// fabric is quiet again for two windows. Every status message in the whole run is exactly five sends of one
-/// change, topology_version never goes backward per publisher, and a third party on the gossip channels hears
-/// each birth's digest_seq start at one and the restarted broker's two births as two births. What must NOT
+/// broker is restarted by the Build rectifier, which keeps its birth (node-stop.md, Kept). Hearing no node, the
+/// victim is mesh2's primary in its own view (elections §4.1) and investigates the nodes it cannot hear: a
+/// node its investigation does not reach, the broker included, is re-created at once at its path.name with a
+/// new node.id (node-recovery.md step 3; node-investigation.md; Q188, Q195), which nodes not pinned. The cut
+/// is dropped: the fabric settles on the computed primaries with one writer, the node-admin holds every node
+/// ready with the broker under its current birth, and a quiet fabric is quiet again for two windows. Every
+/// status message in the whole run is exactly five sends of one change, topology_version never goes backward
+/// per publisher, and a third party on the gossip channels hears each birth's digest_seq start at one, the
+/// restarted broker under the birth its restart kept and, if it was re-created, its new birth. What must NOT
 /// happen: a status send outside a five-send message, a status heartbeat in a quiet window, a version going
-/// backward, a restarted node heard as its old birth.
+/// backward, a re-creation on `reached`, a restart heard as a new birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_control_loss_recovers_without_status_heartbeat() {
     control_run("mock_control_loss_recovers_without_status_heartbeat", any_tier()).await;
