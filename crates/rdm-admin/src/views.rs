@@ -1,6 +1,7 @@
 //! The reads over Node RPC (node-rpc-envelope.md "Typed objects mapped to wire and execution
 //! owners"): `node.get`, `mesh.get` and `fabric.get` answered from a node-admin's view (a node's
-//! tags read from its row, and `node.get`'s tag filter from the node store's tags index, R-TG1), and
+//! record, its config and tags among it, from its `FabricAtlas`, never the node store, Q203; and
+//! `node.get`'s tag filter from the node store's tags index, R-TG1), and
 //! `node.connections.get` answered by any node from the connections it holds as its own
 //! (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held connections"). A read changes
 //! nothing and publishes nothing; its answer is one Status reply, and an answer past the Status reply
@@ -13,6 +14,7 @@ use crate::model::{Node, PathName};
 use crate::topology::Topology;
 use rdm_core::connections::{ConnectionsHeld, NodeConnection};
 use rdm_core::{GossipStats, NodeLoad};
+use crate::fabric_atlas::FabricAtlas;
 use crate::storage::NodesStorage;
 use rdm_core::NodeId;
 use rdm_core::status::{NodeSelect, StatusReply, StatusRequest, TagFilter};
@@ -65,8 +67,8 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 }
 
 /// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
-/// the tags its row carries and the config its digest carries (R-TG1: config rides the digest).
-pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>) -> NodeView {
+/// and the tags and config its record carries (Q203: config is never gossiped).
+pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>, config: BTreeMap<String, String>) -> NodeView {
     NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: n.name.clone(),
         kind: n.kind,
@@ -88,7 +90,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
         load,
         gossip,
         tags,
-        config: n.config.clone(),
+        config,
         data_dir_lost: None,
         data_dir_unreadable: None,
         // The fact the view folded for the silent birth (deployment-provider.md §2.5): node.get, the
@@ -142,21 +144,16 @@ async fn tagged(me: &PathName, storage: &dyn NodesStorage, filter: &TagFilter) -
     Ok(picked.unwrap_or_default())
 }
 
-/// The record of the birth `n`'s node: a point read of its key. None when it holds no record.
-async fn row_of(storage: &dyn NodesStorage, n: &Node) -> Result<Option<crate::storage::NodeRow>, ReadFailed> {
-    storage.node(&n.node_id).await.map_err(|e| ReadFailed { source: format!("the nodes store's records of {}", n.mesh), op: format!("read of the record of {} ({})", n.name, n.node_id), cause: e.to_string() })
-}
-
 /// The `data-dir-lost` fact of the birth `n`: on its own birth's facts, else on the birth its record
-/// names as its predecessor (the exited birth it was recovered over), a point read of that record.
-async fn data_dir_lost_of(facts: Option<&dyn NodesStorage>, n: &Node, row: Option<&crate::storage::NodeRow>) -> Option<DataDirLost> {
+/// names as its predecessor (the exited birth it was recovered over), that record as `records` holds it.
+fn data_dir_lost_of(records: &FabricAtlas, n: &Node, row: Option<&crate::storage::NodeRow>) -> Option<DataDirLost> {
     let row = row?;
     let own = n.incarnation_id.as_ref().and_then(|i| row.birth(i)).and_then(|b| b.data_dir_lost.clone());
     let lost = match own {
         Some(l) => l,
         None => {
             let p = row.predecessor.as_ref()?;
-            facts?.node(&p.node_id).await.ok().flatten()?.birth(&p.incarnation_id)?.data_dir_lost.clone()?
+            records.record(&p.node_id)?.birth(&p.incarnation_id)?.data_dir_lost.clone()?
         }
     };
     Some(DataDirLost { path: lost.path, since: lost.since })
@@ -171,11 +168,11 @@ fn data_dir_unreadable_of(n: &Node, row: Option<&crate::storage::NodeRow>) -> Op
 }
 
 /// The births `view` holds that `chosen` selects, sorted by `path.name`, each with what `loads`
-/// carries for it and what its record carries (its tags, app types, cert dates and data-dir facts):
-/// every birth the view holds, replaced predecessors included, its reads point reads made at once. A
-/// birth the view no longer holds is answered at a path `planned` names and no birth holds, from the
-/// data-dir-unreadable fact on the record the `path.name` index names there. No read lists a store.
-async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, storage: &dyn NodesStorage, facts: Option<&dyn NodesStorage>, chosen: &Chosen<'_>, planned: &BTreeMap<String, Vec<PathName>>) -> Result<Vec<NodeView>, ReadFailed> {
+/// carries for it and what its record in `records` carries (its config, tags, app types, cert dates and
+/// data-dir facts): every birth the view holds, replaced predecessors included. A birth the view no
+/// longer holds is answered at a path `planned` names and no birth holds, from the data-dir-unreadable
+/// fact on the record `records` holds there. Nothing reads the node store (Q203).
+fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, records: &FabricAtlas, chosen: &Chosen<'_>, planned: &BTreeMap<String, Vec<PathName>>) -> Vec<NodeView> {
     let births: Vec<&Node> = view
         .births()
         .filter(|n| match chosen {
@@ -186,10 +183,10 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             Chosen::Fabric => true,
         })
         .collect();
-    let read = births.iter().map(|n| async move {
-        let row = row_of(storage, n).await?;
+    let mut out: Vec<NodeView> = births.iter().map(|n| {
+        let row = records.record(&n.node_id);
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
-        let mut v = node_view(n, load, gossip, row.as_ref().map(|r| r.tags.clone()).unwrap_or_default());
+        let mut v = node_view(n, load, gossip, row.as_ref().map(|r| r.tags.clone()).unwrap_or_default(), row.as_ref().map(|r| r.config.clone()).unwrap_or_default());
         // What this birth runs, as its row records it (proposal executable-bindings-at-create.md rule 7).
         v.executable = row.as_ref().and_then(|r| r.executable.clone());
         // Its storage_persistence and the topology_storage_provider it writes, as its row records them
@@ -201,24 +198,20 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             v.held = v.types.clone();
         }
         v.held_hash = rdm_core::app_types::hash(&v.held);
-        if facts.is_some() {
-            // fabric-certs.md §Tracking: `node.get` surfaces the birth's held cert as `cert { issued_at,
-            // expires_at, issuer_expires_at }`.
-            v.cert = n.incarnation_id.as_ref().and_then(|i| row.as_ref()?.birth(i)?.cert.clone()).map(|c| rdm_core::views::NodeCertView { issued_at: c.issued_at, expires_at: c.expires_at, issuer_expires_at: c.issuer_expires_at });
-            v.data_dir_lost = data_dir_lost_of(facts, n, row.as_ref()).await;
-            v.data_dir_unreadable = data_dir_unreadable_of(n, row.as_ref());
-        }
-        Ok::<_, ReadFailed>(v)
-    });
-    let mut out = futures_util::future::try_join_all(read).await?;
-    if let Some(s) = facts {
+        // fabric-certs.md §Tracking: `node.get` surfaces the birth's held cert as `cert { issued_at,
+        // expires_at, issuer_expires_at }`.
+        v.cert = n.incarnation_id.as_ref().and_then(|i| row.as_ref()?.birth(i)?.cert.clone()).map(|c| rdm_core::views::NodeCertView { issued_at: c.issued_at, expires_at: c.expires_at, issuer_expires_at: c.issuer_expires_at });
+        v.data_dir_lost = data_dir_lost_of(records, n, row.as_ref());
+        v.data_dir_unreadable = data_dir_unreadable_of(n, row.as_ref());
+        v
+    }).collect();
+    {
         let meshes: Vec<&String> = match chosen {
             Chosen::Mesh(m) | Chosen::MeshIds(m, _) => planned.keys().filter(|k| k.as_str() == *m).collect(),
             _ => planned.keys().collect(),
         };
         let unheld: Vec<&PathName> = meshes.into_iter().flat_map(|m| planned[m].iter()).filter(|p| !view.births().any(|n| &n.name == *p)).collect();
-        let found = futures_util::future::join_all(unheld.iter().map(|p| s.node_at(p))).await;
-        for r in found.into_iter().filter_map(|r| r.ok().flatten()) {
+        for r in unheld.into_iter().filter_map(|p| records.record_at(p)) {
             let Some((incarnation, unreadable)) = r.births.iter().rev().find_map(|b| Some((b.incarnation_id.clone(), b.data_dir_unreadable.clone()?))) else { continue };
             let matches_chosen = match chosen {
                 Chosen::Id(id) => &r.node_id == *id,
@@ -236,8 +229,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             n.provider = Some(view.fabric.provider);
             n.data_dir = Some(unreadable.path.clone());
             n.status = crate::model::NodeStatus::Dead;
-            n.config = r.config.clone();
-            let mut v = node_view(&n, None, None, r.tags.clone());
+            let mut v = node_view(&n, None, None, r.tags.clone(), r.config.clone());
             v.executable = r.executable.clone();
             v.storage_persistence = r.storage_persistence;
             v.topology_storage_provider = r.topology_storage_provider.clone();
@@ -246,23 +238,23 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
+    out
 }
 
 /// The node reads (`node.get`, `mesh.nodes.get`, `fabric.nodes.get`; Q165) answered by the node-admin
-/// `me` from its `view`, its nodes' `loads` and its nodes `storage`: the births `select` selects,
-/// each with its tags. A tag filter is read from the tags
-/// index, one point read per label; a filter that is not a tag set is `RejectedTags`, named; a read
-/// that fails is `RejectedSourceFailed` naming the read. Its span names what was asked, the filter,
-/// its labels, how many index reads were made and how many nodes were answered.
-pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, select: &NodeSelect) -> StatusReply {
-    nodes_answer_with_status(me, view, loads, storage, None, &Ok(BTreeMap::new()), select).await
+/// `me` from its `view`, its nodes' `loads` and the node records its `FabricAtlas` holds (`records`;
+/// never the node store, Q203): the births `select` selects, each with its record's properties. A tag
+/// filter is read from the tags index of `storage`, one point read per label; a filter that is not a
+/// tag set is `RejectedTags`, named; a read that fails is `RejectedSourceFailed` naming the read. Its
+/// span names what was asked, the filter, its labels, how many index reads were made and how many
+/// nodes were answered.
+pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, records: &FabricAtlas, select: &NodeSelect) -> StatusReply {
+    nodes_answer_with_status(me, view, loads, storage, records, &Ok(BTreeMap::new()), select).await
 }
 
-/// [`nodes_answer`] with `facts` supplying the durable facts on each birth (R-FM1,
-/// R-FM2), and `planned`, the current Build's paths, naming where a birth the view no longer holds is
-/// read.
-pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, facts: Option<&dyn NodesStorage>, planned: &Planned, select: &NodeSelect) -> StatusReply {
+/// [`nodes_answer`] with `planned`, the current Build's paths, naming where a birth the view no
+/// longer holds is answered from its record (R-FM1, R-FM2).
+pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, records: &FabricAtlas, planned: &Planned, select: &NodeSelect) -> StatusReply {
     let span = tracing::info_span!(
         "rdm.node_admin.node.serve.via-get",
         node = %me,
@@ -307,19 +299,15 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                 }
             }
         };
-        match nodes(view, &loads(), storage, facts, &chosen, &planned).await {
-            Ok(nodes) => {
-                let count = nodes.len();
-                span.record("nodes", count as u64);
-                let reply = StatusReply::within_reply_bound(StatusReply::Nodes { nodes }, select.read());
-                if let StatusReply::ReadOverBound { bytes, max, .. } = &reply {
-                    tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %me, read = select.read(), select = select.name(), nodes = count, bytes, max, "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the selected nodes encode past the Status reply bound; nothing of them is sent"));
-                }
-                reply
-            }
-            Err(f) => rdm_core::reply::status::bounded_source_failed(&f.source, &f.op, &f.cause),
+        let nodes = nodes(view, &loads(), records, &chosen, &planned);
+        let count = nodes.len();
+        span.record("nodes", count as u64);
+        let reply = StatusReply::within_reply_bound(StatusReply::Nodes { nodes }, select.read());
+        if let StatusReply::ReadOverBound { bytes, max, .. } = &reply {
+            tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %me, read = select.read(), select = select.name(), nodes = count, bytes, max, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the selected nodes encode past the Status reply bound; nothing of them is sent"));
         }
+        reply
     };
     // What the read's store calls took (the blocking pool's queue and run).
     let io = crate::blocking::IoTime::default();

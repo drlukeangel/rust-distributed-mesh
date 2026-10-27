@@ -3171,7 +3171,6 @@ mod tests {
                 data_dir: Some(spec.data_dir.display().to_string()),
                 mesh_id: None,
                 in_flight: None,
-                config: Default::default(),
                 load: None,
                 gossip: None,
                 is_primary: None,

@@ -551,14 +551,6 @@ pub enum BuildReject {
         /// Why.
         detail: String,
     },
-    /// The config a request's create spec names for a path, over the cap `node.config.update` holds a
-    /// map to (Q166; [`rdm_core::check_config`]), refused at acceptance before anything is accepted.
-    ConfigOverCap {
-        /// The path.
-        node: String,
-        /// The map's keys and bytes, and the cap.
-        over: rdm_core::ConfigOverCap,
-    },
 }
 
 impl BuildReject {
@@ -594,7 +586,6 @@ impl BuildReject {
             Self::ExecutableMissing { .. } => "executable-missing",
             Self::ExecutableRefused { .. } => "executable-refused",
             Self::TagsRefused { .. } => "tags-refused",
-            Self::ConfigOverCap { .. } => "config-over-cap",
         }
     }
 }
@@ -635,7 +626,6 @@ impl fmt::Display for BuildReject {
             Self::ExecutableMissing { node } => write!(f, "`{node}` is created by the request and its create spec names no executable: every created node names the executable it runs; nothing is accepted"),
             Self::ExecutableRefused { node, detail } => write!(f, "the executable the request names for `{node}` is refused: {detail}; nothing is accepted"),
             Self::TagsRefused { node, detail } => write!(f, "the tags the request names for `{node}` are refused: {detail}; nothing is accepted"),
-            Self::ConfigOverCap { node, over } => write!(f, "the config the request names for `{node}` is refused: {over}; nothing is accepted"),
             Self::NodeSpecMismatch { mesh, missing, extra } => write!(
                 f,
                 "mesh `{mesh}`: every materialized path carries exactly one create spec; missing [{}], without a node [{}]",

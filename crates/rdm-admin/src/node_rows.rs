@@ -93,9 +93,21 @@ pub struct WrittenRows {
     /// open and again each time a storage change moves it: a name claim it writes records it on the
     /// claimed row, the provider the node it launches writes.
     topology_storage_provider: std::sync::RwLock<Option<String>>,
+    /// This admin's `FabricAtlas`: every record the writer holds is written to it (Q203: each op
+    /// writes the atlas), so a node read answers what this writer wrote without reading the store.
+    atlas: std::sync::OnceLock<Arc<crate::fabric_atlas::FabricAtlas>>,
 }
 
 impl WrittenRows {
+    /// Write every record this writer holds from now on to `atlas` as well, the ones it holds now
+    /// included.
+    pub fn feeds(&self, atlas: Arc<crate::fabric_atlas::FabricAtlas>) {
+        for r in self.rows.all() {
+            atlas.write_record(&r);
+        }
+        let _ = self.atlas.set(atlas);
+    }
+
     /// Hold `provider` as the `topology_storage_provider` this admin writes: at its boot, and at each
     /// move a storage change makes.
     pub fn writes_to(&self, provider: &str) {
@@ -107,9 +119,17 @@ impl WrittenRows {
         self.topology_storage_provider.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// The `FabricAtlas` this writer feeds, once [`Self::feeds`] named it.
+    pub fn atlas(&self) -> Option<&Arc<crate::fabric_atlas::FabricAtlas>> {
+        self.atlas.get()
+    }
+
     /// Hold `row` as the writer's record of its node.
     pub fn hold(&self, row: &NodeRow) {
         self.rows.hold(row.node_id.clone(), row.clone());
+        if let Some(atlas) = self.atlas.get() {
+            atlas.write_record(row);
+        }
     }
 
     /// Hold `node_type` as the writer's record of `node_id`'s immutable `node_type`.
@@ -125,13 +145,12 @@ impl WrittenRows {
     /// The node let go of its record (a withdrawn claim): the writer holds no record of it.
     pub fn forget(&self, node_id: &NodeId) {
         self.rows.forget(node_id);
+        if let Some(atlas) = self.atlas.get() {
+            atlas.forget_record(node_id);
+        }
         self.node_types.lock().unwrap().remove(node_id);
     }
 
-    /// The config the writer holds for `node_id`, if it holds a record of it.
-    pub fn config_of(&self, node_id: &NodeId) -> Option<BTreeMap<String, String>> {
-        self.rows.get(node_id).map(|r| r.config)
-    }
 
     /// The record the writer holds for `node_id`, if it holds one.
     pub fn row_of(&self, node_id: &NodeId) -> Option<NodeRow> {
@@ -188,7 +207,7 @@ impl WrittenRows {
     /// Apply `change` to the facts of `node`'s birth `incarnation` on its record, written whole: the
     /// record held, else one made of `node` (its name claimed for it).
     pub async fn update_birth<R>(&self, storage: &dyn NodesStorage, node: &Node, incarnation: &IncarnationId, change: impl FnOnce(&mut crate::storage::BirthFacts) -> R) -> Result<Option<R>, String> {
-        let base = NodeRow { config: node.config.clone(), ..NodeRow::new(node.name.clone(), node.node_id.clone(), node.status) };
+        let base = NodeRow::new(node.name.clone(), node.node_id.clone(), node.status);
         self.update(storage, &node.node_id, Some(base), |r| change(r.birth_mut(incarnation, &node.name))).await
     }
 
@@ -337,15 +356,6 @@ impl NodeRows {
     pub fn with_written(mut self, written: Arc<WrittenRows>) -> Self {
         self.written = written;
         self
-    }
-
-    /// The config of the row `record`'s node is written with: the one this writer holds for it,
-    /// else the record's own; and which of the two it is (`writer-record`, `executor-record`).
-    fn known_config(&self, record: &Node) -> (BTreeMap<String, String>, &'static str) {
-        match self.written.config_of(&record.node_id) {
-            Some(config) => (config, "writer-record"),
-            None => (record.config.clone(), "executor-record"),
-        }
     }
 
     /// Tell each birth whose row is seeded its config through `configs`, the config door.
@@ -600,7 +610,7 @@ impl NodeRows {
         let me = self.writer_check(&d.node.name.mesh, &d.node.name).await.map_err(|e| e.to_string())?;
         let configs = self.configs.as_ref().and_then(|slot| slot.get());
         let _one = match configs { Some(door) => Some(door.one_at_a_time().await), None => None };
-        let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &d.config, None, None, &std::collections::BTreeSet::new(), None, ClaimFor::Arrival, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
+        let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &BTreeMap::new(), None, None, &std::collections::BTreeSet::new(), None, ClaimFor::Arrival, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
             Claimed::Written { row, .. } | Claimed::HeldByNode(row) => row,
         };
         if let Some(held) = &row.app_types {
@@ -643,22 +653,21 @@ impl NodeRows {
     }
 
     async fn deleted_as(&self, record: &Node, operation: &str, fabric_recovery: bool) -> Result<(), RowRefused> {
-        let (config, config_from) = self.known_config(record);
-        let tags = match self.known_tags(record).await {
-            Ok(tags) => tags,
-            Err(e) => return self.deleted_row(&record.name, &record.node_id, Err(e), operation, fabric_recovery).await,
-        };
-        self.deleted_row(&record.name, &record.node_id, Ok(Some((config, tags, config_from))), operation, fabric_recovery).await
+        let known = self.known_meta(record).await;
+        self.deleted_row(&record.name, &record.node_id, known.map(Some), operation, fabric_recovery).await
     }
 
-    /// The tags of the row `record`'s node is written with: the ones this writer holds for it, else
-    /// those of the row the node holds now (a point read through the id index); none when it holds
-    /// no row. A node's tags are never in the executor's record: they are meta only its rows carry.
-    async fn known_tags(&self, record: &Node) -> Result<std::collections::BTreeSet<String>, RowRefused> {
+    /// The config and tags of the row `record`'s node is written with: the ones this writer holds for
+    /// it (`writer-record`), else those of the row the node holds now, a point read through the id
+    /// index (`node-row`); none when it holds no row (`no-row`). A node's config and tags are never in
+    /// the executor's record: they are properties only its record carries (Q203).
+    async fn known_meta(&self, record: &Node) -> Result<(BTreeMap<String, String>, std::collections::BTreeSet<String>, &'static str), RowRefused> {
         let me = self.held_name().await;
+        let held = self.written.row_of(&record.node_id).is_some();
         match self.written.known_row(&*self.storage, &record.node_id).await {
-            Ok(row) => Ok(row.map(|r| r.tags).unwrap_or_default()),
-            Err(why) => Err(RowRefused::Unwritten(format!("{me}: {why}: the row of {} is not written without the tags it carries", record.name))),
+            Ok(Some(r)) => Ok((r.config, r.tags, if held { "writer-record" } else { "node-row" })),
+            Ok(None) => Ok((BTreeMap::new(), Default::default(), "no-row")),
+            Err(why) => Err(RowRefused::Unwritten(format!("{me}: {why}: the row of {} is not written without the config and tags it carries", record.name))),
         }
     }
 
@@ -789,8 +798,8 @@ impl NodeRows {
     }
 
     /// Write the row of each birth in `arrivals`, the writer's view `now` having first held it; a
-    /// birth whose row carries a config it does not (seeded from a previous row, or claimed with
-    /// one at its create) is told that config.
+    /// birth whose row is seeded at its arrival with a config (from a previous row at its name), one
+    /// its join did not hand it, is told that config.
     pub async fn write_arrivals(&self, now: &Topology, arrivals: Vec<Node>) {
         let me = self.held_name_in(now);
         let taken: Vec<String> = std::mem::take(&mut *self.to_fill.lock().unwrap());
@@ -820,7 +829,10 @@ impl NodeRows {
             record_claim(&span, &r);
             span.in_scope(|| tracing::info!("node.create: the birth's row decided"));
             match r {
-                Ok(Claimed::Written { row, .. } | Claimed::HeldByNode(row)) if row.config != birth.config => self.tell(&me, now, &birth, row, &span),
+                // A row seeded at the arrival (from the previous row at its name) carries a config the birth's
+                // join did not hand it; a row the node held was handed at its join (Q203: no digest
+                // carries config to compare).
+                Ok(Claimed::Written { row, .. }) if !row.config.is_empty() => self.tell(&me, now, &birth, row, &span),
                 _ => {}
             }
         }
@@ -837,7 +849,7 @@ impl NodeRows {
             Some(row) => Claimed::HeldByNode(row),
             // A recovery's claim precedes its birth's arrival (the create claims before it launches),
             // so an arrival that finds no row of its node is never a recovery's: a plain create's seed.
-            None => self.put_seeded(me, &birth.name, &birth.node_id, birth.status, &birth.config, None, None, &std::collections::BTreeSet::new(), None, ClaimFor::Arrival, span, "").await?,
+            None => self.put_seeded(me, &birth.name, &birth.node_id, birth.status, &BTreeMap::new(), None, None, &std::collections::BTreeSet::new(), None, ClaimFor::Arrival, span, "").await?,
         };
         if let Claimed::HeldByNode(row) = &claimed {
             if let Err(why) = finish_release(&*self.storage, &self.written, me, row, "rebuild").await {
@@ -847,8 +859,8 @@ impl NodeRows {
         Ok(claimed)
     }
 
-    /// Tell a birth the config its row carries (ops-naming "Node data": the node applies it and
-    /// carries it in its next digest) through the config door, which writes the record and calls
+    /// Tell a birth the config its row carries (node-config-update.md step 3: the node applies the
+    /// map) through the config door, which writes the record and calls
     /// the birth through its mesh-primary. On its own task, under the row write's span: the view
     /// install that found the birth never waits on a call to it (the join door installs the view
     /// before it answers the joiner).
@@ -1344,7 +1356,7 @@ pub async fn move_row(storage: &dyn NodesStorage, written: &WrittenRows, me: &Pa
         });
     }
     take_name(storage, to, node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the claim of {to} for {node_id}: {e}")))?.map_err(RenameRefused::NameHeld)?;
-    let mut row = held.unwrap_or_else(|| NodeRow { config: record.config.clone(), ..NodeRow::new(from.clone(), node_id.clone(), record.status) });
+    let mut row = held.unwrap_or_else(|| NodeRow::new(from.clone(), node_id.clone(), record.status));
     row.name = to.clone();
     row.allocated = None;
     row.renamed_from = Some(from.clone());

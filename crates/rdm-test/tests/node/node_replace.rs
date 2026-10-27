@@ -1089,7 +1089,7 @@ async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
 async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index() {
     let (estate, _build) = two_mesh_estate("a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index").await;
     let nodes = estate.node_values().await;
-    let (node, mesh_primary, _fp) = placement(&nodes);
+    let (node, mesh_primary, fp) = placement(&nodes);
     let node_path = node.as_str();
     let old_name = format!("{node_path}.old");
     let before = estate.node_value(node_path).await;
@@ -1098,10 +1098,12 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
-    let reply = rdm_client::NodeRpc::new(&client)
-        .config_update(&mp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
+    // node-config-update.md step 1: the caller sends it to the fabric-primary, which sends it down.
+    let (fp_client, fp_id) = caller_of(&fp).await;
+    let reply = rdm_client::NodeRpc::new(&fp_client)
+        .config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
         .await
-        .unwrap_or_else(|e| panic!("node.config.update of {node_path} at {mesh_primary}: {e:?}"));
+        .unwrap_or_else(|e| panic!("node.config.update of {node_path} at the fabric-primary: {e:?}"));
     assert_eq!(reply.name(), "config-updated", "the mesh-primary wrote the row and the node applied it: {reply:?}");
     let told_json = json!({"tier": "gold"});
     wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
@@ -2124,7 +2126,7 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rdm_transport::NodeRpcClien
 async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_predecessor() {
     let (estate, _build) = two_mesh_estate("a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_predecessor").await;
     let nodes = estate.node_values().await;
-    let (node, mesh_primary, _fp) = placement(&nodes);
+    let (node, mesh_primary, fp) = placement(&nodes);
     let node_path = node.as_str();
     let before = estate.node_value(node_path).await;
     let admin = nodes.iter().find(|n| n["name"] == mesh_primary.as_str()).expect("the mesh-primary's view row").clone();
@@ -2132,10 +2134,12 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
-    let reply = rdm_client::NodeRpc::new(&client)
-        .config_update(&mp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
+    // node-config-update.md step 1: the caller sends it to the fabric-primary, which sends it down.
+    let (fp_client, fp_id) = caller_of(&fp).await;
+    let reply = rdm_client::NodeRpc::new(&fp_client)
+        .config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
         .await
-        .unwrap_or_else(|e| panic!("node.config.update of {node_path} at {mesh_primary}: {e:?}"));
+        .unwrap_or_else(|e| panic!("node.config.update of {node_path} at the fabric-primary: {e:?}"));
     assert_eq!(reply.name(), "config-updated", "the mesh-primary wrote the row and the node applied it: {reply:?}");
     let told_json = json!({"tier": "gold"});
     wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;

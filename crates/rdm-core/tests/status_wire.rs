@@ -122,7 +122,7 @@ fn replies_match_the_frozen_fifty_six_variant_wire_schema() {
         (StartFailed { step: "node.join".into(), reason: "refused".into() }, "13096e6f64652e6a6f696e0772656675736564"),
         (CurrentStopped { node_id: node(), incarnation: birth() }, "140c3031323334353637383961620c397763707266677776746879"),
         (ConfigUpdated { node_id: node(), incarnation: birth() }, "150c3031323334353637383961620c397763707266677776746879"),
-        (RejectedConfig { over: rdm_core::ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, "16210a208010"),
+        (Reserved22 { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 }, "16210a208010"),
         (ConfigRowRefused { node: "n".into(), reason: "r".into() }, "17016e0172"),
         (ConfigNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "18016e01610172"),
         (Blocked { node_id: node(), incarnation: birth(), reason: "r".into(), retry_on: RetryOn::TargetReachable { node_id: node() } }, "190c3031323334353637383961620c3977637072666777767468790172010c303132333435363738396162"),

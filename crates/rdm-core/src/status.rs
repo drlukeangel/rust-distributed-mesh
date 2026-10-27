@@ -34,7 +34,7 @@
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::views::{ConnectionsView, FabricView, MeshView, NodeStatus, NodeView};
-use crate::{ConfigOverCap, ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS};
+use crate::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN};
 use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
@@ -322,11 +322,12 @@ pub enum StatusRequest {
         /// The operation: `node.start:<path>`.
         operation: String,
     },
-    /// Upward: a caller asks the exact birth's mesh-primary, the writer of that mesh's rows, to put the
-    /// birth's whole config (`node.config.update`), through a carrier (Forward `0x1A`) when it cannot
-    /// reach it directly. The mesh-primary writes the node's row, tells the node, and answers
-    /// [`StatusReply::ConfigUpdated`] (`node.config.updated`) once the node applied it; a config past its
-    /// cap is [`StatusReply::RejectedConfig`]. A single call, never a Build.
+    /// Upward: a caller asks the fabric-primary to put the exact birth's whole config
+    /// (`node.config.update`, node-config-update.md), through a carrier (Forward `0x1A`) when it cannot
+    /// reach it directly; the fabric-primary writes the map to the node in its `FabricAtlas` and sends
+    /// the command to the node's mesh-primary, the writer of that mesh's rows, which writes the node's
+    /// record and tells the node. [`StatusReply::ConfigUpdated`] (`node.config.updated`) once the node
+    /// applied it. A single call, never a Build.
     UpdateNodeConfig {
         /// The birth whose config is put.
         node_id: NodeId,
@@ -791,18 +792,13 @@ pub fn create_tags_refusal(labels: &BTreeSet<String>) -> Option<String> {
 /// The longest `receipt_manifest` reference a `MeshDeleted` carries.
 pub const MAX_RECEIPT_MANIFEST_BYTES: usize = 128;
 
-/// The most bytes postcard spends on one varint length prefix of a config key or value: one string
-/// is at most [`MAX_CONFIG_BYTES`] long, under `2^14`, so its prefix is at most two bytes.
-const CONFIG_STRING_PREFIX_BYTES: usize = 2;
-const _: () = assert!(MAX_CONFIG_BYTES < 1 << 14, "a config string's length prefix is assumed to be at most two bytes");
+/// The bound every Status request fits in (node-rpc.md "Each protocol declares
+/// `MAX_REQUEST_FRAME_BYTES`"): a request past it, a config put's whole map included, is refused
+/// `Malformed(TooLarge)` before its body is read.
+const MAX_STATUS_REQUEST_BYTES: usize = 4 * 1024;
 
-/// The most bytes an `UpdateNodeConfig` (or `ApplyNodeConfig`) at the config cap encodes to: the
-/// variant (a varint, at most five bytes), the node id (a one-byte length and [`CROCKFORD60_LEN`]
-/// characters), the incarnation (a one-byte length and [`CROCKFORD60_LEN`] characters), the map's length (a varint under the key cap, at most two bytes), and every key and
-/// value at the cap with its length prefix. Derived from the cap, so the two cannot drift.
-pub const MAX_CONFIG_REQUEST_BYTES: usize = 5 + (1 + CROCKFORD60_LEN) + (1 + CROCKFORD60_LEN) + 2 + MAX_CONFIG_BYTES + MAX_CONFIG_KEYS * 2 * CONFIG_STRING_PREFIX_BYTES;
-
-/// The bound every other Status request fits in.
+/// The bound a declaration fits in, well within [`MAX_STATUS_REQUEST_BYTES`].
+#[cfg(test)]
 const MAX_DECLARATION_REQUEST_BYTES: usize = 1024;
 
 impl StatusRequest {
@@ -1056,10 +1052,16 @@ pub enum StatusReply {
         /// The incarnation of that birth.
         incarnation: IncarnationId,
     },
-    /// The config put was refused: the cap it crossed.
-    RejectedConfig {
-        /// The keys and bytes of the refused config and the bounds.
-        over: ConfigOverCap,
+    /// Reserved position (Q203): never sent.
+    Reserved22 {
+        /// Never read.
+        keys: u32,
+        /// Never read.
+        bytes: u32,
+        /// Never read.
+        max_keys: u32,
+        /// Never read.
+        max_bytes: u32,
     },
     /// The config put was not made: the nodes store refused the node's row, so nothing was told to
     /// the birth and the node's record is what it was.
@@ -1548,7 +1550,7 @@ impl StatusReply {
             Self::StartFailed { .. } => "start-failed",
             Self::CurrentStopped { .. } => "current-stopped",
             Self::ConfigUpdated { .. } => "config-updated",
-            Self::RejectedConfig { .. } => "rejected-config",
+            Self::Reserved22 { .. } => "reserved-22",
             Self::ConfigRowRefused { .. } => "config-row-refused",
             Self::ConfigNotApplied { .. } => "config-not-applied",
             Self::Blocked { .. } => "blocked",
@@ -1612,8 +1614,8 @@ impl StatusReply {
 impl NodeProtocol for Status {
     const OP: u8 = 0x1B;
     const NAME: &'static str = "status";
-    /// The larger of a declaration's bound and a config put at its cap ([`MAX_CONFIG_REQUEST_BYTES`]).
-    const MAX_REQUEST_FRAME_BYTES: usize = if MAX_CONFIG_REQUEST_BYTES > MAX_DECLARATION_REQUEST_BYTES { MAX_CONFIG_REQUEST_BYTES } else { MAX_DECLARATION_REQUEST_BYTES };
+    /// [`MAX_STATUS_REQUEST_BYTES`].
+    const MAX_REQUEST_FRAME_BYTES: usize = MAX_STATUS_REQUEST_BYTES;
     /// A `node.connections.deleted` names every connection it accounts for by id: the bound holds
     /// [`MAX_REPORTED_CONNECTIONS`] of them. A read's answer past it is
     /// [`StatusReply::ReadOverBound`] ([`StatusReply::within_reply_bound`]).
@@ -1652,7 +1654,7 @@ impl NodeProtocol for Status {
             StatusReply::StartFailed { .. } => "start-failed",
             StatusReply::CurrentStopped { .. } => "current-stopped",
             StatusReply::ConfigUpdated { .. } => "config-updated",
-            StatusReply::RejectedConfig { .. } => "rejected-config",
+            StatusReply::Reserved22 { .. } => "reserved22",
             StatusReply::ConfigRowRefused { .. } => "config-row-refused",
             StatusReply::ConfigNotApplied { .. } => "config-not-applied",
             StatusReply::Blocked { .. } => "blocked",
@@ -1717,7 +1719,7 @@ impl NodeProtocol for Status {
             StatusReply::StartFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::CurrentStopped { .. } => ReplyKind::Success,
             StatusReply::ConfigUpdated { .. } => ReplyKind::Success,
-            StatusReply::RejectedConfig { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
+            StatusReply::Reserved22 { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::ConfigRowRefused { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::ConfigNotApplied { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::Blocked { .. } => ReplyKind::Success,
@@ -1852,7 +1854,7 @@ mod tests {
             (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::CurrentStopped { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
-            (StatusReply::RejectedConfig { over: ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
+            (StatusReply::Reserved22 { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
@@ -1944,27 +1946,6 @@ mod tests {
         // A declaration naming the operation that produced its state (i146 Q36).
         let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: Some(DeclaredOperation { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "node.stop:mesh1.rpc.1".into() }) };
         assert_eq!(Status::decode_request(&Status::encode_request(&named).unwrap()).unwrap(), named);
-    }
-
-    /// CONTRACT (ops-naming "Node data": config is capped in key count and bytes): a config put at
-    /// its cap encodes within the Status request bound, whichever shape fills the cap: the most keys,
-    /// the longest strings (two-byte length prefixes), or both prefixes long on every entry.
-    #[test]
-    fn a_config_put_at_its_cap_encodes_within_the_status_request_bound() {
-        let shapes: [(usize, usize, usize); 3] = [(MAX_CONFIG_KEYS, 8, MAX_CONFIG_BYTES / MAX_CONFIG_KEYS - 8), (MAX_CONFIG_BYTES / 256, 128, 128), (MAX_CONFIG_BYTES / 136, 8, 128)];
-        for (keys, key_len, value_len) in shapes {
-            let config: BTreeMap<String, String> = (0..keys).map(|i| (format!("{i:0key_len$}"), "v".repeat(value_len))).collect();
-            assert_eq!(config.len(), keys);
-            crate::check_config(&config).expect("the shape is within the cap");
-            for q in [
-                StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: config.clone() },
-                StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: config.clone() },
-            ] {
-                let len = Status::encode_request(&q).unwrap().len();
-                assert!(len <= Status::MAX_REQUEST_FRAME_BYTES, "{keys} keys of {key_len}+{value_len} bytes encode to {len}, over {}", Status::MAX_REQUEST_FRAME_BYTES);
-                assert!(len <= MAX_CONFIG_REQUEST_BYTES, "{len} over the derived {MAX_CONFIG_REQUEST_BYTES}");
-            }
-        }
     }
 
     /// CONTRACT (R-TG1; node-rpc-envelope.md node.tags: "A label is 1-64 characters of a-z 0-9 - _ .

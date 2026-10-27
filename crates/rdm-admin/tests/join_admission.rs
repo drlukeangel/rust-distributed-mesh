@@ -110,7 +110,6 @@ fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
         data_dir: Some(d.data_dir.clone()),
         mesh_id: None,
         in_flight: None,
-        config: Default::default(),
         load: None,
         gossip: None, is_primary: None, is_fabric_primary: None
     }
@@ -408,13 +407,13 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
 /// step 2: the join answer hands the row's config, which the node installs before it publishes
 /// anything or declares readiness): a first start whose row at its create spec's name is its own
 /// (the create's claim, seeded from the exited predecessor's Deleted row) is handed that row's
-/// config in its join answer, and the digest the authority installs for it carries that config, so
-/// the writer's arrival finds the birth already carrying its row's config and tells it nothing (no
-/// config call racing the node's start, which a node whose authority is not filled answers
-/// NotReady and never applies: gate 7fd59dec, node_replace, via-config config-not-applied).
+/// config in its join answer and installed once, so the writer's arrival finds the row its own and
+/// tells it nothing (no config call racing the node's start, which a node whose authority is not
+/// filled answers NotReady and never applies: gate 7fd59dec, node_replace, via-config
+/// config-not-applied). No digest carries the config (Q203).
 #[test]
-fn a_first_start_whose_row_is_its_own_seeded_claim_is_handed_and_installed_with_the_rows_config() {
-    let cell = "a_first_start_whose_row_is_its_own_seeded_claim_is_handed_and_installed_with_the_rows_config";
+fn a_first_start_whose_row_is_its_own_seeded_claim_is_handed_the_rows_config() {
+    let cell = "a_first_start_whose_row_is_its_own_seeded_claim_is_handed_the_rows_config";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let cap = capture(cell);
@@ -422,19 +421,18 @@ fn a_first_start_whose_row_is_its_own_seeded_claim_is_handed_and_installed_with_
     let gold: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into_iter().collect();
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
-        let installed: Arc<Mutex<Vec<std::collections::BTreeMap<String, String>>>> = Arc::default();
+        let installed: Arc<Mutex<Vec<String>>> = Arc::default();
         let log = installed.clone();
         let row = rdm_admin::storage::NodeRow { topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: gold.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None };
         let mut door = door_over(joins.clone(), Arc::default(), row);
-        door.install = Arc::new(move |d| log.lock().unwrap().push(d.config.clone()));
+        door.install = Arc::new(move |d| log.lock().unwrap().push(d.node.name.to_string()));
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34570");
-        assert!(good.config.is_empty(), "the first start reports no config of its own");
         let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into(), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(answer.control.config.as_ref(), Some(&gold), "the first start is handed its own row's config: {answer:?}");
-        assert_eq!(*installed.lock().unwrap(), vec![gold.clone()], "the installed digest carries the row's config");
+        assert_eq!(*installed.lock().unwrap(), vec![dep.name.to_string()], "the birth is installed once");
         json!({ "cell": cell, "joined": format!("{joined:?}") })
     });
     let spans = cap.spans();

@@ -134,7 +134,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // with nothing to tombstone.
     let Some(tags) = tags else { return done };
     // The record this writer holds, its tags changed: written whole, its tags index moves with it.
-    let base = NodeRow { config: subject.config.clone(), ..NodeRow::new(subject.name.clone(), node_id.clone(), subject.status) };
+    let base = NodeRow::new(subject.name.clone(), node_id.clone(), subject.status);
     // A tag put moves no status (node-status.md: "never a meta or config put"): the record's stands.
     match door.written().update(storage, node_id, Some(base), |r| {
         r.tags = tags;

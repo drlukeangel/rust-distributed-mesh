@@ -149,9 +149,6 @@ pub struct Node {
     /// Stopped: `Leaving` with a live process, waiting for a start or a delete.
     #[serde(default)]
     pub stopped: bool,
-    /// The node's config as its digest carries it: the application's own key/values, opaque to RDM.
-    #[serde(default)]
-    pub config: std::collections::BTreeMap<String, String>,
 }
 
 /// A node read without the fact held is not selected (states.md "Routing": selection needs the
@@ -183,7 +180,6 @@ impl Node {
             routable: false,
             declared: None,
             stopped: false,
-            config: Default::default(),
         }
     }
 

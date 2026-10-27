@@ -588,7 +588,6 @@ async fn start_booted(
         digest_seq: 0,
         mesh_id: None,
         in_flight: None,
-        config: Default::default(),
         load: None,
         gossip: None,
         data_dir: Some(launch.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
@@ -669,7 +668,7 @@ async fn start_booted(
                         let mut d = own.clone();
                         d.status = *st.lock().unwrap();
                         // The config this birth was told rides its own digest here as in every publish.
-                        m.with_config(&d)
+                        m.reported(&d)
                     }),
                     rafka_time.clone(),
                 )));
@@ -937,7 +936,7 @@ impl crate::node_self::Session for NodeSession {
         // The stopped cycle's declaration ends with it: the start begins the next cycle, whose states
         // this birth declares from here (its ReadyForTraffic names the start).
         self.owed.lock().unwrap().owed = None;
-        let held = self.topology_view.with_config(&self.digest);
+        let held = self.topology_view.reported(&self.digest);
         let name = held.node.name.to_string();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows, operation, progress, held_again };
@@ -1548,22 +1547,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     Ok(rdm_core::reply::status::rejected_invalid_node_transition(current))
                 }
                 StatusRequest::ApplyNodeConfig { config, .. } => {
-                    // ops-naming "Node data": the node applies the config and carries it in its next
-                    // digest. It is held first, so every later publish carries it; a live node
-                    // publishes now, a stopped one presents nothing until it starts.
+                    // node-config-update.md step 3: the node applies the map, held for the application
+                    // (`TopologyView::config`); no digest carries it (Q203).
                     me.topology_view.set_config(config.clone());
-                    let published = if me.own.is_stopped() {
-                        "stopped"
-                    } else {
-                        let mut d = me.digest.clone();
-                        d.status = *me.status.lock().unwrap();
-                        match me.topology_view.publish(&d).await {
-                            Ok(()) => "published",
-                            Err(_) => "publish-failed",
-                        }
-                    };
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.topology_view.held_name(&me.digest.node.name), sender = %sender_name, keys = config.len(), digest = published, outcome = "applied", "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the config its mesh-primary wrote is held and rides this birth's digest"));
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.topology_view.held_name(&me.digest.node.name), sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the config its mesh-primary wrote is held"));
                     Ok(rdm_core::reply::applied())
                 }
                 StatusRequest::ApplyNodeName { name, .. } => {
@@ -1571,7 +1559,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     // mesh (node-name-update.md Precondition). It is held first, so every later publish
                     // carries it; off its mesh it publishes nothing (node-mesh-leave.md), and its stop
                     // or its next join carries the name.
-                    let held = me.topology_view.with_config(&me.digest).node.name;
+                    let held = me.topology_view.reported(&me.digest).node.name;
                     let asked = match name.parse::<rdm_core::PathName>() {
                         Ok(n) => n,
                         Err(e) => {

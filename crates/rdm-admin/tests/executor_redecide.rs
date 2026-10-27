@@ -158,7 +158,6 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rdm_core::Runtime
         data_dir: Some(spec.data_dir.display().to_string()),
         mesh_id: None,
         in_flight: None,
-        config: Default::default(),
         load: None,
         gossip: None, is_primary: None, is_fabric_primary: None
     }

@@ -27,12 +27,12 @@ fn digest(status: &str) -> MeshDigest {
 /// The digest's wire shape: fabric id, node (node id, path.name, endpoint id, transport address
 /// (variant V4, four address bytes, port), incarnation, supersedes, runtime), then `node_state` at
 /// position 2 (`Joining` = 0), admin API base, digest_seq, emitted_at, data dir, mesh id, in flight,
-/// config, load, gossip, held hash, then the primary revision and the fabric-primary revision (gossip.md
+/// load, gossip, held hash, then the primary revision and the fabric-primary revision (gossip.md
 /// "A primary change on gossip"; absent: one `00` each).
 const WIRE_DIGEST: &str = "0c 313132333435363738396162 \
     0c 303132333435363738396162 0b 6d657368312e7270632e31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
     00 \
-    00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00";
+    00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00";
 
 /// CONTRACT (gossip.md §3.1 frame catalog): a heartbeat (`Digest`, variant 0) is the digest's wire
 /// shape with the liveness `node_state` at position 2 and no status: a ConnectionsDeleting digest and a
@@ -110,7 +110,7 @@ fn the_largest_complete_message_golden_fits_max_frame() {
     // postcard length (3600 = 0x90 0x1c), then sequence, stamp and all remaining empty fields.
     let mut data = bytes("00 0c313132333435363738396162 0c303132333435363738396162 0b6d657368312e7270632e31 016b 007f00000150 0c79727a34396a333033796834 0000 00 01 901c");
     data.extend(std::iter::repeat_n(b'x', 3600));
-    data.extend(bytes("07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"));
+    data.extend(bytes("07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"));
     let expected = golden(&frame, &data);
     let actual = frame.golden_encode();
     assert_eq!(actual, expected, "the complete near-ceiling golden is independent of the serializer");
@@ -150,7 +150,7 @@ fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling() {
     // 3500 = postcard unsigned varint 0xac 0x1b. All other domain positions stand.
     let mut data = bytes("00 0c313132333435363738396162 0c303132333435363738396162 0b6d657368312e7270632e31 016b 007f00000150 0c79727a34396a333033796834 0000 00 01 ac1b");
     data.extend(std::iter::repeat_n(b'x', 3500));
-    data.extend(bytes("07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"));
+    data.extend(bytes("07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"));
     let expected = crate::gossip_wire::golden_with_trace(&frame, &data, Some(PARENT), Some(STATE));
     let mut traced = crate::gossip_wire::authored(&frame);
     let Frame::Authored { context, .. } = &mut traced else { unreachable!() };

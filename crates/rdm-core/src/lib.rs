@@ -56,7 +56,7 @@ pub use connections::{
     CarrierChoice, CarrierPolicy, ConnectionEnd, ConnectionIndex, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery,
     EffectiveRoute, NodeConnection, RouteResolution,
 };
-pub use digest::{check_config, ConfigOverCap, GossipStats, MemberStatus, MeshDigest, MeshNode, NodeLoad, NodeState, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS};
+pub use digest::{GossipStats, MemberStatus, MeshDigest, MeshNode, NodeLoad, NodeState};
 pub use dto::{Accepted, BuildState, BuildView, ClientError, FabricDesired, MeshDesired, StepView};
 #[doc(hidden)]
 pub use ids::fixture_crockford60;

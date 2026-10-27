@@ -133,7 +133,6 @@ fn node_record(name: &str, primary: bool, fabric_primary: bool) -> Node {
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
     n.incarnation_id = Some(IncarnationId::mint());
-    n.config = BTreeMap::from([("role".to_string(), name.to_string())]);
     n
 }
 
@@ -159,7 +158,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 name: n.name.clone(),
                 node_id: n.node_id.clone(),
                 status: NodeStatus::ReadyForTraffic,
-                config: n.config.clone(),
+                config: BTreeMap::from([("role".to_string(), n.name.to_string())]),
                 tags: Default::default(),
                 allocated: None,
                 renamed_from: None,

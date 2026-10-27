@@ -519,8 +519,8 @@ pub struct StatusAuthority {
     /// re-join), filled once its digest exists: the check-in a probed birth owes (states.md "The
     /// check-in checklist"), what the checklist's down op reads.
     pub republish: Republish,
-    /// This admin as the subject of `ApplyNodeConfig`: it holds the config and publishes its digest
-    /// carrying it; filled once its digest exists.
+    /// This admin as the subject of `ApplyNodeConfig`: it holds the config (node-config-update.md
+    /// step 3; no digest carries it, Q203); filled once its digest exists.
     pub configure: Configure,
     /// Where this admin's own `pre_node_ready` stands (the cell its start writes): while it is
     /// Blocked, a probe naming this admin is answered `Blocked` carrying its blocker.
@@ -1004,12 +1004,16 @@ impl StatusAuthority {
                 self.commands.admitted().await;
                 let view = self.topology.read().await.clone();
                 return match self.configs.get() {
-                    Some(configs) => configs.update(&me_name, &self.node_id, &view, &*self.nodes_storage, req).await,
+                    Some(configs) => configs.serve(&me_name, &self.node_id, &view, &*self.nodes_storage, self.atlas.get().map(|a| &**a), req).await,
                     None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet; {} is refused", req.op())),
                 };
             }
             // The reads: answered from what this admin holds, changing nothing.
             StatusRequest::GetNodes { select } => {
+                // Answered from this admin's FabricAtlas, never the node store (Q203).
+                let Some(atlas) = self.atlas.get() else {
+                    return rdm_core::reply::status::not_ready(format!("{me_name} holds no fabric atlas yet; {} is refused", req.op()));
+                };
                 return match self.loads.as_ref() {
                     Some(loads) => {
                         let planned = match self.fabric_states.get() {
@@ -1017,7 +1021,7 @@ impl StatusAuthority {
                             None => Err(format!("{me_name} holds no checklists yet: the current Build is not read")),
                         };
                         {
-                            let mut answer = crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, Some(&*self.nodes_storage), &planned, select).await;
+                            let mut answer = crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, atlas, &planned, select).await;
                             if let (Some(channels), StatusReply::Nodes { nodes }) = (&self.app_channels, &mut answer) {
                                 for n in nodes {
                                     let sets = if n.node_id == self.node_id {
@@ -1169,7 +1173,7 @@ impl StatusAuthority {
 
     /// Write `change` to this admin's own birth's facts on its own record, as its mesh's writer.
     async fn write_own(&self, me: &crate::model::Node, incarnation: &IncarnationId, change: impl FnOnce(&mut crate::storage::BirthFacts)) -> Result<(), String> {
-        let base = crate::storage::NodeRow { config: me.config.clone(), ..crate::storage::NodeRow::new(me.name.clone(), me.node_id.clone(), me.status) };
+        let base = crate::storage::NodeRow::new(me.name.clone(), me.node_id.clone(), me.status);
         self.caches.nodes.update(&*self.nodes_storage, &self.node_id, Some(base), |r| change(r.birth_mut(incarnation, &me.name))).await.map(|_| ())
     }
 
@@ -1915,7 +1919,7 @@ pub type PreNodeReadyCell = Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHand
 
 /// A node's re-publish of its presence (its digest published on the channel it is on), filled once it has joined its mesh.
 pub type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
-/// This node holding the config it is told and publishing its digest carrying it (`ApplyNodeConfig`).
+/// This node holding the config it is told (`ApplyNodeConfig`; no digest carries it, Q203).
 pub type Configure = Arc<OnceLock<Arc<dyn Fn(BTreeMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
 /// This node deciding a name its mesh-primary's row gives it (`ApplyNodeName`): the name it held
@@ -2033,13 +2037,13 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             Some(rdm_core::reply::status::rejected_invalid_node_transition(current))
         }
         StatusRequest::ApplyNodeConfig { config, .. } => {
-            // ops-naming "Node data": the node applies the config and carries it in its next digest.
+            // node-config-update.md step 3: the node applies the map (no digest carries it, Q203).
             let Some(configure) = configure.get() else {
                 return Some(rdm_core::reply::status::not_ready(format!("{}: its digest does not exist yet; the config is not held", me.name)));
             };
             configure(config.clone()).await;
             tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.name, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the config its mesh-primary wrote is held and rides this admin's digest"));
+                .in_scope(|| tracing::info!("the config its mesh-primary wrote is held"));
             Some(rdm_core::reply::applied())
         }
         StatusRequest::ApplyNodeName { name, .. } => {
@@ -2100,7 +2104,7 @@ impl StatusAuthority {
         let issued_at = certs.now_ms().unwrap_or(0);
         let dates = crate::storage::SigningCertDates { issued_at, expires_at, renew_at: crate::certs::issuer_renew_at(&admin.mesh, issued_at, expires_at, certs.policy().renew_at_permille) };
         let span = tracing::info_span!("rdm.node_admin.issuer.update.via-carried", node = %admin.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), carrier = %self.me, issuer_expires_at = expires_at, outcome = tracing::field::Empty, reason = tracing::field::Empty);
-        let base = crate::storage::NodeRow { config: admin.config.clone(), ..crate::storage::NodeRow::new(admin.name.clone(), admin.node_id.clone(), admin.status) };
+        let base = crate::storage::NodeRow::new(admin.name.clone(), admin.node_id.clone(), admin.status);
         match self.caches.nodes.update(&*self.nodes_storage, node_id, Some(base), |r| r.birth_mut(incarnation, &admin.name).signing_cert = Some(dates)).await {
             Ok(_) => {
                 span.record("outcome", "written");
@@ -2669,7 +2673,6 @@ mod tests {
             data_dir: Some(first.data_dir.clone()),
             mesh_id: None,
             in_flight: None,
-            config: Default::default(),
             load: None,
             gossip: None,
             is_primary: None,
@@ -3201,7 +3204,6 @@ mod tests {
             digest_seq: 1,
             mesh_id: None,
             in_flight: None,
-            config: BTreeMap::new(),
             load: None,
             gossip: None,
             data_dir: None, is_primary: None, is_fabric_primary: None

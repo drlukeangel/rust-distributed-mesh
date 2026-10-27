@@ -80,8 +80,7 @@ fn tier(t: &str) -> BTreeMap<String, String> {
 }
 
 fn view() -> Topology {
-    let mut rpc = node("mesh1.rpc.1", false, false);
-    rpc.config = tier("gold");
+    let rpc = node("mesh1.rpc.1", false, false);
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
@@ -120,8 +119,10 @@ async fn held(mp: &MeshPrimary, name: &str) -> Node {
     mp.view.read().await.nodes.iter().find(|n| n.name.to_string() == name).cloned().unwrap()
 }
 
+/// The record of `n` as its create left it: the fixture's `mesh1.rpc.1` carries config `{tier: gold}`.
 fn row_of(n: &Node) -> NodeRow {
-    NodeRow { topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }
+    let config = if n.name.to_string() == "mesh1.rpc.1" { tier("gold") } else { Default::default() };
+    NodeRow { topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config, tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }
 }
 
 /// CONTRACT: `node.delete` leaves the node's row at its `path.name` with status `Deleted`, its
@@ -247,7 +248,6 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
         // The executor's record of the birth it created: no config on it.
         let mut record = Node::allocated(name.clone());
         record.node_id = born.clone();
-        assert!(record.config.is_empty());
         mp.rows.deleted(&record, "node.delete:mesh1.rpc.2").await.expect("the Deleted row is written");
         let deleted = storage.record_at(&name).await.unwrap();
         let next = NodeId::mint();
@@ -1681,12 +1681,14 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         let mp = mesh_primary(&storage);
         let me: PathName = "mesh1.admin.2".parse().unwrap();
         let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
+        // The admin's FabricAtlas holds every record its writer holds (Q203).
+        let atlas = Arc::new(rdm_admin::fabric_atlas::FabricAtlas::default());
+        mp.rows.written().feeds(atlas.clone());
 
         // 1. Create: `mesh1.broker.north` with free-text name `north`, path `mesh1.broker`, node_type `broker`.
         let north_key: PathName = "mesh1.broker.north".parse().expect("free-text node name parses");
         assert_eq!((north_key.path().as_str(), north_key.name().as_str(), north_key.node_type()), ("mesh1.broker", "north", "broker"));
-        let mut north = node("mesh1.broker.north", false, false).with_node_type("broker").expect("valid node_type");
-        north.config = tier("gold");
+        let north = node("mesh1.broker.north", false, false).with_node_type("broker").expect("valid node_type");
         assert_eq!((north.path().as_str(), north.node_name().as_str(), north.node_type()), ("mesh1.broker", "north", "broker"));
         let (_, claimed_type) = mp
             .rows
@@ -1710,7 +1712,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         install(&mp.records, &mp.view, move |v| v.nodes.push(north_for_view)).await;
 
         // 2. Get: `nodes_answer` round-trips `name`, `path` and `node_type`.
-        let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &NodeSelect::Id(north.node_id.clone())).await else {
+        let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &atlas, &NodeSelect::Id(north.node_id.clone())).await else {
             panic!("expected StatusReply::Nodes");
         };
         assert_eq!(nodes.len(), 1);
@@ -1728,7 +1730,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
             n.routable = false;
         })
         .await;
-        let StatusReply::Nodes { nodes: stopped } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &NodeSelect::Id(north.node_id.clone())).await else {
+        let StatusReply::Nodes { nodes: stopped } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &atlas, &NodeSelect::Id(north.node_id.clone())).await else {
             panic!("expected StatusReply::Nodes");
         };
         assert!(stopped[0].stopped);
@@ -1742,7 +1744,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
             n.routable = true;
         })
         .await;
-        let StatusReply::Nodes { nodes: started } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &NodeSelect::Id(north.node_id.clone())).await else {
+        let StatusReply::Nodes { nodes: started } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &atlas, &NodeSelect::Id(north.node_id.clone())).await else {
             panic!("expected StatusReply::Nodes");
         };
         assert!(!started[0].stopped);
@@ -1752,7 +1754,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         //    recovered node claims `mesh1.broker.north` with `ClaimFor::Recovery`, copying
         //    `node_type`, `config` and `tags`.
         mp.rows.deleted(&north, "node.delete:mesh1.broker.north").await.expect("Deleted row written at mesh1.broker.north");
-        let mut recovered_north = node("mesh1.broker.north", false, false);
+        let recovered_north = node("mesh1.broker.north", false, false);
         let (_, recovered_type) = mp
             .rows
             .claim_with_node_type(&north_key, &recovered_north.node_id, "", "node.create:mesh1.broker.north", None, None, ClaimFor::Recovery)
@@ -1765,7 +1767,6 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
             (recovered_row.node_id.clone(), recovered_row.path().as_str(), recovered_row.node_name().as_str(), recovered_row.node_type(), &recovered_row.config, &recovered_row.tags),
             (recovered_north.node_id.clone(), "mesh1.broker", "north", "broker", &tier("gold"), &["blue".to_string()].into())
         );
-        recovered_north.config = recovered_row.config.clone();
         let rec_for_view = recovered_north.clone();
         let exited_id = north.node_id.clone();
         install(&mp.records, &mp.view, move |v| {
@@ -1805,7 +1806,6 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         succ_ready.name = north_key.clone();
         succ_ready.status = NodeStatus::ReadyForTraffic;
         succ_ready.stopped = false;
-        succ_ready.config = succ_row.config.clone();
         let mut pred_old = pred_stopped.clone();
         pred_old.name = old_key.clone();
         let pred_id = pred_old.node_id.clone();
@@ -1816,7 +1816,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         })
         .await;
 
-        let StatusReply::Nodes { nodes: mesh_nodes } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &NodeSelect::Mesh("mesh1".into())).await else {
+        let StatusReply::Nodes { nodes: mesh_nodes } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &atlas, &NodeSelect::Mesh("mesh1".into())).await else {
             panic!("expected StatusReply::Nodes");
         };
         let active = mesh_nodes.iter().find(|n| n.name == north_key).expect("active successor at mesh1.broker.north");

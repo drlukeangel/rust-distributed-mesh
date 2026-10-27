@@ -15,6 +15,12 @@
 //!
 //! Nothing moves backward: an effect is taken only over an older one (the Build's acceptance stamp,
 //! then its attempt). Gossip is context (`observed`) and decides nothing.
+//!
+//! It holds every node record too (Q203, Q204): the fabric-primary fills them from the node records
+//! once, at its start or hand-over, and each op writes them from then on: a record this admin writes
+//! or holds as a writer (`crate::node_rows::WrittenRows`), the config `node.config.update` puts, and
+//! the records of the meshes a Build names once its attempt completes (an op's result, Q197).
+//! `node.get`, `mesh.nodes.get` and `fabric.nodes.get` answer from them and never read the node store.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -60,6 +66,11 @@ struct Accepted {
 
 #[derive(Debug, Default)]
 struct Held {
+    /// Every node record, by node id (Q203): what the node reads answer from.
+    records: BTreeMap<NodeId, NodeRow>,
+    /// The births whose record the atlas holds as it stood once the birth was heard: each record's
+    /// births, and each birth read once when it was first heard (`read_new_births`).
+    births_read: std::collections::BTreeSet<(NodeId, String)>,
     /// The completed lifecycle effect of each birth, by incarnation.
     effects: BTreeMap<String, Effect>,
     /// The operation accepted on each path, by `path.name`.
@@ -141,6 +152,101 @@ fn lifecycle_of(operation: &str) -> Option<(Lifecycle, PathName)> {
 }
 
 impl FabricAtlas {
+    /// Hold `row` as its node's record: a write an op made (a writer's record, an op's result).
+    pub fn write_record(&self, row: &NodeRow) {
+        let mut held = self.held.lock().unwrap();
+        held.births_read.extend(row.births.iter().map(|b| (row.node_id.clone(), b.incarnation_id.as_str().to_string())));
+        held.records.insert(row.node_id.clone(), row.clone());
+    }
+
+    /// The record of each birth of `births` the atlas has not read since the birth was first heard
+    /// (a mesh-primary's self-healing, a recovery's or a re-create's new birth: an op the
+    /// fabric-primary did not run, whose result reaches it through the view and the store's record,
+    /// Q197), read once: one point read per such birth, never per request. The number read.
+    pub(crate) async fn read_new_births(&self, rows: &dyn NodesStorage, births: Vec<(NodeId, IncarnationId)>) -> usize {
+        let new: Vec<(NodeId, IncarnationId)> = {
+            let held = self.held.lock().unwrap();
+            births.into_iter().filter(|(n, i)| !held.births_read.contains(&(n.clone(), i.as_str().to_string()))).collect()
+        };
+        let mut read = 0;
+        for (node_id, incarnation) in new {
+            if let Ok(Some(r)) = rows.node(&node_id).await {
+                let mut held = self.held.lock().unwrap();
+                held.births_read.insert((node_id.clone(), incarnation.as_str().to_string()));
+                held.births_read.extend(r.births.iter().map(|b| (node_id.clone(), b.incarnation_id.as_str().to_string())));
+                held.records.insert(node_id, r);
+                read += 1;
+            }
+        }
+        read
+    }
+
+    /// Apply `change` to the record the atlas holds for `node_id`: an op's result on a record another
+    /// admin writes (Q197). `false` when the atlas holds no record of the node.
+    pub(crate) fn update_record(&self, node_id: &NodeId, change: impl FnOnce(&mut NodeRow)) -> bool {
+        match self.held.lock().unwrap().records.get_mut(node_id) {
+            Some(r) => {
+                change(r);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The node `node_id` holds no record any more (a withdrawn claim).
+    pub(crate) fn forget_record(&self, node_id: &NodeId) {
+        self.held.lock().unwrap().records.remove(node_id);
+    }
+
+    /// `node.config.update` at the fabric-primary (node-config-update.md step 1): the map written to
+    /// the node in the atlas before the command goes down. The config it held before, to put back when
+    /// the command is refused; `None` when the atlas holds no record of the node.
+    pub(crate) fn write_config(&self, node_id: &NodeId, config: &BTreeMap<String, String>) -> Option<BTreeMap<String, String>> {
+        let mut held = self.held.lock().unwrap();
+        let r = held.records.get_mut(node_id)?;
+        Some(std::mem::replace(&mut r.config, config.clone()))
+    }
+
+    /// Put `config` back on the node `node_id` where the atlas still holds `put` (a refused command).
+    pub(crate) fn restore_config(&self, node_id: &NodeId, put: &BTreeMap<String, String>, config: BTreeMap<String, String>) {
+        if let Some(r) = self.held.lock().unwrap().records.get_mut(node_id) {
+            if r.config == *put {
+                r.config = config;
+            }
+        }
+    }
+
+    /// The record the atlas holds for `node_id`.
+    pub fn record(&self, node_id: &NodeId) -> Option<NodeRow> {
+        self.held.lock().unwrap().records.get(node_id).cloned()
+    }
+
+    /// The record the atlas holds at `path`: the one whose node holds the name now.
+    pub fn record_at(&self, path: &PathName) -> Option<NodeRow> {
+        self.held.lock().unwrap().records.values().find(|r| r.name == *path).cloned()
+    }
+
+    /// Fill the records of each mesh in `meshes` from the node records, read whole (one listing per
+    /// mesh): at the fabric-primary's start or hand-over (Q204), and once a Build's attempt completed
+    /// (its op results on every mesh it names, Q197). The number of records held after.
+    pub async fn fill(&self, rows: &dyn NodesStorage, meshes: impl IntoIterator<Item = String>) -> Result<usize, String> {
+        let mut read = Vec::new();
+        for mesh in meshes {
+            let listed = rows.nodes(&mesh).await.map_err(|e| format!("nodes.storage: the node records of {mesh} could not be read: {e}"))?;
+            read.push((mesh, listed));
+        }
+        let mut held = self.held.lock().unwrap();
+        for (mesh, listed) in read {
+            held.records.retain(|_, r| r.name.mesh != mesh);
+            for r in listed {
+                let births: Vec<(NodeId, String)> = r.births.iter().map(|b| (r.node_id.clone(), b.incarnation_id.as_str().to_string())).collect();
+                held.births_read.extend(births);
+                held.records.insert(r.node_id.clone(), r);
+            }
+        }
+        Ok(held.records.len())
+    }
+
     /// The operations `action` acts with, accepted as attempt `attempt` of `build_id`: written at
     /// acceptance, before the attempt can be claimed (R-FA2).
     pub(crate) fn note_accepted(&self, build_id: &crate::build::BuildId, attempt: u32, action: &AttemptAction) {

@@ -2500,8 +2500,8 @@ pub struct TopologyView {
     load: Arc<crate::load::LoadSampler>,
     /// What the forwarder decides and where it goes: this mesh's channel.
     forward_path: ForwardPath,
-    /// The config this birth's mesh-primary last told it (`ApplyNodeConfig`; ops-naming "Node data"):
-    /// carried in every digest this topology view publishes from then on. `None` until it is told.
+    /// The config this birth's mesh-primary last told it (`ApplyNodeConfig`, node-config-update.md):
+    /// the map the application reads ([`Self::config`]); never gossiped (Q203). `None` until it is told.
     config: Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>,
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12): carried in every
     /// digest this topology view publishes from then on. `None` while the birth holds its launch name.
@@ -2814,7 +2814,7 @@ impl TopologyView {
             *author = Some(birth);
         }
         *self.digest_view.own.lock().unwrap() = Some(d.node.node_id.to_string());
-        let mut d = self.with_config(d);
+        let mut d = self.reported(d);
         d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
         d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
         // The liveness this birth self-publishes (node-identity-and-state.md §4), from its own word
@@ -2834,10 +2834,15 @@ impl TopologyView {
         self.mesh.broadcast(&Frame::Digest { digest: d }).await
     }
 
-    /// Hold `config` as this birth's config: every digest this topology view publishes from now on carries
-    /// it (ops-naming "Node data": the node applies it and carries it in its next digest).
+    /// Hold `config` as this birth's config (node-config-update.md step 3: "it applies the map"): the
+    /// map the application reads from now on ([`Self::config`]). No digest carries it (Q203).
     pub fn set_config(&self, config: std::collections::BTreeMap<String, String>) {
         *self.config.lock().unwrap() = Some(config);
+    }
+
+    /// The config this birth was last told (its join answer or `ApplyNodeConfig`); `None` until told.
+    pub fn config(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        self.config.lock().unwrap().clone()
     }
 
     /// Hold `name` as this birth's name: every digest this topology view publishes from now on carries
@@ -2852,13 +2857,10 @@ impl TopologyView {
         self.name.lock().unwrap().clone().unwrap_or_else(|| birth.clone())
     }
 
-    /// `d` as this birth reports it: with the config and the name it was told, when it was told them,
-    /// and the held app-type hash.
-    pub fn with_config(&self, d: &MeshDigest) -> MeshDigest {
+    /// `d` as this birth reports it: with the name it was told, when it was told it, and the held
+    /// app-type hash.
+    pub fn reported(&self, d: &MeshDigest) -> MeshDigest {
         let mut d = d.clone();
-        if let Some(c) = self.config.lock().unwrap().as_ref() {
-            d.config = c.clone();
-        }
         if let Some(n) = self.name.lock().unwrap().as_ref() {
             d.node.name = n.clone();
         }
@@ -5616,7 +5618,6 @@ mod tests {
             digest_seq: at,
             mesh_id: None,
             in_flight: None,
-            config: Default::default(),
             load: None,
             gossip: None,
             data_dir: None, is_primary: None, is_fabric_primary: None
@@ -6523,7 +6524,7 @@ mod tests {
         assert!(digests.has_changed().unwrap(), "the first digest ticks");
         digests.borrow_and_update();
         let mut renamed = digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 101);
-        renamed.config.insert("k".into(), "v".into());
+        renamed.data_dir = Some("d".into());
         assert!(digest_view.record(renamed));
         assert!(digests.has_changed().unwrap(), "a fresher digest of the same birth and status ticks");
         digests.borrow_and_update();

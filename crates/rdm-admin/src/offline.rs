@@ -829,7 +829,7 @@ pub(crate) async fn put_silence_status(store: &dyn crate::storage::NodesStorage,
             .in_scope(|| tracing::info!("the node's silence status names no birth: nothing is written"));
         return Err(why);
     };
-    let base = crate::storage::NodeRow { config: node.config.clone(), ..crate::storage::NodeRow::new(node.name.clone(), node.node_id.clone(), node.status) };
+    let base = crate::storage::NodeRow::new(node.name.clone(), node.node_id.clone(), node.status);
     let marked = written.update(store, &node.node_id, Some(base), |r| r.birth_mut(&incarnation_id, &node.name).silence = status).await;
     if let Err(e) = marked {
         tracing::info_span!("rdm.node_admin.node.reject.via-nodes-storage", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation_id.as_str(), status = word, store = "nodes.storage", error = %e)
@@ -1632,7 +1632,6 @@ pub(crate) mod tests {
             digest_seq: 1,
             mesh_id: None,
             in_flight: None,
-            config: Default::default(),
             load: None,
             gossip: None,
             data_dir: None, is_primary: None, is_fabric_primary: None

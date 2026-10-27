@@ -326,7 +326,8 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     let held = view_of(&estate.meshes_obj().await, &path).await;
     assert!(held.stopped && held.status == NodeStatus::Leaving, "{held:?}");
 
-    // The update: one call to the node's mesh-primary, the row written, the stopped node told nothing.
+    // The update: one call to the fabric-primary, here mesh1's mesh-primary too, the row written, the
+    // stopped node told nothing.
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().expect("the stopped node's birth") };
     let carrier = estate.carrier().await;
@@ -339,12 +340,12 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     let started = frames(nodes.start(&path).await.expect("the start was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
-    // The config the join handed rides the started node's digests (R-JN1): the view carries it once the
-    // first of them is heard, within a gossip interval of the start's completion.
+    // The config the row holds is what node.get answers, from the fabric-primary's atlas (Q203: no
+    // digest carries it); read until the started birth is ready, within a staleness floor.
     let until = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
     let after = loop {
         let v = view_of(&estate.meshes_obj().await, &path).await;
-        if v.config == told || std::time::Instant::now() >= until {
+        if (v.config == told && !v.stopped && v.status == NodeStatus::ReadyForTraffic) || std::time::Instant::now() >= until {
             break v;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

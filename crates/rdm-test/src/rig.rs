@@ -575,7 +575,6 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         data_dir: None,
         mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
         in_flight: None,
-        config: Default::default(),
         load: None,
         gossip: None, is_primary: None, is_fabric_primary: None
     };
@@ -612,7 +611,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     };
     let _ = own_digest_slot.set(admin_digest.clone());
     let own_topology_view = topology_view.clone();
-    let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.with_config(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
+    let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
         observer: LiveMesh { topology_view, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands },

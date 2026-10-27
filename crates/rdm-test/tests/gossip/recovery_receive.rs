@@ -21,7 +21,7 @@ async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, 
     }).await.expect("the following frame proves this receipt finished");
 }
 fn birth(fabric: &FabricId, mesh: &MeshId, path: &str, ordinal: u16) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None }
+    MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None }
 }
 fn operation(d: &MeshDigest, command: &str) -> LifecycleOp {
     LifecycleOp { build_id: "recovery-receive".into(), attempt: 1, operation: format!("node.{command}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
@@ -88,7 +88,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let (births,changes,overlays,seats)=(receiver.digest_view.birth_changes(),receiver.digest_view.digest_changes(),receiver.digest_view.overlay_changes(),receiver.primaries().subscribe());
         let counts=(*births.borrow(),*changes.borrow(),*overlays.borrow(),*seats.borrow());
         let bad=iroh::SecretKey::generate().public();
-        let mut stale=restarted.clone();stale.digest_seq=99;stale.node.endpoint_id=EndpointId(bad.to_string());stale.config.insert("obsolete".into(),"yes".into());
+        let mut stale=restarted.clone();stale.digest_seq=99;stale.node.endpoint_id=EndpointId(bad.to_string());stale.data_dir = Some("obsolete=yes".into());
         let mut frames=vec![
             Frame::Digest{digest:stale.clone()},
             Frame::MeshStatus{mesh:"mesh1".into(),status:"deleting".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:99},

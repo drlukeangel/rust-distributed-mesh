@@ -35,8 +35,7 @@ pub struct NodeSpec {
     #[serde(default)]
     pub tags: BTreeSet<String>,
     /// The application's config, the node's map (node-rpc-envelope.md "Node properties"): written to
-    /// the row at the name claim and handed in the first join; capped as `node.config.update` caps it
-    /// ([`crate::check_config`]), refused by name at acceptance. RDM never reads it. A Build accepted
+    /// the row at the name claim and handed in the first join. RDM never reads it. A Build accepted
     /// before the field decodes with none.
     #[serde(default)]
     pub config: BTreeMap<String, String>,

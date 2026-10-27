@@ -52,7 +52,7 @@ fn story(story: Story) {
         }
         let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let id = NodeId::mint();
-        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { node_id: id.clone(), name: "mesh2.rpc.1".parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(MeshId::mint()), in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { node_id: id.clone(), name: "mesh2.rpc.1".parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(MeshId::mint()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         let snapshot = |version, publication, index, count, digests: Vec<MeshDigest>, stamp| Frame::MeshTopology { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.2".into()), topology_version: version, published_at_rafka_ms: stamp, snapshot_id: publication, chunk_index: index, chunk_count: count, digests, in_flight: vec![], deleted: vec![] };
         let read = |digests| Chunk { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 10, snapshot_id: 3, chunk_index: 0, chunk_count: 1, digests, in_flight: vec![], departed: vec![] };
         let delta = |base, version, changed: Vec<MeshDigest>, stamp| Frame::MeshTopologyDelta { mesh: "mesh2".into(), source_publisher: publisher.clone(), base_version: base, topology_version: version, published_at_rafka_ms: stamp, changed, removed: vec![], in_flight: vec![], deleted: vec![] };
@@ -62,7 +62,7 @@ fn story(story: Story) {
         assert_eq!(receiver.held_source_version("mesh2"), Some((publisher.clone(), 10)));
         let heard_before = receiver.digest_view.get(id.as_str()).unwrap().1;
         let before = receiver.digest_view.all().into_iter().find(|d| d.node.node_id == id).unwrap();
-        let mut changed = digest.clone(); changed.config.insert("version".into(), "eleven".into());
+        let mut changed = digest.clone(); changed.data_dir = Some("version=eleven".into());
         let mut expected = 10;
         match story {
             Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication | Story::CrossRepeat => {
@@ -92,7 +92,7 @@ fn story(story: Story) {
                     send(&sender, &receiver, last.clone(), 3).await;
                 } else {
                     send(&sender, &receiver, first.clone(), 2).await;
-                    let mut wrong = changed.clone(); wrong.config.insert("contradiction".into(), "yes".into());
+                    let mut wrong = changed.clone(); wrong.data_dir = Some("contradiction=yes".into());
                     send(&sender, &receiver, snapshot(11, 2, 0, 2, vec![wrong], 101), 3).await;
                 }
                 assert_eq!(receiver.held_source_version("mesh2"), Some((publisher.clone(), 10)), "unfinished publication never advances the installed floor");
@@ -121,7 +121,7 @@ fn story(story: Story) {
                 let frame = delta(10, 11, vec![changed.clone()], 101);
                 send(&sender, &receiver, frame.clone(), 2).await;
                 if matches!(story, Story::DeltaRepeat) { send(&sender, &receiver, frame, 3).await; }
-                if matches!(story, Story::DeltaInconsistent) { let mut wrong=changed.clone();wrong.config.insert("contradiction".into(), "yes".into());send(&sender, &receiver, delta(10, 11, vec![wrong], 101), 3).await; }
+                if matches!(story, Story::DeltaInconsistent) { let mut wrong=changed.clone();wrong.data_dir = Some("contradiction=yes".into());send(&sender, &receiver, delta(10, 11, vec![wrong], 101), 3).await; }
                 expected=11;
             },
             Story::TwoForwarders => {
@@ -142,7 +142,7 @@ fn story(story: Story) {
         }
         assert_eq!(receiver.held_source_version("mesh2"), Some((publisher, expected)));
         let held=receiver.digest_view.all().into_iter().find(|d| d.node.node_id == id).unwrap();
-        assert_eq!(held.config, if expected>=11 { changed.config } else { before.config }, "only a newer complete publication or applicable delta replaces content");
+        assert_eq!(held.data_dir, if expected>=11 { changed.data_dir } else { before.data_dir }, "only a newer complete publication or applicable delta replaces content");
         drop(role);
         sender_ep.close().await; receiver_ep.close().await;
     });

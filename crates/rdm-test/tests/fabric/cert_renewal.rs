@@ -432,8 +432,8 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         );
         let (digest_after, _) = b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).expect("mesh1.rpc.2 still holds mesh1.rpc.1's digest");
         assert_eq!(
-            (digest_after.status, &digest_after.node.incarnation, &digest_after.node.name, &digest_after.config),
-            (digest_before.status, &digest_before.node.incarnation, &digest_before.node.name, &digest_before.config),
+            (digest_after.status, &digest_after.node.incarnation, &digest_after.node.name),
+            (digest_before.status, &digest_before.node.incarnation, &digest_before.node.name),
             "the renewal is invisible to the peer"
         );
         bounded("the members and the root admin stop", stop_all(vec![a, b], vec![root])).await;

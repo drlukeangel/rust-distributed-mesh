@@ -31,7 +31,6 @@ fn digest(name: &str, port: u16) -> MeshDigest {
         data_dir: None,
         mesh_id: Some(MeshId::mint()),
         in_flight: None,
-        config: Default::default(),
         load: None,
         gossip: None, is_primary: None, is_fabric_primary: None
     }

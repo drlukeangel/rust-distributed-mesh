@@ -43,7 +43,7 @@ fn story(story: Story) {
         let key = iroh::SecretKey::generate().public();
         let other_key = iroh::SecretKey::generate().public();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { node_id: node_id.clone(), name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { node_id: node_id.clone(), name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         if matches!(story, Story::ReadFloor) {
             let read = rdm_transport::snapshot::Chunk {
                 mesh: "mesh1".into(), publisher: rdm_transport::snapshot::PublisherId { node: "mesh1.admin.2".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
@@ -62,14 +62,14 @@ fn story(story: Story) {
         let counts = (*changes.borrow(), *births.borrow(), *overlays.borrow());
         let mut offered = digest.clone();
         match story {
-            Story::Stale | Story::ReadFloor => { offered.digest_seq = 90; offered.config.insert("obsolete".into(), "yes".into()); }
+            Story::Stale | Story::ReadFloor => { offered.digest_seq = 90; offered.data_dir = Some("obsolete=yes".into()); }
             Story::Duplicate => {
                 offered.status = MemberStatus::Leaving; // absent from the wire; the held status is Ready.
                 assert_eq!(Frame::Digest { digest: offered.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode(), Frame::Digest { digest: digest.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode());
                 receiver.location_view().forget(key);
             }
             Story::Inconsistent => { offered.node.endpoint_id = EndpointId(other_key.to_string()); }
-            Story::Newer => { offered.digest_seq = 101; offered.node.transport_addr = "127.0.0.1:12002".parse().unwrap(); offered.config.insert("new".into(), "yes".into()); }
+            Story::Newer => { offered.digest_seq = 101; offered.node.transport_addr = "127.0.0.1:12002".parse().unwrap(); offered.data_dir = Some("new=yes".into()); }
             Story::NewBirth => { offered.digest_seq = 1; offered.node.incarnation = IncarnationId::mint(); offered.node.supersedes = Some(incarnation.clone()); }
         }
         send(&sender, &receiver, offered.clone(), 2).await;

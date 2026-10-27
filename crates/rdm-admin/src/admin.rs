@@ -191,7 +191,6 @@ mod tests {
             digest_seq: 1,
             mesh_id: Some(mesh_id(&name.mesh)),
             in_flight: None,
-            config: BTreeMap::new(),
             load: None,
             gossip: None,
             data_dir: None, is_primary: None, is_fabric_primary: None
@@ -2748,12 +2747,8 @@ mod tests {
 
     #[test]
     fn ready_since_and_ordinal_never_change_a_winner() {
-        let at = |name: &str, id: &str, since: u64| {
-            let mut d = with_id(digest(name, MemberStatus::ReadyForTraffic), id);
-            // A digest still carrying the retired readiness claim: a fact nothing reads.
-            d.config.insert("ready_since_ms".into(), since.to_string());
-            d
-        };
+        // The ready claim no digest carries any more (Q203: a digest carries no config map).
+        let at = |name: &str, id: &str, _since: u64| with_id(digest(name, MemberStatus::ReadyForTraffic), id);
         // rpc.3 has the highest ordinal and the latest ready claim, and the lowest id.
         let a = view(&[at("mesh1.admin.1", "100000000000", 10), at("mesh1.rpc.1", "900000000000", 1), at("mesh1.rpc.2", "800000000000", 2), at("mesh1.rpc.3", "200000000000", 900)]);
         let b = view(&[at("mesh1.admin.1", "100000000000", 999), at("mesh1.rpc.1", "900000000000", 900), at("mesh1.rpc.2", "800000000000", 800), at("mesh1.rpc.3", "200000000000", 1)]);

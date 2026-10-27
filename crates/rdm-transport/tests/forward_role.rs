@@ -37,7 +37,6 @@ fn member(ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq: u64, statu
         data_dir: None,
         mesh_id: None,
         in_flight: None,
-        config: Default::default(),
         load: None,
         gossip: None, is_primary: None, is_fabric_primary: None
     }

@@ -297,9 +297,14 @@ async fn renew_one(r: &Renewals, n: &Node, birth: &BirthIdentity, held: &CertDat
 async fn written(r: &Renewals, n: &Node, birth: &BirthIdentity, dates: &CertDates, writes: bool) -> Outcome {
     if !writes {
         r.issued.lock().unwrap().insert((n.node_id.clone(), birth.incarnation.clone()), dates.clone());
+        // The renewal is this admin's op: its result is its FabricAtlas's at once (Q197, Q203); the
+        // record is the writer of `n`'s mesh's.
+        if let Some(atlas) = r.caches.nodes.atlas() {
+            atlas.update_record(&n.node_id, |rec| rec.birth_mut(&birth.incarnation, &birth.name).cert = Some(dates.clone()));
+        }
         return Outcome::Installed;
     }
-    let base = crate::storage::NodeRow { config: n.config.clone(), ..crate::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), n.status) };
+    let base = crate::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), n.status);
     match r.caches.nodes.update(&*r.nodes_storage, &n.node_id, Some(base), |rec| rec.birth_mut(&birth.incarnation, &birth.name).cert = Some(dates.clone())).await {
         Ok(_) => Outcome::Installed,
         Err(e) => {
@@ -493,7 +498,7 @@ async fn update_one(r: &Renewals, mesh: &str, admin: &Node, carrier: Option<&Nod
     let outcome = match outcome {
         Outcome::Installed if own_mesh => {
             let dates = signing_dates(current);
-            let base = crate::storage::NodeRow { config: admin.config.clone(), ..crate::storage::NodeRow::new(admin.name.clone(), admin.node_id.clone(), admin.status) };
+            let base = crate::storage::NodeRow::new(admin.name.clone(), admin.node_id.clone(), admin.status);
             match r.caches.nodes.update(&*r.nodes_storage, &admin.node_id, Some(base), |rec| rec.birth_mut(incarnation, &admin.name).signing_cert = Some(dates)).await {
                 Ok(_) => Outcome::Installed,
                 Err(e) => {

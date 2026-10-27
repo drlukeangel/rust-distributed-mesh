@@ -434,12 +434,6 @@ impl JoinDoor {
                         return rdm_core::reply::join::not_ready(format!("{}: the node row at {} could not be read: {why}", self.me, d.node.name));
                     }
                 };
-                // The digest installed for the birth carries the config it is handed, as it carries the
-                // row's name: what the birth publishes from its first digest on. The writer's arrival
-                // then finds the birth carrying its row's config and tells it nothing.
-                if let Some(c) = &config {
-                    d.config = c.clone();
-                }
                 span.record("config_keys", config.as_ref().map_or(0, |c| c.len()) as u64);
                 // The member cert is issued for this exact birth BEFORE it is admitted: a refused
                 // issuance leaves nothing installed for its key and completes no report.
@@ -597,7 +591,6 @@ mod tests {
             data_dir: Some(d.data_dir.clone()),
             mesh_id: None,
             in_flight: None,
-            config: Default::default(),
             load: None,
             gossip: None, is_primary: None, is_fabric_primary: None
         }

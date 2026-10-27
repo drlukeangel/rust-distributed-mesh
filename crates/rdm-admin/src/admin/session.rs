@@ -390,7 +390,6 @@ impl AdminSession {
                 }
                 if let Some(c) = &joined.control.config {
                     s.topology_view.set_config(c.clone());
-                    d.config = c.clone();
                 }
             }
             // The member cert this join was issued, as at every join (Q87).

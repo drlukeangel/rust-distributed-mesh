@@ -4,7 +4,6 @@ use crate::ids::{EndpointId, FabricId, IncarnationId, NodeId, MeshId};
 use crate::path::PathName;
 use crate::runtime::RuntimeFact;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// One process birth of a logical node, as it publishes itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,9 +102,6 @@ pub struct MeshDigest {
     /// While `ConnectionsDeleting`: the work still in flight at this birth; the connections delete's own evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_flight: Option<u64>,
-    /// The node's config: the application's own key/values, written to the node's row by its mesh's primary. Opaque to RDM: nothing reads it to decide. Capped (`MAX_CONFIG_KEYS`, `MAX_CONFIG_BYTES`).
-    #[serde(default)]
-    pub config: BTreeMap<String, String>,
     /// The process's CPU and RAM at the moment the digest was published (the publishing node
     /// samples its own process); `None` when the publisher sampled nothing. Load, like
     /// `in_flight`: it never moves the topology version.
@@ -192,35 +188,3 @@ mod tests {
     }
 }
 
-/// The most keys a node's config holds: it rides every heartbeat, so it is bounded.
-pub const MAX_CONFIG_KEYS: usize = 32;
-/// The most bytes (every key and every value) a node's config holds.
-pub const MAX_CONFIG_BYTES: usize = 2048;
-
-/// A config past its cap, naming the measure and the bound that was crossed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConfigOverCap {
-    /// Keys in the refused config.
-    pub keys: u32,
-    /// Bytes (keys plus values) in the refused config.
-    pub bytes: u32,
-    /// The key bound.
-    pub max_keys: u32,
-    /// The byte bound.
-    pub max_bytes: u32,
-}
-
-impl std::fmt::Display for ConfigOverCap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "node config of {} keys and {} bytes is over its cap of {} keys and {} bytes", self.keys, self.bytes, self.max_keys, self.max_bytes)
-    }
-}
-
-/// `config` within its cap, or the refusal that names the cap crossed.
-pub fn check_config(config: &BTreeMap<String, String>) -> Result<(), ConfigOverCap> {
-    let bytes: usize = config.iter().map(|(k, v)| k.len() + v.len()).sum();
-    if config.len() > MAX_CONFIG_KEYS || bytes > MAX_CONFIG_BYTES {
-        return Err(ConfigOverCap { keys: config.len() as u32, bytes: bytes as u32, max_keys: MAX_CONFIG_KEYS as u32, max_bytes: MAX_CONFIG_BYTES as u32 });
-    }
-    Ok(())
-}

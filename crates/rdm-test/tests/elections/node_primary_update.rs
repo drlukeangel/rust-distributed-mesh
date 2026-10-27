@@ -277,6 +277,67 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     );
 }
 
+/// CONTRACT (node-config-update.md step 1: "The caller sends `node.config.update` to the
+/// fabric-primary. It writes the map to the node in its `FabricAtlas` and sends the command to the
+/// node's mesh-primary"; node-rpc-envelope.md node.get: "node.get, mesh.nodes.get and fabric.nodes.get
+/// are answered by the fabric-primary from its `FabricAtlas`, never from the node store: it fills the
+/// atlas from the node records once, at its start or hand-over, and each op writes it after that";
+/// Q203, Q204): a caller's `node.config.update` of a node of the other mesh, sent to the
+/// fabric-primary, ends `node.config.updated`, and the fabric-primary's `mesh.nodes.get` answers the
+/// node's config at once. The fabric-primary is then stopped and its process killed; the surviving
+/// admin of its mesh, the new fabric-primary, fills its atlas from the node records as it becomes the
+/// fabric-primary and answers the same config. Spans: the old fabric-primary's
+/// `rdm.node_admin.node.update.via-fabric-primary` (`config-updated`, sent to the node's mesh-primary)
+/// and the successor's `rdm.node_admin.fabric.update.via-atlas-filled` (`filled`). Must NOT happen: the read
+/// answering the config the node had before, at once or after the hand-over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_a_hand_over() {
+    let (mut estate, nodes) = fabric("a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_a_hand_over").await;
+    let old = fabric_primary(&nodes).expect("one fabric primary");
+    let mesh = old.split('.').next().unwrap().to_string();
+    let successor = if old.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
+    let other_mesh = if mesh == "mesh1" { "mesh2" } else { "mesh1" };
+    let subject_name = format!("{other_mesh}.rpc.1");
+    let subject = node(&nodes, &subject_name).clone();
+    let node_id = rdm_core::NodeId::parse(&s(&subject["node_id"])).expect("a node id");
+    let incarnation = rdm_core::IncarnationId::parse(&s(&subject["incarnation_id"])).expect("a live birth");
+    let fp_id = rdm_core::NodeId::parse(&s(&node(&nodes, &old)["node_id"])).expect("the fabric-primary's id");
+    let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
+    let carrier = estate.carrier().await;
+    let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default()).await.expect("node.config.update answered");
+    assert_eq!(reply, rdm_core::status::StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() }, "the fabric-primary sent it down and the node applied it");
+    let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.name.to_string() == subject_name).unwrap_or_else(|| panic!("{subject_name} is answered"));
+    let at_once = read(estate.meshes_obj().await.nodes(other_mesh, None).await.expect("mesh.nodes.get at the fabric-primary"));
+    assert_eq!(at_once.config, told, "the fabric-primary answers the config at once, from its atlas");
+
+    // The hand-over: the fabric-primary is stopped and killed; the surviving admin of its mesh becomes the fabric-primary.
+    estate.enter(&Estate::path(&successor)).await;
+    let mut stop = estate.nodes_obj().await.stop(&old.parse().unwrap()).await.expect("node.stop of the fabric-primary");
+    let accepted = stop.accepted().clone();
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
+        estate.resume(&accepted.build_id, accepted.attempt).await;
+    }
+    kill(&mut estate, &old).await;
+    estate
+        .until_view("the surviving admin of the fabric-primary's mesh is fabric-primary", Duration::from_secs(90), |views| {
+            let ns = Estate::values(views);
+            (fabric_primary(&ns).as_deref() == Some(successor.as_str())).then_some(())
+        })
+        .await;
+    let after = read(estate.meshes_obj().await.nodes(other_mesh, None).await.expect("mesh.nodes.get at the new fabric-primary"));
+    estate.stop().await;
+    assert_eq!(after.config, told, "the new fabric-primary answers the config from the atlas it filled at the hand-over");
+
+    let spans: Vec<Value> = estate.spans();
+    let sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().filter(|sp| attr(sp, "node") == old && attr(sp, "subject") == subject_name).collect();
+    assert_eq!(sent.len(), 1, "one node.config.update at the fabric-primary: {sent:?}");
+    assert_eq!((attr(sent[0], "outcome").as_str(), attr(sent[0], "atlas").as_str()), ("config-updated", "written"), "{:?}", sent[0]);
+    let filled: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-filled").into_iter().filter(|sp| attr(sp, "node") == successor).collect();
+    assert!(filled.iter().any(|sp| attr(sp, "outcome") == "filled"), "the successor filled its atlas as it became the fabric-primary: {filled:?}");
+    println!("trace {}: rdm.node_admin.node.update.via-fabric-primary node={old} subject={subject_name} outcome=config-updated route={}", s(&sent[0]["trace_id"]), attr(sent[0], "route"));
+}
+
 /// CONTRACT (lifecycles/node-primary-update.md step 4: the successor's next `Digest` carries the change,
 /// its normal announcement and the only one): the primary of the mesh that is not the fabric-primary's
 /// dies; its mesh's other admin becomes its mesh-primary by the election, and an admin of the OTHER

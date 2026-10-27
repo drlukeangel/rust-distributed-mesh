@@ -177,7 +177,6 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             data_dir: Some(data_dir.display().to_string()),
             mesh_id: None,
             in_flight: None,
-            config: Default::default(),
             load: None,
             gossip: None, is_primary: None, is_fabric_primary: None
         };

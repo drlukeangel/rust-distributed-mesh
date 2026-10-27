@@ -190,7 +190,7 @@ async fn rename(
         let Some(moved) = doors.moved.get() else {
             return rdm_core::reply::status::not_ready(format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name));
         };
-        let (keys, tags) = known.map(|r| (r.config.len(), r.tags)).unwrap_or_else(|| (held.config.len(), Default::default()));
+        let (keys, tags) = known.map(|r| (r.config.len(), r.tags)).unwrap_or_default();
         span.record("keys", keys as u64).record("tags", crate::node_rows::labels(&tags).as_str());
         let pending = match crate::node_rows::move_row(storage, door.written(), me, &held, &from, &to).await {
             Ok((m, _)) => {

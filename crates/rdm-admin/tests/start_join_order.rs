@@ -191,7 +191,6 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         data_dir: node.data_dir.clone(),
         mesh_id: None,
         in_flight: None,
-        config: Default::default(),
         load: None,
         gossip: None, is_primary: None, is_fabric_primary: None
     };

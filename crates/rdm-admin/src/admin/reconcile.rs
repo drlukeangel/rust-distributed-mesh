@@ -115,6 +115,12 @@ impl crate::build_drive::Gate for SeatGate {
     async fn attempt_completed(&self, build_id: &crate::build::BuildId, attempt: u32) {
         if let Ok(p) = self.builds.read_build(build_id).await {
             self.control.atlas.receipts(&p, attempt);
+            // The records the attempt's ops wrote on every mesh the Build names, its result (Q197, Q203).
+            if let Some(rows) = self.control.node_rows.get() {
+                let filled = self.control.atlas.fill(&**rows, p.topology.meshes.keys().cloned()).await;
+                tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-filled", build_id = %build_id.log(), attempt, meshes = p.topology.meshes.len() as u64, records = filled.as_ref().map(|n| *n as u64).unwrap_or(0), outcome = if filled.is_ok() { "filled" } else { "fill-refused" }, detail = %filled.err().unwrap_or_default(), "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("the records the attempt's ops wrote are the atlas's"));
+            }
         }
     }
 

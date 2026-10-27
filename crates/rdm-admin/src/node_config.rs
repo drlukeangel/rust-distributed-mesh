@@ -1,21 +1,24 @@
-//! `node.config.update` at the node's mesh-primary (ops-naming "Node data: meta, config and exe").
+//! `node.config.update` (node-config-update.md; ops-naming "Node data: meta, config and exe").
+//!
+//! The caller sends it to the fabric-primary (step 1, Q203): it writes the map to the node in its
+//! `FabricAtlas` and sends the command to the node's mesh-primary (in process when it is that
+//! mesh-primary too; Forward `0x1A` through another node-admin of the mesh when the mesh-primary is not
+//! directly reachable). An admin that is neither refuses it by name (`ReceiverNotPrimary`).
 //!
 //! Config is a field of the node record. The mesh-primary of the node's mesh is the only writer of
-//! that mesh's rows (fabric-node-lifecycle §4.3): the door refuses by name at any admin that does not
-//! hold that mesh's primary seat. It checks the cap, writes the node's whole row from what it holds (a
+//! that mesh's rows (fabric-node-lifecycle §4.3). It writes the node's whole row from what it holds (a
 //! blind put of the `path.name` key; it never reads the store on the write path), tells the exact
-//! birth directly, within its mesh, with `ApplyNodeConfig`, which the node holds and carries in its
-//! next digest, and answers `node.config.updated` only after that apply answered. A stopped node is
-//! told nothing and the command completes on the row: the node gets its config back in its join
-//! answer at its next start (node-rpc-envelope.md "Node properties"). A caller that cannot
-//! reach the mesh-primary directly reaches it through a carrier (Forward `0x1A`). A single call, never
-//! a Build, and never refused because a Build runs: updates go through this one door one at a time.
+//! birth directly, within its mesh, with `ApplyNodeConfig`, which the node holds and applies, and
+//! answers `node.config.updated` only after that apply answered. A stopped node is told nothing and
+//! the command completes on the row: the node gets its config back in its join answer at its next
+//! start (node-rpc-envelope.md "Node properties"). A single call, never a Build, and never refused
+//! because a Build runs: updates go through this one door one at a time.
 
 use crate::storage::NodeRow;
 use crate::topology::Topology;
 use rdm_client::{CallEnd, ExactBirth, NodeRpc};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
-use rdm_core::status::{NotPrimary, StatusReply, StatusRequest};
+use rdm_core::status::{NotPrimary, Status, StatusReply, StatusRequest};
 use std::sync::Arc;
 
 /// A mesh-primary's config door: the client it tells a birth of its mesh through, what holds this
@@ -64,6 +67,97 @@ impl NodeConfigs {
         self.one_at_a_time.lock().await
     }
 
+    /// A caller's `UpdateNodeConfig` at the admin `me` (born as `me_id`), deciding over `view`
+    /// (node-config-update.md steps 1-3): at the fabric-primary, the map written to the node in `atlas`
+    /// and the command sent to the node's mesh-primary ([`Self::update`] in process when it is that
+    /// mesh-primary too); at the node's mesh-primary, the command served ([`Self::update`]); at any other admin
+    /// refused `ReceiverNotPrimary`, naming the fabric-primary. A command the mesh-primary refused
+    /// before writing the row puts the atlas's config back.
+    pub async fn serve(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, atlas: Option<&crate::fabric_atlas::FabricAtlas>, req: &StatusRequest) -> StatusReply {
+        let StatusRequest::UpdateNodeConfig { node_id, config, .. } = req else { unreachable!("serve is called for UpdateNodeConfig only") };
+        let fabric_primary = view.is_fabric_primary(me_id);
+        let Some(subject) = view.own(node_id).cloned() else {
+            return self.update(me, me_id, view, storage, req).await;
+        };
+        let mesh_primary = view.is_mesh_primary(&subject.mesh, me_id);
+        if !fabric_primary {
+            if mesh_primary {
+                return self.update(me, me_id, view, storage, req).await;
+            }
+            let held_by = view.fabric_primary().map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
+            let needed = format!("the fabric-primary, where node.config.update of {} goes ({held_by}; {me} does not hold it)", subject.name);
+            tracing::info_span!("rdm.node_admin.node.reject.via-not-primary", node = %me, subject = %subject.name, op = req.op(), detail = %needed, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("node.config.update refused: this admin holds neither the fabric-primary nor the node's mesh-primary"));
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
+        }
+        let down = view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map(|p| (p.name.clone(), p.node_id.clone()));
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.update.via-fabric-primary",
+            node = %me,
+            subject = %subject.name,
+            node_id = %node_id,
+            keys = config.len(),
+            mesh_primary = %down.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default(),
+            atlas = tracing::field::Empty,
+            route = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            detail = tracing::field::Empty,
+            "otel.kind" = "internal",
+        );
+        let prior = atlas.and_then(|a| a.write_config(node_id, config));
+        span.record("atlas", if prior.is_some() { "written" } else { "no-record" });
+        let reply = tracing::Instrument::instrument(
+            async {
+                if mesh_primary {
+                    tracing::Span::current().record("route", "in-process");
+                    return self.update(me, me_id, view, storage, req).await;
+                }
+                let Some((name, mp)) = down.clone() else {
+                    let why = format!("{me}: {} has no mesh-primary in this view; node.config.update of {} is not sent", subject.mesh, subject.name);
+                    tracing::Span::current().record("detail", why.as_str());
+                    return rdm_core::reply::status::not_ready(why);
+                };
+                // Direct, else through each other live node-admin of the mesh in turn (Forward `0x1A`).
+                let carriers: Vec<rdm_core::NodeId> = view.births().filter(|n| n.mesh == subject.mesh && n.kind == rdm_core::NodeKind::NodeAdmin && n.node_id != mp && n.node_id != *me_id && n.status.is_live()).map(|n| n.node_id.clone()).collect();
+                let mut ended = Vec::new();
+                for carrier in std::iter::once(None).chain(carriers.into_iter().map(Some)) {
+                    let (out, _) = match &carrier {
+                        None => self.client.call::<Status>(&NodeTarget::ExactNode(mp.clone()), req, &CallOptions::default()).await,
+                        Some(c) => self.client.call_via::<Status>(&NodeTarget::ExactNode(c.clone()), &mp, req, &CallOptions::default()).await,
+                    };
+                    tracing::Span::current().record("route", carrier.as_ref().map_or_else(|| "direct".to_string(), |c| format!("via {c}")).as_str());
+                    match out {
+                        rdm_core::outcome::RpcOutcome::Reply(r) => return r.into_value(),
+                        rdm_core::outcome::RpcOutcome::NotSent(_) => ended.push(format!("{}: {}", carrier.as_ref().map_or_else(|| "direct".to_string(), |c| format!("via {c}")), out.name())),
+                        other => {
+                            let why = format!("{me} sent node.config.update of {} to {name}, and the call ended {} with no reply", subject.name, other.name());
+                            tracing::Span::current().record("detail", why.as_str());
+                            return rdm_core::reply::status::not_ready(why);
+                        }
+                    }
+                }
+                let why = format!("{me} could not send node.config.update of {} to {name}: {}", subject.name, ended.join("; "));
+                tracing::Span::current().record("detail", why.as_str());
+                rdm_core::reply::status::not_ready(why)
+            },
+            span.clone(),
+        )
+        .await;
+        // The op's result is the atlas's (Q204: each op writes it): a written row's map once more, over
+        // any fill made while the command was down; a command whose row was not written leaves the
+        // record as it was, the atlas's config too.
+        if let Some(a) = atlas {
+            if matches!(reply, StatusReply::ConfigUpdated { .. } | StatusReply::ConfigNotApplied { .. }) {
+                a.write_config(node_id, config);
+            } else if let Some(prior) = prior {
+                a.restore_config(node_id, config, prior);
+            }
+        }
+        span.record("outcome", reply.name());
+        span.in_scope(|| tracing::info!("node.config.update at the fabric-primary decided"));
+        reply
+    }
+
     /// Serve an `UpdateNodeConfig` at the admin `me` (born as `me_id`) deciding over `view`, writing to `storage`. One
     /// span, opened first, holds the whole put: the row write and the call that tells the birth are
     /// inside it, and its outcome is the reply's name. A refusal's reply carries its detail cut to the
@@ -100,9 +194,6 @@ impl NodeConfigs {
 
     #[allow(clippy::too_many_arguments)]
     async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, onto_row: Option<(rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)>, span: &tracing::Span) -> StatusReply {
-        if let Err(over) = rdm_core::check_config(config) {
-            return rdm_core::reply::status::rejected_config(over);
-        }
         // The subject is the exact birth the call names, wherever its row stands: a node whose row its
         // mesh-primary moved to `<path>.old` is still that birth (never found by path.name, its shape
         // included: `Topology::own`). A subject this receiver does not hold is the receiver's own fact

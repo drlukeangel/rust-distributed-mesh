@@ -316,7 +316,7 @@ fn writer_view(records: &[Node], primary: Option<&str>, fabric_primary: Option<N
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage.write_record(&NodeRow { topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }).await.unwrap();
+        storage.write_record(&NodeRow { topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier_of(&n.name.to_string()), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }).await.unwrap();
         assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
     }
 }
@@ -341,11 +341,7 @@ fn artifact_dir() -> PathBuf {
 fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     let cap = capture();
     let data_root = std::env::temp_dir().join(format!("mesh-delete-resume-{}", NodeId::mint()));
-    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| {
-        let mut n = node(n);
-        n.config = tier_of(&n.name.to_string());
-        n
-    }).collect();
+    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
     let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 41_000 + i as u32))).collect();
     let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(), ..Default::default() };
     *fleet.blind_once.lock().unwrap() = handles[FAILING].pid;
@@ -469,7 +465,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     };
     for n in records.iter().filter(|n| n.name.to_string() != FINAL) {
         let row = read(&n.name.to_string()).unwrap_or_else(|| panic!("{} has a row", n.name));
-        assert_eq!((row.status, &row.node_id, &row.config), (NodeStatus::Deleted, &n.node_id, &n.config), "{}'s row is Deleted with its node id and config: {row:?}", n.name);
+        assert_eq!((row.status, &row.node_id, &row.config), (NodeStatus::Deleted, &n.node_id, &tier_of(&n.name.to_string())), "{}'s row is Deleted with its node id and config: {row:?}", n.name);
     }
     let last = read(FINAL).unwrap();
     assert_ne!(last.status, NodeStatus::Deleted, "the final primary's row is not deleted at step 3: {last:?}");
@@ -712,8 +708,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         n.is_fabric_primary = true;
         n
     };
-    let mut last = node(FINAL);
-    last.config = tier_of(FINAL);
+    let last = node(FINAL);
     let storage = Arc::new(MemoryNodesStorage::default());
     let status = MemoryMeshStorage::default();
     let declared = Mutex::new(Declared::default());
@@ -761,7 +756,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     stopped.unwrap_or_else(|e| panic!("once stopped, the fabric-primary writes the final primary's row Deleted as acting primary: {e}"));
     after.unwrap_or_else(|e| panic!("mesh-left writes its rows: {e}"));
     let row = row.expect("the final primary's row stays, readable at its path.name");
-    assert_eq!((row.status, &row.node_id, &row.config), (NodeStatus::Deleted, &last.node_id, &last.config), "{row:?}");
+    assert_eq!((row.status, &row.node_id, &row.config), (NodeStatus::Deleted, &last.node_id, &tier_of(FINAL)), "{row:?}");
     assert!(dead_held, "the mesh's status is Dead on mesh2 (mesh.storage, R-MD1)");
     assert_eq!(statuses.get(&mesh_id), Some(&MeshState::Dead), "mesh2's one status fact is its Dead, on mesh2: {statuses:?}");
     assert_eq!(declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Dead), "and held as applied");
@@ -1574,11 +1569,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
     let cap = capture();
     let all: Vec<Node> = [FAILING, EXITING, NEW_ADMIN]
         .iter()
-        .map(|n| {
-            let mut n = node(n);
-            n.config = tier_of(&n.name.to_string());
-            n
-        })
+        .map(|n| node(n))
         .collect();
     let birth = |name: &str| RosterBirth::of(all.iter().find(|n| n.name.to_string() == name).unwrap()).unwrap();
     let (stopped, me) = (birth(FAILING), birth(NEW_ADMIN));
@@ -1594,7 +1585,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // Every member's row as its create left it. The created admin's writer holds the rows of the
         // births its view names; the stopped birth's row it never held.
         for n in &all {
-            storage.write_record(&NodeRow { topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }).await.unwrap();
+            storage.write_record(&NodeRow { topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier_of(&n.name.to_string()), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None }).await.unwrap();
         }
         for n in &records {
             assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);

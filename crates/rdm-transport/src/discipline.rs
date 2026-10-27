@@ -138,7 +138,6 @@ mod tests {
             digest_seq: 1,
             mesh_id: None,
             in_flight: None,
-            config: Default::default(),
             load: None,
             gossip: None,
             data_dir: None, is_primary: None, is_fabric_primary: None

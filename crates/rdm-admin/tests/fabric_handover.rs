@@ -566,7 +566,6 @@ fn digest_of(r: &ResolvedNode, fabric: &FabricId) -> rdm_core::MeshDigest {
         data_dir: None,
         mesh_id: None,
         in_flight: None,
-        config: Default::default(),
         load: None,
         gossip: None,
         held_hash: Default::default(),

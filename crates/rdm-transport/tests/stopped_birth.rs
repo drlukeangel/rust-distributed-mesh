@@ -58,7 +58,7 @@ fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, supersedes:
         in_flight: None,
         load: None,
         gossip: None,
-        config: Default::default(), is_primary: None, is_fabric_primary: None
+        is_primary: None, is_fabric_primary: None
     }
 }
 

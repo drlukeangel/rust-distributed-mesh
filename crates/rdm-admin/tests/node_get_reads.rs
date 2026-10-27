@@ -1,7 +1,7 @@
-//! `node.get`'s reads (i144): every read is a keyed point read and none lists a store. A birth's facts
-//! are read on its node's record, by its id, or on the record its `predecessor` names, or on the
-//! record the `path.name` index names; a birth the view no longer holds is named at a path the
-//! current Build plans.
+//! `node.get`'s reads (i144, Q203): answered from the node records the admin's `FabricAtlas` holds,
+//! never the node store. A birth's facts are read on its node's record, by its id, or on the record
+//! its `predecessor` names, or on the record held at its `path.name`; a birth the view no longer holds
+//! is named at a path the current Build plans.
 
 use rdm_admin::model::*;
 use rdm_admin::storage::{BirthRef, DataDirLost, DataDirUnreadable, NodeRow};
@@ -23,27 +23,29 @@ fn path(name: &str) -> PathName {
     name.parse().unwrap()
 }
 
+/// The node read over `view`, its records as an atlas filled from `status` holds them (Q204: read once).
 async fn answer(view: &Topology, storage: &MemoryNodesStorage, status: &MemoryNodesStorage, planned: &rdm_admin::views::Planned, select: NodeSelect) -> Vec<rdm_core::views::NodeView> {
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
-    match rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin.1"), view, &loads, storage, Some(status), planned, &select).await {
+    let atlas = rdm_admin::fabric_atlas::FabricAtlas::default();
+    atlas.fill(status, ["mesh1".to_string()]).await.expect("the records are read");
+    match rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin.1"), view, &loads, storage, &atlas, planned, &select).await {
         StatusReply::Nodes { nodes } => nodes,
         other => panic!("node.get answered {other:?}"),
     }
 }
 
-/// CONTRACT (i144; a read is a point read through a key or an index, never a scan;
+/// CONTRACT (i144, Q203: a node read answers from the atlas, never the node store;
 /// storage-whole-records.md: "A birth recovered over a fresh data dir reads its predecessor's
 /// `data-dir-lost` through the `predecessor` reference on its own record"): a birth recovered over a
 /// fresh data dir at the path.name of a birth whose data dir was lost answers that loss on
 /// `node.get`, read on the record its own record names as its predecessor; a birth the view no longer
 /// holds (deleted by its recovery, held with its data dir unreadable) is answered, by mesh and by its
-/// id, at the path the current Build plans, read on the record the `path.name` index names there; a
+/// id, at the path the current Build plans, read on the record held at that `path.name`; a
 /// birth with neither fact answers neither. A Build that cannot be read names no path: the births the
 /// view holds are still answered. A cleared unreadable fact is answered no more. Must NOT happen: the
-/// loss answered only on the exited birth, the held birth missing while the Build plans its path, a
-/// store listed (the status store has no list on this path to call).
+/// loss answered only on the exited birth, or the held birth missing while the Build plans its path.
 #[tokio::test]
-async fn node_get_answers_data_dir_facts_by_point_reads_at_their_path_name() {
+async fn node_get_answers_data_dir_facts_from_the_atlas_at_their_path_name() {
     let (admin, plain, recovered) = (node("mesh1.admin.1"), node("mesh1.rpc.1"), node("mesh1.rpc.2"));
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },

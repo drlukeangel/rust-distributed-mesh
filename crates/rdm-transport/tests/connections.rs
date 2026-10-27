@@ -571,7 +571,6 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
             in_flight: None,
             load: None,
             gossip: None,
-            config: Default::default(),
             is_primary: None,
             is_fabric_primary: None,
         };

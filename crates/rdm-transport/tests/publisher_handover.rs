@@ -52,7 +52,7 @@ fn digest(name: &str, port: u16) -> MeshDigest {
         in_flight: None,
         load: None,
         gossip: None,
-        config: Default::default(), is_primary: None, is_fabric_primary: None
+        is_primary: None, is_fabric_primary: None
     }
 }
 

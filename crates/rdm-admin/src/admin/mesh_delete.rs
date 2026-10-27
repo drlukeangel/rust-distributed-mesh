@@ -70,7 +70,6 @@ impl AdminRunner {
         n.status = crate::admin::node_status(d.status);
         n.routable = false;
         n.admin_api_base = d.admin_api_base.clone();
-        n.config = d.config.clone();
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
         n.deployment_id = d.node.runtime.as_ref().and_then(|f| f.deployment().ok());

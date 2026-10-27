@@ -428,7 +428,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.routable = n.status == NodeStatus::ReadyForTraffic && digest_view.routable(d.node.node_id.as_str());
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
-        n.config = d.config.clone();
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
         // The birth's own published runtime fact names its deployment, whichever admin launched it.
@@ -477,7 +476,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
-        n.config = d.config.clone();
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
         n.deployment_id = d.node.runtime.as_ref().and_then(|f| f.deployment().ok());
@@ -547,7 +545,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
-        n.config = d.config.clone();
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
         n.deployment_id = d.node.runtime.as_ref().and_then(|f| f.deployment().ok());

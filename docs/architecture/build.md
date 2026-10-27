@@ -132,8 +132,7 @@ Each node's create spec carries the executable the node runs ([build-deployment.
 **The create spec is the node's properties, flat (Q166).** A node entry names its `path.name` and the
 node's own properties under the [node properties](node-rpc-envelope.md#node-properties) names:
 `executable`, `storage`, `placement`, `tags` and `config`. There is no nested configuration type;
-`config` is the application's map and nothing else (RDM never reads it; capped as
-[node.config.update](lifecycles/node-config-update.md) caps it, `ConfigOverCap` refused by name at acceptance).
+`config` is the application's map and nothing else (RDM never reads it).
 
 **The Build applies the diff.** The reconciler compares each node's entry with what the node's row
 records and applies every property that differs, each by its own operation. It decides nothing else:

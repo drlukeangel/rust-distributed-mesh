@@ -39,7 +39,6 @@ fn digest() -> rdm_core::MeshDigest {
         data_dir: None,
         mesh_id: None,
         in_flight: None,
-        config: Default::default(),
         load: None,
         gossip: None, is_primary: None, is_fabric_primary: None
     }
@@ -121,7 +120,6 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
         data_dir: None,
         mesh_id: None,
         in_flight: None,
-        config: Default::default(),
         load: None,
         gossip: None, is_primary: None, is_fabric_primary: None
     };
@@ -129,7 +127,7 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
     let hex = "00 05 6d65736831 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
         0c 313132333435363738396162 0c 303132333435363738396162 0b 6d657368312e7270632e31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
         01 00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
-        00 00 \
+        00 \
         02 \
         00 00";
     assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");

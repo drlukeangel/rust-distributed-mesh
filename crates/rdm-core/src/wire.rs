@@ -13,7 +13,6 @@
 use crate::runtime::{RuntimeFact, RuntimeLocator, RuntimeProvider};
 use crate::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, NodeState, GossipStats, PathName};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 enum WireLocator {
@@ -53,7 +52,6 @@ pub struct WireDigest {
     data_dir: Option<String>,
     mesh_id: Option<MeshId>,
     in_flight: Option<u64>,
-    config: BTreeMap<String, String>,
     load: Option<NodeLoad>,
     gossip: Option<GossipStats>,
     held_hash: [u8; 32],
@@ -91,7 +89,6 @@ impl From<&MeshDigest> for WireDigest {
             data_dir: d.data_dir.clone(),
             mesh_id: d.mesh_id.clone(),
             in_flight: d.in_flight,
-            config: d.config.clone(),
             load: d.load,
             gossip: d.gossip,
             held_hash: d.held_hash,
@@ -135,7 +132,6 @@ impl From<WireDigest> for MeshDigest {
             data_dir: w.data_dir,
             mesh_id: w.mesh_id,
             in_flight: w.in_flight,
-            config: w.config,
             load: w.load,
             gossip: w.gossip,
             held_hash: w.held_hash,

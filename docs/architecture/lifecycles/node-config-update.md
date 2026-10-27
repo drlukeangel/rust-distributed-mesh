@@ -10,11 +10,9 @@ carried in its first join; a later Build's different `config` is applied as this
 
 ## Numbered end-to-end sequence
 
-1. The caller sends `node.config.update` to the node's mesh-primary (Forward `0x1A` when not
-   directly reachable).
-2. The mesh-primary validates the map against the [cap](../gossip.md#31-frame-catalog) and refuses
-   an over-cap map by name, then writes the record.
-3. A live node is sent `ApplyNodeConfig`; it applies the map and carries it in its next digest. The command
+1. The caller sends `node.config.update` to the fabric-primary. It writes the map to the node in its `FabricAtlas` and sends the command to the node's mesh-primary (Forward `0x1A` when not directly reachable).
+2. The mesh-primary writes the record.
+3. A live node is sent `ApplyNodeConfig`; it applies the map. The command
    completes after `Applied` or `AlreadyApplied`. A stopped node is sent nothing: the command completes after
    the durable row write, and its next start receives the config in the join answer.
 4. Emit `node.config.updated`.

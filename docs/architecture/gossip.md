@@ -215,7 +215,6 @@ composition and invents no wall clock of its own; the product supplies the adopt
 Size:
 
 - every frame fits one gossip message; a backbone mesh topology and a forwarded full are each chunked under one `snapshot_id`, and every list they carry (`digests`, `in_flight`, `deleted`) is inside that sizing; neither snapshot is installed until every chunk is held;
-- a node's `config` map rides every heartbeat, so it is capped at 32 keys and 2048 bytes (`MAX_CONFIG_KEYS`, `MAX_CONFIG_BYTES`, `crates/rdm-core/src/digest.rs`) and refused by name, with the measured size and the bound, as `ConfigOverCap`. The two numbers are set, not computed from the 4032-byte gossip message: config takes about half of it and the digest's other fields the rest. A change to them is a change to that budget in the code, never a runtime percentage. [Meta and config](node-rpc-envelope.md#node-properties) owns the config rules;
 - there is no ACK, no per-peer resend, no deletion queue and no gossip-level replay: a lost push is repaired by iroh-gossip; a node that missed an event learns the state from the next delta, full or top-up (§3.3).
 
 #### Reserved lifecycle frame positions
@@ -420,7 +419,6 @@ removal in `in_flight`:
       "data_dir": null,
       "mesh_id": "mesh1",
       "in_flight": null,
-      "config": {},
       "load": null,
       "gossip": null
     }

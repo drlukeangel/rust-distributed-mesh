@@ -929,7 +929,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         digest_seq: 0,
         mesh_id: cfg.mesh_id.clone(),
         in_flight: None,
-        config: BTreeMap::new(),
         load: None,
         gossip: None,
         data_dir: Some(cfg.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
@@ -1418,6 +1417,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // The record the writer of this admin's mesh rows holds, shared with its config door: a config
                                 // put through the door is what the node's next row carries (`crate::node_rows::WrittenRows`).
                                 let written = records.caches.nodes.clone();
+                                // Every record the writer holds is this admin's FabricAtlas's too (Q203).
+                                written.feeds(control.atlas.clone());
                                 let _ = configs_slot.set(Arc::new(
                                     crate::node_config::NodeConfigs::new(
                                         node_rpc.client.clone(),
@@ -1741,7 +1742,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 digest_seq: 0,
                                 mesh_id: Some(mesh_id.clone()),
                                 in_flight: None,
-                                config: handed.as_ref().and_then(|(_, c)| c.clone()).unwrap_or_default(),
                                 load: None,
                                 gossip: None,
                                 data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
@@ -1898,7 +1898,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     Arc::new(move |h: &rdm_core::Primary| incumbency_of(&digest_view, &records).lost.contains(&h.incarnation))
                                 };
                                 let own_topology_view = topology_view.clone();
-                                let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.with_config(&own.lock().unwrap())), rafka_time.clone()).with_stored(stored).with_gone(gone)));
+                                let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(&own.lock().unwrap())), rafka_time.clone()).with_stored(stored).with_gone(gone)));
                             }
                             // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
                             // a blind put (a successor fabric primary proves an exit from it).
@@ -2232,17 +2232,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         }));
                                     }
                                     {
-                                        let (topology_view, digest) = (topology_view.clone(), digest.clone());
+                                        let topology_view = topology_view.clone();
                                         let _ = configure.set(Arc::new(move |config: BTreeMap<String, String>| {
-                                            let (topology_view, digest) = (topology_view.clone(), digest.clone());
+                                            let topology_view = topology_view.clone();
                                             Box::pin(async move {
-                                                topology_view.set_config(config.clone());
-                                                let d = {
-                                                    let mut d = digest.lock().unwrap();
-                                                    d.config = config;
-                                                    d.clone()
-                                                };
-                                                let _ = topology_view.publish(&d).await;
+                                                topology_view.set_config(config);
                                             })
                                         }));
                                     }
@@ -2810,6 +2804,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let fabric_states = states_slot.get().cloned().expect("the fabric states are built before the hierarchy runs");
                                         let stop = stop_gate.clone();
                                         let claim_door = claim_slot.clone();
+                                        let (atlas, atlas_rows) = (control.atlas.clone(), nodes_storage.clone());
                                         hierarchy = tokio::spawn(async move {
                                             let mut was_fabric_primary = false;
                                             let mut was_mesh_primary = false;
@@ -2903,8 +2898,22 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if fabric_primary && !was_fabric_primary {
                                                     let adopted = topology_view.fabric_status().is_some_and(|s| s.status == "degraded");
                                                     records.set_adopted_degraded(adopted);
+                                                    // Its FabricAtlas holds every node record, read once at its start or
+                                                    // hand-over (Q204): the meshes its view and the current Build name.
+                                                    let meshes: std::collections::BTreeSet<String> = t.members().map(|n| n.mesh.clone()).chain(current.and_then(|c| c.as_ref()).map(|b| b.topology.meshes.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()).collect();
+                                                    let filled = atlas.fill(&*atlas_rows, meshes.iter().cloned()).await;
+                                                    tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-filled", node = %me, meshes = %meshes.iter().map(String::as_str).collect::<Vec<_>>().join(","), records = filled.as_ref().map(|n| *n as u64).unwrap_or(0), outcome = if filled.is_ok() { "filled" } else { "fill-refused" }, detail = %filled.err().unwrap_or_default(), "otel.kind" = "internal")
+                                                        .in_scope(|| tracing::info!("the fabric-primary's atlas holds every node record, read once as it became the fabric-primary"));
                                                 }
                                                 if fabric_primary {
+                                                    // A birth first heard (a mesh-primary's self-healing among them) has
+                                                    // its record read once into the atlas (Q197, Q203).
+                                                    let births: Vec<(rdm_core::NodeId, rdm_core::IncarnationId)> = t.births().filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
+                                                    let read = atlas.read_new_births(&*atlas_rows, births).await;
+                                                    if read > 0 {
+                                                        tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-births-read", node = %me, records = read as u64, "otel.kind" = "internal")
+                                                            .in_scope(|| tracing::info!("the records of births first heard are the atlas's"));
+                                                    }
                                                     records.set_published_degraded(false);
                                                     crate::investigate::restore_peer_recovery(&me, &records, &t);
                                                 } else {

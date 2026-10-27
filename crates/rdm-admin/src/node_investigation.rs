@@ -314,7 +314,6 @@ mod tests {
             data_dir: Some("/data/from-the-digest".into()),
             mesh_id: None,
             in_flight: None,
-            config: Default::default(),
             load: None,
             gossip: None,
             is_primary: None,

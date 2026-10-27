@@ -167,14 +167,12 @@ impl Admin {
     }
 
     /// Put `key` = `value` on the config of the entry admin's own row, beside what the row holds: one
-    /// `node.config.update` to its mesh's primary for its exact birth, admitted at any time (Q166).
+    /// `node.config.update` to the fabric-primary for its exact birth (node-config-update.md step 1),
+    /// admitted at any time (Q166).
     pub async fn put_own_config(&self, key: &str, value: &str) -> Result<rdm_core::status::StatusReply, String> {
         let rows = self.rows().await.map_err(|e| format!("fabric.nodes.get: {e:?}"))?;
         let own = rows.iter().find(|n| n.name == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds {}", self.entry))?;
-        let primary = rows
-            .iter()
-            .find(|n| n.mesh == own.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary)
-            .ok_or_else(|| format!("no row names {}'s mesh-primary", own.mesh))?;
+        let primary = rows.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.is_fabric_primary).ok_or_else(|| "no row names the fabric-primary".to_string())?;
         let mut config = own.config.clone();
         config.insert(key.to_string(), value.to_string());
         let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(own.node_id.clone()), node_id: own.node_id.clone(), incarnation: own.incarnation_id.clone().expect("checked above") };

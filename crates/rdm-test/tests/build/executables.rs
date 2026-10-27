@@ -153,8 +153,7 @@ async fn fabric_at_its_primary(estate: &Estate) -> (String, ScopeStatus, Option<
 /// accepted and `mesh1.rpc.2` untouched. A re-reads: a request listing no node is refused `no-node-listed`
 /// naming fabric.delete, one creating `mesh1.rpc.3` with no executable `executable-missing`, one creating it
 /// on an executable whose bytes do not hash to the sha it names `executable-refused` (build-deployment.md
-/// §2.4, "a differing hash is refused by name"), one creating it with a config over node.config.update's
-/// cap `config-over-cap` (build.md §1), and a request at the reserved position of the count
+/// §2.4, "a differing hash is refused by name"), and a request at the reserved position of the count
 /// form that created a node (`AddNode`'s, proposal §3.10(a)) is an unknown variant
 /// (`Malformed(UnknownVariant)`, node-rpc.md §26), nothing accepted; the re-read request itself is accepted and
 /// completes, changing nothing. The bootstrap admin's row records the hash of the executable it runs
@@ -215,12 +214,6 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let differing = Binding { sha256: "0".repeat(64), ..next.clone() };
     let (reason, detail) = rejected("a created path on an executable whose bytes hash otherwise", carrier.create(Change::Reconcile { topology_storage_provider: None, based_on: based_on.clone(), nodes: naming(request.clone(), "mesh1.rpc.3", Some(&differing)) }).await);
     assert_eq!(reason, "executable-refused", "{detail}");
-    assert!(detail.contains("mesh1.rpc.3"), "{detail}");
-    let over: std::collections::BTreeMap<String, String> = (0..=rdm_core::MAX_CONFIG_KEYS).map(|i| (format!("k{i}"), "v".into())).collect();
-    let mut over_cap = naming(request.clone(), "mesh1.rpc.3", Some(&next));
-    over_cap.iter_mut().find(|s| s.path.to_string() == "mesh1.rpc.3").expect("the entry named").config = over;
-    let (reason, detail) = rejected("a created path with a config over the cap", carrier.create(Change::Reconcile { topology_storage_provider: None, based_on: based_on.clone(), nodes: over_cap }).await);
-    assert_eq!(reason, "config-over-cap", "{detail}");
     assert!(detail.contains("mesh1.rpc.3"), "{detail}");
     let (reason, detail) = rejected("a request at a count form's reserved position", carrier.create(Change::Reserved2).await);
     assert_eq!((reason.as_str(), detail.as_str()), ("malformed", "UnknownVariant"), "the count forms are reserved positions: a request at one is an unknown variant");

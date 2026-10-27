@@ -7,7 +7,7 @@ use crate::status::*;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::views::{ConnectionsView, FabricView, MeshView, NodeStatus, NodeView};
-use crate::{ConfigOverCap, ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS};
+use crate::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN};
 use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 /// Construct the typed applied outcome.
@@ -44,7 +44,6 @@ pub fn rejected_unmatched_completion(field: String, expected: String, reported: 
 /// Construct the typed start-failed outcome.
 pub fn start_failed(step: String, reason: String) -> StatusReply { StatusReply::StartFailed { step, reason } }
 /// Construct the typed rejected-config outcome.
-pub fn rejected_config(over: ConfigOverCap) -> StatusReply { StatusReply::RejectedConfig { over } }
 /// Construct the typed config-row-refused outcome.
 pub fn config_row_refused(node: String, reason: String) -> StatusReply { StatusReply::ConfigRowRefused { node, reason } }
 /// Construct the typed config-not-applied outcome.

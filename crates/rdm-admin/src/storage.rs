@@ -673,7 +673,7 @@ pub struct NodeRow {
     pub node_id: NodeId,
     /// The node's status: `Deleted` once its runtime exit is proven.
     pub status: crate::model::NodeStatus,
-    /// The application's own key/values on the node (capped: [`rdm_core::check_config`]).
+    /// The application's own key/values on the node; RDM never reads it.
     pub config: BTreeMap<String, String>,
     /// The node's tag labels (R-TG1), set through `node.tags.create` / `node.tags.delete`, each one a
     /// row of the tags index while the row is live. A `Deleted` row keeps them, as it keeps the config;
