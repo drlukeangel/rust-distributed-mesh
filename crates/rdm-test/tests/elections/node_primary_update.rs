@@ -310,6 +310,16 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.name.to_string() == subject_name).unwrap_or_else(|| panic!("{subject_name} is answered"));
     let at_once = read(estate.meshes_obj().await.nodes(other_mesh, None).await.expect("mesh.nodes.get at the fabric-primary"));
     assert_eq!(at_once.config, told, "the fabric-primary answers the config at once, from its atlas");
+    // The fabric-primary's process is killed below: its evidence is read once its span reached it
+    // (the exporter writes in batches), so the kill never decides what the cell can read.
+    let subject_for = subject_name.clone();
+    let old_for = old.clone();
+    wait_for("the fabric-primary's node.config.update span in its evidence", Duration::from_secs(10), || {
+        let spans = estate.spans();
+        let found = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().any(|sp| attr(sp, "node") == old_for && attr(sp, "subject") == subject_for);
+        async move { found.then_some(()) }
+    })
+    .await;
 
     // The hand-over: the fabric-primary is stopped and killed; the surviving admin of its mesh becomes the fabric-primary.
     estate.enter(&Estate::path(&successor)).await;
