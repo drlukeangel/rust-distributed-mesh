@@ -119,6 +119,8 @@ async fn rig(t: Topology) -> Rig {
     let contexts = Arc::new(MemoryBuildStateAdapter::new());
     let mut cp = ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time())
         .with_contexts(Arc::new(AttemptContexts::on(contexts.clone() as Arc<dyn LocalBuildLog>)));
+    // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
+    let _ = cp.node_rows.set(crate::records_of(&t).await);
     cp.topology = Arc::new(tokio::sync::RwLock::new(t));
     Rig { builds, contexts, cp: Arc::new(cp) }
 }
