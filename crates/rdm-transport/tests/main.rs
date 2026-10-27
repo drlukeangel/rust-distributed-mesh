@@ -43,6 +43,7 @@ mod seat_frames_wire;
 mod publication_wake;
 mod forward_role;
 mod no_acting_publication;
+mod peer_mesh_deletion;
 mod deleted_mesh_aggregate;
 mod stopped_birth;
 mod served_topology;

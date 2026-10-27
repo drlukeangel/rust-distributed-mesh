@@ -2914,8 +2914,13 @@ impl TopologyView {
     }
 
     /// Publish a lifecycle event this node authored on its own mesh channel,
-    /// applying it to its own view first.
+    /// applying it to its own view first. A `NodeDeleted` it authored is a deletion it executed: its
+    /// mesh's aggregate carries it on the backbone for the retention, so the deleted birth's own mesh
+    /// takes it when the birth was in a peer mesh (gossip.md §6.1).
     pub async fn publish_lifecycle(&self, f: &Frame) -> Result<()> {
+        if let Frame::NodeDeleted { op, forwarded_by: None } = f {
+            self.digest_view.note_executed_deletion(op);
+        }
         let authored = self.mesh.authored(f)?;
         let f = &authored;
         let _ = self.view.take(f, &self.fabric, "mesh-channel");
@@ -3562,7 +3567,8 @@ impl Backbone {
     }
 
     /// This Mesh's aggregate as a publication puts it out: `members` with this mesh's own overlays and
-    /// departures only (a peer mesh's travel in that mesh's aggregate).
+    /// departures, and the deletions this admin executed in a peer mesh ([`DigestView::overlays_of`]);
+    /// a peer mesh's other overlays and departures travel in that mesh's aggregate.
     fn own_full(&self, topology_view: &TopologyView, members: Vec<MeshDigest>) -> Full {
         let (mut in_flight, departed) = topology_view.digest_view.overlays_of(&self.mesh);
         if members.len() == 1
@@ -3902,6 +3908,11 @@ pub struct DigestView {
     /// Proven departures by NodeId, with when this view accepted each: held
     /// for `retention` of local age, then forgotten.
     departed: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
+    /// The deletions this process executed and published as `NodeDeleted`, by the deleted NodeId: its
+    /// mesh's aggregate carries each in `Members.deleted` for the retention, whatever mesh the deleted
+    /// birth was in (gossip.md §3.1 `NodeDeleted`: the "executor's own mesh channel; backbone
+    /// Members.deleted"). A deletion this view only heard is not one of them.
+    executed_deletions: Arc<Mutex<std::collections::HashSet<String>>>,
     /// The departures the departed fence refused, by the NodeId of the departure held: each operation
     /// key refused by name once. Its publisher carries it in every aggregate for the retention, and a
     /// later copy is a copy of a refusal already made. Forgotten with the departure it was refused by.
@@ -4102,6 +4113,7 @@ impl DigestView {
             overlays: Arc::new(tokio::sync::watch::Sender::new(0)),
             digests: Arc::new(tokio::sync::watch::Sender::new(0)),
             departed: Arc::default(),
+            executed_deletions: Arc::default(),
             refused_departures: Arc::default(),
             in_flight: Arc::default(),
             awake: Arc::default(),
@@ -4947,11 +4959,26 @@ impl DigestView {
         v
     }
 
-    /// The open overlays and retained departures of `mesh`'s own nodes: what
-    /// that mesh's primary publishes for it.
+    /// The open overlays and retained departures of `mesh`'s own nodes, and the retained deletions this
+    /// process executed in any mesh: what that mesh's primary publishes for it (gossip.md §2 rules:
+    /// "lifecycle events are published by the executor on its own mesh channel and reach the backbone
+    /// only inside Members.in_flight and Members.deleted").
     pub fn overlays_of(&self, mesh: &str) -> (Vec<LifecycleOp>, Vec<LifecycleOp>) {
-        let mine = |ops: Vec<LifecycleOp>| ops.into_iter().filter(|op| op.name.mesh == mesh).collect::<Vec<_>>();
-        (mine(self.in_flight()), mine(self.deleted()))
+        let deleted = self.deleted();
+        let executed = {
+            let mut executed = self.executed_deletions.lock().unwrap();
+            executed.retain(|id| deleted.iter().any(|op| op.node_id.as_str() == id));
+            executed.clone()
+        };
+        let in_flight = self.in_flight().into_iter().filter(|op| op.name.mesh == mesh).collect();
+        let deleted = deleted.into_iter().filter(|op| op.name.mesh == mesh || executed.contains(op.node_id.as_str())).collect();
+        (in_flight, deleted)
+    }
+
+    /// Hold `op` as a deletion this process executed: its `NodeDeleted` is this process's to carry in
+    /// its mesh's aggregate ([`Self::overlays_of`]).
+    pub fn note_executed_deletion(&self, op: &LifecycleOp) {
+        self.executed_deletions.lock().unwrap().insert(op.node_id.to_string());
     }
 
     /// May application routing select this node (states.md "Routing"): only while the birth is
