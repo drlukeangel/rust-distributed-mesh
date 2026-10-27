@@ -376,7 +376,9 @@ async fn admission_of_stream(end: Result<rdm_transport::stream::ReplyStream<rdm_
             rdm_transport::stream::StreamItem::Failed(f) => return CommandAdmission::Indeterminate { code: match &f { rdm_transport::stream::StreamFailure::Indeterminate(c) => c.code(), _ => Code::Internal }, reason: format!("{f:?}") },
         };
         let result = match &frame {
-            R::CommandAccepted { .. } | R::NodeJoined => None,
+            // A stop's primitives' acknowledgements and node.mesh.left (Q205): progress, recorded by the
+            // owner path, never this stream's end.
+            R::CommandAccepted { .. } | R::NodeJoined | R::ConnectionsDeleting { .. } | R::Leaving { .. } | R::StopMeshLeft { .. } => None,
             R::StopConnectionsDeleted { receipt: r } => { receipt = Some(r.clone()); None }
             R::NodeStopped => Some(match receipt.clone() { Some(receipt) => CommandAdmission::Stopped { receipt }, None => CommandAdmission::Indeterminate { code: Code::Internal, reason: "NodeStopped without its closure receipt".into() } }),
             R::NodeStarted => Some(CommandAdmission::Started {}),

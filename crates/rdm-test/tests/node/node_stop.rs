@@ -221,6 +221,108 @@ async fn stop_then_start(test: &str, node: &str) {
     estate.record_trace_url(sent["trace_id"].as_str().unwrap_or(""));
 }
 
+/// The mesh-primary's record of `node`'s command frames for `operation`, in the order it took them.
+fn command_frames(spans: &[Value], node: &str, operation: &str) -> Vec<String> {
+    let mut of: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "operation") == operation).collect();
+    of.sort_by_key(|sp| start_ns(sp));
+    of.into_iter().map(|sp| attr(sp, "frame")).collect()
+}
+
+/// The statuses the mesh-primary wrote on `node`'s row from `from` on, in order.
+fn rows_written(spans: &[Value], node: &str, from: u64) -> Vec<String> {
+    let mut of: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-row-status").into_iter().filter(|sp| attr(sp, "subject") == node && attr(sp, "outcome") == "written" && start_ns(sp) >= from).collect();
+    of.sort_by_key(|sp| start_ns(sp));
+    of.into_iter().map(|sp| attr(sp, "status")).collect()
+}
+
+/// Where `operation` began: the first span naming it, whoever recorded it. Its rows are read from here.
+fn began(spans: &[Value], operation: &str) -> u64 {
+    spans.iter().filter(|sp| attr(sp, "operation") == operation).map(start_ns).min().unwrap_or_else(|| panic!("no span names {operation}"))
+}
+
+/// CONTRACT (Q205; node-stop.md steps 1-5; node-rpc-envelope.md, the node.stop row; states.md "Who
+/// sets each state"): a commanded stop is a workflow that calls its primitives, node.connections.delete
+/// `{ All }` then node.mesh.leave, and streams each one's acknowledgement and completion on the stop's
+/// own stream: the mesh-primary takes `command-accepted`, `connections-deleting`,
+/// `stop-connections-deleted`, `leaving`, `stop-mesh-left`, `node-stopped`, in that order, and writes
+/// the node's row from each: stopping, connections-deleting, connections-deleted, leaving, left,
+/// stopped. The node's owed `Stopped` declaration is held at the mesh-primary for the stop (the
+/// faulted admin's `declaration` cut), so the stream's frames reach it first; released, the declaration
+/// finds the stop applied (step 5: whichever of the two reaches it first is applied). Must NOT happen: a
+/// primitive's frame missing from the stop's stream, or a status the frames carry missing from the row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_commanded_stop_streams_each_primitives_acknowledgement_and_completion_and_its_mesh_primary_writes_each_status() {
+    let test = "a_commanded_stop_streams_each_primitives_acknowledgement_and_completion_and_its_mesh_primary_writes_each_status";
+    let sha = candidate_sha();
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    let views = estate.settled_views(&[("mesh1", 2, 3)]).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let primary = views.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh1's primary");
+    let path: PathName = NODE.parse().unwrap();
+    let door = Door::at(&estate, &primary).await;
+    door.arm("declaration", serde_json::json!({"kind": "declaration", "node": NODE, "state": "Stopped"})).await;
+    let stopped = frames(estate.nodes_obj().await.stop(&path).await.expect("the stop was accepted")).await;
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    let hit = door.wait_held("declaration").await;
+    assert_eq!(hit["hit"]["node"], NODE, "the mesh-primary holds the node's Stopped declaration: {hit}");
+    door.release("declaration").await;
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let operation = format!("node.stop:{NODE}");
+    assert_eq!(
+        command_frames(&spans, NODE, &operation),
+        ["command-accepted", "connections-deleting", "stop-connections-deleted", "leaving", "stop-mesh-left", "node-stopped"],
+        "the stop's stream carries each primitive's acknowledgement and completion"
+    );
+    assert_eq!(
+        rows_written(&spans, NODE, began(&spans, &operation)),
+        ["Stopping", "ConnectionsDeleting", "ConnectionsDeleted", "Leaving", "Left", "Stopped"],
+        "the mesh-primary writes the row from each frame"
+    );
+    let declared: Vec<String> = named(&spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| attr(sp, "sender") == NODE && attr(sp, "state") == "Stopped").map(|sp| attr(sp, "outcome")).collect();
+    assert_eq!(declared, ["already-applied"], "the released declaration finds the stop applied from its stream");
+}
+
+/// CONTRACT (Q205; node-mesh-leave.md Wire row and steps 1-5; node-replace.md steps 1-3): the
+/// predecessor's half of a replace, node.connections.delete `{ All }`, node.mesh.leave, node.stop. The
+/// standalone leave is a node command on 0x22: the mesh-primary takes `command-accepted` (leaving) and
+/// `mesh-left`, and writes leaving then left. The stop of the node already connections-deleted and left
+/// answers each primitive's acknowledgement and completion at once and repeats no work: its stream
+/// carries the same six frames as any stop, the node closes nothing again (`via-stop` says
+/// `already-deleted`) and leaves nothing again (one `via-leaving`, the leave's), and its row ends
+/// stopped. Must NOT happen: a 0x1B `LeaveMesh`, a second `via-leaving`, or a second closure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_of_a_node_already_connections_deleted_and_left_answers_each_primitive_at_once_and_repeats_no_work() {
+    let test = "a_stop_of_a_node_already_connections_deleted_and_left_answers_each_primitive_at_once_and_repeats_no_work";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.settled_views(&[("mesh1", 2, 3)]).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let path: PathName = NODE.parse().unwrap();
+    use rdm_core::build::RecipeStep;
+    let steps = vec![RecipeStep::DeleteConnections { node: path.clone() }, RecipeStep::LeaveMesh { node: path.clone() }, RecipeStep::Stop { node: path.clone() }];
+    let got = frames(estate.nodes_obj().await.recipe(steps).await.expect("the recipe was accepted")).await;
+    assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let (leave, stop) = (format!("node.mesh.leave:{NODE}"), format!("node.stop:{NODE}"));
+    assert_eq!(command_frames(&spans, NODE, &leave), ["command-accepted", "mesh-left"], "the standalone leave is a node command: its acknowledgement, then its completion");
+    let rows = rows_written(&spans, NODE, began(&spans, &leave));
+    assert_eq!(rows, ["Leaving", "Left", "Stopped"], "the leave writes leaving and left, the stop stopped; the stop's other frames find the row past them");
+    assert_eq!(
+        command_frames(&spans, NODE, &stop),
+        ["command-accepted", "connections-deleting", "stop-connections-deleted", "leaving", "stop-mesh-left", "node-stopped"],
+        "the stop answers each primitive's acknowledgement and completion"
+    );
+    let leaving: Vec<String> = named(&spans, "rdm.node.mesh.update.via-leaving").into_iter().filter(|sp| attr(sp, "node") == NODE).map(|sp| attr(sp, "operation")).collect();
+    assert_eq!(leaving, [leave.clone()], "the node left its mesh once, at the leave; the stop leaves nothing again");
+    let closures: Vec<String> = named(&spans, "rdm.node_admin.node.connections.delete.via-stop").into_iter().filter(|sp| attr(sp, "node") == NODE && attr(sp, "operation") == stop).map(|sp| attr(sp, "outcome")).collect();
+    assert_eq!(closures, ["already-deleted"], "the stop closes nothing again: it answers the receipt its connections delete established");
+}
+
 /// CONTRACT (node-name-update.md Precondition: "A stopped node is never renamed"; Validation: "the
 /// precondition holds, else `RejectedAdmittingConnections { status, held_connections }`"; Failure and
 /// receipts: refused before the claim, "nothing written, nothing changed"; node-start.md): the caller's

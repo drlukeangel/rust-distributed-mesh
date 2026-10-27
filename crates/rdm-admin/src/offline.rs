@@ -858,6 +858,7 @@ fn silence_word(status: Option<crate::model::NodeStatus>) -> &'static str {
         Some(Stopping) => "stopping",
         Some(Stopped) => "stopped",
         Some(Deleting) => "deleting",
+        Some(Left) => "left",
     }
 }
 

@@ -475,7 +475,24 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
             let (s, h, answer) = (cs.clone(), ch.clone(), canswer.clone());
             async move {
                 use rdm_core::node_command::{NodeCommandReply as N, NodeCommandRequest};
-                let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req else { panic!("expected DeleteConnections") };
+                // node.mesh.leave reaches the birth here too (Q205): its acknowledgement, then its
+                // completion, or its refusal before acceptance.
+                if let NodeCommandRequest::LeaveMesh { node_id, incarnation, build_id, attempt, operation } = req {
+                    let carried = StatusRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id, attempt, operation };
+                    let reply = answer(&carried);
+                    s.lock().unwrap().push(carried);
+                    h.notify_one();
+                    let StatusReply::MeshLeft { left, .. } = reply else {
+                        return Ok(match reply {
+                            StatusReply::BusyHoldingConnections { connections } => N::BusyHoldingConnections { connections },
+                            StatusReply::RejectedStaleIncarnation { held } => N::RejectedStaleIncarnation { held },
+                            other => N::NotReady { reason: format!("{}: {other:?}", other.name()) },
+                        });
+                    };
+                    sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                    return Ok(N::MeshLeft { node_id, incarnation, left });
+                }
+                let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req else { panic!("expected DeleteConnections or LeaveMesh") };
                 let carried = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: scope.clone() };
                 let reply = answer(&carried);
                 s.lock().unwrap().push(carried);

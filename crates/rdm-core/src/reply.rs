@@ -134,6 +134,9 @@ pub fn busy(reason: String) -> NodeCommandReply { NodeCommandReply::Busy { reaso
 pub fn rejected_connections_deleting(reason: String) -> NodeCommandReply { NodeCommandReply::RejectedConnectionsDeleting { reason } }
 /// Construct the typed malformed outcome.
 pub fn malformed(kind: MalformedKind) -> NodeCommandReply { NodeCommandReply::Malformed { kind } }
+/// `LeaveMesh` refused before acceptance: the birth still holds `connections`, at most
+/// [`crate::status::MAX_REPORTED_CONNECTIONS`] of them named.
+pub fn busy_holding_connections(connections: Vec<ConnectionId>) -> NodeCommandReply { NodeCommandReply::BusyHoldingConnections { connections: connections.into_iter().take(crate::status::MAX_REPORTED_CONNECTIONS).collect() } }
 }
 
 /// Constructors for the BuildReply family.

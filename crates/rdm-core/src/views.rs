@@ -43,6 +43,9 @@ pub enum NodeStatus {
     Stopped,
     /// Deleting: node.delete's claim was adopted.
     Deleting,
+    /// Left: its node.mesh.leave completed (Q205); off its mesh, its endpoint bound. Appended after
+    /// `Deleting`: no variant before it moves.
+    Left,
 }
 
 /// The lifecycle state of a mesh or of a fabric.

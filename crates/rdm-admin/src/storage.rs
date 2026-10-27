@@ -793,9 +793,10 @@ impl NodeRow {
     /// record stands; a birth that is not the record's newest moves nothing. A start of a stopped node
     /// (`Starting`) and a new join (`Pending`, from any status but `Deleting`) begin its next cycle (a
     /// create's claim writes `Starting` as the record's first status); every other status
-    /// only moves forward along states.md's order (starting, pending, ready-for-traffic,
-    /// connections-deleting, connections-deleted, stopping, stopped, deleting), so inside node.stop the
-    /// node's ConnectionsDeleting leaves it stopping, and a delete's stop leaves it deleting.
+    /// only moves forward along node.stop's frames (node-stop.md steps 1-4, Q205: starting, pending,
+    /// ready-for-traffic, stopping, connections-deleting, connections-deleted, leaving, left, stopped,
+    /// deleting), so inside node.stop each primitive's frame moves the row on from stopping, a stop of a
+    /// node already left moves it only to stopped, and a delete's stop leaves it deleting.
     pub fn set_status(&mut self, birth: &IncarnationId, to: crate::model::NodeStatus) -> bool {
         use crate::model::NodeStatus as S;
         fn order(s: S) -> u8 {
@@ -803,12 +804,14 @@ impl NodeRow {
                 S::Starting => 0,
                 S::Pending => 1,
                 S::ReadyForTraffic | S::PendingReconnect | S::Dead | S::Reserved5 => 2,
-                S::ConnectionsDeleting => 3,
-                S::ConnectionsDeleted => 4,
-                S::Stopping => 5,
-                S::Stopped | S::Leaving => 6,
-                S::Deleting => 7,
-                S::Deleted | S::Withdrawn => 8,
+                S::Stopping => 3,
+                S::ConnectionsDeleting => 4,
+                S::ConnectionsDeleted => 5,
+                S::Leaving => 6,
+                S::Left => 7,
+                S::Stopped => 8,
+                S::Deleting => 9,
+                S::Deleted | S::Withdrawn => 10,
             }
         }
         let current = self.status;
@@ -1647,9 +1650,14 @@ mod tests {
         r.birth_mut(&birth, &r.name.clone());
         let walk = |r: &mut NodeRow, steps: &[(S, S)]| for (to, then) in steps { r.set_status(&birth, *to); assert_eq!(r.status, *then, "after {to:?}"); };
         walk(&mut r, &[(S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic), (S::Starting, S::ReadyForTraffic), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
-        walk(&mut r, &[(S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::Stopping), (S::ReadyForTraffic, S::Stopping), (S::Stopped, S::Stopped)]);
+        // A stop (Q205): stopping from its admission, then each primitive's frame, then stopped.
+        walk(&mut r, &[(S::Stopping, S::Stopping), (S::ReadyForTraffic, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::ConnectionsDeleting, S::Left), (S::Stopped, S::Stopped), (S::Left, S::Stopped)]);
         walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
         walk(&mut r, &[(S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::ConnectionsDeleting, S::ConnectionsDeleted)]);
+        // A stop of a node already connections-deleted and left: its admission and its primitives'
+        // frames find the row past them, and its stopped moves it.
+        walk(&mut r, &[(S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopping, S::Left), (S::ConnectionsDeleting, S::Left), (S::ConnectionsDeleted, S::Left), (S::Leaving, S::Left), (S::Stopped, S::Stopped)]);
+        walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
         walk(&mut r, &[(S::Deleting, S::Deleting), (S::Stopping, S::Deleting), (S::Stopped, S::Deleting), (S::Pending, S::Deleting), (S::Starting, S::Deleting)]);
         assert!(!r.clone().set_status(&old, S::Deleted), "a superseded birth moves no status");
         r.status = S::Deleted;

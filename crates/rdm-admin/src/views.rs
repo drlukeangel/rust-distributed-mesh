@@ -45,6 +45,7 @@ pub(crate) fn node_status(s: crate::model::NodeStatus) -> NodeStatus {
         S::Stopping => NodeStatus::Stopping,
         S::Stopped => NodeStatus::Stopped,
         S::Deleting => NodeStatus::Deleting,
+        S::Left => NodeStatus::Left,
     }
 }
 

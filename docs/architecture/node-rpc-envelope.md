@@ -207,14 +207,14 @@ sees only the catalog.
 | `0x01` | ping | core | live | canonical | `Ping` |
 | `0x11` | echo | core | retired | | |
 | `0x1A` | forward | core | live | canonical | `Forward` |
-| `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md); `Reserved6`, `Reserved7`, `Reserved12`, `Reserved13` and `NodeLeft` are reserved positions, never sent |
+| `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md); `Reserved6`, `Reserved7`, `Reserved12`, `Reserved13` and `NodeLeft` are reserved positions, never sent; `LeaveMesh` and its reply `MeshLeft` keep their positions and are refused by name, node.mesh.leave being on 0x22 |
 | `0x1C` | build-claim | rdm | live | canonical | `ClaimAttempt` |
 | `0x1D` | join | rdm | live | canonical | `JoinNode` |
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
 | `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts`, `FetchCurrentBuild` |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied` |
-| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
+| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `LeaveMesh`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
 | `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
 | `0x13` | snapshot | rafka | live | transitional | mesh digest snapshot |
@@ -305,10 +305,10 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 |---|---|---|---|
 | [node.create](lifecycles/node-create.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; first join on [JoinNode 0x1D](#join-op-0x1d-rdm); a held name answers NameHeld { by }; the create of a mesh's first node-admin is the mesh-absent arm, [mesh.create](lifecycles/mesh-create.md), with no call of its own | every FirstStart event ending node.started, then node.created | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → StopConnectionsDeleted (Data) → NodeStopped (Terminal); the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → ConnectionsDeleting (Data) → StopConnectionsDeleted (Data) → Leaving (Data) → StopMeshLeft (Data) → NodeStopped (Terminal); the stop is a workflow that calls `node.connections.delete { scope: All }` then `node.mesh.leave` and streams each one's acknowledgement and completion, and the mesh-primary writes each status from its frame | node.connections.deleted, node.stopped | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.delete](lifecycles/node-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's ops, then provider inspection, which is not a Node RPC | every stop event, then node.deleted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.mesh.join](lifecycles/node-mesh-join.md) | The report is [JoinNode 0x1D](#join-op-0x1d-rdm); standalone, [Status 0x1B](#status-op-0x1b-rdm) `JoinMesh`, answered `MeshJoined { joined }`; inside node.start a step of the start's stream | node.mesh.joined; a refused report fails the primitive by the report's refusal | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.mesh.leave](lifecycles/node-mesh-leave.md) | Standalone, [Status 0x1B](#status-op-0x1b-rdm) `LeaveMesh`, answered `MeshLeft { left }`; node.stop and node.delete end their live part with it, and inside a stop it is the stop's own step and this frame is not sent | node.mesh.left; `BusyHoldingConnections { connections }` while the node holds a connection | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.mesh.leave](lifecycles/node-mesh-leave.md) | Standalone, [NodeCommand 0x22](#nodecommand-op-0x22-rdm) `LeaveMesh`, exact-node hop only, server-streaming: `CommandAccepted` (leaving), then `MeshLeft { node_id, incarnation, left }` (Terminal); node.stop and node.delete end their live part with it, and inside a stop its `Leaving` and `StopMeshLeft { left }` are Data frames on the stop's stream | node.mesh.left; `BusyHoldingConnections { connections }` while the node holds a connection | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.tickle](lifecycles/node-tickle.md) | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) direct, and the same probe through up to two live peers of the node's mesh on [Forward 0x1A](#forward-op-0x1a-core) | `reached { answer }` or `unreached`; no event, and unreached is never death | `OK` for a served probe; unreached retains its typed delivery code |
 | [node.runtime.inspect](lifecycles/node-runtime-inspect.md) | The deployment provider's inspect of the runtime handle recorded at launch; not a Node RPC | `running`, `os-stopped`, `exited { code }` or `unavailable { reason }`, node investigation's provider verdict; no event | — (typed provider result; no Node RPC) |
 | node.get | [Status 0x1B](#status-op-0x1b-rdm) `GetNodes { select: Id }`, answered `Nodes`; node.get, mesh.nodes.get and fabric.nodes.get are answered by the fabric-primary from its `FabricAtlas`, never from the node store: it fills the atlas from the node records once, at its start or hand-over, and each op writes it after that; `node.get { id }` answers the one node with that minted id, and an id the answering admin does not hold is `NOT_FOUND` (Q165: `<entity>.get` returns one, `<parent>.<children>.get` the list); the nodes of a mesh are mesh.nodes.get and the nodes of the fabric fabric.nodes.get, each with an optional tag filter; a node's tags are its own property (node.tags.get/create/delete) | the node, `NodeView`; a stopped node answers `stopped`; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
@@ -773,7 +773,7 @@ pub enum StatusRequest {
     CreateTags { node_id: NodeId, incarnation: IncarnationId, labels: BTreeSet<String> },
     DeleteTags { node_id: NodeId, incarnation: IncarnationId, scope: TagScope },
     JoinMesh { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
-    LeaveMesh { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
+    LeaveMesh { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 29, refused by name: node.mesh.leave is on NodeCommand 0x22
 }
 
 pub enum TagScope {
@@ -860,7 +860,7 @@ pub enum StatusReply {
     RejectedName { reason: String },
     BusyHoldingConnections { connections: Vec<ConnectionId> },
     MeshJoined { node_id: NodeId, incarnation: IncarnationId, joined: Vec<WhichMesh> },
-    MeshLeft { node_id: NodeId, incarnation: IncarnationId, left: Vec<WhichMesh> },
+    MeshLeft { node_id: NodeId, incarnation: IncarnationId, left: Vec<WhichMesh> }, // position 50, never sent: node.mesh.leave is on NodeCommand 0x22
     RequestNotHandled { request: String },
 }
 
@@ -879,15 +879,18 @@ pub enum RetryOn {
 The caller contract is [node.stop / node.delete](#typed-object-contract). The mesh-primary's
 exact-node stop and start hops use [NodeCommand 0x22](#nodecommand-op-0x22-rdm); caller routing and
 the Build carrier are unchanged. StatusRequest positions 8 `StopNode` and 16 `StartNode` are reserved:
-a receiver refuses each by name and executes nothing. Reply positions 17 `Stopped`, 18 `Started`
-and 19 `StartFailed` stand. Reserved6, Reserved7 and NodeLeft retain positions 6, 7 and 9 and are
+a receiver refuses each by name and executes nothing; so is position 29 `LeaveMesh`, node.mesh.leave
+being on NodeCommand 0x22, and reply position 50 `MeshLeft` is never sent. Reply positions 17
+`Stopped`, 18 `Started` and 19 `StartFailed` stand. Reserved6, Reserved7 and NodeLeft retain positions 6, 7 and 9 and are
 refused by name; Reserved12 and Reserved13 retain positions 12 and 13 (Q171), Reserved14 and
 Reserved15 positions 14 and 15 (Q174), and each is refused by name; Reserved2, Reserved22 and Reserved44 retain StatusReply positions 2, 22 (Q203) and 44. No position is reordered or
 reused.
 
-Stop's whole `node.connections.delete { scope: All }` reports its `ConnectionsReceipt` in
-`StopConnectionsDeleted` (Data), preserving `Established` or `Deadline` evidence; `NodeStopped`
-ends the stream after the transport cut. The operation-named owed Stopped declaration remains
+The stop calls its primitives and streams each one's acknowledgement and completion (Q205): its
+whole `node.connections.delete { scope: All }` reports `ConnectionsDeleting` (Data), then its
+`ConnectionsReceipt` in `StopConnectionsDeleted` (Data), preserving `Established` or `Deadline`
+evidence; its `node.mesh.leave` reports `Leaving` (Data), then `StopMeshLeft { left }` (Data);
+`NodeStopped` ends the stream after the leave. The operation-named owed Stopped declaration remains
 (Q36); frame and declaration apply once through the operation's held row (Q49).
 
 ### Mesh delete command pair
@@ -1518,8 +1521,8 @@ to these frames is `durable format moved`, with byte fixtures.
 
 RDM owns this family. It carries the mesh-primary → exact-node hop of
 [node.connections.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md),
-[node.start](lifecycles/node-start.md) and a [storage change](storage.md#changing-it)'s move of a
-node. The caller's hop and Build carrier are unchanged.
+[node.start](lifecycles/node-start.md), [node.mesh.leave](lifecycles/node-mesh-leave.md) and a
+[storage change](storage.md#changing-it)'s move of a node. The caller's hop and Build carrier are unchanged.
 Every call is server-streaming, never forwarded, and served while connections-deleting.
 Births are exact identities, never names. Every earlier byte and enum position stands; requests
 `StopNode` and `StartNode` append at 1 and 2. Replies append after the existing positions 0–10.
@@ -1531,7 +1534,10 @@ DeleteConnections { node_id, incarnation, scope }
   ← ConnectionsDeleted { closed, not_open, held, receipt } (Terminal)
 StopNode { node_id, incarnation, build_id, attempt, operation }
   ← CommandAccepted { node_id, incarnation } (Started)
-  ← StopConnectionsDeleted { receipt } (Data; appended reply 11)
+  ← ConnectionsDeleting { node_id, incarnation } (Data; node.connections.delete's acknowledgement)
+  ← StopConnectionsDeleted { receipt } (Data; appended reply 11; its completion)
+  ← Leaving { node_id, incarnation } (Data; appended reply 19; node.mesh.leave's acknowledgement)
+  ← StopMeshLeft { left } (Data; appended reply 20; its completion)
   ← NodeStopped (Terminal; appended reply 12)
 StartNode { node_id, incarnation, build_id, attempt, operation }
   ← CommandAccepted { node_id, incarnation } (Started)
@@ -1547,6 +1553,11 @@ StorageStep { node_id, incarnation, build_id, change_id, provider } (appended re
   ← Failed { step, reason, code } (Terminal)
 before StorageStep acceptance:
   ← RejectedStaleChange { held } (Refusal; appended reply 18, ABORTED)
+LeaveMesh { node_id, incarnation, build_id, attempt, operation } (appended request 4)
+  ← CommandAccepted { node_id, incarnation } (Started; leaving)
+  ← MeshLeft { node_id, incarnation, left } (Terminal; appended reply 21)
+before LeaveMesh acceptance:
+  ← BusyHoldingConnections { connections } (Refusal; appended reply 22, UNAVAILABLE, as on 0x1B)
 ```
 
 A storage change's `mesh.block` and `mesh.unblock` are operations of its Build, each claimed and
@@ -1558,8 +1569,11 @@ records `provider` on the birth's row. A command of a change older than the one 
 refused `rejected-stale-change`, naming that change.
 
 A refusal before acceptance is one refusal frame. `CommandAccepted` is admission and carries no
-lifecycle state: on a stop it makes the mesh-primary record stopping. `ConnectionsDeleting`
-records connections-deleting for connections.delete; `NodeStopped` records stopped, `NodeJoined`
+lifecycle state: on a stop it makes the mesh-primary record stopping, on a leave leaving.
+`ConnectionsDeleting` records connections-deleting, for connections.delete and inside a stop; a
+completion carrying `Established` (`ConnectionsDeleted`, `StopConnectionsDeleted`) records
+connections-deleted; `Leaving` records leaving; `MeshLeft` and `StopMeshLeft` record left;
+`NodeStopped` records stopped, `NodeJoined`
 records pending, and `NodeStarted` records ReadyForTraffic after every start gate and before the
 outer Build's Complete. Starting stays the executor's overlay. Nothing is written
 before CommandAccepted or for NotSent. There is no separate status declaration for an open start;

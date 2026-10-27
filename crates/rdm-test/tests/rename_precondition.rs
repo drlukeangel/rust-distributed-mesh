@@ -130,6 +130,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         let call = |req: StatusRequest| {
             let (client, target, opts) = (&admin.observer.client, &target, &opts);
             async move {
+                if let Some(reply) = crate::common::lifecycle_reply(client, target, &req, opts, None).await { return reply; }
                 match client.call::<Status>(target, &req, opts).await.0 {
                     RpcOutcome::Reply(r) => r.into_value(),
                     other => panic!("{} did not end in a reply: {other:?}", req.op()),
@@ -272,6 +273,7 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
         let call = |req: StatusRequest| {
             let (client, target, opts) = (&admin.observer.client, &target, &opts);
             async move {
+                if let Some(reply) = crate::common::lifecycle_reply(client, target, &req, opts, None).await { return reply; }
                 match client.call::<Status>(target, &req, opts).await.0 {
                     RpcOutcome::Reply(r) => r.into_value(),
                     other => panic!("{} did not end in a reply: {other:?}", req.op()),

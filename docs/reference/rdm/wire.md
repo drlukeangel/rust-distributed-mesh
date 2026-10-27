@@ -311,7 +311,7 @@ A Status call.
 | 28.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 28.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 28.4 | `operation` | `String` |  |  | The operation: `join-mesh:<path.name>` or `node.start:<path.name>`. |
-| 29 | **`LeaveMesh`** |  |  | `op() = "node.mesh.leave"` | Downward: the commanding authority tells the exact birth to leave its mesh channel(s) |
+| 29 | **`LeaveMesh`** |  |  | `op() = "node.mesh.leave"` | Reserved position (Q205): node.mesh.leave is a node command on NodeCommand 0x22 |
 | 29.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth commanded. |
 | 29.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 29.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
@@ -1012,8 +1012,8 @@ The answer to a node.primary.update call.
 | `NAME` | `"node-command"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `4` |
-| `REPLY_VARIANTS` | `19` |
+| `REQUEST_VARIANTS` | `5` |
+| `REPLY_VARIANTS` | `23` |
 | `MAX_REQUEST_FRAME_BYTES` | `4 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
@@ -1021,7 +1021,7 @@ The answer to a node.primary.update call.
 
 ### `NodeCommandRequest`
 
-`crates/rdm-core/src/node_command.rs` · enum · 4 variants · rdm-core
+`crates/rdm-core/src/node_command.rs` · enum · 5 variants · rdm-core
 
 A command to the exact birth it names.
 
@@ -1049,12 +1049,18 @@ A command to the exact birth it names.
 | 3.2 | `build_id` | `String` |  |  | The storage change's Build. |
 | 3.3 | `change_id` | `crate::ChangeId` → [`ChangeId`](#t-rdm_core-ids-ChangeId) |  |  | The change. |
 | 3.4 | `provider` | `String` |  |  | The provider the birth writes from here on. |
+| 4 | **`LeaveMesh`** |  |  | `op() = "leave-mesh"` | `node.mesh.leave` (node-mesh-leave.md; Q205): the exact birth, its connections deleted, leaves |
+| 4.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The commanded node. |
+| 4.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | Its exact incarnation. |
+| 4.2 | `build_id` | `String` |  |  | The Build that owns this operation. |
+| 4.3 | `attempt` | `u32` |  |  | Its executing attempt. |
+| 4.4 | `operation` | `String` |  |  | The operation's declared identity. |
 
 <a id="t-rdm_core-node_command-NodeCommandReply"></a>
 
 ### `NodeCommandReply`
 
-`crates/rdm-core/src/node_command.rs` · enum · 19 variants · rdm-core
+`crates/rdm-core/src/node_command.rs` · enum · 23 variants · rdm-core
 
 One reply frame of a node command's stream. Positional order is part of the wire schema.
 
@@ -1102,6 +1108,17 @@ One reply frame of a node command's stream. Positional order is part of the wire
 | 17.0 | `provider` | `String` |  |  | The provider the birth writes. |
 | 18 | **`RejectedStaleChange`** |  |  | `name() = "rejected-stale-change"` | The command names a storage change older than the one the birth acted on: refused by name, |
 | 18.0 | `held` | `crate::ChangeId` → [`ChangeId`](#t-rdm_core-ids-ChangeId) |  |  | The change the birth acted on last. |
+| 19 | **`Leaving`** |  |  | `name() = "leaving"` | Inside a stop, node.mesh.leave's acknowledgement (Q205): the birth is leaving its mesh; the |
+| 19.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth that is leaving. |
+| 19.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | Its incarnation. |
+| 20 | **`StopMeshLeft`** |  |  | `name() = "stop-mesh-left"` | Inside a stop, node.mesh.leave's completion, `node.mesh.left`: progress, never the stop's |
+| 20.0 | `left` | `Vec<WhichMesh>` → [`WhichMesh`](#t-rdm_core-status-WhichMesh) |  |  | Which meshes the birth left: its own, and the backbone for a node-admin. |
+| 21 | **`MeshLeft`** |  |  | `name() = "mesh-left"` | Standalone `node.mesh.left`: the birth left its mesh (and the backbone, a node-admin), its |
+| 21.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth that left. |
+| 21.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | Its incarnation. |
+| 21.2 | `left` | `Vec<WhichMesh>` → [`WhichMesh`](#t-rdm_core-status-WhichMesh) |  |  | Which meshes it left. |
+| 22 | **`BusyHoldingConnections`** |  |  | `name() = "busy-holding-connections"` | `LeaveMesh` refused before acceptance: the birth still holds these connections, and leaves |
+| 22.0 | `connections` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The connections it still holds. |
 
 ## 0x40 `broker-data`
 
@@ -2507,7 +2524,7 @@ A node birth's lifecycle state, as declared.
 
 ### `NodeStatus`
 
-`crates/rdm-core/src/views.rs` · enum · 13 variants · rdm-core
+`crates/rdm-core/src/views.rs` · enum · 14 variants · rdm-core
 
 A node's lifecycle state as its node-admin's view holds it.
 
@@ -2528,6 +2545,7 @@ serde: `rename_all = "kebab-case"`
 | 10 | **`Stopping`** |  |  | Stopping: its stop's admission arrived. |
 | 11 | **`Stopped`** |  |  | Stopped: a live, stopped process. |
 | 12 | **`Deleting`** |  |  | Deleting: node.delete's claim was adopted. |
+| 13 | **`Left`** |  |  | Left: its node.mesh.leave completed (Q205); off its mesh, its endpoint bound. Appended after |
 
 <a id="t-rdm_core-views-NodeView"></a>
 

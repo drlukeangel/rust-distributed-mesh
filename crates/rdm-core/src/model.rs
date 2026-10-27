@@ -55,6 +55,10 @@ pub enum NodeStatus {
     Stopped,
     /// Deleting: the node's row once node.delete's claim was adopted (published as NodeDeleting).
     Deleting,
+    /// Left: the node's row once its node.mesh.leave's completion arrived (`MeshLeft`, or `StopMeshLeft`
+    /// on its stop's stream; Q205), the node off its mesh with its endpoint bound. Appended after
+    /// `Deleting`: no variant before it moves.
+    Left,
 }
 
 impl NodeStatus {

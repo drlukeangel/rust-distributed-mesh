@@ -22,6 +22,7 @@ use std::time::Duration;
 
 async fn call_on(admin: &AdminSide, target: &NodeTarget, req: &StatusRequest, scope: Option<&str>) -> StatusReply {
     let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, scope: scope.map(str::to_string), ..CallOptions::default() };
+    if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, None).await { return reply; }
     match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),
         other => panic!("{} did not end in a reply: {other:?}", req.op()),

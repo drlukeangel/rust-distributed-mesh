@@ -846,8 +846,9 @@ impl StatusAuthority {
 
     /// node.mesh.leave of the birth `(node_id, incarnation)` of this admin's mesh, its connections
     /// deleted (node-mesh-leave.md; node-replace.md step 1): this mesh-primary sends `LeaveMesh` on
-    /// 0x1B to the exact birth and, on its `MeshLeft`, holds the birth's `node.mesh.left` for its
-    /// rename (node-name-update.md Precondition). The birth's own answer is returned whatever it is
+    /// NodeCommand 0x22 to the exact birth (its own birth in-process), writes leaving on the birth's row
+    /// from its acknowledgement and left from its `MeshLeft` (Q205), and holds the birth's
+    /// `node.mesh.left` for its rename (node-name-update.md Precondition). The birth's own answer is returned whatever it is
     /// (`BusyHoldingConnections` naming what it still holds, a stale incarnation); a refusal this
     /// mesh-primary decides is its own reply, and nothing is sent; a call that ended in no reply is
     /// `Err` naming how it ended. One `rdm.node_admin.node.mesh.update.via-mesh-primary` span.
@@ -877,26 +878,88 @@ impl StatusAuthority {
                     return Ok(rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown));
                 }
             }
-            let Some(configs) = self.configs.get() else {
-                return Ok(rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet to carry node.mesh.leave to {}; nothing is sent", subject.name)));
+            use rdm_core::node_command::{NodeCommand, NodeCommandReply as R, NodeCommandRequest};
+            use rdm_core::protocol::NodeProtocol;
+            let command = NodeCommandRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.to_string(), attempt, operation: operation.to_string() };
+            let mut frames = if *node_id == self.node_id {
+                // This mesh-primary is its own subject: an endpoint does not dial itself, so its own
+                // birth's command path runs in-process and its frames come back on a channel.
+                let Some(own) = self.own.get().cloned() else {
+                    return Ok(rdm_core::reply::status::not_ready(format!("{me_name} has not yet joined its mesh; node.mesh.leave of its own birth is refused and nothing is left")));
+                };
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let commander = self.node_id.clone();
+                tokio::spawn(
+                    async move {
+                        let completion = own.serve_node_command(Some(&commander), &command, Box::new(crate::node_self::ChannelFrames(tx.clone()))).await;
+                        let _ = tx.send(completion);
+                    }
+                    .instrument(tracing::Span::current()),
+                );
+                CarriedFrames::InProcess(rx)
+            } else {
+                let Some(configs) = self.configs.get() else {
+                    return Ok(rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet to carry node.mesh.leave to {}; nothing is sent", subject.name)));
+                };
+                let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
+                match configs.client().call_stream::<NodeCommand>(&target, &command, &rdm_transport::CallOptions::default()).await {
+                    Ok((stream, _)) => CarriedFrames::Dialled(stream),
+                    Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => return refused_leave(r.into_value()),
+                    Err((other, _)) => {
+                        let why = format!("{me_name} carried node.mesh.leave to {} and the call ended {} ({}) before the node accepted it: {other:?}", subject.name, other.name(), other.code().name());
+                        tracing::Span::current().record("detail", why.as_str());
+                        return Err(why);
+                    }
+                }
             };
-            let req = StatusRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.to_string(), attempt, operation: operation.to_string() };
-            let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
-            match configs.client().call::<rdm_core::status::Status>(&target, &req, &rdm_transport::CallOptions::default()).await.0 {
-                rdm_core::outcome::RpcOutcome::Reply(r) => {
-                    let reply = r.into_value();
-                    if let StatusReply::MeshLeft { left, .. } = &reply {
+            // The node's acknowledgement and completion, each written on its row from its frame before
+            // the frame is acknowledged (states.md "Who sets each state"; Q205).
+            let mut accepted = false;
+            while let Some(item) = frames.next().await {
+                let frame = match item {
+                    Ok(frame) => frame,
+                    Err(f) => {
+                        let why = format!("{me_name}'s node.mesh.leave stream to {} broke {}: {f:?}", subject.name, if accepted { "after the node accepted it" } else { "before the node accepted it" });
+                        tracing::Span::current().record("detail", why.as_str());
+                        return Err(why);
+                    }
+                };
+                let (status, end) = match &frame {
+                    R::CommandAccepted { .. } => {
+                        accepted = true;
+                        (Some(crate::model::NodeStatus::Leaving), None)
+                    }
+                    R::MeshLeft { left, .. } => {
                         tracing::Span::current().record("left", format!("{left:?}").as_str());
                         self.declared.lock().unwrap().meshes_left.insert((node_id.clone(), incarnation.clone()));
+                        (Some(crate::model::NodeStatus::Left), Some(Ok(StatusReply::MeshLeft { node_id: node_id.clone(), incarnation: incarnation.clone(), left: left.clone() })))
                     }
-                    Ok(reply)
+                    other if !accepted => (None, Some(refused_leave(other.clone()))),
+                    other => {
+                        let why = format!("{} answered {} on its node.mesh.leave stream after accepting it", subject.name, other.name());
+                        tracing::Span::current().record("detail", why.as_str());
+                        (None, Some(Err(why)))
+                    }
+                };
+                if let Some(status) = status {
+                    if let Err(e) = Box::pin(self.put_status(node_id, incarnation, &subject.name, status)).await {
+                        let why = format!("{me_name}: {} reported {} and its {status:?} row was not written: {e}", subject.name, frame.name());
+                        tracing::Span::current().record("detail", why.as_str());
+                        return Err(why);
+                    }
                 }
-                other => {
-                    let why = format!("{me_name} carried node.mesh.leave to {} and the call ended {} ({}) with no reply: {other:?}", subject.name, other.name(), other.code().name());
-                    tracing::Span::current().record("detail", why.as_str());
-                    Err(why)
+                let position = frames.position();
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-command-frame", recorder = %self.me, node = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), operation = %operation, frame = frame.name(), invocation_id = tracing::field::Empty, seq = tracing::field::Empty, code = NodeCommand::classify_reply(&frame).code().name(), detail = NodeCommand::reply_detail(&frame), outcome = tracing::field::Empty);
+                if let Some((invocation, seq)) = position { span.record("invocation_id", invocation.to_string()).record("seq", seq); }
+                span.in_scope(|| tracing::info!("the mesh-primary recorded the node's command frame before acknowledging its recovery"));
+                frames.accepted().await;
+                if let Some(end) = end {
+                    return end;
                 }
             }
+            let why = format!("{me_name}'s node.mesh.leave stream to {} ended without its completion", subject.name);
+            tracing::Span::current().record("detail", why.as_str());
+            Err(why)
         }
         .instrument(span.clone())
         .await;
@@ -986,12 +1049,12 @@ impl StatusAuthority {
         let view = self.topology.read().await.clone();
         let me_name = self.held_name_in(&view);
         match req {
-            StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return crate::node_commands::refuse_reserved(&me_name.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
+            StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::LeaveMesh { .. } => return crate::node_commands::refuse_reserved(&me_name.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
             StatusRequest::NodeLeft { node_id, .. } => {
                 let name = view.births().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_default();
                 return crate::node_commands::refuse_node_left(&me_name.to_string(), &name, &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req);
             }
-            StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } => return self.serve_command(&view, sender.as_ref(), peer, req).await,
+            StatusRequest::JoinMesh { .. } => return self.serve_command(&view, sender.as_ref(), peer, req).await,
             StatusRequest::DeleteConnections { node_id, incarnation, scope } => {
                 // A blocked mesh-primary carries the command to the node only once unblocked (storage.md §2 step 1).
                 self.commands.admitted().await;
@@ -1580,7 +1643,36 @@ impl StatusAuthority {
                     }
                     None
                 }
-                R::StopConnectionsDeleted { receipt } if !start => { closure = Some(receipt.clone()); None }
+                // node.stop calls its primitives and streams each one's acknowledgement and completion
+                // (Q205); this mesh-primary writes the node's row from each frame, before it
+                // acknowledges the frame (states.md "Who sets each state").
+                R::ConnectionsDeleting { .. } if !start => {
+                    if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.name, crate::model::NodeStatus::ConnectionsDeleting)).await {
+                        return A::Indeterminate { code: Code::Unavailable, reason: format!("the stop's connections-deleting row was not written: {e}") };
+                    }
+                    None
+                }
+                R::StopConnectionsDeleted { receipt } if !start => {
+                    closure = Some(receipt.clone());
+                    if matches!(receipt, rdm_core::status::ConnectionsReceipt::Established { .. }) {
+                        if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.name, crate::model::NodeStatus::ConnectionsDeleted)).await {
+                            return A::Indeterminate { code: Code::Unavailable, reason: format!("the stop's connections-deleted row was not written: {e}") };
+                        }
+                    }
+                    None
+                }
+                R::Leaving { .. } if !start => {
+                    if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.name, crate::model::NodeStatus::Leaving)).await {
+                        return A::Indeterminate { code: Code::Unavailable, reason: format!("the stop's leaving row was not written: {e}") };
+                    }
+                    None
+                }
+                R::StopMeshLeft { .. } if !start => {
+                    if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.name, crate::model::NodeStatus::Left)).await {
+                        return A::Indeterminate { code: Code::Unavailable, reason: format!("the stop's left row was not written: {e}") };
+                    }
+                    None
+                }
                 R::NodeJoined if start => {
                     let applied = self.node_joined(&op, node, &incarnation).await;
                     if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeJoined not recorded: {applied:?}") }; }
@@ -1796,7 +1888,7 @@ impl StatusAuthority {
     /// §14): the commander is the caller as the view holds it, where its completion goes; the
     /// connection spared is the call's own (`peer`).
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest) -> StatusReply {
-        let (StatusRequest::StopNode { incarnation, .. } | StatusRequest::StartNode { incarnation, .. } | StatusRequest::JoinMesh { incarnation, .. } | StatusRequest::LeaveMesh { incarnation, .. }) = req else {
+        let (StatusRequest::StopNode { incarnation, .. } | StatusRequest::StartNode { incarnation, .. } | StatusRequest::JoinMesh { incarnation, .. }) = req else {
             unreachable!("serve_command is called for commands only")
         };
         let me_name = self.held_name_in(view);
@@ -2000,7 +2092,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
         S::ReadyForTraffic => NodeState::ReadyForTraffic,
         S::ConnectionsDeleting => NodeState::ConnectionsDeleting,
         S::Starting => NodeState::Pending,
-        S::ConnectionsDeleted | S::Stopping => NodeState::ConnectionsDeleting,
+        S::ConnectionsDeleted | S::Stopping | S::Left => NodeState::ConnectionsDeleting,
         S::Leaving | S::Reserved5 | S::PendingReconnect | S::Dead | S::Deleted | S::Withdrawn | S::Stopped | S::Deleting => NodeState::Stopped,
     }
 }
@@ -2204,6 +2296,18 @@ fn serve_node_command(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthor
 /// The frames of a carried node command, in order (Luke Q9): the dialled node's reply stream on op
 /// 0x22, or, this mesh-primary its own subject, its own birth's command path run in-process. The frames
 /// are the same either way.
+/// A node's refusal of `LeaveMesh` before it accepted it, as carry_mesh_leave answers it: the refusals
+/// the leave names (node-mesh-leave.md) as the Status replies they are; any other is `Err` naming it.
+fn refused_leave(reply: rdm_core::node_command::NodeCommandReply) -> Result<StatusReply, String> {
+    use rdm_core::node_command::NodeCommandReply as R;
+    match reply {
+        R::BusyHoldingConnections { connections } => Ok(rdm_core::reply::status::busy_holding_connections(connections)),
+        R::RejectedStaleIncarnation { held } => Ok(rdm_core::reply::stale(held)),
+        R::NotReady { reason } => Ok(rdm_core::reply::status::not_ready(reason)),
+        other => Err(format!("node.mesh.leave refused before acceptance: {}: {other:?}", other.name())),
+    }
+}
+
 enum CarriedFrames {
     Dialled(rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>),
     InProcess(tokio::sync::mpsc::UnboundedReceiver<rdm_core::node_command::NodeCommandReply>),

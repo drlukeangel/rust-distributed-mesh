@@ -471,11 +471,9 @@ pub enum StatusRequest {
         /// The operation: `join-mesh:<path.name>` or `node.start:<path.name>`.
         operation: String,
     },
-    /// Downward: the commanding authority tells the exact birth to leave its mesh channel(s)
-    /// (`node.mesh.leave`; node-mesh-leave.md), closing the mesh channel (`WhichMesh::Own`,
-    /// and `WhichMesh::Backbone` for a node-admin) while keeping its endpoint bound, answered
-    /// [`StatusReply::MeshLeft`], or [`StatusReply::BusyHoldingConnections`] if any connection
-    /// entry is still open in its connections log.
+    /// Reserved position (Q205): node.mesh.leave is a node command on NodeCommand 0x22
+    /// ([`crate::node_command::NodeCommandRequest::LeaveMesh`]). A receiver refuses this by name and
+    /// executes nothing; the position and its fields stay so no later variant moves.
     LeaveMesh {
         /// The birth commanded.
         node_id: NodeId,
@@ -1310,7 +1308,9 @@ pub enum StatusReply {
         joined: Vec<WhichMesh>,
     },
     /// `node.mesh.left`: the exact birth left its mesh channel(s), its endpoint still bound
-    /// (`[Own]` for an rpc-node or storage-node, `[Own, Backbone]` for a node-admin).
+    /// (`[Own]` for an rpc-node or storage-node, `[Own, Backbone]` for a node-admin). Never sent on
+    /// this op since node.mesh.leave moved to NodeCommand 0x22 (Q205): the mesh-primary's in-process
+    /// carry of the leave answers it ([`crate::node_command::NodeCommandReply::MeshLeft`] on the wire).
     MeshLeft {
         /// The birth that left.
         node_id: NodeId,

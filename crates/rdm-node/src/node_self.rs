@@ -10,12 +10,17 @@
 //!   of the connections log and answers `ConnectionsDeleted` with its `ConnectionsReceipt`
 //!   (`Established`, or `Deadline` at the bound). `Connections` closes exactly the named entries.
 //!   Gossip neighbours and the Node RPC pool are not connections: neither scope touches them.
-//! - `StopNode`: the whole `node.connections.delete { All }`, then hold the node's own tasks, declare
-//!   `Leaving` to the authority, publish a mesh-primary node-admin's last mesh topology with itself
-//!   `Leaving` (gossip.md, "Mesh delete"), then the stop's own transport cut (gossip neighbours and the
-//!   Node RPC pool; never the endpoint and never the commander's connection the call rides), and answer
-//!   `StopConnectionsDeleted` (Data) with the `All`'s receipt and `NodeStopped` (Terminal) on that stream. The process stays alive,
-//!   its endpoint bound.
+//! - `StopNode` (a workflow over its primitives, Q205): the whole `node.connections.delete { All }`,
+//!   streaming its acknowledgement `ConnectionsDeleting` and its completion `StopConnectionsDeleted`
+//!   with the `All`'s receipt (Data), then hold the node's own tasks, publish a mesh-primary
+//!   node-admin's last mesh topology with itself `Leaving` (gossip.md, "Mesh delete"), then
+//!   `node.mesh.leave` (gossip neighbours and the Node RPC pool; never the endpoint and never the
+//!   commander's connection the call rides), streaming its acknowledgement `Leaving` and its completion
+//!   `StopMeshLeft` (Data), and answer `NodeStopped` (Terminal) on that stream. A primitive the birth
+//!   already completed since it last started is answered at once and not run again. The process stays
+//!   alive, its endpoint bound.
+//! - `LeaveMesh`: standalone `node.mesh.leave`: `BusyHoldingConnections` while a connection is open,
+//!   else `CommandAccepted` (leaving), the leave, and `MeshLeft` (Terminal).
 //! - `StartNode`: a stopped birth rejoins as itself (same node id, incarnation, endpoint key and
 //!   port) through its [`Session`], and answers `Started`, or `StartFailed` naming the step.
 //! - `Reserved6` and `Reserved7` are reserved Status positions (R-CR4): refused by name.
@@ -243,6 +248,18 @@ enum Cycle {
     },
 }
 
+/// What this birth's primitives completed since it last started or joined (Q205): a stop of a birth
+/// already connections-deleted and left answers each primitive's acknowledgement and completion at
+/// once and repeats no work (node-stop.md step 3).
+#[derive(Default)]
+struct Completed {
+    /// The receipt of an `All` that completed `Established`: from it on the birth holds no connection
+    /// and opens none until it starts or joins again.
+    deleted: Option<ConnectionsReceipt>,
+    /// The meshes its node.mesh.leave left.
+    left: Option<Vec<WhichMesh>>,
+}
+
 /// The surface a node kind gives the commands.
 pub struct NodeSelf {
     /// This birth's logical node.
@@ -281,6 +298,8 @@ pub struct NodeSelf {
     pub connections_delete_deadline: Duration,
     /// Where this birth stands between a stop and a start.
     cycle: Mutex<Cycle>,
+    /// What its primitives completed since it last started or joined.
+    completed: Mutex<Completed>,
     /// How this process leaves and rejoins its mesh; filled once the process holds the parts.
     session: Mutex<Option<Arc<dyn Session>>>,
     /// The client this birth originates its data-plane connections on, the ones its connections log
@@ -316,7 +335,7 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         topology_view.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
+        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -573,6 +592,11 @@ impl NodeSelf {
             InFlight::Zero { began } => ConnectionsReceipt::Established { in_flight: began, closed: closed.clone() },
             InFlight::Deadline { last } => ConnectionsReceipt::Deadline { last_in_flight: last, closed: closed.clone(), held: held.clone() },
         });
+        // An `All` completed `Established`: the birth is connections-deleted until it starts or joins
+        // again, and a stop answers this receipt rather than closing again.
+        if let Some(r @ ConnectionsReceipt::Established { .. }) = &receipt {
+            self.completed.lock().unwrap().deleted = Some(r.clone());
+        }
         Deleted { closed, not_open, held, receipt }
     }
 
@@ -593,6 +617,9 @@ impl NodeSelf {
     /// Lift the admission block: a birth that starts, or that joins its mesh again, opens
     /// connections again.
     fn admit_new_connections(&self) {
+        // A birth that starts or joins again holds connections again and is on its mesh again: what
+        // its primitives completed before is not this cycle's.
+        *self.completed.lock().unwrap() = Completed::default();
         if let Some(data_plane) = self.data_plane.lock().unwrap().clone() {
             data_plane.admit_new_connections();
         }
@@ -638,6 +665,9 @@ impl NodeSelf {
         use tracing::Instrument;
         if let NodeCommandRequest::StorageStep { incarnation, build_id, change_id, provider, .. } = req {
             return self.serve_storage_step(incarnation, build_id, change_id, provider, frames).await;
+        }
+        if let NodeCommandRequest::LeaveMesh { incarnation, operation, .. } = req {
+            return self.serve_leave_mesh(spare, incarnation, operation, frames).await;
         }
         if !matches!(req, NodeCommandRequest::DeleteConnections { .. }) {
             return self.serve_lifecycle_command(commander, spare, req, frames).await;
@@ -744,14 +774,8 @@ impl NodeSelf {
     /// call's own connection. A state command is served for `commander`, the primary of this birth's
     /// mesh, which its check-in goes to. `None` for any other request.
     pub async fn serve(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &StatusRequest) -> Option<StatusReply> {
-        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. }) {
+        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::LeaveMesh { .. }) {
             return Some(refuse_reserved(&self.held_name().to_string(), &named(commander), req));
-        }
-        if let StatusRequest::LeaveMesh { incarnation, operation, .. } = req {
-            if *incarnation != self.incarnation {
-                return Some(rdm_core::reply::stale(self.incarnation.clone()));
-            }
-            return Some(self.serve_leave_mesh(spare, operation).await);
         }
         if let StatusRequest::JoinMesh { incarnation, build_id, attempt, operation, .. } = req {
             if *incarnation != self.incarnation {
@@ -803,30 +827,45 @@ impl NodeSelf {
         }
     }
 
-    /// Standalone `node.mesh.leave` (`LeaveMesh` on 0x1B; node-mesh-leave.md): refuses
-    /// `BusyHoldingConnections` while the birth has a connection open, its row landed or still owed
-    /// (Q169), otherwise leaves the mesh channel (and backbone, for a node-admin) and cuts the Node
-    /// RPC pool.
-    async fn serve_leave_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> StatusReply {
-        if let Ok(open) = self.live_routes() {
-            if !open.is_empty() {
-                let connections: Vec<rdm_core::ConnectionId> = open.into_iter().map(|r| r.id).collect();
-                tracing::info_span!(
-                    "rdm.node.mesh.reject.via-busy-holding-connections",
-                    node = %self.held_name(),
-                    node_id = %self.node_id,
-                    mesh = %self.topology_view.mesh_name(),
-                    mesh_id = %self.topology_view.mesh_id(),
-                    operation = %operation,
-                    connections = ?connections,
-                    "otel.kind" = "internal"
-                )
-                .in_scope(|| tracing::info!("node.mesh.leave refused: this birth still holds open connections"));
-                return rdm_core::reply::status::busy_holding_connections(connections);
+    /// Standalone `node.mesh.leave` (`LeaveMesh` on NodeCommand 0x22; node-mesh-leave.md, Q205): a
+    /// command naming another birth is refused stale; a birth already left since it last started
+    /// acknowledges and completes at once, leaving nothing again; otherwise it refuses
+    /// `BusyHoldingConnections` while it has a connection open, its row landed or still owed (Q169),
+    /// before acceptance. Accepted, it acknowledges (`CommandAccepted`: leaving), leaves its mesh
+    /// channel (and the backbone, a node-admin), cuts its Node RPC pool sparing the command's call,
+    /// and completes with `MeshLeft`.
+    async fn serve_leave_mesh(&self, spare: Option<iroh::PublicKey>, incarnation: &IncarnationId, operation: &str, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
+        if *incarnation != self.incarnation {
+            return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
+        }
+        let already = self.completed.lock().unwrap().left.clone();
+        if already.is_none() {
+            if let Ok(open) = self.live_routes() {
+                if !open.is_empty() {
+                    let connections: Vec<rdm_core::ConnectionId> = open.into_iter().map(|r| r.id).collect();
+                    tracing::info_span!(
+                        "rdm.node.mesh.reject.via-busy-holding-connections",
+                        node = %self.held_name(),
+                        node_id = %self.node_id,
+                        mesh = %self.topology_view.mesh_name(),
+                        mesh_id = %self.topology_view.mesh_id(),
+                        operation = %operation,
+                        connections = ?connections,
+                        "otel.kind" = "internal"
+                    )
+                    .in_scope(|| tracing::info!("node.mesh.leave refused: this birth still holds open connections"));
+                    return rdm_core::reply::node_command::busy_holding_connections(connections);
+                }
             }
         }
-        let (_, left) = self.leave_mesh(spare.as_slice(), operation).await;
-        StatusReply::MeshLeft { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), left }
+        if let Err(e) = frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await {
+            return rdm_core::reply::node_command::not_ready(format!("{}: the command's caller is gone before its acceptance ({e}); nothing is left", self.held_name()));
+        }
+        let left = match already {
+            Some(left) => left,
+            None => self.leave_mesh(spare.as_slice(), operation).await.1,
+        };
+        NodeCommandReply::MeshLeft { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), left }
     }
 
     /// The `node.mesh.leave` primitive (node-mesh-leave.md): shared by standalone `LeaveMesh` and
@@ -856,14 +895,30 @@ impl NodeSelf {
                     CutReport::default()
                 }
             };
-            let mut left = vec![WhichMesh::Own];
-            if self.backbone.is_some() {
-                left.push(WhichMesh::Backbone);
-            }
+            let left = self.meshes();
+            self.completed.lock().unwrap().left = Some(left.clone());
             (report, left)
         }
         .instrument(leaving_span)
         .await
+    }
+
+    /// The meshes this birth is on: its own, and the backbone for a node-admin.
+    fn meshes(&self) -> Vec<WhichMesh> {
+        if self.backbone.is_some() { vec![WhichMesh::Own, WhichMesh::Backbone] } else { vec![WhichMesh::Own] }
+    }
+
+    /// node.stop's frames for primitives already completed (Q205; node-stop.md step 3): each one's
+    /// acknowledgement and completion at once, `ConnectionsDeleting`, `StopConnectionsDeleted` with
+    /// the receipt `receipt`, `Leaving`, `StopMeshLeft`. No work is done again.
+    async fn answer_completed(&self, progress: &Option<CommandProgress>, receipt: &ConnectionsReceipt) {
+        let Some(progress) = progress else { return };
+        let left = self.completed.lock().unwrap().left.clone().unwrap_or_else(|| self.meshes());
+        let mut frames = progress.lock().await;
+        let _ = frames.progress(rdm_core::reply::node_command::connections_deleting(self.node_id.clone(), self.incarnation.clone())).await;
+        let _ = frames.progress(NodeCommandReply::StopConnectionsDeleted { receipt: receipt.clone() }).await;
+        let _ = frames.progress(NodeCommandReply::Leaving { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await;
+        let _ = frames.progress(NodeCommandReply::StopMeshLeft { left }).await;
     }
 
     /// `node.mesh.join` commanded on this live birth (`JoinMesh` on 0x1B; node-mesh-join.md step 10,
@@ -977,7 +1032,7 @@ impl NodeSelf {
         };
         let receipt = match next {
             Next::Done(r) => {
-                if let Some(progress) = &progress { let _ = progress.lock().await.progress(NodeCommandReply::StopConnectionsDeleted { receipt: r.clone() }).await; }
+                self.answer_completed(&progress, &r).await;
                 r
             },
             Next::Wait(mut rx) => {
@@ -985,7 +1040,7 @@ impl NodeSelf {
                     Ok(r) => r.clone().expect("waited for a receipt"),
                     Err(_) => return rdm_core::reply::status::not_ready(format!("{}: the stop that was under way ended without a receipt", self.held_name())),
                 };
-                if let Some(progress) = &progress { let _ = progress.lock().await.progress(NodeCommandReply::StopConnectionsDeleted { receipt: receipt.clone() }).await; }
+                self.answer_completed(&progress, &receipt).await;
                 receipt
             },
             Next::Run(tx) => {
@@ -1036,19 +1091,46 @@ impl NodeSelf {
         // open Direct or Proxy entry is closed, its drop written under the name the birth holds. The
         // receipt never turns a deadline into zero. A command's own call is in flight and is not
         // eligible work, nor are the calls commanding a failed start; a signal has none, and owes its
-        // connections-deleting once the block is in force.
+        // connections-deleting once the block is in force. A command's stop streams the primitive's
+        // acknowledgement, `ConnectionsDeleting`, once the block is in force, and its completion,
+        // `StopConnectionsDeleted` (Q205). A birth already connections-deleted (an `All` completed
+        // `Established` since it last started) answers both at once with that receipt and closes
+        // nothing again.
+        let closure = tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %operation, commander = %named(commander), outcome = tracing::field::Empty);
+        let already = self.completed.lock().unwrap().deleted.clone();
         let deleting = Mutex::new(None);
-        let deleted = self
-            .delete_connections_asked(&ConnectionScope::All, asking, || {
-                if op.is_none() {
-                    *deleting.lock().unwrap() = self.owe(NodeState::ConnectionsDeleting, None);
+        let ack = |progress: &Option<CommandProgress>| {
+            let progress = progress.clone();
+            let frame = rdm_core::reply::node_command::connections_deleting(self.node_id.clone(), self.incarnation.clone());
+            async move {
+                if let Some(progress) = progress {
+                    let _ = progress.lock().await.progress(frame).await;
                 }
-                async {}
-            })
-            .instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %operation, commander = %named(commander)))
-            .await;
+            }
+        };
+        let receipt = match already {
+            Some(receipt) => {
+                ack(&progress).await;
+                closure.record("outcome", "already-deleted");
+                receipt
+            }
+            None => {
+                let deleted = self
+                    .delete_connections_asked(&ConnectionScope::All, asking, || {
+                        if op.is_none() {
+                            *deleting.lock().unwrap() = self.owe(NodeState::ConnectionsDeleting, None);
+                        }
+                        ack(&progress)
+                    })
+                    .instrument(closure.clone())
+                    .await;
+                closure.record("outcome", "deleted");
+                deleted.receipt.expect("All carries its receipt")
+            }
+        };
+        closure.in_scope(|| tracing::info!("the stop's node.connections.delete All is complete"));
+        drop(closure);
         let mut owed: Vec<tokio::task::JoinHandle<()>> = deleting.into_inner().unwrap().into_iter().collect();
-        let receipt = deleted.receipt.expect("All carries its receipt");
         if let Some(progress) = &progress {
             let _ = progress.lock().await.progress(NodeCommandReply::StopConnectionsDeleted { receipt: receipt.clone() }).await;
         }
@@ -1098,22 +1180,36 @@ impl NodeSelf {
             tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.held_name(), mesh = %self.held_name().mesh, operation = %operation, status = "Leaving", members = count, published)
                 .in_scope(|| tracing::info!("the last mesh topology before the stop carries this node Leaving"));
         }
-        // 5. The stop's own step after its connections are deleted (node-stop.md step 3;
+        // 5. node.mesh.leave, called after its connections are deleted (node-stop.md step 3;
         // node-mesh-leave.md): leave the mesh and cut its transport, its gossip neighbours and its
         // Node RPC pool, sparing the commander's connection the stop call rides. Never its endpoint.
-        let cut = tracing::info_span!(
-            "rdm.node_admin.node.update.via-stop-transport-cut",
-            node = %self.held_name(), operation = %operation,
-            spared = spare.len(), neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty, turns_in_progress = tracing::field::Empty
-        );
-        let (report, _) = self.leave_mesh(spare.as_slice(), operation).instrument(cut.clone()).await;
-        cut.record("neighbours", report.neighbours);
-        cut.record("pooled", report.pooled);
-        cut.record("accepted", report.accepted);
-        cut.record("turns_in_progress", report.turns_in_progress);
-        // The cut's span ends with the cut: what follows is the declaration, not the cut.
-        cut.in_scope(|| tracing::info!("the stop cut its transport: gossip neighbours and the Node RPC pool; the endpoint stays bound and the commander's connection stays open"));
-        drop(cut);
+        // A command's stop streams its acknowledgement, `Leaving`, and its completion, `StopMeshLeft`
+        // (Q205). A birth already left since it last started leaves nothing again and answers both.
+        if let Some(progress) = &progress {
+            let _ = progress.lock().await.progress(NodeCommandReply::Leaving { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await;
+        }
+        let already_left = self.completed.lock().unwrap().left.clone();
+        let left = match already_left {
+            Some(left) => left,
+            None => {
+                let cut = tracing::info_span!(
+                    "rdm.node_admin.node.update.via-stop-transport-cut",
+                    node = %self.held_name(), operation = %operation,
+                    spared = spare.len(), neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty, turns_in_progress = tracing::field::Empty
+                );
+                let (report, left) = self.leave_mesh(spare.as_slice(), operation).instrument(cut.clone()).await;
+                cut.record("neighbours", report.neighbours);
+                cut.record("pooled", report.pooled);
+                cut.record("accepted", report.accepted);
+                cut.record("turns_in_progress", report.turns_in_progress);
+                // The cut's span ends with the cut: what follows is the declaration, not the cut.
+                cut.in_scope(|| tracing::info!("the stop cut its transport: gossip neighbours and the Node RPC pool; the endpoint stays bound and the commander's connection stays open"));
+                left
+            }
+        };
+        if let Some(progress) = &progress {
+            let _ = progress.lock().await.progress(NodeCommandReply::StopMeshLeft { left }).await;
+        }
         // 6. This birth declares `Stopped` to its mesh-primary (i146 Q29, Q36, Q55; node-stop.md step 4): an
         // owed message whose delivery is the runtime's (node-rpc.md §43), never waited on, so the stop's
         // receipt and reply never wait for the mesh-primary's answer. A command's names its stop: the owed
@@ -1324,12 +1420,12 @@ pub async fn wait_for_own_record(dir: &std::path::Path, within: std::time::Durat
 pub const NODE_LEFT_IS_NEVER_A_CALL: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
 
 /// What a reserved Status position is refused with: none is ever a call (R-CR4).
-pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8 (StopNode), 12 to 15, and 16 (StartNode) are reserved, never executed; lifecycle commands use NodeCommand 0x22";
+pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8 (StopNode), 12 to 15, 16 (StartNode) and 29 (LeaveMesh) are reserved, never executed; lifecycle commands and node.mesh.leave use NodeCommand 0x22";
 
 /// A reserved Status position at `receiver` (node-rpc-envelope.md "Node stop command
 /// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
 pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
-    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved12 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved14 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved15 { node_id, incarnation, build_id, attempt, operation, .. }) = req else {
+    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::LeaveMesh { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved12 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved14 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved15 { node_id, incarnation, build_id, attempt, operation, .. }) = req else {
         unreachable!("refuse_reserved is called for the reserved positions only")
     };
     let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());

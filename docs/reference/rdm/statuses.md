@@ -187,7 +187,7 @@ A node birth's lifecycle state, as declared.
 
 ### `NodeStatus`
 
-`crates/rdm-core/src/model.rs` · enum · 14 variants · rdm-core
+`crates/rdm-core/src/model.rs` · enum · 15 variants · rdm-core
 
 Node lifecycle status as published on views.
 
@@ -209,12 +209,13 @@ serde: `rename_all = "kebab-case"`
 | 11 | **`Stopping`** | `stopping` |  |  | Stopping: the node's row once its stop's `CommandAccepted` admission frame arrived. |
 | 12 | **`Stopped`** | `stopped` |  |  | Stopped: the node's row once the matching stopped frame arrived: a live, stopped process. |
 | 13 | **`Deleting`** | `deleting` |  |  | Deleting: the node's row once node.delete's claim was adopted (published as NodeDeleting). |
+| 14 | **`Left`** | `left` |  |  | Left: the node's row once its node.mesh.leave's completion arrived (`MeshLeft`, or `StopMeshLeft` |
 
 <a id="t-rdm_core-views-NodeStatus"></a>
 
 ### `NodeStatus`
 
-`crates/rdm-core/src/views.rs` · enum · 13 variants · rdm-core
+`crates/rdm-core/src/views.rs` · enum · 14 variants · rdm-core
 
 A node's lifecycle state as its node-admin's view holds it.
 
@@ -235,6 +236,7 @@ serde: `rename_all = "kebab-case"`
 | 10 | **`Stopping`** | `stopping` |  |  | Stopping: its stop's admission arrived. |
 | 11 | **`Stopped`** | `stopped` |  |  | Stopped: a live, stopped process. |
 | 12 | **`Deleting`** | `deleting` |  |  | Deleting: node.delete's claim was adopted. |
+| 13 | **`Left`** | `left` |  |  | Left: its node.mesh.leave completed (Q205); off its mesh, its endpoint bound. Appended after |
 
 <a id="t-rdm_core-catalog-OpState"></a>
 

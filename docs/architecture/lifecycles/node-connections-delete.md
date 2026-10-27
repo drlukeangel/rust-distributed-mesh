@@ -3,8 +3,8 @@
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Typed calls and wire mapping](../node-rpc-envelope.md#typed-object-contract)
 
 `node.connections.delete` closes a node's connections and keeps the process running. It is a node
-primitive: [node.stop](node-stop.md) calls it, so does [node.delete](node-delete.md) through the
-stop, a [rename](node-name-update.md) is permitted only once its `All` has completed (connections-deleted)
+primitive: [node.stop](node-stop.md) calls it and streams its acknowledgement and completion on the
+stop's stream, so does [node.delete](node-delete.md) through the stop, a [rename](node-name-update.md) is permitted only once its `All` has completed (connections-deleted)
 or the node is stopped, and a caller can call it on its own. A connection is an open Direct or Proxy
 connection of the node, read from the connections open now, a connection whose row is still owed
 included (Q169). Gossip neighbours and the Node RPC pool are not connections, and
@@ -45,7 +45,8 @@ node.connections.delete { scope: Connections([id, …]) }
 Admission is not completion: the caller reads the stream through its completion, and a stream broken after `CommandAccepted` is incomplete, never a claimed closure. `Deadline` records the last observed in-flight count and the
 connections still open; it never claims zero. The bound, the receipt and the in-flight admission
 facts stay distinct. A caller reads the receipt before proceeding according to its workflow.
-[node.stop](node-stop.md) composes the complete `All` call before its own transport cut.
+[node.stop](node-stop.md) calls the complete `All` before its node.mesh.leave, and streams its
+`ConnectionsDeleting` and its completion, `StopConnectionsDeleted { receipt }`, on the stop's stream.
 
 ## Gossip message and channels
 

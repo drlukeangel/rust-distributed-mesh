@@ -20,16 +20,18 @@ fn bytes(hex: &str) -> Vec<u8> {
 
 /// CONTRACT (Luke Q7): the requests of op 0x22 in frozen bytes: `DeleteConnections` variant 0 (node id,
 /// incarnation, then the scope: `All` 0, `Connections` 1 with its ids), `StopNode` 1, `StartNode` 2 and a
-/// storage change's `StorageStep` 3 (storage.md §2 "Changing it").
+/// storage change's `StorageStep` 3 (storage.md §2 "Changing it") and `LeaveMesh` 4 (Q205,
+/// node-mesh-leave.md Wire).
 #[test]
-fn the_requests_match_the_frozen_four_variant_wire_schema() {
-    assert_eq!(NodeCommand::REQUEST_VARIANTS, 4);
+fn the_requests_match_the_frozen_five_variant_wire_schema() {
+    assert_eq!(NodeCommand::REQUEST_VARIANTS, 5);
     for (req, hex) in [
         (NodeCommandRequest::StopNode { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: "o".into() }, "010c3031323334353637383961620c397763707266677776746879016201016f"),
         (NodeCommandRequest::StartNode { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: "o".into() }, "020c3031323334353637383961620c397763707266677776746879016201016f"),
         (NodeCommandRequest::DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::All }, "000c3031323334353637383961620c39776370726667777674687900"),
         (NodeCommandRequest::DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "000c3031323334353637383961620c39776370726667777674687901010c333132333435363738396162"),
         (NodeCommandRequest::StorageStep { node_id: node(), incarnation: birth(), build_id: "b".into(), change_id: change(), provider: "f".into() }, "030c3031323334353637383961620c39776370726667777674687901620c3331323334353637383961620166"),
+        (NodeCommandRequest::LeaveMesh { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: "o".into() }, "040c3031323334353637383961620c397763707266677776746879016201016f"),
     ] {
         let expected = bytes(hex);
         assert_eq!(NodeCommand::encode_request(&req).unwrap(), expected, "{req:?}");
@@ -39,11 +41,12 @@ fn the_requests_match_the_frozen_four_variant_wire_schema() {
 
 /// CONTRACT (Luke Q7): every reply of op 0x22 in frozen bytes, in its position: `CommandAccepted` 0,
 /// `ConnectionsDeleting` 1, `ConnectionsDeleted` 2 (its receipt absent for a list of ids, present for
-/// `All`), then the refusals.
+/// `All`), then the refusals; Q205 appends `Leaving` 19, `StopMeshLeft` 20, `MeshLeft` 21 and
+/// `BusyHoldingConnections` 22.
 #[test]
-fn replies_match_the_frozen_nineteen_variant_wire_schema() {
+fn replies_match_the_frozen_twenty_three_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
-    assert_eq!(NodeCommand::REPLY_VARIANTS, 19);
+    assert_eq!(NodeCommand::REPLY_VARIANTS, 23);
     use NodeCommandReply::*;
     for (reply, hex) in [
         (CommandAccepted { node_id: node(), incarnation: birth() }, "000c3031323334353637383961620c397763707266677776746879"),
@@ -66,6 +69,10 @@ fn replies_match_the_frozen_nineteen_variant_wire_schema() {
         (Failed { step: "s".into(), reason: "r".into(), code: rdm_core::outcome::Code::Internal }, "0f017301720d"),
         (StorageStepped { provider: "f".into() }, "110166"),
         (RejectedStaleChange { held: change() }, "120c333132333435363738396162"),
+        (Leaving { node_id: node(), incarnation: birth() }, "130c3031323334353637383961620c397763707266677776746879"),
+        (StopMeshLeft { left: vec![rdm_core::status::WhichMesh::Own] }, "140100"),
+        (MeshLeft { node_id: node(), incarnation: birth(), left: vec![rdm_core::status::WhichMesh::Own, rdm_core::status::WhichMesh::Backbone] }, "150c3031323334353637383961620c397763707266677776746879020001"),
+        (BusyHoldingConnections { connections: vec![connection()] }, "16010c333132333435363738396162"),
     ] {
         let expected = bytes(hex);
         variants.insert(NodeCommand::encode_reply(&reply).unwrap()[0]);
@@ -101,7 +108,7 @@ fn node_command_builds_streaming_and_never_forwarded_beside_a_forwarded_status()
 
 #[test]
 fn every_reply_variant_of_node_command_classifies_to_one_code() {
-    replies_match_the_frozen_nineteen_variant_wire_schema();
+    replies_match_the_frozen_twenty_three_variant_wire_schema();
 }
 
 /// CONTRACT (Q47 A): stop/start append requests 1/2, with the exact birth and operation;
