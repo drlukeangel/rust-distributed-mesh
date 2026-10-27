@@ -505,7 +505,7 @@ impl ControlPlane {
                     match self.delete_gate(&n, &observed, &outer).await {
                         Some(crate::build::DeleteAdmitted::Exited) => exited_pin = n.incarnation.clone().map(|incarnation| (node.clone(), crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation })),
                         Some(_) => {}
-                        None => return Err(not_live(&outer, route, node, n.status, "a delete needs a live node, a stopped one, or one whose exit node investigation proved (Q219)")),
+                        None => return Err(not_live(&outer, route, node, n.status, "a delete needs a live node, a stopped one, or one whose exit node investigation proved")),
                     }
                 }
             }
