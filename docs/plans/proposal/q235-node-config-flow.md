@@ -160,7 +160,7 @@ node-admin it joined through…").
 After `Primaries { kind: PrimaryKind, primary: Primary, gone: bool },` in `TopologyReply`, new:
 
 > ```rust
->     OwnRow { node: StoredNode, revision: u64 },
+>     OwnRow { node: NodeView, revision: u64 },
 > ```
 
 and after "End.meshes counts each answered mesh once.", new:
@@ -170,6 +170,10 @@ and after "End.meshes counts each answered mesh once.", new:
 > placement, listeners, status, primaries) with the row's revision; the reader installs it on its own
 > entry over an older revision (Q234). A read served by any other node answers no `OwnRow`.
 > `OwnRow` is the next reply position; REPLY_VARIANTS steps by one.
+
+Sequencing: `node` is rdm-core's `NodeView`, every property of the row (`StoredNode` carries five fields and
+is not the row). #3237 adds `OwnRow` with `node`; the row's `revision` exists only once #3236 adds it (P1),
+so the page text with `revision` lands with #3236, and #3237's lands without it.
 
 query.md (new, its draft with the architects) states the reads: the mesh-primary's Atlas for its own
 mesh, the fabric-primary's for the rest, and the node's own whole row on its own entry.
