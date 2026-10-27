@@ -2863,7 +2863,7 @@ async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
 }
 
 /// CONTRACT (Q207, #3211 red 3: "a FP/MP looks to see if something at that path.name exists currently;
-/// if it does it should delete the caller"): a mesh2 member is held (SIGSTOP) until mesh2's primary
+/// if it does it should delete the caller"): a mesh2 node is held (SIGSTOP) until mesh2's primary
 /// re-creates it as a new birth at its path, then continued: a caller its mesh-primary does not hold
 /// (its Digest, or a declaration, refused). Mesh2's primary decides it from its atlas by its path.name:
 /// another birth is there, so the caller is deleted; not the fabric-primary, it verifies at the root
