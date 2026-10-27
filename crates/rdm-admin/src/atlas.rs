@@ -632,8 +632,8 @@ impl Atlas {
         t.nodes.retain_mut(|n| self.answer(n));
     }
 
-    /// `n`, a birth a node read answers, as this atlas holds it (node-rpc-envelope.md node.get: the
-    /// node reads are answered by the fabric-primary from its atlas): the name its record holds, and the lifecycle the
+    /// `n`, a birth Build acceptance decides from ([`Self::apply`]; a node read answers [`Self::read`],
+    /// the row's status as written), as this atlas holds it: the name its record holds, and the lifecycle the
     /// ops left it in (a completed stop: stopped; a completed start: ready for traffic over every state
     /// its stop and its start pass through, the gossip view's stopped birth and its `Starting` and
     /// `Pending` before the mesh-primary's ReadyForTraffic, node-start.md "Completion", so a projection

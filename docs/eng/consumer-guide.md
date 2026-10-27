@@ -45,9 +45,9 @@ nothing matches.
 
 | Read | Address | Properties a pair may name | Answers, in order | Served by |
 |---|---|---|---|---|
-| `fabrics.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | a node-admin |
-| `meshes.get` | — | `id`, `name`, `status`, `primary_admin` | meshes, by name | a node-admin |
-| `nodes.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `kind`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path.name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | a node-admin |
+| `fabrics.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
+| `meshes.get` | — | `id`, `name`, `status`, `primary_admin` | meshes, by name | the fabric-primary |
+| `nodes.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `kind`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path.name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from its atlas |
 | `connections.get` | `node` (id, incarnation), required | `id`, `destination`, `kind`, `state` | the exact birth's own connections from its connections log | the exact birth |
 
 Written as the pair list the wire carries:
