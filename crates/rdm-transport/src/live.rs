@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-pub use rdm_core::DEPARTED_RETENTION;
+pub use rdm_core::DELETED_RETENTION;
 
 /// What applying one fact did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,7 +133,7 @@ pub struct LiveNodeResolver {
 
 impl Default for LiveNodeResolver {
     fn default() -> Self {
-        Self::new(DEPARTED_RETENTION)
+        Self::new(DELETED_RETENTION)
     }
 }
 

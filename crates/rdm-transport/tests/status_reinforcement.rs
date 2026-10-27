@@ -263,7 +263,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
             "unchanged_sends": unchanged_sends,
             "replaced_change_repeats_after_replacement": rest.len(),
             "forwarded": { "publisher": publisher_of(&fwd), "forwarded_by": peer, "changed_at_rafka_ms": ts(&fwd) },
-            "members_frame_fields": ["mesh", "publisher", "forwarded_by", "topology_version", "published_at_rafka_ms", "snapshot_id", "chunk_index", "chunk_count", "digests", "in_flight", "departed"],
+            "members_frame_fields": ["mesh", "publisher", "forwarded_by", "topology_version", "published_at_rafka_ms", "snapshot_id", "chunk_index", "chunk_count", "digests", "in_flight", "deleted"],
             "held_mesh_status": { "publisher": m.publisher, "status": m.status, "changed_at_rafka_ms": m.changed_at_rafka_ms },
             "held_fabric_status": { "publisher": f.publisher, "status": f.status, "changed_at_rafka_ms": f.changed_at_rafka_ms },
             "publisher_role_spans": roles.iter().map(|s| json!({ "role": s["attributes"]["role"], "trace_id": s["trace_id"], "span_id": s["span_id"] })).collect::<Vec<_>>(),

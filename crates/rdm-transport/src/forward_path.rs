@@ -297,7 +297,7 @@ async fn send_forward(sink: &Sink, owes_full: &AtomicBool, me: String, source: O
             frames
         }
         Forward::Delta(frame) => {
-            if let (Frame::MeshTopologyDelta { base_version, changed, removed, in_flight, deleted: departed, .. }, Some((mesh, publisher, version))) = (frame.data(), &source) {
+            if let (Frame::MeshTopologyDelta { base_version, changed, removed, in_flight, deleted, .. }, Some((mesh, publisher, version))) = (frame.data(), &source) {
                 tracing::info_span!(
                     "rdm.mesh.topology.update.via-forwarded-delta",
                     node = %me,
@@ -308,7 +308,7 @@ async fn send_forward(sink: &Sink, owes_full: &AtomicBool, me: String, source: O
                     changed = changed.len(),
                     removed = removed.len(),
                     in_flight = in_flight.len(),
-                    departed = departed.len(),
+                    deleted = deleted.len(),
                 )
                 .in_scope(|| tracing::info!("a source moved: one delta from the version last published into this mesh"));
             }

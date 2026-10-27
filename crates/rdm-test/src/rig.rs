@@ -506,7 +506,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         chunk_count: 1,
         digests: vec![],
         in_flight: vec![],
-        departed: vec![],
+        deleted: vec![],
     };
     // A silent admin side holds only what its primary publishes into the mesh.
     if matches!(seat, SideSeat::Primary) {

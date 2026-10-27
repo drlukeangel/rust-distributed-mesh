@@ -115,8 +115,8 @@ fn mesh_topology_chunks(full: &Full, p: &PublisherId, version: u64, snapshot_id:
 
 fn chunk_of(f: &Frame) -> Chunk {
     match f.clone().into_data() {
-        Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted: departed, .. } => {
-            Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed }
+        Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => {
+            Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }
         }
         other => panic!("not a MeshTopology chunk: {other:?}"),
     }
@@ -124,8 +124,8 @@ fn chunk_of(f: &Frame) -> Chunk {
 
 fn delta_of(f: &Frame) -> (String, PublisherId, u64, u64, Delta) {
     match f.clone().into_data() {
-        Frame::MeshTopologyDelta { mesh, source_publisher, base_version, topology_version, changed, removed, in_flight, deleted: departed, .. } => {
-            (mesh, source_publisher, base_version, topology_version, Delta { changed, removed, in_flight, departed })
+        Frame::MeshTopologyDelta { mesh, source_publisher, base_version, topology_version, changed, removed, in_flight, deleted, .. } => {
+            (mesh, source_publisher, base_version, topology_version, Delta { changed, removed, in_flight, deleted })
         }
         other => panic!("not a MeshTopologyDelta: {other:?}"),
     }
@@ -214,7 +214,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let deleting = op(&reborn[1], "node.delete:mesh2.rpc.2");
         bumps.push(("an in_flight overlay added", v.observe(&Full::new(reborn.clone(), vec![deleting.clone()], vec![]))));
         bumps.push(("an in_flight overlay cleared with the departure", v.observe(&Full::new(vec![reborn[0].clone(), reborn[2].clone()], vec![], vec![deleting.clone()]))));
-        bumps.push(("a departed identity expired", v.observe(&Full::new(vec![reborn[0].clone(), reborn[2].clone()], vec![], vec![]))));
+        bumps.push(("a deleted identity expired", v.observe(&Full::new(vec![reborn[0].clone(), reborn[2].clone()], vec![], vec![]))));
         bumps.push(("a birth added", v.observe(&Full::new(vec![reborn[0].clone(), reborn[2].clone(), member("mesh2", 9, &NodeId::mint(), &IncarnationId::mint(), 1)], vec![], vec![]))));
         let versions: Vec<u64> = bumps.iter().map(|(_, n)| *n).collect();
         assert_eq!(versions, vec![1, 1, 1, 1, 2, 3, 4, 5, 6, 7, 8], "only material changes bump: {bumps:?}");
@@ -316,7 +316,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         changed_member[3].status = MemberStatus::ConnectionsDeleting;
         let f8 = Full::new(changed_member.clone(), vec![], vec![]);
         let d78 = f7.delta_to(&f8);
-        assert_eq!((d78.changed.len(), d78.removed.len(), d78.in_flight.len(), d78.departed.len()), (1, 0, 0, 0), "one remote change is one changed member");
+        assert_eq!((d78.changed.len(), d78.removed.len(), d78.in_flight.len(), d78.deleted.len()), (1, 0, 0, 0), "one remote change is one changed member");
         assert_eq!(d78.changed[0].node.node_id, changed_member[3].node.node_id);
         assert!(d78.changed.iter().all(|d| d.in_flight.is_none()), "loads are omitted");
         assert!(matches!(rx.take_delta("mesh2", &p, 7, 8, &d78), Moved::Applied { topology_version: 8, .. }));
@@ -331,7 +331,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let p3 = publisher("mesh3.admin.1");
         assert!(matches!(rx.take_delta("mesh3", &p3, 1, 2, &d78), Moved::Desynced { gap: Gap::NoBaseline, .. }));
         // The top-up: the primary's baseline is what it last PUBLISHED, which may lag what it holds.
-        let published_baseline = SourceSnapshot { mesh: "mesh2".into(), publisher: p.clone(), topology_version: 9, digests: f8.digests(), in_flight: vec![], departed: vec![] };
+        let published_baseline = SourceSnapshot { mesh: "mesh2".into(), publisher: p.clone(), topology_version: 9, digests: f8.digests(), in_flight: vec![], deleted: vec![] };
         let r = installed(read_baseline(&mut rx, &published_baseline));
         assert!(r.resumed);
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 9)));
@@ -363,7 +363,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
             }
         }
         assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 1)), "the held version stands while a chunk is missing");
-        let top_up = SourceSnapshot { mesh: "mesh2".into(), publisher: successor.clone(), topology_version: 8, digests: big.digests(8), in_flight: vec![], departed: vec![] };
+        let top_up = SourceSnapshot { mesh: "mesh2".into(), publisher: successor.clone(), topology_version: 8, digests: big.digests(8), in_flight: vec![], deleted: vec![] };
         let r = installed(read_baseline(&mut rx, &top_up));
         assert_eq!(r.topology_version, 8);
         assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 8)), "the top-up completed what the lost chunk left incomplete");

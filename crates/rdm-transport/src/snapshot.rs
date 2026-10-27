@@ -55,7 +55,7 @@ pub(crate) fn without_load(d: &MeshDigest) -> MeshDigest {
 pub struct Full {
     digests: BTreeMap<String, MeshDigest>,
     in_flight: BTreeMap<OpKey, LifecycleOp>,
-    departed: BTreeMap<String, LifecycleOp>,
+    deleted: BTreeMap<String, LifecycleOp>,
     /// The members' node ids by endpoint key, kept in step with `digests` ([`Full::member_at`]).
     by_endpoint: BTreeMap<String, BTreeSet<String>>,
 }
@@ -63,7 +63,7 @@ pub struct Full {
 impl Full {
     /// A full from its members, the overlays still open and the departures retained; each keyed by
     /// its node id.
-    pub fn new(digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>) -> Self {
+    pub fn new(digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, deleted: Vec<LifecycleOp>) -> Self {
         let digests: BTreeMap<String, MeshDigest> = digests.into_iter().map(|d| (d.node.node_id.to_string(), d)).collect();
         let mut by_endpoint: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for (id, d) in &digests {
@@ -72,7 +72,7 @@ impl Full {
         Self {
             digests,
             in_flight: in_flight.into_iter().map(|o| (o.key(), o)).collect(),
-            departed: departed.into_iter().map(|o| (o.node_id.to_string(), o)).collect(),
+            deleted: deleted.into_iter().map(|o| (o.node_id.to_string(), o)).collect(),
             by_endpoint,
         }
     }
@@ -115,7 +115,7 @@ impl Full {
 
     /// The retained departures.
     pub fn deleted(&self) -> Vec<LifecycleOp> {
-        self.departed.values().cloned().collect()
+        self.deleted.values().cloned().collect()
     }
 
     /// The number of members.
@@ -130,17 +130,17 @@ impl Full {
         self.digests.len() == other.digests.len()
             && self.digests.iter().all(|(id, d)| other.digests.get(id).is_some_and(|o| topology_view(d) == topology_view(o)))
             && self.in_flight == other.in_flight
-            && self.departed == other.departed
+            && self.deleted == other.deleted
     }
 
     /// This full without any member's load.
     pub fn without_loads(&self) -> Full {
-        Full { digests: self.digests.iter().map(|(k, d)| (k.clone(), without_load(d))).collect(), in_flight: self.in_flight.clone(), departed: self.departed.clone(), by_endpoint: self.by_endpoint.clone() }
+        Full { digests: self.digests.iter().map(|(k, d)| (k.clone(), without_load(d))).collect(), in_flight: self.in_flight.clone(), deleted: self.deleted.clone(), by_endpoint: self.by_endpoint.clone() }
     }
 
     /// The complete difference from this full to `new`, loads omitted (gossip.md §3.3: one delta
     /// per move from a held version to a newer one, never a replay of the versions between).
-    /// `in_flight` and `departed` carry the overlays and departures `new` holds that this one does
+    /// `in_flight` and `deleted` carry the overlays and departures `new` holds that this one does
     /// not. A cleared stop overlay travels as its birth's own `changed` entry: a source's primary
     /// never lists a stopped birth, and lists it again only after its `node.joined` cleared the
     /// stop ([`Full::apply`]). An expired departure is a local fact of the receiver's age.
@@ -149,12 +149,12 @@ impl Full {
         Delta {
             removed: self.digests.keys().filter(|id| !new.digests.contains_key(*id)).cloned().collect(),
             in_flight: new.in_flight.iter().filter(|(k, _)| !self.in_flight.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
-            departed: new.departed.iter().filter(|(k, _)| !self.departed.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
+            deleted: new.deleted.iter().filter(|(k, _)| !self.deleted.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
             changed,
         }
     }
 
-    /// This full moved by `delta` (gossip.md §3.1, `MeshTopologyDelta` carries "overlay and departed
+    /// This full moved by `delta` (gossip.md §3.1, `MeshTopologyDelta` carries "overlay and deleted
     /// changes"). A `changed` entry of a birth clears that exact birth's stop overlay
     /// (`NodeStopped`, `node.stop:`): the source lists the birth again once its primary's
     /// `node.joined` ended the stop. A departure ends every overlay of its exact birth, its stop
@@ -171,9 +171,9 @@ impl Full {
         for o in &delta.in_flight {
             self.in_flight.insert(o.key(), o.clone());
         }
-        for o in &delta.departed {
+        for o in &delta.deleted {
             self.in_flight.retain(|_, x| !(x.node_id == o.node_id && x.incarnation == o.incarnation));
-            self.departed.insert(o.node_id.to_string(), o.clone());
+            self.deleted.insert(o.node_id.to_string(), o.clone());
         }
     }
 }
@@ -188,13 +188,13 @@ pub struct Delta {
     /// The overlays opened or advanced.
     pub in_flight: Vec<LifecycleOp>,
     /// The departures recorded.
-    pub departed: Vec<LifecycleOp>,
+    pub deleted: Vec<LifecycleOp>,
 }
 
 impl Delta {
     /// Whether the delta moves nothing.
     pub fn is_empty(&self) -> bool {
-        self.changed.is_empty() && self.removed.is_empty() && self.in_flight.is_empty() && self.departed.is_empty()
+        self.changed.is_empty() && self.removed.is_empty() && self.in_flight.is_empty() && self.deleted.is_empty()
     }
 }
 
@@ -258,7 +258,7 @@ fn split(run: Vec<Item>) -> (Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>
     (d, i, x)
 }
 
-/// `full` as the chunks of ONE snapshot: `shape(digests, in_flight, departed, chunk_index,
+/// `full` as the chunks of ONE snapshot: `shape(digests, in_flight, deleted, chunk_index,
 /// chunk_count)` builds each frame. Every list rides inside the sizing, each chunk encodes within
 /// one gossip message (sized with the widest index and count, so a filled-in chunk never
 /// overflows), and an empty full is one empty chunk: an empty Mesh is a complete snapshot.
@@ -312,13 +312,13 @@ pub struct SourceSnapshot {
     /// The overlays still open.
     pub in_flight: Vec<LifecycleOp>,
     /// The retained departures.
-    pub departed: Vec<LifecycleOp>,
+    pub deleted: Vec<LifecycleOp>,
 }
 
 impl SourceSnapshot {
     /// The snapshot as a [`Full`].
     pub fn full(&self) -> Full {
-        Full::new(self.digests.clone(), self.in_flight.clone(), self.departed.clone())
+        Full::new(self.digests.clone(), self.in_flight.clone(), self.deleted.clone())
     }
 }
 
@@ -344,7 +344,7 @@ pub struct Chunk {
     /// The overlays this chunk carries.
     pub in_flight: Vec<LifecycleOp>,
     /// The departures this chunk carries.
-    pub departed: Vec<LifecycleOp>,
+    pub deleted: Vec<LifecycleOp>,
 }
 
 /// A complete snapshot, installed.
@@ -524,12 +524,12 @@ struct Held {
 }
 
 fn same_parts(parts: &(Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>), c: &Chunk) -> bool {
-    Full::new(parts.0.clone(), parts.1.clone(), parts.2.clone()).same_topology(&Full::new(c.digests.clone(), c.in_flight.clone(), c.departed.clone()))
+    Full::new(parts.0.clone(), parts.1.clone(), parts.2.clone()).same_topology(&Full::new(c.digests.clone(), c.in_flight.clone(), c.deleted.clone()))
 }
 
 fn same_delta(a: &Delta, b: &Delta) -> bool {
     a.removed.iter().collect::<std::collections::BTreeSet<_>>() == b.removed.iter().collect()
-        && Full::new(a.changed.clone(), a.in_flight.clone(), a.departed.clone()).same_topology(&Full::new(b.changed.clone(), b.in_flight.clone(), b.departed.clone()))
+        && Full::new(a.changed.clone(), a.in_flight.clone(), a.deleted.clone()).same_topology(&Full::new(b.changed.clone(), b.in_flight.clone(), b.deleted.clone()))
 }
 
 /// Borrow the complete image under ReceiveOrder's shared installation lock; inspecting a chunk
@@ -627,12 +627,12 @@ impl SnapshotReceiver {
             }
         }
         let p = self.pending.entry(key.clone()).or_insert_with(|| Pending { owner: owner.clone(), version: c.topology_version, snapshot_id: c.snapshot_id, count: c.chunk_count, chunks: BTreeMap::new() });
-        p.chunks.insert(c.chunk_index, (c.digests.clone(), c.in_flight.clone(), c.departed.clone()));
+        p.chunks.insert(c.chunk_index, (c.digests.clone(), c.in_flight.clone(), c.deleted.clone()));
         if (p.chunks.len() as u32) < p.count { return Taken::Waiting { held: p.chunks.len() as u32, of: p.count }; }
         let publication = self.pending.remove(&key).expect("just assembled");
-        let mut digests = Vec::new(); let mut in_flight = Vec::new(); let mut departed = Vec::new();
-        for (d, i, x) in publication.chunks.values() { digests.extend(d.clone()); in_flight.extend(i.clone()); departed.extend(x.clone()); }
-        let full = Full::new(digests, in_flight, departed);
+        let mut digests = Vec::new(); let mut in_flight = Vec::new(); let mut deleted = Vec::new();
+        for (d, i, x) in publication.chunks.values() { digests.extend(d.clone()); in_flight.extend(i.clone()); deleted.extend(x.clone()); }
+        let full = Full::new(digests, in_flight, deleted);
         if let Some(h) = self.held.get(&c.mesh).filter(|h| h.publisher == c.publisher && h.version == c.topology_version) {
             if !h.full.same_topology(&full) { return conflict(); }
         }
@@ -769,7 +769,7 @@ impl SnapshotReceiver {
             .held
             .iter()
             .filter(|(_, h)| h.desynced.is_none())
-            .map(|(m, h)| SourceSnapshot { mesh: m.clone(), publisher: h.publisher.clone(), topology_version: h.version, digests: h.full.digests(), in_flight: h.full.in_flight(), departed: h.full.deleted() })
+            .map(|(m, h)| SourceSnapshot { mesh: m.clone(), publisher: h.publisher.clone(), topology_version: h.version, digests: h.full.digests(), in_flight: h.full.in_flight(), deleted: h.full.deleted() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
@@ -910,7 +910,7 @@ impl Forwarder {
             changed: delta.changed,
             removed: delta.removed,
             in_flight: delta.in_flight,
-            deleted: delta.departed,
+            deleted: delta.deleted,
         }.authored(self.author.as_ref().expect("forwarder requires its supplied author birth"), 0, now_ms);
         self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version, full: stripped.clone() });
         // A delta is an optimization: one too large for a message is the full instead.
@@ -955,7 +955,7 @@ impl Forwarder {
         let mut v: Vec<SourceSnapshot> = self
             .published
             .iter()
-            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), publisher: p.publisher.clone(), topology_version: p.version, digests: p.full.digests(), in_flight: p.full.in_flight(), departed: p.full.deleted() })
+            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), publisher: p.publisher.clone(), topology_version: p.version, digests: p.full.digests(), in_flight: p.full.in_flight(), deleted: p.full.deleted() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
@@ -1017,7 +1017,7 @@ mod tests {
     }
 
     fn chunk(publisher: &PublisherId, topology_version: u64) -> Chunk {
-        Chunk { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], departed: vec![] }
+        Chunk { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] }
     }
 
     /// CONTRACT: the receiver enforces its installed floor, including for direct callers. An

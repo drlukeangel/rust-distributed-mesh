@@ -41,7 +41,7 @@ pub use client::{AcceptTrigger, Budget, CallEvidence, CallOptions, CarriedIdenti
 pub use delivery::{Acceptance, Delivery, DeliverySeams, DeliveryStats, Pacing};
 pub use forward::{CarriedReplies, CarrierEdges};
 pub use pre_node_ready::{CancelToken, PreNodeReadyGate, Retirement};
-pub use live::{Applied, LiveNodeResolver, Refusal, DEPARTED_RETENTION};
+pub use live::{Applied, LiveNodeResolver, Refusal, DELETED_RETENTION};
 pub use pool::{ClosedConnection, Failpoint, PoolKey};
 pub use resolve::{NodeResolver, NodeTarget, ResolvedNode, StaticResolver};
 pub use route::{ConnectedCall, RouteChoice, RouteLeg};

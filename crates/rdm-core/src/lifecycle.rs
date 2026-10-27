@@ -73,7 +73,7 @@ impl LifecycleOp {
 /// age, never another machine's clock). It covers the topology repair
 /// horizon: a process cut off for less than this still learns the departure
 /// once it rejoins.
-pub const DEPARTED_RETENTION: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+pub const DELETED_RETENTION: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 #[cfg(test)]
 mod tests {

@@ -3506,7 +3506,7 @@ mod tests {
     /// under another node_id (the exited birth's row released it, the new node's claim holds it; Q197:
     /// the records, never the view, say which birth holds a path), the exited birth's declared-state
     /// rows are tombstoned (via-new-node), whether or not the view still holds the exited birth's
-    /// departure (that is held only DEPARTED_RETENTION; an admin that rehydrates later holds none).
+    /// departure (that is held only DELETED_RETENTION; an admin that rehydrates later holds none).
     /// Must NOT happen: the exited birth's rows folded back for ever because its node_id is gone.
     #[tokio::test]
     async fn a_birth_whose_path_the_view_holds_under_a_new_node_leaves_no_declared_state_row_behind() {

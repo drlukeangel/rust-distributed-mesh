@@ -79,8 +79,8 @@ fn read_chunks(s: &SourceSnapshot, snapshot_id: u64) -> Vec<Chunk> {
     }.authored(&crate::gossip_wire::author(), 0, 1))
     .into_iter()
     .map(|f| match f.into_data() {
-        Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted: departed, .. } => {
-            Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed }
+        Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => {
+            Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }
         }
         other => panic!("not a MeshTopology chunk: {other:?}"),
     })

@@ -93,7 +93,7 @@ fn publisher(node: &str) -> PublisherId {
 /// `s` held by `m` as a complete snapshot its primary put into the mesh.
 fn hold(m: &TopologyView, s: &SourceSnapshot) {
     for r in snapshot_replies(s, 1) {
-        let TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed } = r else { unreachable!() };
+        let TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed: deleted } = r else { unreachable!() };
         let t = m.take_read_chunk(Chunk {
             mesh,
             publisher,
@@ -104,14 +104,14 @@ fn hold(m: &TopologyView, s: &SourceSnapshot) {
             chunk_count,
             digests: digests.into_iter().map(MeshDigest::from).collect(),
             in_flight,
-            departed,
+            deleted,
         }, "peer");
         assert!(!matches!(t, Taken::Refused(_)), "{t:?}");
     }
 }
 
 fn snap(mesh: &str, p: &PublisherId, version: u64, digests: Vec<MeshDigest>) -> SourceSnapshot {
-    SourceSnapshot { mesh: mesh.into(), publisher: p.clone(), topology_version: version, digests, in_flight: vec![], departed: vec![] }
+    SourceSnapshot { mesh: mesh.into(), publisher: p.clone(), topology_version: version, digests, in_flight: vec![], deleted: vec![] }
 }
 
 fn target_of(from: &Node, to: &Node) -> NodeTarget {

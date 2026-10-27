@@ -368,7 +368,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
             let gap_at = named(&spans, "rdm.mesh.topology.update.via-gap").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == ordinary && sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).min();
             let topped_up: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed")
                 .into_iter()
-                .filter(|sp| s(&sp["attributes"]["node"]) == ordinary && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["channel"] == "topology-read" && attr_u(sp, "departed") >= members.len() as u64 && gap_at.is_some_and(|g| start_ns(sp) >= g))
+                .filter(|sp| s(&sp["attributes"]["node"]) == ordinary && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["channel"] == "topology-read" && attr_u(sp, "deleted") >= members.len() as u64 && gap_at.is_some_and(|g| start_ns(sp) >= g))
                 .collect();
             assert!(
                 held_here || !topped_up.is_empty(),

@@ -61,7 +61,7 @@ pub use dto::{Accepted, BuildState, BuildView, ClientError, FabricDesired, MeshD
 #[doc(hidden)]
 pub use ids::fixture_crockford60;
 pub use ids::{BuildId, BuildIdLog, ChangeId, ConnectionId, DeploymentId, EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, CROCKFORD60_LEN, ID_FORMAT};
-pub use lifecycle::{LifecycleOp, StateHook, DEPARTED_RETENTION};
+pub use lifecycle::{LifecycleOp, StateHook, DELETED_RETENTION};
 pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use outcome::{Committed, IndeterminateReason, MalformedKind, NotSentReason, ReplyKind, RequestFinished, RpcOutcome};
 pub use outcome::PreCommit;

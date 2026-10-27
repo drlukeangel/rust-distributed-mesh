@@ -120,8 +120,7 @@ fn answer(c: &Control, what: &str, r: Result<Accepted, CallEnd>, node: Option<&s
     match r {
         Ok(Accepted { build_id, attempt }) => {
             c.events.submitted(what, &build_id, node, mesh);
-            tracing::info_span!("rdm.ui.build.create.via-node-admin", what, build_id = %build_id, "otel.kind" = "internal")
-                .in_scope(|| tracing::info!(%build_id, "{what} submitted to node-admin"));
+            tracing::info!(%build_id, "{what} submitted to node-admin");
             (StatusCode::ACCEPTED, Json(json!({ "build_id": build_id, "attempt": attempt }))).into_response()
         }
         Err(CallEnd::Rejected { reason, detail }) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": reason, "detail": detail }))).into_response(),

@@ -452,7 +452,7 @@ async fn read_with(
                     chunk_count,
                     digests: digests.into_iter().map(MeshDigest::from).collect(),
                     in_flight,
-                    departed,
+                    deleted: departed,
                 };
                 match take(chunk) {
                     Taken::Waiting { .. } => {}

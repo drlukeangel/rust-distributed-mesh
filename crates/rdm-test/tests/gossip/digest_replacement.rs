@@ -48,7 +48,7 @@ fn story(story: Story) {
             let read = rdm_transport::snapshot::Chunk {
                 mesh: "mesh1".into(), publisher: rdm_transport::snapshot::PublisherId { node: "mesh1.admin.2".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
                 forwarded_by: None, topology_version: 5, snapshot_id: 1, chunk_index: 0, chunk_count: 1,
-                digests: vec![digest.clone()], in_flight: vec![], departed: vec![],
+                digests: vec![digest.clone()], in_flight: vec![], deleted: vec![],
             };
             assert!(matches!(receiver.take_read_chunk(read, "mesh1"), rdm_transport::snapshot::Taken::Installed(_)), "the real topology-read path installs the held digest");
         } else {

@@ -30,7 +30,7 @@ literal at its own span macro.
 
 | span name | file:line | rule | reason kept |
 |---|---|---|---|
-| `rdm.ui.build.create.via-node-admin` | `demo/admin-ui/src/control.rs:123` | component not in §8.1 (`ui`) | The demo admin UI is the emitter and is none of §8.1's five components; naming it `node_admin` would name a component that did not emit it. A component for the demo UI is a §8.1 amendment, Luke's. |
+| ~~`rdm.ui.build.create.via-node-admin`~~ | `demo/admin-ui/src/control.rs:123` | closed by Q215 (e9806c1a2): the span is removed, its log line kept | The demo admin UI is the emitter and is none of §8.1's five components; naming it `node_admin` would name a component that did not emit it. A component for the demo UI is a §8.1 amendment, Luke's. |
 
 ### What the first census missed
 

@@ -180,7 +180,7 @@ fn read_chunks(topology: &[rdm_transport::snapshot::SourceSnapshot], mesh: &str)
     }.authored(&crate::gossip_wire::author(), 0, 1))
     .into_iter()
     .map(|f| match f.into_data() {
-        Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted: departed, .. } => Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed },
+        Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted },
         _ => unreachable!("chunks_of shapes MeshTopology"),
     })
     .collect()
