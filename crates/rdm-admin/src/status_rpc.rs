@@ -1010,13 +1010,19 @@ impl StatusAuthority {
             // A caller's property command is admitted at any time (Q166, node-config-update.md); a
             // mesh-primary that replied `blocked` to a storage change issues it, its row write and its
             // command to the node, only once it is unblocked (storage.md §2 step 1).
+            // A caller's goes up to the fabric-primary and down to the node's writer (node-name-update.md
+            // step 1), the fabric-primary's atlas written on its way back.
             StatusRequest::UpdateName { .. } => {
                 self.commands.admitted().await;
-                return self.update_name(req).await;
+                let routed = crate::node_name_update::routed(&me_name, &self.node_id, &self.topology, self.configs.get().map(|c| &**c), self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await;
+                return match routed {
+                    crate::node_name_update::Routed::Answered(reply) => reply,
+                    crate::node_name_update::Routed::Here => self.update_name(req).await,
+                };
             }
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
                 self.commands.admitted().await;
-                return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of(sender.as_ref()), req).await;
+                return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await;
             }
             StatusRequest::UpdateNodeConfig { .. } => {
                 self.commands.admitted().await;

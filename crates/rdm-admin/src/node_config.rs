@@ -81,6 +81,17 @@ impl SentBy {
             _ => Self::Other,
         }
     }
+
+    /// The sender of a command a caller sends to the node's mesh-primary (`node.name.update`,
+    /// node-name-update.md step 1; `node.tags.*`): every endpoint that is not a node-admin the view
+    /// holds, a caller outside the fabric (an endpoint the view holds no birth for) included, is the
+    /// caller's; a node-admin's is the fabric-primary's command sent down, or a carrier of it.
+    pub fn of_writer_call(sender: Option<&crate::model::Node>) -> Self {
+        match sender {
+            Some(n) if n.kind == rdm_core::NodeKind::NodeAdmin => Self::Other,
+            _ => Self::Caller,
+        }
+    }
 }
 
 /// The primary an owed property command goes to ([`NodeConfigs::owed`]).
@@ -244,7 +255,7 @@ impl NodeConfigs {
     /// the fabric-primary, the sends and the answer.
     pub async fn forward_up(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, req: &StatusRequest) -> Up {
         let (node_id, subject) = match req {
-            StatusRequest::UpdateNodeConfig { node_id, .. } | StatusRequest::CreateTags { node_id, .. } | StatusRequest::DeleteTags { node_id, .. } => (node_id, first.own(node_id).map(|n| n.name.to_string()).unwrap_or_default()),
+            StatusRequest::UpdateNodeConfig { node_id, .. } | StatusRequest::CreateTags { node_id, .. } | StatusRequest::DeleteTags { node_id, .. } | StatusRequest::UpdateName { node_id, .. } => (node_id, first.own(node_id).map(|n| n.name.to_string()).unwrap_or_default()),
             other => unreachable!("forward_up carries a node's property command only, never {}", other.op()),
         };
         let span = tracing::info_span!(

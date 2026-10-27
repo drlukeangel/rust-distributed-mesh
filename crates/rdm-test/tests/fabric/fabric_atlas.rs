@@ -304,3 +304,49 @@ async fn a_recipe_another_meshs_primary_executed_is_read_back_at_the_fabric_prim
     let taken: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-receipt").into_iter().filter(|sp| attr(sp, "operation") == format!("node.update:{node}") || attr(sp, "operation") == format!("node.stop:{renamed}")).collect();
     assert_eq!(taken.len(), 2, "the rename's and the stop's receipts are taken into the atlas as they stream up: {taken:#?}");
 }
+
+/// CONTRACT (node-name-update.md step 1: "an admin that is not the fabric-primary carries it to the
+/// fabric-primary ... The fabric-primary sends the command to the node's mesh-primary ... and, on its
+/// answer that the row moved, writes the new name to the node in its `FabricAtlas`"; Q197, Q203, Q204:
+/// node reads answer from the atlas and each op writes it): a live rpc node of mesh2, its connections
+/// deleted and off its mesh, is renamed `.old` by a caller's `node.name.update` sent directly to mesh2's
+/// primary, answered `NameUpdated`; the fabric-primary's node read, at once and with no wait, lists the
+/// birth at the new name and none at the old. mesh2's primary carried the call up
+/// (`rdm.node_admin.node.update.via-forward`, op node.name.update), the fabric-primary sent it down and
+/// renamed the node in its atlas (`rdm.node_admin.node.update.via-fabric-primary`, atlas=renamed), and
+/// mesh2's primary wrote the row once (`rdm.node_admin.node.name.update.via-writer`). Must NOT happen:
+/// the fabric-primary answering the old name after the rename was answered, until a fill or gossip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_primary_at_once() {
+    let test = "a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_primary_at_once";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    let targets = two_meshes(&mut estate).await;
+    let (node, primary) = (path_of(&targets[0]), &targets[3]);
+    let renamed = node.renamed();
+    let nodes = estate.nodes_obj().await;
+    // The node's connections deleted and its mesh left: the precondition of a live rename.
+    Estate::workflow(&format!("node.connections.delete and node.mesh.leave of {node}"), nodes.recipe(vec![rdm_core::build::RecipeStep::DeleteConnections { node: node.clone() }, rdm_core::build::RecipeStep::LeaveMesh { node: node.clone() }]).await).await;
+    let id = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
+    let node_id: rdm_core::NodeId = serde_json::from_value(targets[0]["node_id"].clone()).expect("a node id");
+    let birth = rdm_client::ExactBirth {
+        target: rdm_transport::NodeTarget::ExactNode(node_id.clone()),
+        node_id,
+        incarnation: serde_json::from_value(targets[0]["incarnation_id"].clone()).expect("an incarnation id"),
+    };
+    let mesh_primary: rdm_core::NodeId = serde_json::from_value(primary["node_id"].clone()).expect("a node id");
+    let reply = nodes.name_update(&birth, &mesh_primary, &rdm_transport::RouteChoice::Direct, &renamed.name()).await.unwrap_or_else(|e| panic!("node.name.update of {node} at mesh2's primary: {e}"));
+    assert!(matches!(reply, rdm_core::status::StatusReply::NameUpdated { .. }), "node.name.update of {node} at mesh2's primary: {reply:?}");
+    // No wait: the fabric-primary's read the moment the caller is answered.
+    let read = estate.node_values().await;
+    let at: Vec<String> = read.iter().filter(|n| n["node_id"] == targets[0]["node_id"]).map(|n| id(n, "name")).collect();
+    estate.stop().await;
+    assert_eq!(at, vec![renamed.to_string()], "the fabric-primary's node read lists the birth of {node} at {renamed} once the rename was answered: {read:#?}");
+    let spans = estate.spans();
+    let mp = id(primary, "name");
+    let forwarded: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-forward").into_iter().filter(|sp| attr(sp, "node") == mp && attr(sp, "op") == "node.name.update").collect();
+    assert_eq!(forwarded.iter().map(|sp| attr(sp, "outcome")).collect::<Vec<_>>(), vec!["name-updated".to_string()], "mesh2's primary carried the caller's rename up to the fabric-primary once: {forwarded:#?}");
+    let down: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().filter(|sp| attr(sp, "op") == "node.name.update").collect();
+    assert_eq!(down.iter().map(|sp| (attr(sp, "outcome"), attr(sp, "atlas"))).collect::<Vec<_>>(), vec![("name-updated".to_string(), "renamed".to_string())], "the fabric-primary sent it down and renamed the node in its atlas: {down:#?}");
+    let written: Vec<&Value> = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().filter(|sp| attr(sp, "node_id") == id(&targets[0], "node_id")).collect();
+    assert_eq!(written.iter().map(|sp| (attr(sp, "node"), attr(sp, "outcome"))).collect::<Vec<_>>(), vec![(mp.clone(), "name-updated".to_string())], "mesh2's primary wrote the row once: {written:#?}");
+}

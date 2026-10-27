@@ -40,6 +40,73 @@ pub struct NameDoors<'a> {
     pub rename: &'a crate::status_rpc::Rename,
 }
 
+/// Where a caller's `node.name.update` is decided ([`routed`]).
+pub enum Routed {
+    /// Answered on its route: the fabric-primary's answer carried back up, or the node's mesh-primary's
+    /// answer to the fabric-primary that sent it down.
+    Answered(StatusReply),
+    /// Served here, by the node's row writer ([`update`]).
+    Here,
+}
+
+/// The route of a `node.name.update` at the admin `me` (born `me_id`) sent by `sent_by`, over the view
+/// `view` holds (node-name-update.md step 1; Q197, Q203, Q204: each op writes the fabric-primary's
+/// `FabricAtlas`; commands go down): a caller's at an admin that is not the fabric-primary is carried up
+/// to the fabric-primary its view names, owed until it answers, and that answer is handed back
+/// ([`crate::node_config::NodeConfigs::forward_up`]); at the fabric-primary, a node whose row another
+/// admin writes (its mesh-primary) is sent the command down, owed until that mesh-primary answers
+/// ([`crate::node_config::NodeConfigs::send_down`]), and an answer naming its row moved (`NameUpdated`,
+/// or `NameNotApplied`: the row moved, its apply unresolved) moves the node's record in `atlas` to the
+/// new name, so the fabric-primary's node reads answer it at once. Every other command, and a node
+/// whose row this admin writes, is served here ([`Routed::Here`]): the row writer's own write feeds
+/// its atlas (`crate::node_rows::WrittenRows`). A node.update step of a Build is served at its
+/// executor and never routed: its receipt is the atlas's.
+#[allow(clippy::too_many_arguments)]
+pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, configs: Option<&crate::node_config::NodeConfigs>, atlas: Option<&crate::fabric_atlas::FabricAtlas>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> Routed {
+    let StatusRequest::UpdateName { node_id, name, .. } = req else { unreachable!("routed is called for UpdateName only") };
+    let Some(door) = configs else { return Routed::Here };
+    let mut first = view.read().await.clone();
+    if sent_by == crate::node_config::SentBy::Caller && !first.is_fabric_primary(me_id) {
+        match door.forward_up(me, me_id, &first, view, req).await {
+            crate::node_config::Up::Answered(reply) => return Routed::Answered(reply),
+            crate::node_config::Up::InProcess(now) => first = now,
+        }
+    }
+    let Some(subject) = first.own(node_id).cloned() else { return Routed::Here };
+    if !first.is_fabric_primary(me_id) || crate::node_rows::writes_for(&first, me_id, &subject.mesh) {
+        return Routed::Here;
+    }
+    let span = tracing::info_span!(
+        "rdm.node_admin.node.update.via-fabric-primary",
+        node = %me, subject = %subject.name, node_id = %node_id, op = req.op(), name = %name,
+        mesh_primary = tracing::field::Empty, atlas = tracing::field::Empty, route = tracing::field::Empty, sends = tracing::field::Empty,
+        outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
+    );
+    let down = tracing::Instrument::instrument(door.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
+    let crate::node_config::Down::Answered(reply) = down else {
+        // This admin holds the node's mesh-primary now, or no longer holds the birth: served here.
+        span.record("outcome", "in-process");
+        span.in_scope(|| tracing::info!("node.name.update at the fabric-primary is served here"));
+        return Routed::Here;
+    };
+    if matches!(reply, StatusReply::NameUpdated { .. } | StatusReply::NameNotApplied { .. }) {
+        // The op's result is the atlas's (Q204): the record at the new name, carrying the name it came from.
+        let written = atlas.is_some_and(|a| {
+            a.update_record(node_id, |r| {
+                if let Ok(to) = r.name.with_name(name) {
+                    if r.name != to {
+                        r.renamed_from = Some(r.name.clone());
+                        r.name = to;
+                    }
+                }
+            })
+        });
+        span.record("atlas", if written { "renamed" } else { "no-record" });
+    }
+    span.record("outcome", reply.name());
+    span.in_scope(|| tracing::info!("node.name.update at the fabric-primary decided"));
+    Routed::Answered(reply)
+}
 
 /// Serve an `UpdateName` at the admin `me` (born `me_id`): one span holds the whole command, its
 /// outcome the reply's name.
