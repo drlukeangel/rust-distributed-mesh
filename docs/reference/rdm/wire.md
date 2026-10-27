@@ -1756,8 +1756,8 @@ What a caller submits. The fabric-primary compiles it once against the accepted 
 | 10.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node's `path.name`. |
 | 10.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The exited instance's node.id. |
 | 10.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The exited instance's incarnation. |
-| 11 | **`Recipe`** |  |  | A recipe: one Build whose steps are node primitives, run in order (build.md §1: "Rafka's |
-| 11.0 | `steps` | `Vec<RecipeStep>` → [`RecipeStep`](#t-rdm_core-build-RecipeStep) |  | The steps, in the order they run. |
+| 11 | **`Steps`** |  |  | Steps: one Build whose steps are node primitives, run in order (build.md §1: "Rafka's |
+| 11.0 | `steps` | `Vec<Step>` → [`Step`](#t-rdm_core-build-Step) |  | The steps, in the order they run. |
 | 12 | **`DeleteFabric`** |  |  | Delete the fabric (`fabric.delete`, lifecycles/fabric-delete.md): run `mesh.delete` on each |
 | 13 | **`Terminate`** |  |  | A deleted birth heard again (node-investigation.md: "A node that comes back after it was |
 | 13.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` the birth held. |
@@ -2819,33 +2819,6 @@ The author of a versioned topology: its descriptive name and exact node/incarnat
 | 1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the birth that holds the seat. |
 | 2 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The author's logical node, supplied at publication, never resolved from its name. |
 
-<a id="t-rdm_core-build-RecipeStep"></a>
-
-### `RecipeStep`
-
-`crates/rdm-core/src/build.rs` · enum · 7 variants · rdm-core
-
-One step of a `BuildChange::Recipe`: one node primitive acting on the node a `path.name` names
-
-| # | variant · field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | **`Create`** |  |  | node.create at `node`: a new node.id, incarnation and data dir at that exact `path.name` |
-| 0.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` the node is created at. |
-| 0.1 | `executable` | `Option<crate::binding::Binding>` → [`Binding`](#t-rdm_core-binding-Binding) | `default` | The executable binding the Build fixes for the node (node-rpc-envelope.md "Build recipe"; |
-| 1 | **`Stop`** |  |  | node.stop of the live node at `node`: it is stopped, its process and data kept. |
-| 1.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
-| 2 | **`Update`** |  |  | node.update of the node at `node`: its `path.name` becomes `name` (lifecycles/node-name-update.md, under the |
-| 2.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
-| 2.1 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` it takes. |
-| 3 | **`Start`** |  |  | node.start of the stopped node at `node`: the same process rejoins under the name its row holds. |
-| 3.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
-| 4 | **`Delete`** |  |  | node.delete of the node at `node`: its identity and name are released, its storage kept. |
-| 4.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
-| 5 | **`DeleteConnections`** |  |  | node.connections.delete `{ scope: All }` of the live node at `node` |
-| 5.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
-| 6 | **`LeaveMesh`** |  |  | node.mesh.leave of the live node at `node`, once its connections are deleted |
-| 6.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
-
 <a id="t-rdm_core-views-Renewals"></a>
 
 ### `Renewals`
@@ -2947,6 +2920,33 @@ The source version a caller already holds for a mesh: the publisher is the epoch
 |---|---|---|---|---|
 | 0 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | The source mesh's primary birth that published the version, the epoch of `topology_version`. |
 | 1 | `topology_version` | `u64` |  | The version held. |
+
+<a id="t-rdm_core-build-Step"></a>
+
+### `Step`
+
+`crates/rdm-core/src/build.rs` · enum · 7 variants · rdm-core
+
+One step of a `BuildChange::Steps`: one node primitive acting on the node a `path.name` names
+
+| # | variant · field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | **`Create`** |  |  | node.create at `node`: a new node.id, incarnation and data dir at that exact `path.name` |
+| 0.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` the node is created at. |
+| 0.1 | `executable` | `Option<crate::binding::Binding>` → [`Binding`](#t-rdm_core-binding-Binding) | `default` | The executable binding the Build fixes for the node (node-rpc-envelope.md "Build schema"; |
+| 1 | **`Stop`** |  |  | node.stop of the live node at `node`: it is stopped, its process and data kept. |
+| 1.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+| 2 | **`Update`** |  |  | node.update of the node at `node`: its `path.name` becomes `name` (lifecycles/node-name-update.md, under the |
+| 2.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+| 2.1 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` it takes. |
+| 3 | **`Start`** |  |  | node.start of the stopped node at `node`: the same process rejoins under the name its row holds. |
+| 3.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+| 4 | **`Delete`** |  |  | node.delete of the node at `node`: its identity and name are released, its storage kept. |
+| 4.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+| 5 | **`DeleteConnections`** |  |  | node.connections.delete `{ scope: All }` of the live node at `node` |
+| 5.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+| 6 | **`LeaveMesh`** |  |  | node.mesh.leave of the live node at `node`, once its connections are deleted |
+| 6.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 
 <a id="t-rdm_core-build-StepReceipt"></a>
 
