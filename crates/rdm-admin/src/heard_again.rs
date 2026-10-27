@@ -150,6 +150,11 @@ async fn command_mesh_join(
             commanded().lock().unwrap().remove(&key);
             return "command-open: a start or stop of this authority is under way".to_string();
         }
+        // Commands go down (node-mesh-join.md, Commander): read in the view as it stands at the send, not
+        // the one the look began in, where this admin may since have stopped being the mesh's primary.
+        if let Err(why) = commands_join(&*authority.topology.read().await, &authority.node_id, node) {
+            return format!("not-commander: {why}");
+        }
         // The join the command makes the birth report is verified against the deployment this admin
         // holds of it (node-mesh-join.md step 4): the live birth is registered as a start after a
         // stop registers a stopped one, from its runtime handle and its admitted digest.
@@ -185,7 +190,7 @@ async fn command_mesh_join(
     let outcome = tracing::Instrument::instrument(outcome, span.clone()).await;
     // A command the birth refused by name (it is not ready for one yet) is looked at again on the next
     // pass, not held for a floor: the refusal is the birth's knowledge at that instant, not a new silence.
-    if outcome.starts_with("no-authority") || outcome.starts_with("join-not-registered") || outcome.starts_with("rejected-not-primary") || outcome.starts_with("not-ready") {
+    if outcome.starts_with("no-authority") || outcome.starts_with("join-not-registered") || outcome.starts_with("rejected-not-primary") || outcome.starts_with("not-ready") || outcome.starts_with("not-commander") {
         commanded().lock().unwrap().remove(&key);
     }
     span.record("outcome", outcome.as_str());
@@ -196,8 +201,11 @@ async fn command_mesh_join(
 /// Whether the admin born as `me` commands `node.mesh.join` to `subject` in its view now
 /// (node-mesh-join.md, Commander: "Standalone: the node's mesh-primary, after a tickle that reached
 /// the exact birth; the fabric-primary for a mesh-primary. Commands go down"). `Err` names why not.
-pub(crate) fn commands_join(_view: &crate::topology::Topology, _me: &crate::model::NodeId, _subject: &Node) -> Result<(), String> {
-    Ok(())
+pub(crate) fn commands_join(view: &crate::topology::Topology, me: &crate::model::NodeId, subject: &Node) -> Result<(), String> {
+    if view.is_mesh_primary(&subject.mesh, &subject.node_id) {
+        return if view.is_fabric_primary(me) { Ok(()) } else { Err(format!("{} is the mesh-primary of {} and this admin is not the fabric-primary", subject.name, subject.mesh)) };
+    }
+    if view.is_mesh_primary(&subject.mesh, me) { Ok(()) } else { Err(format!("this admin is not the mesh-primary of {}, which commands {}", subject.mesh, subject.name)) }
 }
 
 #[cfg(test)]
