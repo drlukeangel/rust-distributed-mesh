@@ -1600,11 +1600,11 @@ mod tests {
         let primary: PathName = "mesh2.admin.1".parse().unwrap();
         let from = t.node(&started).unwrap().incarnation_id.clone().unwrap();
         let build_id = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
-        let start = AttemptAction::Start { path: started.clone(), from_incarnation: from.clone() };
+        let start = AttemptAction::Start { path: started.clone(), node_id: t.node(&started).unwrap().node_id.clone(), from_incarnation: from.clone() };
         let operation = format!("node.start:{started}");
         let p = BuildProjection {
             build_id: build_id.clone(),
-            topology: FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
+            topology: FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default(), pinned: Default::default() },
             submitted_change: None,
             submitted_at_ms: 0,
             state: BuildState::Pending,
