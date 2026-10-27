@@ -2413,21 +2413,26 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_t
         Duration::from_secs(60),
         || async {
             let spans = estate.spans();
-            let submit = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+            // FP's submit may repeat: one sent while mesh2's lane still runs its attempt is answered
+            // BuildInProgress (node-recovery.md step 1: "A repeat answers AlreadyApplied or
+            // BuildInProgress, never a second recovery"), and the submit that opens the recovery is the
+            // one whose trace carries FP's claim decision.
+            named(&spans, "rdm.node_admin.build.update.via-node-recovery")
                 .into_iter()
-                .find(|sp| {
+                .filter(|sp| {
                     sp["attributes"]["submitter"] == fp.as_str()
                         && sp["attributes"]["node_id"] == p["node_id"]
                 })
-                .cloned()?;
-            let claim = named(
-                &in_trace(&spans, &submit),
-                "rdm.node_admin.build.update.via-claim-decision",
-            )
-            .into_iter()
-            .find(|sp| sp["attributes"]["node"] == fp.as_str())
-            .cloned()?;
-            Some((submit, claim))
+                .find_map(|submit| {
+                    let claim = named(
+                        &in_trace(&spans, submit),
+                        "rdm.node_admin.build.update.via-claim-decision",
+                    )
+                    .into_iter()
+                    .find(|sp| sp["attributes"]["node"] == fp.as_str())
+                    .cloned()?;
+                    Some((submit.clone(), claim))
+                })
         },
     )
     .await;
