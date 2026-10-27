@@ -252,3 +252,55 @@ async fn a_delayed_observation_of_another_meshs_node_never_moves_the_atlas_back(
     }
     estate.stop().await;
 }
+
+/// CONTRACT (fabric-atlas.md R-FA2: "execution progress writes it from each attempt's receipts as they
+/// stream up `build.attempt.run`, before the caller is answered `Complete`"; node-rpc-envelope.md
+/// node.get: "node.get, mesh.nodes.get and fabric.nodes.get are answered by the fabric-primary from its
+/// `FabricAtlas`"): with the other mesh's topology withheld from the backbone (so no gossip observation
+/// can be the source), the predecessor's half of a replace recipe of a mesh2 node (connections
+/// deleted, mesh left, renamed `<path>.old`, stopped; lifecycles/node-replace.md steps 1-2), executed
+/// by mesh2's primary, is read back through `mesh.nodes.get` at the fabric-primary the moment it
+/// streams `Complete`: the same birth listed stopped at `<path>.old`, and the atlas holds it so. Must
+/// NOT happen: the read answering the birth at `<path>`, not stopped, from a gossip view that has not
+/// heard the stop (release red e58dbc369: the fill at .926687, the read at .929307, the view's last
+/// word `ConnectionsDeleting` from .798319).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recipe_another_meshs_primary_executed_is_read_back_at_the_fabric_primary_on_its_complete() {
+    use rdm_test::faults::{binding_set, candidate_sha, Door};
+    let test = "a_recipe_another_meshs_primary_executed_is_read_back_at_the_fabric_primary_on_its_complete";
+    let sha = candidate_sha();
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let targets = two_meshes(&mut estate).await;
+    let before = &targets[0];
+    let node = path_of(before);
+    let renamed = node.renamed();
+    let mut mesh2_doors = Vec::new();
+    for v in estate.node_values().await.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin") {
+        mesh2_doors.push(Door::at(&estate, v["name"].as_str().unwrap_or_default()).await);
+    }
+    for d in &mesh2_doors {
+        d.arm("atlas:no-gossip", json!({"kind": "announcement", "announcement": "aggregate-in-flight", "channel": "backbone"})).await;
+    }
+    Estate::workflow(&format!("the predecessor's half of the replace of {node}"), estate.nodes_obj().await.recipe(rdm_test::recipes::predecessor_steps(&node)).await).await;
+    // No wait: the read goes out on the recipe's Complete.
+    let listed = estate.meshes_obj().await.nodes(&node.mesh, None).await.expect("mesh.nodes.get at the fabric-primary");
+    let read = atlas(&estate, "R-FA2: fabrics.atlas.get on the recipe's Complete").await;
+    for d in &mesh2_doors {
+        d.release("atlas:no-gossip").await;
+    }
+    let at_old = listed.iter().find(|n| n.name == renamed).cloned();
+    assert!(
+        at_old.as_ref().is_some_and(|n| n.stopped && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()),
+        "mesh.nodes.get at the fabric-primary lists {node}'s birth stopped at {renamed} on the recipe's Complete: {listed:#?}"
+    );
+    assert!(!listed.iter().any(|n| n.name == node && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()), "the renamed birth is not answered at {node} too: {listed:#?}");
+    // `fabrics.atlas.get` answers the paths the current Build names (R-FA4): the birth the rename moved
+    // off `<path>` is not at it.
+    assert!(read.node(&node.to_string()).is_none_or(|row| row.node_id.to_string() != before["node_id"].as_str().unwrap_or_default()), "R-FA2: on the recipe's Complete the atlas holds no birth of {node} at {node}: {read:#?}");
+    estate.stop().await;
+    let spans = estate.spans();
+    let executed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|sp| attr(sp, "outcome") == "complete" && attr(sp, "executor").starts_with("mesh2.admin.")).collect();
+    assert!(!executed.is_empty(), "mesh2's primary executed the recipe: {:#?}", named(&spans, "rdm.node_admin.build.update.via-dispatch"));
+    let taken: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-receipt").into_iter().filter(|sp| attr(sp, "operation") == format!("node.update:{node}") || attr(sp, "operation") == format!("node.stop:{renamed}")).collect();
+    assert_eq!(taken.len(), 2, "the rename's and the stop's receipts are taken into the atlas as they stream up: {taken:#?}");
+}

@@ -139,6 +139,57 @@ fn birth_of_step(p: &BuildProjection, attempt: u32, path: &PathName, output: Opt
     }
 }
 
+/// What a streamed receipt wrote in the atlas ([`FabricAtlas::take_receipt`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Taken {
+    /// The Build's journal holds no completed receipt of the operation in the attempt.
+    NoReceipt,
+    /// The operation changes nothing the atlas holds (a connections delete, a mesh leave), or the
+    /// atlas holds no record of its node.
+    Nothing,
+    /// The lifecycle effect of its birth only (the atlas holds no record of the node).
+    Effect(Option<&'static str>),
+    /// The lifecycle effect and the record's status.
+    Status(NodeStatus),
+    /// The record's new name.
+    Renamed(PathName),
+    /// The record's config or tags.
+    Property,
+    /// A create completed at the path: its record is read once.
+    Created(PathName),
+}
+
+impl Taken {
+    /// The name its span carries.
+    pub(crate) fn name(&self) -> String {
+        match self {
+            Taken::NoReceipt => "no-receipt".into(),
+            Taken::Nothing => "nothing".into(),
+            Taken::Effect(l) => format!("effect:{}", l.unwrap_or("none")),
+            Taken::Status(s) => format!("status:{s:?}"),
+            Taken::Renamed(to) => format!("renamed:{to}"),
+            Taken::Property => "property".into(),
+            Taken::Created(at) => format!("created:{at}"),
+        }
+    }
+}
+
+/// The completed lifecycle receipt `s` of `p` taken over an older effect of its birth; the lifecycle's
+/// name when it is one.
+fn take_effect(held: &mut Held, p: &BuildProjection, s: &crate::build_state::BuildStepReceipt) -> Option<&'static str> {
+    let (lifecycle, path) = lifecycle_of(&s.operation)?;
+    let incarnation = birth_of_step(p, s.attempt, &path, s.output.as_ref())?;
+    let stamp = Stamp { submitted_at_ms: p.submitted_at_ms, build_id: p.build_id.to_string(), attempt: s.attempt };
+    if held.effects.get(incarnation.as_str()).is_none_or(|e| e.stamp < stamp) {
+        held.effects.insert(incarnation.as_str().to_string(), Effect { lifecycle, stamp });
+    }
+    Some(match lifecycle {
+        Lifecycle::Started => "started",
+        Lifecycle::Stopped => "stopped",
+        Lifecycle::Deleted => "deleted",
+    })
+}
+
 /// The lifecycle a completed operation key leaves its birth in, and its path.
 fn lifecycle_of(operation: &str) -> Option<(Lifecycle, PathName)> {
     let (op, path) = operation.split_once(':')?;
@@ -267,15 +318,135 @@ impl FabricAtlas {
     pub(crate) fn receipts(&self, p: &BuildProjection, attempt: u32) {
         let mut held = self.held.lock().unwrap();
         for s in p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == StepOutcome::Complete) {
-            let Some((lifecycle, path)) = lifecycle_of(&s.operation) else { continue };
-            let Some(incarnation) = birth_of_step(p, s.attempt, &path, s.output.as_ref()) else { continue };
-            let stamp = Stamp { submitted_at_ms: p.submitted_at_ms, build_id: p.build_id.to_string(), attempt: s.attempt };
-            let newer = held.effects.get(incarnation.as_str()).is_none_or(|e| e.stamp < stamp);
-            if newer {
-                held.effects.insert(incarnation.as_str().to_string(), Effect { lifecycle, stamp });
-            }
+            take_effect(&mut held, p, s);
         }
         held.accepted.retain(|_, a| !(a.build_id == p.build_id.as_str() && a.attempt <= attempt));
+    }
+
+    /// The `Complete` receipt of `operation` in attempt `attempt` of `p`, taken the moment it streams up
+    /// `build.attempt.run` to this fabric-primary, whichever admin executed it (R-FA2: "execution
+    /// progress writes it from each attempt's receipts as they stream up `build.attempt.run`, before
+    /// the caller is answered `Complete`"): the lifecycle it leaves its birth in (stop, start, delete)
+    /// and what it changed on the node's record (a rename's name, a stop's or a delete's status, the
+    /// config and tags the Build applied in place). What it took, for its span; a create's is
+    /// [`Taken::Created`], whose record its mesh-primary wrote and the caller reads once
+    /// ([`Self::take_created`]).
+    pub(crate) fn take_receipt(&self, p: &BuildProjection, attempt: u32, operation: &str) -> Taken {
+        let Some(s) = p.steps.iter().rev().find(|s| s.attempt == attempt && s.operation == operation && s.step == "Complete" && s.outcome == StepOutcome::Complete) else {
+            return Taken::NoReceipt;
+        };
+        let Some((op, path)) = operation.split_once(':').and_then(|(op, path)| Some((op, path.parse::<PathName>().ok()?))) else {
+            return Taken::Nothing;
+        };
+        let mut held = self.held.lock().unwrap();
+        let lifecycle = take_effect(&mut held, p, s);
+        let node_of = |held: &Held| -> Option<NodeId> {
+            let pinned = match p.attempt_actions.get(&attempt) {
+                Some(AttemptAction::Recipe { pinned, .. }) => pinned.iter().find(|(at, _)| *at == path).map(|(_, b)| b.node_id.clone()),
+                _ => None,
+            };
+            pinned.or_else(|| held.records.values().find(|r| r.name == path).map(|r| r.node_id.clone()))
+        };
+        match op {
+            "node.stop" | "node.delete" => {
+                let to = if op == "node.stop" { NodeStatus::Stopped } else { NodeStatus::Deleted };
+                let birth = birth_of_step(p, attempt, &path, s.output.as_ref());
+                match (node_of(&held), birth) {
+                    (Some(node_id), Some(incarnation)) => match held.records.get_mut(&node_id) {
+                        Some(r) => {
+                            r.set_status(&incarnation, to);
+                            Taken::Status(to)
+                        }
+                        None => Taken::Effect(lifecycle),
+                    },
+                    _ => Taken::Effect(lifecycle),
+                }
+            }
+            "node.start" => Taken::Effect(lifecycle),
+            "node.update" => {
+                // The recipe's node.name.update: the name the step names (the receipt carries none).
+                let to = match p.attempt_actions.get(&attempt) {
+                    Some(AttemptAction::Recipe { steps, .. }) => steps.iter().find_map(|st| match st {
+                        rdm_core::build::RecipeStep::Update { node, name } if *node == path => Some(name.clone()),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                match (node_of(&held), to) {
+                    (Some(node_id), Some(to)) => match held.records.get_mut(&node_id) {
+                        Some(r) => {
+                            r.renamed_from = Some(path.clone());
+                            r.name = to.clone();
+                            Taken::Renamed(to)
+                        }
+                        None => Taken::Nothing,
+                    },
+                    _ => Taken::Nothing,
+                }
+            }
+            "node.config.update" | "node.tags.create" | "node.tags.delete" => {
+                // In place, to the create spec the accepted Build names for the path (build.md §1, "The
+                // Build applies the diff"): its config; its tags added (create) or the ones it does not
+                // name removed (delete).
+                let Some(spec) = p.topology.mesh(&path.mesh).and_then(|m| m.spec(&path)).cloned() else { return Taken::Nothing };
+                let Some(node_id) = node_of(&held) else { return Taken::Nothing };
+                let Some(r) = held.records.get_mut(&node_id) else { return Taken::Nothing };
+                match op {
+                    "node.config.update" => r.config = spec.config,
+                    "node.tags.create" => r.tags.extend(spec.tags),
+                    _ => r.tags.retain(|t| spec.tags.contains(t)),
+                }
+                Taken::Property
+            }
+            "node.create" => Taken::Created(path),
+            _ => Taken::Nothing,
+        }
+    }
+
+    /// The record a completed node.create at `path` wrote (its mesh-primary's write, the op's result,
+    /// Q197): one point read at the path, held from now on. `false` when no record is written there.
+    pub(crate) async fn take_created(&self, rows: &dyn NodesStorage, path: &PathName) -> Result<bool, String> {
+        match rows.node_at(path).await.map_err(|e| format!("nodes.storage: the node row at {path} could not be read: {e}"))? {
+            Some(r) => {
+                self.write_record(&r);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// `t`, a view an acceptance decides from, with each of its births as this atlas holds it
+    /// ([`Self::answer`]; R-FA1: the fabric-primary accepts or denies from the atlas, the gossip view
+    /// context only): a birth an op deleted is not in it.
+    pub(crate) fn apply(&self, t: &mut Topology) {
+        t.nodes.retain_mut(|n| self.answer(n));
+    }
+
+    /// `n`, a birth a node read answers, as this atlas holds it (node-rpc-envelope.md node.get: the
+    /// node reads are answered from the `FabricAtlas`): the name its record holds, and the lifecycle the
+    /// ops left it in (a completed stop: stopped; a completed start of a birth the gossip view still
+    /// holds stopped: ready for traffic). `false` when an op deleted the birth: it is not answered. The
+    /// gossip view's status stands where no op moved the birth (R-FA3: context).
+    pub(crate) fn answer(&self, n: &mut crate::model::Node) -> bool {
+        let held = self.held.lock().unwrap();
+        if let Some(r) = held.records.get(&n.node_id).filter(|r| r.status != NodeStatus::Withdrawn) {
+            n.name = r.name.clone();
+        }
+        let effect = n.incarnation_id.as_ref().and_then(|i| held.effects.get(i.as_str())).map(|e| e.lifecycle);
+        match effect {
+            Some(Lifecycle::Deleted) => return false,
+            Some(Lifecycle::Stopped) => {
+                n.stopped = true;
+                n.status = NodeStatus::Leaving;
+                n.routable = false;
+            }
+            Some(Lifecycle::Started) if n.stopped => {
+                n.stopped = false;
+                n.status = NodeStatus::ReadyForTraffic;
+            }
+            _ => {}
+        }
+        true
     }
 
     /// The effect the node row records last of `row`'s birth `incarnation`, with its stamp: a stop's
@@ -302,7 +473,9 @@ impl FabricAtlas {
     /// on it. With no node row at the path, the birth `observed` holds there, its own status deciding
     /// liveness, and `birth_source` says so. `None` when neither holds a birth at the path.
     pub(crate) async fn row(&self, path: &PathName, rows: &dyn NodesStorage, builds: &dyn BuildStateAdapter, observed: &Topology) -> Result<Option<AtlasRow>, String> {
-        let row = rows.node_at(path).await.map_err(|e| format!("nodes.storage: the node row at {path} could not be read: {e}"))?;
+        // The path's index entry still names a node a rename moved off it (its claim released, the
+        // entry left): that row names another path, so it is not the birth at this one.
+        let row = rows.node_at(path).await.map_err(|e| format!("nodes.storage: the node row at {path} could not be read: {e}"))?.filter(|r| r.name == *path);
         let accepted = self.held.lock().unwrap().accepted.get(&path.to_string()).map(|a| a.operation.clone());
         let Some(row) = row else { return Ok(self.observed_row(path, observed)) };
         let birth = row.newest_birth().map(|b| b.incarnation_id.clone());
@@ -343,7 +516,12 @@ impl FabricAtlas {
     /// its own status deciding liveness (`birth_source` `view`). `None` when the view holds none.
     fn observed_row(&self, path: &PathName, observed: &Topology) -> Option<AtlasRow> {
         let accepted = self.held.lock().unwrap().accepted.get(&path.to_string()).map(|a| a.operation.clone());
-        let n = observed.node(path)?;
+        // The view's birth as the ops left it (R-FA3: the view merges in only what the fabric-primary
+        // did not do itself): one an op renamed off the path or deleted is not at it.
+        let mut n = observed.node(path)?.clone();
+        if !self.answer(&mut n) || n.name != *path {
+            return None;
+        }
         Some(AtlasRow { name: path.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone(), status: n.status, stopped: n.stopped, live: n.status.is_live() && !n.stopped, accepted, observed: Some(n.status), birth_source: "view" })
     }
 
@@ -375,6 +553,41 @@ impl FabricAtlas {
 }
 
 impl crate::control_plane::ControlPlane {
+    /// The `Complete` receipt of `operation` of attempt `attempt` of `build_id`, as it streams up
+    /// `build.attempt.run` to this fabric-primary (read from `builds`, the attempt's own Build journal), taken
+    /// into its `FabricAtlas` before the frame is passed on (fabric-atlas.md R-FA2), whichever admin
+    /// executed it; a create's record read once at its path. One
+    /// `rdm.node_admin.fabric.update.via-atlas-receipt` span.
+    pub(crate) async fn take_streamed_receipt(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, operation: &str) {
+        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, operation, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let taken = match builds.read_build(build_id).await {
+            Ok(p) => self.atlas.take_receipt(&p, attempt, operation),
+            Err(e) => {
+                span.record("outcome", "build-unread").record("detail", format!("Build {build_id} could not be read for the receipt: {e}").as_str());
+                span.in_scope(|| tracing::info!("a streamed receipt was not taken into the atlas"));
+                return;
+            }
+        };
+        span.record("outcome", taken.name().as_str());
+        if let crate::fabric_atlas::Taken::Created(path) = &taken {
+            match self.node_rows.get() {
+                Some(rows) => match self.atlas.take_created(&**rows, path).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        span.record("detail", format!("no record is written at {path}").as_str());
+                    }
+                    Err(e) => {
+                        span.record("detail", e.as_str());
+                    }
+                },
+                None => {
+                    span.record("detail", "no nodes.storage is open yet to read the created record from");
+                }
+            }
+        }
+        span.in_scope(|| tracing::info!("a streamed receipt is the atlas's"));
+    }
+
     /// The atlas row of `path` Build acceptance reads (fabric-atlas.md R-FA1): from this admin's node
     /// rows once its nodes.storage is open, else from `observed` alone.
     pub(crate) async fn atlas_row(&self, path: &PathName, observed: &Topology) -> Result<Option<AtlasRow>, crate::control_plane::Refusal> {

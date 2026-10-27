@@ -124,6 +124,10 @@ impl crate::build_drive::Gate for SeatGate {
         }
     }
 
+    async fn receipt_streamed(&self, build_id: &crate::build::BuildId, attempt: u32, operation: &str) {
+        self.control.take_streamed_receipt(&*self.builds, build_id, attempt, operation).await;
+    }
+
     async fn attempt_failed(&self, build_id: &crate::build::BuildId, attempt: u32) {
         self.control.atlas.ended(build_id, attempt);
     }

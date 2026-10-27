@@ -88,6 +88,10 @@ pub trait Gate: Send + Sync {
     /// Take the completed lifecycle receipts of `build_id` into the fabric-primary's `FabricAtlas`
     /// before `BuildReply::Complete` goes out on the caller's stream (fabric-atlas.md R-FA2).
     async fn attempt_completed(&self, _build_id: &BuildId, _attempt: u32) {}
+    /// Take the `Complete` receipt of `operation` of attempt `attempt` of `build_id` into the
+    /// fabric-primary's `FabricAtlas` as its frame streams up `build.attempt.run`, before the frame is
+    /// passed on (fabric-atlas.md R-FA2), whichever admin executed it.
+    async fn receipt_streamed(&self, _build_id: &BuildId, _attempt: u32, _operation: &str) {}
     /// Attempt `attempt` of `build_id` ended `Failed`: what it accepted is no longer executing.
     async fn attempt_failed(&self, _build_id: &BuildId, _attempt: u32) {}
     /// What the node rows record of each member of `topology`'s executable, for a replacement's plan
@@ -1855,7 +1859,12 @@ impl DriveEnv {
             };
             match item {
                 InnerItem::Frame(f) => match f {
-                    BuildReply::Step { .. } => self.step(drive, f).await,
+                    BuildReply::Step { ref operation, ref step, attempt: a, .. } => {
+                        if step == "Complete" {
+                            self.gate.receipt_streamed(id, a, operation).await;
+                        }
+                        self.step(drive, f).await
+                    }
                     BuildReply::Blocked { .. } => {
                         drive.push(f);
                     }

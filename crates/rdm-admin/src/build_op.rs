@@ -375,6 +375,9 @@ impl BuildDoor {
                             if let Some(r) = receipt.as_deref().and_then(|b| serde_json::from_slice::<BuildStepReceipt>(b).ok()) {
                                 if let Err(e) = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, mesh: Some(mesh.clone()), ..r }).await {
                                     tracing::info!(error = %e, operation = %operation, step = %step, "a reported step receipt could not be written: a later attempt runs the step again");
+                                } else if step == "Complete" {
+                                    // Taken into the atlas as it streams up, before it is passed on (R-FA2).
+                                    self.control.take_streamed_receipt(&*lane, &id, attempt, &operation).await;
                                 }
                             }
                             stream.accepted().await;

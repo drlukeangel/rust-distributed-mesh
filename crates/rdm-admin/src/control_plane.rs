@@ -683,10 +683,12 @@ impl ControlPlane {
                     return Err(Refusal::BuildInProgress(held));
                 }
             }
-            let t = match self.view_now.get() {
+            let mut t = match self.view_now.get() {
                 Some(project) => project().await,
                 None => self.topology.read().await.clone(),
             };
+            // Each birth as the ops left it (R-FA1): a primary's successor, a step's node.
+            self.atlas.apply(&mut t);
             for step in &steps {
                 let node = step.node();
                 if node.mesh != self.me.mesh {
@@ -756,10 +758,13 @@ impl ControlPlane {
             let from_incarnation = {
                 // A stopped birth at a `.old` path is admitted from the view, which reads a renamed
                 // birth by its node id through the node-row id index (R12).
-                let t = match self.view_now.get() {
+                let mut t = match self.view_now.get() {
                     Some(project) => project().await,
                     None => self.topology.read().await.clone(),
                 };
+                // Each birth as the ops left it (R-FA1): a primary's successor a stop or a start the
+                // fabric-primary ran moved is read so, whatever the gossip view has heard of it.
+                self.atlas.apply(&mut t);
                 // The birth and its lifecycle are the atlas's: the node row's current birth and what the
                 // ops left it (fabric-atlas.md R-FA1), never the gossip view.
                 let held = self.atlas_row(&path, &t).await?;

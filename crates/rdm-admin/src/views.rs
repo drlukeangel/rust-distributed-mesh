@@ -173,7 +173,9 @@ fn data_dir_unreadable_of(n: &Node, row: Option<&crate::storage::NodeRow>) -> Op
 /// longer holds is answered at a path `planned` names and no birth holds, from the data-dir-unreadable
 /// fact on the record `records` holds there. Nothing reads the node store (Q203).
 fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, records: &FabricAtlas, chosen: &Chosen<'_>, planned: &BTreeMap<String, Vec<PathName>>) -> Vec<NodeView> {
-    let births: Vec<&Node> = view
+    // Each birth as the atlas holds it: the name its record holds and the lifecycle the ops left it
+    // in, never the gossip view's word on either (Q197, Q203); a birth an op deleted is not answered.
+    let births: Vec<Node> = view
         .births()
         .filter(|n| match chosen {
             Chosen::Id(id) => &n.node_id == *id,
@@ -181,6 +183,10 @@ fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<Gos
             Chosen::Ids(ids) => ids.contains(&n.node_id),
             Chosen::MeshIds(mesh, ids) => n.mesh == *mesh && ids.contains(&n.node_id),
             Chosen::Fabric => true,
+        })
+        .filter_map(|n| {
+            let mut n = n.clone();
+            records.answer(&mut n).then_some(n)
         })
         .collect();
     let mut out: Vec<NodeView> = births.iter().map(|n| {
