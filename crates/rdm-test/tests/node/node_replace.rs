@@ -1352,6 +1352,65 @@ async fn deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_execut
     estate.shutdown().await;
 }
 
+/// CONTRACT (node-admin-lifecycle.md §6.1: "A replace of a birth absent from the view runs node.delete
+/// against its exact runtime, rebuilt from the Build action and the data-root runtime record. It emits
+/// `rdm.node_admin.node.update.via-rebuilt-birth` and refuses by name when no record names the birth.
+/// Completion requires the NodeDeleted receipt of that exact birth"): mesh2's only admin runs the
+/// predecessor's half of the replace of `mesh2.rpc.1` (stopped at `.old`); mesh2 then takes a second
+/// admin, born after the stop, so no digest of the stopped birth ever reached its view; mesh2's first
+/// admin is stopped and its seats move to the second. The Build's `node[1].delete` at `.old` is executed
+/// by that admin, whose view does not hold the birth: it rebuilds the birth from the Build action's
+/// exact birth and the runtime record in the birth's data dir under the data root
+/// (`via-rebuilt-birth`, `outcome = rebuilt`, naming the birth, its data dir and the record's
+/// deployment), then deletes that exact runtime with everything node.delete owes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replacing_a_birth_absent_from_the_executors_view_deletes_the_runtime_rebuilt_from_the_build_action_and_the_data_root_record() {
+    const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 1, 2), ("mesh2", 1, 2)];
+    const GROWN: [(&str, u32, u32); 2] = [("mesh1", 1, 2), ("mesh2", 2, 2)];
+    let (estate, _birth_build) = fabric_of("replacing_a_birth_absent_from_the_executors_view_deletes_the_runtime_rebuilt_from_the_build_action_and_the_data_root_record", &SHAPE, Duration::from_secs(90)).await;
+    let nodes = objects(&estate).await;
+    let stopped_birth = leave_rename_and_stop(&estate, &nodes, "mesh2.rpc.1").await;
+    assert_eq!(stopped_birth.renamed_by, "mesh2.admin.1", "mesh2's only admin renamed and stopped it");
+    // mesh2's second admin is born after the stop: no digest of the stopped birth reaches its view.
+    let grown = estate.reconcile_shape("fabric1", &GROWN).await;
+    // The view holds the stopped `.old` beside the grown cohorts, so it is read by name.
+    wait_for("mesh2.admin.2 is ready for traffic", Duration::from_secs(90), || async {
+        estate.meshes_obj().await.nodes("mesh2", None).await.ok()?.into_iter().find(|n| n.name.to_string() == "mesh2.admin.2" && n.status == NodeStatus::ReadyForTraffic).map(|_| ())
+    })
+    .await;
+    let nodes = objects(&estate).await;
+    let stopped = frames(nodes.stop(&"mesh2.admin.1".parse().unwrap()).await.expect("the stop of mesh2's first admin was accepted")).await;
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    wait_for("mesh2.admin.2 holds mesh2's seat", Duration::from_secs(30), || async {
+        estate.meshes_obj().await.nodes("mesh2", None).await.ok()?.into_iter().find(|n| n.name.to_string() == "mesh2.admin.2" && n.is_primary).map(|_| ())
+    })
+    .await;
+    let record = match rdm_core::RuntimeFact::read_record(&stopped_birth.old_dir) {
+        Some(Ok(f)) => f,
+        other => panic!("the stopped birth's data dir {:?} holds its runtime record: {other:?}", stopped_birth.old_dir),
+    };
+    let executor = delete_stopped_and_assert(&estate, &grown.build_id.to_string(), &stopped_birth).await;
+    assert_eq!(executor, "mesh2.admin.2", "mesh2's new primary, born after the stop, executes the delete");
+
+    let spans = estate.spans();
+    let old_name = format!("{}.old", stopped_birth.node);
+    let rebuilt: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-rebuilt-birth").into_iter().filter(|sp| sp["attributes"]["node"] == old_name.as_str()).collect();
+    assert_eq!(rebuilt.len(), 1, "the executor rebuilt the birth its view does not hold, once: {rebuilt:#?}");
+    let a = &rebuilt[0]["attributes"];
+    assert_eq!(
+        (s(&a["executor"]), s(&a["node_id"]), s(&a["incarnation_id"]), s(&a["outcome"])),
+        ("mesh2.admin.2".to_string(), s(&stopped_birth.before["node_id"]), s(&stopped_birth.before["incarnation_id"]), "rebuilt".to_string()),
+        "the exact birth the Build action names, rebuilt by the executor: {:#}",
+        rebuilt[0]
+    );
+    assert_eq!(s(&a["data_dir"]), stopped_birth.old_dir.display().to_string(), "the birth's data dir under the data root: {:#}", rebuilt[0]);
+    assert_eq!(s(&a["deployment_id"]), record.deployment_id, "the runtime its data-root record names: {:#}", rebuilt[0]);
+    let op = named(&spans, "rdm.node_admin.node.delete.via-build").into_iter().find(|sp| sp["attributes"]["node"] == old_name.as_str()).cloned().expect("the delete operation span");
+    assert!(descends_from(&spans, rebuilt[0], &op), "the rebuild runs inside the delete operation: {:#} / {op:#}", rebuilt[0]);
+    estate.artifact("rebuilt-birth.json", &json!({"rebuilt": rebuilt[0], "record": record.deployment_id}));
+    estate.shutdown().await;
+}
+
 /// The stopped birth a Build's rename left at `<path>.old`: who it was, where, who renamed it.
 struct StoppedBirth {
     node: String,
