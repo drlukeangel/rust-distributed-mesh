@@ -1340,9 +1340,10 @@ pub enum BuildChange {
     Reserved4,
     RemoveMesh { mesh: String },
     Reserved6,
-    // Step = Create | Stop | Update | Start | Delete: one node primitive per step. Create names
-    // the node and the executable binding the Build fixes for it (launch id, hash); the executing
-    // admin launches that binding, verified at launch, whichever admin runs or resumes the step.
+    // Step = Create | Stop | Update | Start | Delete | DeleteConnections | LeaveMesh: one node
+    // primitive per step. Create names the node and the executable binding the Build fixes for it
+    // (launch id, hash); the executing admin launches that binding, verified at launch, whichever
+    // admin runs or resumes the step.
     // Steps are one Build of node primitives (lifecycles/node-replace.md).
     Steps { steps: Vec<Step> },
     // Every create names the node's create spec, its properties flat (Q166):
