@@ -22,7 +22,7 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 
 | state | set by | from |
 |---|---|---|
-| node starting | the node's mesh-primary | the accepted node.start execution (inside node.create, or on a stopped node) |
+| node starting | the node's mesh-primary | a stopped node's `CommandAccepted` admission frame on the `StartNode` command stream (0x22); a create's launch, where no process can acknowledge |
 | node pending | the node's mesh-primary | the node's accepted join report, on the start call or a commanded join, once per join ([node-mesh-join.md](node-mesh-join.md) step 10) |
 | node ReadyForTraffic | the node's mesh-primary | the node's node.started report, after every start gate ([`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) among them); the node then calls [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) |
 | node connections-deleting | the node's mesh-primary | the node's `ConnectionsDeleting` report on the command stream of `node.connections.delete { scope: All }`, its block on new application work in force, standalone or as the acknowledgement on node.stop's stream |
@@ -39,7 +39,7 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete receipts; never an op |
 | fabric ready-for-traffic | the fabric-primary | every mesh the accepted Build names ready-for-traffic, its attempt claimed; the fabric-primary then calls [`on_fabric_ready`](../fabric-node-hooks.md#on_fabric_ready) |
 
-start, stop and delete are workflows the node runs, and each primitive is one command: the node's acknowledgement of a command sets its "ing" state (starting, stopping, deleting, connections-deleting, leaving), its completion sets the "ed" state (ready, stopped, deleted, connections-deleted, left), and each is the row's one status, never a second field. A query answers the state the node last reported; a command the node has not acknowledged moves the row nowhere. Where no node can report, the mesh-primary writes the state from the launch (a create's starting), the claim and the receipt (an exited node's deleting and deleted).
+start and stop are workflows the node runs, and each primitive is one command: the node's acknowledgement of a command sets its "ing" state (starting, stopping, connections-deleting, leaving), its completion sets the "ed" state (ready, stopped, connections-deleted, left), and each is the row's one status, never a second field. delete is the mesh-primary's workflow: no delete command reaches the node; the mesh-primary writes deleting from its adopted claim, composes the node's stop, whose frames move the row as above, terminates the exact runtime and writes deleted from the receipt. A query answers the state the row last took from the node's frame or the mesh-primary's receipt; a command the node has not acknowledged moves the row nowhere. Where no node can report, the mesh-primary writes the state itself: a create's starting from the launch, and an exited node's deleting and deleted from the claim and the receipt.
 
 The internal report and apply that move a node's status are [node status](node-status.md).
 Which frame carries each state to peers, and who publishes it, is the
