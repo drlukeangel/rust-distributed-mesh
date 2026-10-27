@@ -184,13 +184,17 @@ async fn two_lines_then_a_line_still_being_written(path: &Path) -> (StoreLog, Ve
 /// standing unended at the end of the file, its write still in flight however long it stands. The
 /// tail read answers the two lines before it as current and leaves the unended object unconsumed, the
 /// consumed offset at its start; the raw log answers the same two lines; once the write ends, the next
-/// tail read folds the line once. Must NOT happen: the read refused while the line is being written,
-/// the unended object answered, or the consumed offset moved past it.
+/// tail read folds the line once. The read records the unended object's offset and the bytes held of
+/// it on its own span. Must NOT happen: the read refused while the line is being written, the unended
+/// object answered, or the consumed offset moved past it.
 #[tokio::test]
 async fn a_tail_read_leaves_a_line_still_being_written_unconsumed_and_folds_it_once_it_ends() {
     let path = file("store-log-line-in-flight");
     let (log, line, at) = two_lines_then_a_line_still_being_written(&path).await;
-    let latest = log.latest_of("rec").await.unwrap_or_else(|e| panic!("a line another writer is still writing is never refused: {e}"));
+    let mut latest = Vec::new();
+    let spans = capture_spans(|| async { latest = log.latest_of("rec").await.unwrap_or_else(|e| panic!("a line another writer is still writing is never refused: {e}")) }).await;
+    let unended = spans.iter().find(|s| s.0 == UNENDED_SPAN).unwrap_or_else(|| panic!("the read names the line it left unconsumed: {spans:?}"));
+    assert_eq!((unended.1.get("offset"), unended.1.get("held")), (Some(&at.to_string()), Some(&(line.len() / 2 - 1).to_string())), "{unended:?}");
     assert_eq!(latest.iter().map(|l| l.decode::<Rec>(&path).unwrap()).collect::<Vec<_>>(), vec![rec("a", 2), rec("a", 1)], "the lines before it are current");
     assert_eq!(log.consumed(), at, "the unended object stays unconsumed: the offset stands at its start");
     assert_eq!(log.lines().await.unwrap().len(), 2, "the raw log answers the lines before it");

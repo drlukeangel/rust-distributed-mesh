@@ -39,7 +39,8 @@
 //! reader appends one newline alone and fsyncs before it answers (another writer's opening newline
 //! may already have ended it; the added newline is then a blank line). An unended object that does
 //! not verify is another writer's line still being written, however long it stands: a tail read
-//! answers the lines before it and leaves it unconsumed for its next read, and an open refuses it by
+//! answers the lines before it and leaves it unconsumed for its next read, recorded on
+//! [`UNENDED_SPAN`] with its offset, and an open refuses it by
 //! name, naming the file and its offset (R-SR3, "at open ... an incomplete or invalid object is left
 //! untouched and refused"). Once a line stands after it, its write has ended: the object is then a
 //! line that does not verify and refuses every read by name. The consumed offset is the fold's own:
@@ -61,6 +62,11 @@ use std::sync::{Arc, Mutex};
 /// bytes and lines, the latest `op` of each writer and the fold's `duration` in milliseconds; a refused
 /// fold its `invalid_offset` and cause (i149 plan, "OTLP span-assertion bar").
 pub const OPEN_SPAN: &str = "rdm.node.store.resolve.via-fold";
+
+/// The span a tail read records, under its caller's span, when it meets an unended object that does
+/// not verify at the end of the file and leaves it unconsumed (R-SR4): the file, the reader, the
+/// object's offset (where the consumed offset stands) and the bytes of it the file held then.
+pub const UNENDED_SPAN: &str = "rdm.node.store.update.via-tail-read-unended";
 
 /// The bytes every object ends with after its checksummed bytes: `,"crc32":"xxxxxxxx"}`.
 const CRC_SUFFIX: usize = 20;
@@ -649,7 +655,7 @@ impl StoreLog {
         #[cfg(feature = "testkit-store")]
         let door = read_door::take(&self.0.path, caller);
         let inner = self.0.clone();
-        blocking_io(move || {
+        let unended = blocking_io(move || {
             #[cfg(feature = "testkit-store")]
             if let Some(door) = &door {
                 door.admit_wait();
@@ -669,7 +675,12 @@ impl StoreLog {
             }
             inner.read_tail(kind)
         })
-        .await
+        .await?;
+        if let Some((offset, held)) = unended {
+            tracing::info_span!("rdm.node.store.update.via-tail-read-unended", file = %self.0.path.display(), caller, reader, offset, held)
+                .in_scope(|| tracing::info!("a line another writer is still writing stays unconsumed for the next read"));
+        }
+        Ok(())
     }
 
     /// The latest line of (`kind`, `key`) after reading the tail.
@@ -688,7 +699,7 @@ impl StoreLog {
     /// Every line of the file, in file order, read whole from byte 0 (the raw log).
     pub async fn lines(&self) -> Result<Vec<Line>, StorageError> {
         let inner = self.0.clone();
-        let (lines, _) = blocking_io(move || inner.read_whole(0, ReadKind::Tail)).await?;
+        let (lines, _, _) = blocking_io(move || inner.read_whole(0, ReadKind::Tail)).await?;
         Ok(lines)
     }
 
@@ -800,10 +811,11 @@ impl Inner {
 
     /// One read of `kind` (the open's fold or a tail read), holding the read lock: the lines from the
     /// fold's consumed offset to the end, shown to the observer in file order and folded, the offset
-    /// moved past them.
-    fn read_tail(&self, kind: ReadKind) -> Result<(), StorageError> {
+    /// moved past them. Answers the offset and held bytes of an unended object a tail read left
+    /// unconsumed.
+    fn read_tail(&self, kind: ReadKind) -> Result<Option<(u64, u64)>, StorageError> {
         let from = self.fold.lock().unwrap_or_else(|e| e.into_inner()).consumed;
-        let (lines, consumed) = self.read_whole(from, kind)?;
+        let (lines, consumed, unended) = self.read_whole(from, kind)?;
         if let Some(observe) = &self.observer {
             for l in &lines {
                 observe(l);
@@ -812,7 +824,7 @@ impl Inner {
         let mut fold = self.fold.lock().unwrap_or_else(|e| e.into_inner());
         fold.take(lines);
         fold.consumed = consumed;
-        Ok(())
+        Ok(unended)
     }
 
     fn named(&self, offset: u64, why: impl std::fmt::Display) -> StorageError {
@@ -826,14 +838,14 @@ impl Inner {
     /// Read the lines from `from` to the end whole: a complete valid object with no final newline is
     /// ended with one newline alone and fsynced, then read again; an unended object that does not
     /// verify is another writer's line still being written: a tail read leaves it unconsumed and an
-    /// open refuses it by name (R-SR3, R-SR4). Answers the lines and the offset they were read whole
-    /// to.
-    fn read_whole(&self, from: u64, kind: ReadKind) -> Result<(Vec<Line>, u64), StorageError> {
+    /// open refuses it by name (R-SR3, R-SR4). Answers the lines, the offset they were read whole to
+    /// and, when a tail read left an unended object unconsumed, its offset and the bytes held of it.
+    fn read_whole(&self, from: u64, kind: ReadKind) -> Result<(Vec<Line>, u64, Option<(u64, u64)>), StorageError> {
         let mut ended = false;
         loop {
             let bytes = read_from(&self.file, from).map_err(|e| self.io(e))?;
             let s = scan(&bytes, from, &self.formats).map_err(|(at, why)| self.named(at, why))?;
-            let Some((at, tail)) = s.tail else { return Ok((s.lines, s.consumed)) };
+            let Some((at, tail)) = s.tail else { return Ok((s.lines, s.consumed, None)) };
             match verify(&tail, at, &self.formats) {
                 Ok(_) if !ended => {
                     // A complete object missing only its newline: end it, then read it whole.
@@ -847,7 +859,7 @@ impl Inner {
                 Ok(_) => return Err(self.named(at, "the object stays unended after a newline was appended to end it")),
                 Err(why) => {
                     return match kind {
-                        ReadKind::Tail => Ok((s.lines, s.consumed)),
+                        ReadKind::Tail => Ok((s.lines, s.consumed, Some((at, tail.len() as u64)))),
                         ReadKind::Open => Err(self.named(at, format!("an unended object: {why}"))),
                     };
                 }
