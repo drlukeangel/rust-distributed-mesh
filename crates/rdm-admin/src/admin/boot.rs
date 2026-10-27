@@ -506,8 +506,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let mesh_claims = mesh_storage.clone();
     // A launched node-admin starts holding the runtime rows its launcher held (`CreateRequest::
     // held_runtimes`): handed in its data dir beside the launch record, put in its own nodes storage
-    // before anything reads it.
-    if cfg.launch.is_some() {
+    // before anything reads it. On a provider whose runtime rows are the fabric's shared store root's
+    // (`root_runtimes`), the launching admin wrote each there (build.md §5.3: "the launching admin a
+    // birth's runtime row"): the launched admin neither reads nor writes them again (Q227).
+    if cfg.launch.is_some() && root_runtimes.is_none() {
         for row in crate::deployment::provider::held_runtimes_in(&cfg.data_dir).await.map_err(|e| format!("refusing to start: {e}"))? {
             nodes_storage.put_runtime(&row).await.map_err(storage_err)?;
         }
@@ -564,7 +566,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         }
         _ => None,
     };
-    if inherited.is_none() {
+    // The contradictory-start check reads the store only for a start with no launcher (Day 0, a recovery
+    // started by a person): a node-admin a launcher starts is handed its rows before it runs (runtimes),
+    // owes no clean data dir and reads nothing from the store at its start (Q227).
+    if inherited.is_none() && cfg.launch.is_none() {
         let holds = if fabric_storage.fabric().await.map_err(storage_err)?.is_some() {
             Some(super::session::HOLDS_FABRIC)
         } else if !mesh_storage.meshes().await.map_err(storage_err)?.is_empty() {
@@ -574,9 +579,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         } else {
             None
         };
-        // A node-admin a launcher starts is handed its rows before it runs (runtimes): a launch
-        // owes no clean data dir.
-        refuse_contradictory_start(&cfg, holds.filter(|_| cfg.launch.is_none())).map_err(|e| format!("refusing to start: {e}"))?;
+        refuse_contradictory_start(&cfg, holds).map_err(|e| format!("refusing to start: {e}"))?;
     }
     drop(storage_step);
     // A container fabric's node-admin is a host process its containers reach only through the
@@ -1158,13 +1161,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     backbone.withhold_announcements(Arc::new(move |announcement, channel| seam.withholds(&me, announcement, channel)));
                 }
                 // fabric.storage: `fabric/` on the store root, whose one writer is the fabric-primary (R14 item
-                // 2): Day 0 writes the Fabric identity (below), and every other admin reads it there. A store
-                // root holding another Fabric's identity is refused. A shutdown already held there (a restart or
-                // a join during one) is in force from the start.
+                // 2): Day 0 writes the Fabric identity (below). An admin that joined takes the identity its
+                // entry pull carries, never reading the store (Q227); a start with no launcher reads it there. An
+                // identity of another Fabric is refused.
                 let fabric_identity = crate::fabric_storage::FabricIdentity { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone() };
-                if let Some(held) = fabric_storage.fabric().await.map_err(|e| e.to_string())? {
-                    if held.fabric_id != cfg.fabric_id {
-                        return Err(format!("fabric.storage holds the identity of Fabric {} ({}), this admin is configured for Fabric {}", held.fabric_id, held.name, cfg.fabric_id));
+                let held = match &joined {
+                    Some(answer) => answer.control.fabric.clone().map(|f| (f.fabric_id, f.name, "its entry pull")),
+                    None => fabric_storage.fabric().await.map_err(|e| e.to_string())?.map(|f| (f.fabric_id, f.name, "fabric.storage")),
+                };
+                if let Some((fabric_id, fabric_name, from)) = held {
+                    if fabric_id != cfg.fabric_id {
+                        return Err(format!("{from} holds the identity of Fabric {fabric_id} ({fabric_name}), this admin is configured for Fabric {}", cfg.fabric_id));
                     }
                 }
                 let mut tasks_early: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -1334,10 +1341,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
                                 }
                             }
-                            // The meshes the accepted Build names keep the ids this admin stored for them.
+                            // The meshes the accepted Build names keep the ids the Build carries for them; a start with no
+                            // launcher, the ids its store holds for them (Q227: a launched admin reads no store at its
+                            // start).
                             if let Some(named) = builds_dyn.current().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.map(|b| b.topology) {
-                                for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| !m.dead && named.meshes.contains_key(&m.name)) {
-                                    records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
+                                if cfg.launch.is_some() {
+                                    for (mesh, m) in &named.meshes {
+                                        records.meshes.lock().unwrap().insert(mesh.clone(), m.mesh_id.clone());
+                                    }
+                                } else {
+                                    for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| !m.dead && named.meshes.contains_key(&m.name)) {
+                                        records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
+                                    }
                                 }
                             }
                                 records
