@@ -240,6 +240,7 @@ mod probe_root_span;
 mod process_pipeline;
 mod process_pipeline_failure;
 mod rafka_time_handle;
+mod node_own_config;
 mod ready_prerequisites;
 mod recover_pipeline;
 mod node_delete_admission;

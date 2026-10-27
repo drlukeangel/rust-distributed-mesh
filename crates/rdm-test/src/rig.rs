@@ -238,6 +238,10 @@ pub struct AdminSide {
     pub nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>,
     /// The admin every launch from `template` names as its launcher.
     pub launcher: rdm_core::launch::Launcher,
+    /// Every `node.config.update` a node sent this admin side, with the endpoint the transport proved
+    /// sent it: the admin side answers each `ConfigUpdated` for the birth it names, as the fabric-primary
+    /// answers once the command completed.
+    pub config_updates: Arc<std::sync::Mutex<Vec<(iroh::PublicKey, rdm_core::status::StatusRequest)>>>,
     /// The node rows this admin side holds by `path.name` (what a mesh-primary's store answers
     /// `node_row_at` with): its join door reads the row's config to hand a joiner.
     rows: Arc<std::sync::Mutex<std::collections::HashMap<rdm_core::PathName, rdm_admin::storage::NodeRow>>>,
@@ -512,13 +516,21 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // The completion calls a commanded node makes back (`node.connections.deleted`, `node-left`) resolve the
     // open commands of this admin side.
     let commands = Arc::new(rdm_admin::node_commands::CommandView::default());
+    let config_updates: Arc<std::sync::Mutex<Vec<(iroh::PublicKey, rdm_core::status::StatusRequest)>>> = Arc::default();
     let serve_commands = {
-        let (commands, receiver, digest_view) = (commands.clone(), name.to_string(), topology_view.digest_view.clone());
+        let (commands, receiver, digest_view, config_updates) = (commands.clone(), name.to_string(), topology_view.digest_view.clone(), config_updates.clone());
         move |b: rdm_transport::ServerBuilder| {
-            b.serve::<rdm_core::status::Status, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer: rdm_transport::PeerContext, req: rdm_core::status::StatusRequest| {
-                let (commands, receiver, digest_view) = (commands.clone(), receiver.clone(), digest_view.clone());
+            b.serve::<rdm_core::status::Status, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |peer: rdm_transport::PeerContext, req: rdm_core::status::StatusRequest| {
+                let (commands, receiver, digest_view, config_updates) = (commands.clone(), receiver.clone(), digest_view.clone(), config_updates.clone());
                 async move {
                     use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest as R};
+                    // A node's own config update reaches the admin it joined through: recorded with its
+                    // sender and answered as the fabric-primary answers a completed command.
+                    if let R::UpdateNodeConfig { node_id, incarnation, .. } = &req {
+                        let reply = StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
+                        config_updates.lock().unwrap().push((peer.endpoint_id, req.clone()));
+                        return Ok(reply);
+                    }
                     // A member's report to its mesh's primary sets its status (node-status.md "Status
                     // report": "A node reports to its mesh's primary, which sets its status"), as a
                     // node-admin's status authority applies it into its view: its node.started sets
@@ -620,6 +632,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         joins,
         nodes_storage,
         launcher: rdm_core::launch::Launcher { name: name.parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },
+        config_updates,
         rows,
         digest: digest_cell,
         reap: ReapOnDrop(std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint()))),
