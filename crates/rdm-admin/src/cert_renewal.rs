@@ -20,8 +20,8 @@
 //!   `node.issuer.update` to that mesh's primary directly; once it confirms, to each other admin of the
 //!   mesh as a command forwarded through the mesh-primary (Forward 0x1A, the mesh-primary the exact
 //!   carrier). Its own mesh's admins it calls directly, itself in process.
-//! - `fabric.get`'s next expiry and a mesh's stalled renewals are read from the records
-//!   ([`fabric_watch`]).
+//! - `fabrics.get`'s next expiry and a mesh's stalled renewals are folded from the node records the
+//!   answering admin's atlas holds ([`fabric_watch`]), never read from the store.
 
 use crate::certs::{BirthIdentity, CertIssuer, IssueFailure, IssuerMint, MemberIssue};
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, PathName};
@@ -39,10 +39,9 @@ pub fn stalled(dates: &CertDates, now_ms: u64, floor_ms: u64) -> bool {
     now_ms > dates.renew_at.saturating_add(floor_ms)
 }
 
-/// Each birth's member cert dates on the records of `mesh` on `storage`, by exact birth.
-pub async fn fold_of(storage: &dyn NodesStorage, mesh: &str) -> Result<HashMap<(NodeId, IncarnationId), CertDates>, String> {
-    let records = storage.nodes(mesh).await.map_err(|e| format!("the node records of mesh {mesh}: {e}"))?;
-    Ok(records.iter().flat_map(|r| r.births.iter().filter_map(|b| Some(((r.node_id.clone(), b.incarnation_id.clone()), b.cert.clone()?)))).collect())
+/// Each birth's member cert dates on `records`, by exact birth.
+pub fn fold_of(records: &[crate::storage::NodeRow]) -> HashMap<(NodeId, IncarnationId), CertDates> {
+    records.iter().flat_map(|r| r.births.iter().filter_map(|b| Some(((r.node_id.clone(), b.incarnation_id.clone()), b.cert.clone()?)))).collect()
 }
 
 /// The dates a member cert issue writes once its birth holds the cert.
@@ -60,15 +59,16 @@ fn births_of<'a>(view: &'a Topology, mesh: &str) -> HashMap<(NodeId, Incarnation
     view.births().filter(|n| n.mesh == mesh).filter_map(|n| Some(((n.node_id.clone(), n.incarnation_id.clone()?), n))).collect()
 }
 
-/// What `fabric.get` shows of the cert dates (fabric-certs.md §Tracking): the next expiry across the
-/// births the view holds, and each mesh's births whose renewal stalls at `now_ms`.
-pub async fn fabric_watch(view: &Topology, storage: &dyn NodesStorage, now_ms: Option<u64>) -> (Option<u64>, BTreeMap<String, Vec<PathName>>) {
+/// What `fabrics.get` shows of the cert dates (fabric-certs.md §Tracking), folded from the node records
+/// `records` (this admin's atlas) holds, never a store read: the next expiry across the births the view
+/// holds, and each mesh's births whose renewal stalls at `now_ms`.
+pub fn fabric_watch(view: &Topology, records: &crate::atlas::Atlas, now_ms: Option<u64>) -> (Option<u64>, BTreeMap<String, Vec<PathName>>) {
     let floor = rdm_core::cadence::staleness_floor().as_millis() as u64;
     let mut next: Option<u64> = None;
     let mut stalls: BTreeMap<String, Vec<PathName>> = BTreeMap::new();
     let meshes: BTreeSet<String> = view.births().map(|n| n.mesh.clone()).collect();
     for mesh in meshes {
-        let Ok(folded) = fold_of(storage, &mesh).await else { continue };
+        let folded = fold_of(&records.records_of(&mesh));
         let births = births_of(view, &mesh);
         for (birth, cert) in folded {
             let Some(node) = births.get(&birth) else { continue };

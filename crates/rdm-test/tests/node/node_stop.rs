@@ -118,7 +118,7 @@ async fn stop_then_start(test: &str, node: &str) {
     // node.get shows it stopped: the same birth, the same process, alive.
     let stopped = view_of(&estate.nodes_obj().await, &path).await;
     assert!(stopped.stopped, "node.get lists {node} stopped: {stopped:?}");
-    assert_eq!(stopped.status, NodeStatus::Leaving, "{stopped:?}");
+    assert_eq!(stopped.status, NodeStatus::Stopped, "the row's status as its mesh-primary wrote it from the stopped frame (Q233): {stopped:?}");
     assert_eq!((&stopped.node_id, &stopped.incarnation_id, &stopped.endpoint_id, &stopped.transport_addr), (&before.node_id, &before.incarnation_id, &before.endpoint_id, &before.transport_addr), "a stop keeps the node id, incarnation, endpoint key and port");
     assert!(alive(pid), "the stopped process {pid} is alive and stopped");
     assert_eq!(estate.pid_of(node).await, pid);
@@ -358,7 +358,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let stopped = view_of(&estate.nodes_obj().await, &path).await;
-    assert!(stopped.stopped && stopped.status == NodeStatus::Leaving, "{stopped:?}");
+    assert!(stopped.stopped && stopped.status == NodeStatus::Stopped, "{stopped:?}");
 
     // The rename of a stopped node: one call to its mesh-primary, refused before anything is claimed.
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(stopped.node_id.clone()), node_id: stopped.node_id.clone(), incarnation: stopped.incarnation_id.clone().expect("the stopped node's birth") };
@@ -426,7 +426,7 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let held = view_of(&estate.nodes_obj().await, &path).await;
-    assert!(held.stopped && held.status == NodeStatus::Leaving, "{held:?}");
+    assert!(held.stopped && held.status == NodeStatus::Stopped, "{held:?}");
 
     // The update: one call to the fabric-primary, here mesh1's mesh-primary too, the row written, the
     // stopped node told nothing.
@@ -662,7 +662,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
         assert!(std::time::Instant::now() < until, "the stopped birth's declaration lists it stopped within 30 s while the stream's stopped is held: {v:?}");
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
-    assert_eq!((stopped.status, &stopped.node_id, &stopped.incarnation_id), (NodeStatus::Leaving, &before.node_id, &before.incarnation_id), "the same birth, stopped");
+    assert_eq!((stopped.status, &stopped.node_id, &stopped.incarnation_id), (NodeStatus::Stopped, &before.node_id, &before.incarnation_id), "the same birth, stopped on its row from its own declaration");
     assert_eq!(door.cut("stopped-held").await["held"], true, "the stream's stopped is still held: {}", door.cut("stopped-held").await);
     door.release("stopped-held").await;
     let stopped = stop.await.expect("the stop's call");
@@ -1206,7 +1206,7 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
         let complete = receipts.as_ref().is_ok_and(|b| b.phase == rdm_core::build::BuildPhase::Complete);
         let v = view_of(&estate.nodes_obj().await, &node).await;
         if complete && v.stopped {
-            assert_eq!((v.status, &v.node_id, &v.incarnation_id), (NodeStatus::Leaving, &before.node_id, &before.incarnation_id), "the same birth, stopped: {v:?}");
+            assert_eq!((v.status, &v.node_id, &v.incarnation_id), (NodeStatus::Stopped, &before.node_id, &before.incarnation_id), "the same birth, stopped: {v:?}");
             break;
         }
         assert!(std::time::Instant::now() < until, "the stop's Build {build:?} completes and {node_s} reads stopped within {SETTLE:?}: {receipts:?}, {v:?}");

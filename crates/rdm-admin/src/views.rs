@@ -17,7 +17,6 @@ use crate::topology::Topology;
 use rdm_core::connections::{ConnectionsHeld, NodeConnection};
 use rdm_core::{GossipStats, NodeLoad};
 use crate::atlas::Atlas;
-use crate::storage::NodesStorage;
 use rdm_core::filter::{Entity, Filter};
 use rdm_core::status::StatusReply;
 use rdm_core::views::{DataDirLost, DataDirUnreadable, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
@@ -139,13 +138,13 @@ fn data_dir_unreadable_of(n: &Node, row: Option<&crate::storage::NodeRow>) -> Op
 /// no birth holds, from the data-dir-unreadable fact on the record `records` holds there. Nothing
 /// reads the node store (Q203).
 fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, records: &Atlas, planned: &BTreeMap<String, Vec<PathName>>) -> Vec<NodeView> {
-    // Each birth as the atlas holds it: the name its record holds and the lifecycle the ops left it
-    // in, never the gossip view's word on either (Q197, Q203); a birth an op deleted is not answered.
+    // Each birth as the atlas holds it: the name its record holds and the status its row last took,
+    // never the gossip view's word on either (Q197, Q203, Q233); a birth an op deleted is not answered.
     let births: Vec<Node> = view
         .births()
         .filter_map(|n| {
             let mut n = n.clone();
-            records.answer(&mut n).then_some(n)
+            records.read(&mut n).then_some(n)
         })
         .collect();
     let mut out: Vec<NodeView> = births.iter().map(|n| {
@@ -396,11 +395,13 @@ fn fabrics_reply(me: &PathName, fabrics: Vec<FabricView>, filter: &Filter) -> St
     reply
 }
 
-/// [`fabric_answer`] with the cert rows giving the next expiry across the fabric and each mesh whose
-/// renewals stall at `now_ms`, this admin's rafka-time (fabric-certs.md §Tracking), and `record`, what
-/// the Fabric row adds (its topology_storage_provider and the providers it left, storage.md §2).
-pub async fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, facts: &dyn NodesStorage, now_ms: Option<u64>, record: Option<(Option<String>, Vec<String>)>, filter: &Filter) -> StatusReply {
-    let (next_expiry, stalled) = crate::cert_renewal::fabric_watch(view, facts, now_ms).await;
+/// [`fabric_answer`] with the cert dates the node records of `records`, this admin's atlas, hold
+/// giving the next expiry across the fabric and each mesh whose renewals stall at `now_ms`, this
+/// admin's rafka-time (fabric-certs.md §Tracking; no store read, query.md §1; none without an atlas),
+/// and `record`, what the Fabric row adds (its topology_storage_provider and the providers it left,
+/// storage.md §2).
+pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, records: Option<&Atlas>, now_ms: Option<u64>, record: Option<(Option<String>, Vec<String>)>, filter: &Filter) -> StatusReply {
+    let (next_expiry, stalled) = records.map(|r| crate::cert_renewal::fabric_watch(view, r, now_ms)).unwrap_or_default();
     let mut f = fabric(view, build_id);
     f.next_expiry = next_expiry;
     for m in f.meshes.iter_mut() {

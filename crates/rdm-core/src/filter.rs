@@ -13,6 +13,7 @@
 //! cannot take or an empty values list is refused naming the pair; a property the schema has and one
 //! row lacks (a config entry) does not match that row. Nothing matching is the empty list.
 
+use crate::digest::MeshDigest;
 use crate::views::{ConnectionView, FabricView, MeshView, NodeView};
 use serde::{Deserialize, Serialize};
 
@@ -174,6 +175,11 @@ const CONNECTION: &[Property] = &[
     p("logged_at_ms", Takes::Number),
 ];
 
+/// The node properties the topology a node holds carries for every node it hears, the gossiped digest
+/// (query.md §2; Q203: gossip carries what routing needs and nothing else): what a node's local
+/// `nodes_get` may name. Every other node property is the row's, read with `nodes.get`.
+pub const GOSSIPED: &[&str] = &["id", "incarnation", "endpoint", "transport_addr", "status", "path", "mesh", "kind", "node_type", "name", "is_primary", "is_fabric_primary"];
+
 /// A row's value of one property: one string, a set (matched when it carries a value), or absent
 /// (matching nothing).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +252,29 @@ impl Row for NodeView {
                 crate::meta::StorageMeta::Persistent { .. } => "persistent",
             })),
             "topology_storage_provider" => Value::of(self.topology_storage_provider.as_ref()),
+            _ => Value::Absent,
+        }
+    }
+}
+
+/// A gossiped digest, the row of a node's local query (query.md §2), by the node schema's names: the
+/// [`GOSSIPED`] properties only; every other property is absent from it.
+impl Row for MeshDigest {
+    fn value(&self, property: &str) -> Value {
+        let name = &self.node.name;
+        match property {
+            "id" => Value::One(self.node.node_id.to_string()),
+            "incarnation" => Value::One(self.node.incarnation.as_str().to_string()),
+            "endpoint" => Value::One(self.node.endpoint_id.0.clone()),
+            "transport_addr" => Value::One(self.node.transport_addr.to_string()),
+            "status" => Value::of(page_name(&self.status)),
+            "path" => Value::One(name.path()),
+            "mesh" => Value::One(name.mesh.clone()),
+            "kind" => Value::One(name.kind.segment().to_string()),
+            "node_type" => Value::One(name.node_type().to_string()),
+            "name" => Value::One(name.name()),
+            "is_primary" => Value::bool(self.is_primary.is_some()),
+            "is_fabric_primary" => Value::bool(self.is_fabric_primary.is_some()),
             _ => Value::Absent,
         }
     }
@@ -327,6 +356,24 @@ impl Filter {
     /// property of the entity's row and values it can take. Read against the schema, never a row.
     pub fn refusal(&self, entity: Entity) -> Option<String> {
         self.pairs.iter().find_map(|(property, values)| pair_refusal(entity, property, values).map(|why| format!("{}: the pair {} {why}", entity.read(), pair(property, values))))
+    }
+
+    /// Why this filter is refused for a node's local query of the topology it holds (query.md §2,
+    /// Q232), naming the pair: a pair the node schema refuses ([`Self::refusal`]), or one naming a
+    /// property of the node's row that gossip does not carry ([`GOSSIPED`]: `tags`, `config.<key>`,
+    /// `executable`, ...), named with `nodes.get`, the read that answers it. Read against the schema,
+    /// never a row: a row-only property is refused whatever rows would have matched.
+    pub fn local_refusal(&self) -> Option<String> {
+        self.refusal(Entity::Nodes).or_else(|| {
+            self.pairs.iter().find(|(property, _)| !GOSSIPED.contains(&property.as_str())).map(|(property, values)| {
+                format!(
+                    "the topology a node holds: the pair {} names {property}, a property of the node's row that gossip does not carry (its properties: {}); read it with {}",
+                    pair(property, values),
+                    GOSSIPED.join(", "),
+                    Entity::Nodes.read()
+                )
+            })
+        })
     }
 
     /// Whether `row` matches every pair. A filter is read through [`Self::refusal`] first.
@@ -450,6 +497,71 @@ mod tests {
         assert_eq!(Filter::new().eq("config.anything.at.all", ["x"]).refusal(Entity::Nodes), None);
         assert_eq!(Filter::new().eq("status", ["ready-for-traffic"]).eq("name", ["mesh1"]).refusal(Entity::Meshes), None);
         assert_eq!(Filter::new().eq("state", ["connected"]).eq("kind", ["direct", "proxy"]).refusal(Entity::Connections), None);
+    }
+
+    fn digest(name: &str, status: crate::MemberStatus, is_primary: bool) -> MeshDigest {
+        MeshDigest {
+            held_hash: Default::default(),
+            fabric_id: crate::FabricId::mint(),
+            node: crate::MeshNode {
+                node_id: NodeId::mint(),
+                name: name.parse().unwrap(),
+                endpoint_id: crate::EndpointId(format!("key-{name}")),
+                transport_addr: "127.0.0.1:20001".parse().unwrap(),
+                incarnation: crate::IncarnationId::mint(),
+                supersedes: None,
+                runtime: None,
+            },
+            status,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 1,
+            data_dir: None,
+            mesh_id: None,
+            in_flight: None,
+            load: None,
+            gossip: None,
+            is_primary: is_primary.then_some(1),
+            is_fabric_primary: None,
+        }
+    }
+
+    /// CONTRACT (query.md §2; Q232): a node's local query matches the digests it holds with the same
+    /// matcher and the node schema's names: `[kind: broker] [status: ready-for-traffic]` the ready
+    /// broker alone, `[mesh: mesh1] [is_primary: true]` the mesh's primary, `[id: x]` that node; the
+    /// gossiped properties pass the local check. A pair naming a row-only property (`tags`,
+    /// `config.<key>`, `executable`) is refused naming the pair and `nodes.get`, whatever digests would
+    /// have matched; a pair the node schema refuses is refused as `nodes.get` refuses it. Must NOT
+    /// happen: a row-only property answered as no match, or a refusal that does not say where to read it.
+    #[test]
+    fn a_local_query_matches_the_digests_held_and_refuses_a_row_only_property_naming_nodes_get() {
+        use crate::MemberStatus as M;
+        let ready = digest("mesh1.broker.1", M::ReadyForTraffic, false);
+        let pending = digest("mesh1.broker.2", M::Pending, false);
+        let admin = digest("mesh1.admin.1", M::ReadyForTraffic, true);
+        let held = [ready.clone(), pending.clone(), admin.clone()];
+        let local = |f: &Filter| -> Vec<String> {
+            assert_eq!(f.local_refusal(), None, "{f:?}");
+            held.iter().filter(|d| f.matches(*d)).map(|d| d.node.name.to_string()).collect()
+        };
+        assert_eq!(local(&Filter::new().eq("kind", ["broker"]).eq("status", ["ready-for-traffic"])), ["mesh1.broker.1"]);
+        assert_eq!(local(&Filter::new().eq("mesh", ["mesh1"]).eq("is_primary", ["true"])), ["mesh1.admin.1"]);
+        assert_eq!(local(&Filter::new().eq("id", [pending.node.node_id.to_string()])), ["mesh1.broker.2"]);
+        assert_eq!(local(&Filter::new().eq("path", ["mesh1.broker"]).eq("name", ["2"])), ["mesh1.broker.2"]);
+        assert_eq!(local(&Filter::new().eq("incarnation", [ready.node.incarnation.as_str().to_string()]).eq("endpoint", ["key-mesh1.broker.1"]).eq("transport_addr", ["127.0.0.1:20001"])), ["mesh1.broker.1"]);
+        assert_eq!(local(&Filter::new()).len(), 3, "no pair: every node held");
+        for (f, pair) in [
+            (Filter::new().eq("kind", ["broker"]).eq("tags", ["gold"]), "the pair (tags, [gold]) names tags"),
+            (Filter::new().eq("config.zone", ["eu-1"]), "the pair (config.zone, [eu-1]) names config.zone"),
+            (Filter::new().eq("executable", ["/bin/rpc"]), "the pair (executable, [/bin/rpc]) names executable"),
+        ] {
+            let why = f.local_refusal().unwrap_or_else(|| panic!("{f:?} is refused locally"));
+            assert!(why.contains(pair) && why.contains("read it with nodes.get"), "{why:?} names {pair:?} and nodes.get");
+            assert_eq!(f.refusal(Entity::Nodes), None, "nodes.get takes {f:?}");
+        }
+        let why = Filter::new().eq("kind", ["gatway"]).local_refusal().expect("a value the field cannot take");
+        assert!(why.starts_with("nodes.get: the pair (kind, [gatway])"), "{why:?}");
     }
 
     /// CONTRACT: every lifecycle state, kind and provider a row can carry is a value its schema takes,

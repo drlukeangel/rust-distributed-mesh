@@ -1664,7 +1664,7 @@ fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() 
 /// and `node_type` through:
 /// 1. `create` (claiming `mesh1.broker.north` and installing the birth into the view),
 /// 2. `get` (`views::nodes_answer` by id and by mesh),
-/// 3. `stop`/`start` (stopping at `Leaving` and starting back to `ReadyForTraffic`),
+/// 3. `stop`/`start` (stopped on its row and started back to `ReadyForTraffic`),
 /// 4. `recovery` (`NodeDeleted` writing the `Deleted` row at `mesh1.broker.north`, then the
 ///    recovered birth claiming `mesh1.broker.north` with `ClaimFor::Recovery` and inheriting
 ///    config, tags and `node_type`), and
@@ -1722,7 +1722,8 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
             ("mesh1.broker.north", "mesh1.broker", "north", "broker", &tier("gold"), &["blue".to_string()].into())
         );
 
-        // 3. Stop / Start: stopping and starting preserve `name`, `path` and `node_type`.
+        // 3. Stop / Start: stopping and starting preserve `name`, `path` and `node_type`; the read
+        //    answers the status the row takes (Q233), written by its mesh-primary.
         let north_id = north.node_id.clone();
         install(&mp.records, &mp.view, move |v| {
             let n = v.nodes.iter_mut().find(|n| n.node_id == north_id).unwrap();
@@ -1731,6 +1732,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
             n.routable = false;
         })
         .await;
+        mp.rows.written().update(&*storage, &north.node_id, None, |r| r.status = NodeStatus::Stopped).await.unwrap();
         let StatusReply::Nodes { nodes: stopped } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &atlas, &Filter::new().eq("id", [north.node_id.to_string()])).await else {
             panic!("expected StatusReply::Nodes");
         };
@@ -1745,6 +1747,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
             n.routable = true;
         })
         .await;
+        mp.rows.written().update(&*storage, &north.node_id, None, |r| r.status = NodeStatus::ReadyForTraffic).await.unwrap();
         let StatusReply::Nodes { nodes: started } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &atlas, &Filter::new().eq("id", [north.node_id.to_string()])).await else {
             panic!("expected StatusReply::Nodes");
         };

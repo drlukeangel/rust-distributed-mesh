@@ -382,6 +382,12 @@ impl Atlas {
         recorded || held.effects.get(incarnation.as_str()).is_some_and(|e| e.lifecycle == Lifecycle::Deleted)
     }
 
+    /// The records the atlas holds of `mesh`'s nodes: what `fabrics.get`'s cert summary folds
+    /// (fabric-certs.md §Tracking), never a store read.
+    pub fn records_of(&self, mesh: &str) -> Vec<NodeRow> {
+        self.held.lock().unwrap().records.values().filter(|r| r.name.mesh == mesh).cloned().collect()
+    }
+
     /// The record the atlas holds at `path`: the one whose node holds the name now.
     pub fn record_at(&self, path: &PathName) -> Option<NodeRow> {
         self.held.lock().unwrap().records.values().find(|r| r.name == *path).cloned()
@@ -652,6 +658,31 @@ impl Atlas {
                 n.status = NodeStatus::ReadyForTraffic;
             }
             _ => {}
+        }
+        true
+    }
+
+    /// `n`, a birth `nodes.get` answers, as this atlas holds it (query.md §1; Q233, states.md "Who sets
+    /// each state": "A query answers the state the row last took from the node's frame or the
+    /// mesh-primary's receipt"): the name its record holds, and, where the record is of this birth (its
+    /// newest, or a record with no birth yet), the status as the row is written: the silence its
+    /// mesh-primary keeps on the birth (`PendingReconnect`, `Dead`) while it holds one, else the row's
+    /// status, `stopped` exactly when that is stopped. Never the gossip view's status nor a lifecycle
+    /// effect laid over it: a command the node has not acknowledged moved the row nowhere, so it moves
+    /// the answer nowhere. A birth no record of this atlas is of answers the view's status. `false` when
+    /// an op deleted the birth: it is not answered. Build acceptance reads [`Self::answer`], not this.
+    pub(crate) fn read(&self, n: &mut crate::model::Node) -> bool {
+        let held = self.held.lock().unwrap();
+        if n.incarnation_id.as_ref().and_then(|i| held.effects.get(i.as_str())).is_some_and(|e| e.lifecycle == Lifecycle::Deleted) {
+            return false;
+        }
+        if let Some(r) = held.records.get(&n.node_id).filter(|r| r.status != NodeStatus::Withdrawn) {
+            n.name = r.name.clone();
+            let newest = r.newest_birth();
+            if newest.is_none_or(|b| Some(&b.incarnation_id) == n.incarnation_id.as_ref()) {
+                n.status = newest.and_then(|b| b.silence).unwrap_or(r.status);
+                n.stopped = n.status == NodeStatus::Stopped;
+            }
         }
         true
     }

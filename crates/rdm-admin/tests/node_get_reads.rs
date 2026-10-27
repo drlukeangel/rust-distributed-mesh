@@ -167,3 +167,294 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         }
     }
 }
+
+/// A nodes store that fails every call, read or write, and counts them: a read answered while it is
+/// the admin's store read nothing of it.
+#[derive(Default)]
+struct Unreadable {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl Unreadable {
+    fn fail<T>(&self, what: &str) -> Result<T, rdm_admin::storage_error::StorageError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/{what}"), reason: "the nodes store fails every read".into() })
+    }
+}
+
+#[async_trait::async_trait]
+impl rdm_admin::storage::NodesStorage for Unreadable {
+    async fn put_runtime(&self, _: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.fail("runtimes")
+    }
+    async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
+        self.fail("runtimes")
+    }
+    async fn runtime(&self, _: &NodeId, _: &IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
+        self.fail("runtimes")
+    }
+    async fn node(&self, _: &NodeId) -> Result<Option<NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.fail("records")
+    }
+    async fn node_at(&self, _: &PathName) -> Result<Option<NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.fail("records")
+    }
+    async fn nodes(&self, _: &str) -> Result<Vec<NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.fail("records")
+    }
+    async fn put_node(&self, _: &NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.fail("records")
+    }
+    async fn index_path(&self, _: &PathName, _: &NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.fail("paths")
+    }
+    async fn index_tags(&self, _: &str, _: &NodeId, _: &std::collections::BTreeSet<String>, _: &std::collections::BTreeSet<String>) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.fail("tags")
+    }
+    async fn tagged(&self, _: &str) -> Result<std::collections::BTreeSet<NodeId>, rdm_admin::storage_error::StorageError> {
+        self.fail("tags")
+    }
+    async fn name_claim(&self, _: &PathName) -> Result<Option<NodeId>, rdm_admin::storage_error::StorageError> {
+        self.fail("names")
+    }
+    async fn claim_node_name(&self, _: &PathName, _: &NodeId) -> Result<Result<(), rdm_admin::storage::NameHeld>, rdm_admin::storage_error::StorageError> {
+        self.fail("names")
+    }
+    async fn release_node_name(&self, _: &PathName, _: &NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.fail("names")
+    }
+}
+
+/// The fabric-primary `me`'s Status authority over `view`, its atlas `atlas` and its nodes store
+/// `nodes_storage`; every other store in memory.
+fn authority(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atlas>, nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>) -> rdm_admin::status_rpc::StatusAuthority {
+    let slot = Arc::new(std::sync::OnceLock::new());
+    let _ = slot.set(atlas);
+    let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
+    rdm_admin::status_rpc::StatusAuthority {
+        certs: None,
+        app_channels: None,
+        declaration_seam: None,
+        command_frame_seam: None,
+        operation_effects: Default::default(),
+        stopped: Default::default(),
+        me: me.name.clone(),
+        node_id: me.node_id.clone(),
+        fabric_id: view.fabric.id.clone(),
+        topology: Arc::new(tokio::sync::RwLock::new(view)),
+        declared: Arc::new(std::sync::Mutex::new(rdm_admin::status_rpc::Declared::default())),
+        meshes_storage: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
+        fabric_storage: Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()),
+        nodes_storage,
+        caches: Default::default(),
+        mesh_ids: Arc::new(BTreeMap::new),
+        durable: Default::default(),
+        commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
+        own: Arc::new(std::sync::OnceLock::new()),
+        mesh_deleter: Arc::new(std::sync::OnceLock::new()),
+        hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        wake: Default::default(),
+        fabric_states: Default::default(),
+        atlas: slot,
+        fabric_recovery: Default::default(),
+        configs: Default::default(),
+        republish: Default::default(),
+        configure: Default::default(),
+        pre_node_ready: Default::default(),
+        rename: Default::default(),
+        row_moved: Default::default(),
+        loads: Some(loads),
+        digest_view: None,
+        builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
+    }
+}
+
+fn get(entity: rdm_core::filter::Entity, filter: Filter) -> rdm_core::status::StatusRequest {
+    rdm_core::status::StatusRequest::Get { entity, node: None, filter }
+}
+
+/// CONTRACT (query.md §1; node-rpc-envelope.md nodes.get: "answered by the fabric-primary from its
+/// atlas, never from the node store"; fabric-certs.md §Tracking): at a fabric-primary whose atlas was
+/// filled from its node records, with its nodes store failing every call from then on, `nodes.get`
+/// answers every node matching the filter, config and tags and cert included, from the atlas, and
+/// `fabrics.get` answers the fabric with its `next_expiry`, the soonest member cert expiry the atlas's
+/// records hold; neither makes one call to the nodes store. Must NOT happen: a read refused or answered
+/// short because the store failed, the cert summary read from the store (and silently dropped when the
+/// store fails), or any call to the store at all.
+#[tokio::test]
+async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_fails_every_read() {
+    let (mut admin, gw) = (node("mesh1.admin.1"), node("mesh1.gateway.1"));
+    admin.kind = rdm_core::NodeKind::NodeAdmin;
+    admin.is_primary = true;
+    admin.is_fabric_primary = true;
+    let view = Topology {
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        nodes: vec![admin.clone(), gw.clone()],
+    };
+    let records = MemoryNodesStorage::default();
+    let expiries = [(&admin, 9_000_000u64), (&gw, 7_000_000u64)];
+    for (n, expires_at) in expiries {
+        let mut row = NodeRow::new(n.name.clone(), n.node_id.clone(), NodeStatus::ReadyForTraffic);
+        row.config = BTreeMap::from([("zone".to_string(), "eu-1".to_string())]);
+        row.tags = ["gold".to_string()].into();
+        row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name).cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
+        records.write_record(&row).await.unwrap();
+    }
+    let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
+    atlas.fill(&records, ["mesh1".to_string()]).await.expect("the atlas is filled from the node records, once");
+    let store = Arc::new(Unreadable::default());
+    let fp = authority(&admin, view, atlas, store.clone());
+
+    match fp.apply(None, &get(rdm_core::filter::Entity::Nodes, Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold"]))).await {
+        StatusReply::Nodes { nodes } => {
+            assert_eq!(nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>(), ["mesh1.admin.1", "mesh1.gateway.1"], "{nodes:#?}");
+            assert_eq!(nodes[1].cert.as_ref().map(|c| c.expires_at), Some(7_000_000), "the cert is the atlas record's");
+        }
+        other => panic!("nodes.get answers from the atlas while the store fails every read, not {other:?}"),
+    }
+    match fp.apply(None, &get(rdm_core::filter::Entity::Fabrics, Filter::new())).await {
+        StatusReply::Fabrics { fabrics } => {
+            assert_eq!(fabrics.len(), 1, "{fabrics:#?}");
+            assert_eq!(fabrics[0].next_expiry, Some(7_000_000), "the soonest cert expiry the atlas's records hold: {fabrics:#?}");
+        }
+        other => panic!("fabrics.get answers from the atlas while the nodes store fails every read, not {other:?}"),
+    }
+    assert_eq!(store.calls.load(std::sync::atomic::Ordering::SeqCst), 0, "neither read called the nodes store");
+}
+
+/// CONTRACT (Q233, states.md "Who sets each state": "A query answers the state the row last took from
+/// the node's frame or the mesh-primary's receipt; a command the node has not acknowledged moves the
+/// row nowhere"): a stop the mesh-primary admitted and the node has not acknowledged leaves its row
+/// ready-for-traffic, and `nodes.get` answers ready-for-traffic, not stopped, though the admitting
+/// mesh-primary's view already holds the birth leaving; the node's acknowledgement, written on the row
+/// as stopping, answers stopping; the stopped frame, written as stopped, answers stopped. Must NOT
+/// happen: the gossip view's status, or a lifecycle effect laid over it, answered in place of the row's.
+#[tokio::test]
+async fn an_unacknowledged_stop_reads_ready_for_traffic_and_the_row_answers_each_state_it_takes() {
+    let (admin, mut rpc) = (node("mesh1.admin.1"), node("mesh1.rpc.1"));
+    // The stop's admission at the mesh-primary set the birth leaving in its view, with no frame of the node.
+    rpc.status = NodeStatus::Leaving;
+    let view = Topology {
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        nodes: vec![admin.clone(), rpc.clone()],
+    };
+    let records = MemoryNodesStorage::default();
+    let mut row = NodeRow::new(rpc.name.clone(), rpc.node_id.clone(), NodeStatus::ReadyForTraffic);
+    row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.name).declared.insert(rdm_core::status::NodeState::ReadyForTraffic);
+    records.write_record(&row).await.unwrap();
+    let atlas = rdm_admin::atlas::Atlas::default();
+    atlas.fill(&records, ["mesh1".to_string()]).await.unwrap();
+    use rdm_core::views::NodeStatus as Read;
+    assert_eq!(status_of(&view, &atlas, &rpc.node_id).await, (Read::ReadyForTraffic, false), "a stop the node has not acknowledged moves its row nowhere: ready-for-traffic");
+    let ready: Vec<String> = match rdm_admin::views::nodes_answer(&path("mesh1.admin.1"), &view, &(Arc::new(BTreeMap::new) as rdm_admin::views::Loads), &atlas, &Filter::new().eq("status", ["ready-for-traffic"])).await {
+        StatusReply::Nodes { nodes } => nodes.into_iter().map(|n| n.name.to_string()).collect(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(ready, ["mesh1.admin.1", "mesh1.rpc.1"], "[status: ready-for-traffic] matches the birth whose stop is unacknowledged");
+
+    row.status = NodeStatus::Stopping;
+    atlas.write_record(&row);
+    assert_eq!(status_of(&view, &atlas, &rpc.node_id).await, (Read::Stopping, false), "the node's acknowledgement written on the row: stopping");
+
+    row.status = NodeStatus::Stopped;
+    atlas.write_record(&row);
+    assert_eq!(status_of(&view, &atlas, &rpc.node_id).await, (Read::Stopped, true), "the stopped frame written on the row: stopped");
+}
+
+/// CONTRACT (query.md §2, Q232: "the same pair list answers the same nodes from both sources on a
+/// settled fabric"): a gateway of mesh1 holding the digests of mesh1's admin (its primary), two rpc
+/// nodes (one ready for traffic, one pending) and a broker of mesh2, and the fabric-primary's atlas
+/// holding the same births, answer the same nodes for the same gossiped pairs: `[kind: rpc] [status:
+/// ready-for-traffic]`, `[mesh: mesh1]`, `[is_primary: true]`, `[mesh: mesh2] [kind: broker]` and no
+/// pair; the local query makes no call. A row-only pair (`[tags: gold]`, `[config.zone: eu-1]`) is
+/// answered by `nodes.get` and refused locally naming the pair and `nodes.get`. Must NOT happen: the
+/// two sources disagreeing on a gossiped pair, or a row-only pair answered locally as no match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_same_pairs_answer_the_same_nodes_from_the_atlas_and_from_the_topology_a_node_holds() {
+    use rdm_core::{MemberStatus, MeshDigest, MeshNode};
+    let fabric = FabricId::mint();
+    let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+    let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+    let time = rdm_transport::clock::RafkaTime::unadopted();
+    time.adopt(5_000_000);
+    let gateway = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.gateway.1", Arc::new(time.clone()), vec![], &[]).await.unwrap();
+
+    // (name, ready for traffic, primary of its node type)
+    let births = [("mesh1.admin.1", true, true), ("mesh1.rpc.1", true, false), ("mesh1.rpc.2", false, false), ("mesh2.broker.1", true, false)];
+    let mut nodes = Vec::new();
+    let records = MemoryNodesStorage::default();
+    for (i, (name, ready, primary)) in births.into_iter().enumerate() {
+        let mut n = node(name);
+        n.mesh = path(name).mesh.clone();
+        n.kind = path(name).kind;
+        n.status = if ready { NodeStatus::ReadyForTraffic } else { NodeStatus::Pending };
+        n.is_primary = primary;
+        n.endpoint_id = Some(EndpointId(format!("key-{name}")));
+        n.transport_addr = Some(format!("127.0.0.1:{}", 21_000 + i).parse().unwrap());
+        let mut row = NodeRow::new(n.name.clone(), n.node_id.clone(), n.status);
+        row.tags = ["gold".to_string()].into();
+        row.config = BTreeMap::from([("zone".to_string(), "eu-1".to_string())]);
+        records.write_record(&row).await.unwrap();
+        let d = MeshDigest {
+            held_hash: Default::default(),
+            fabric_id: fabric.clone(),
+            node: MeshNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone().unwrap(), transport_addr: n.transport_addr.unwrap(), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            status: if ready { MemberStatus::ReadyForTraffic } else { MemberStatus::Pending },
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 10,
+            emitted_at_rafka_ms: 10,
+            data_dir: None,
+            mesh_id: None,
+            in_flight: None,
+            load: None,
+            gossip: None,
+            is_primary: primary.then_some(1),
+            is_fabric_primary: None,
+        };
+        assert!(gateway.digest_view.record(d.clone()), "{name}'s heartbeat is held");
+        if ready && n.mesh == "mesh1" {
+            assert!(gateway.digest_view.started(&d.node.node_id, &d.node.incarnation, &d.node.name), "{name}'s node.started, as its mesh-primary's projection carries it");
+        }
+        nodes.push(n);
+    }
+    let view = Topology {
+        fabric: Fabric { id: fabric.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }, Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic }],
+        nodes,
+    };
+    let local = |f: &Filter| gateway.nodes_get(f).map(|ds| ds.into_iter().map(|d| d.node.name.to_string()).collect::<Vec<_>>());
+    let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
+    for f in [
+        Filter::new().eq("kind", ["rpc"]).eq("status", ["ready-for-traffic"]),
+        Filter::new().eq("mesh", ["mesh1"]),
+        Filter::new().eq("is_primary", ["true"]),
+        Filter::new().eq("mesh", ["mesh2"]).eq("kind", ["broker"]),
+        Filter::new(),
+    ] {
+        let atlas: Vec<String> = answer(&view, &records, &planned, f.clone()).await.into_iter().map(|n| n.name.to_string()).collect();
+        assert_eq!(local(&f), Ok(atlas.clone()), "{f:?}: the topology the gateway holds answers what the atlas answers");
+        assert!(!atlas.is_empty(), "{f:?} matches a node");
+    }
+    assert_eq!(local(&Filter::new().eq("kind", ["rpc"]).eq("status", ["ready-for-traffic"])), Ok(vec!["mesh1.rpc.1".to_string()]), "the local query filters kind and status");
+    for (f, pair) in [(Filter::new().eq("tags", ["gold"]), "(tags, [gold])"), (Filter::new().eq("config.zone", ["eu-1"]), "(config.zone, [eu-1])")] {
+        assert_eq!(answer(&view, &records, &planned, f.clone()).await.len(), 4, "nodes.get answers the row-only pair {f:?}");
+        let why = local(&f).expect_err("a row-only pair is refused locally");
+        assert!(why.contains(pair) && why.contains("read it with nodes.get"), "{why:?} names {pair} and nodes.get");
+    }
+}
+
+/// The status and `stopped` of the birth `id`, as `nodes.get [id: id]` over `view` and `atlas` answers it.
+async fn status_of(view: &Topology, atlas: &rdm_admin::atlas::Atlas, id: &NodeId) -> (rdm_core::views::NodeStatus, bool) {
+    let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
+    match rdm_admin::views::nodes_answer(&path("mesh1.admin.1"), view, &loads, atlas, &Filter::new().eq("id", [id.to_string()])).await {
+        StatusReply::Nodes { nodes } => {
+            let n = nodes.into_iter().next().expect("the birth is answered");
+            (n.status, n.stopped)
+        }
+        other => panic!("nodes.get answers the birth, not {other:?}"),
+    }
+}
