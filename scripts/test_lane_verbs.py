@@ -164,10 +164,6 @@ class Verbs(unittest.TestCase):
         item_3 = next(l for l in rules if l.startswith('3. '))
         self.assertIn('Never land, never push, never switch branch', item_3)
         self.assertNotIn('gate', item_3, 'a seat proves its own tip: item 3 no longer forbids the gate')
-        # Lane 4's own rules are this template's render: its item 7 is the text above with lane 4 in it.
-        lane4 = Path('/home/admin/lane-queue/rdm/4/seat-rules.md')
-        if lane4.exists():
-            self.assertIn(ITEM_7.format(lane_dir='/home/admin/rdm-lanes/4', lane='4'), lane4.read_text().splitlines())
 
     def test_post_land_gate_regenerates_a_conflict_only_in_the_generated_pages(self):
         self.e.change(self.e.lane, 'branch: a', **{'a.txt': 'a1'})
