@@ -19,6 +19,14 @@ if [ -z "$RDM_GATE_LOCKED" ]; then
   [ $rc = 99 ] && echo "ABORT: a gate is already running on lane $(basename "$(pwd)")" >&2
   exit $rc
 fi
+# The box's turn lock, taken after the lane's own lock and held for the whole run (also `-o`): no gate
+# runs beside a soak batch, an export batch, lane warming or another lane's cells, which take the same
+# lock (cells.sh, lane-lib.sh lane_warm, i143-export-run.sh). A gate that finds it held says so and waits.
+if [ -z "$RDM_GATE_TURNED" ]; then
+  TURN=${RDM_TURN_LOCK:-/tmp/rdm-gate-turn.lock}
+  flock -n -o "$TURN" true 2>/dev/null || echo "WAITING: the box's turn lock ($TURN) is held; this gate runs when it is free"
+  RDM_GATE_TURNED=1 exec flock -o "$TURN" "$0" "$@"
+fi
 # Two gates over one suite. `release` (rdm-gate-at.sh <lane> release) adds the release-only jobs
 # below and exports no cadence: each stem runs at the cadence it sets (rdm-test's and rdm-admin's
 # test binaries set the test cadence when it is unset), and a node a cell launches with a cleared

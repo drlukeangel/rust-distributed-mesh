@@ -9,7 +9,9 @@ arguments; the lane's prebuilt rdm-docgen is a stub that writes the generated pa
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
+import time
 import tempfile
 import unittest
 
@@ -234,6 +236,74 @@ class Verbs(unittest.TestCase):
         rc, out = self.land()
         self.assertEqual(rc, 8, out)
         self.assertIn('no GREEN post-land-gate.sh', out)
+
+
+    def dispatch(self, *extra):
+        design = self.e.home / 'design.md'
+        design.write_text('the design\n')
+        return self.e.run('lane-dispatch.sh', '--lane', LANE, '--issue', '1', '--name', 'scratch', '--title', 'Scratch',
+                          '--design', str(design), *extra)
+
+    def gh_log(self):
+        p = self.e.home / 'gh.log'
+        return p.read_text() if p.exists() else ''
+
+    def test_dispatch_uses_rdms_repo_by_default_and_records_it(self):
+        rc, out = self.dispatch()
+        self.assertEqual(rc, 0, out)
+        rdm = 'drlukeangel/rust-distributed-mesh'
+        self.assertEqual((self.e.state / 'repo').read_text().strip(), rdm)
+        log = self.gh_log()
+        self.assertIn(f'issue view 1 --repo {rdm}', log)
+        self.assertIn(f'issue comment 1 --repo {rdm}', log)
+        self.assertNotIn('rafka-v2', log)
+        self.assertIn(f'You are the seat for {rdm} issue #1', (self.e.state / 'seat-rules.md').read_text())
+        self.assertIn(f'https://github.com/{rdm}/issues/1', (self.e.state / 'plan.md').read_text())
+
+    def test_dispatch_repo_flag_names_a_unit_still_on_rafka_v2(self):
+        rc, out = self.dispatch('--repo', 'drlukeangel/rafka-v2')
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.e.state / 'repo').read_text().strip(), 'drlukeangel/rafka-v2')
+        self.assertIn('issue view 1 --repo drlukeangel/rafka-v2', self.gh_log())
+        self.assertIn('You are the seat for drlukeangel/rafka-v2 issue #1', (self.e.state / 'seat-rules.md').read_text())
+
+    def land_proven(self):
+        self.e.commit(self.e.lane, 'branch: a', {'src/a.txt': 'a1\n'})
+        self.prove()
+        rc, out = self.land()
+        self.assertEqual(rc, 0, out)
+
+    def test_land_closes_in_the_lanes_recorded_repo(self):
+        (self.e.state / 'repo').write_text('drlukeangel/rust-distributed-mesh\n')
+        self.land_proven()
+        self.assertIn('issue close 1 --repo drlukeangel/rust-distributed-mesh', self.gh_log())
+
+    def test_land_in_a_lane_with_no_repo_file_closes_in_rafka_v2(self):
+        self.assertFalse((self.e.state / 'repo').exists())
+        self.land_proven()
+        self.assertIn('issue close 1 --repo drlukeangel/rafka-v2', self.gh_log())
+
+    def test_a_gate_waits_for_a_held_turn_lock(self):
+        turn = self.e.home / 'turn.lock'
+        env = {**self.e.env, 'RDM_TURN_LOCK': str(turn)}
+        holder = subprocess.Popen(['flock', '-o', str(turn), 'sleep', '600'], env=env, start_new_session=True)
+        gate = None
+        try:
+            time.sleep(1)
+            gate = subprocess.Popen(['bash', str(SCRIPTS / 'rdm-gate-at.sh'), str(self.e.lane)], cwd=self.e.home, env=env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+            time.sleep(4)
+            self.assertIsNone(gate.poll(), 'the gate is still waiting, not run or aborted, while the turn lock is held')
+            holder_pg = os.getpgid(holder.pid)
+            os.killpg(holder_pg, signal.SIGKILL)
+            holder.wait()
+            out, _ = gate.communicate(timeout=120)
+            self.assertIn('WAITING: the box\'s turn lock', out)
+        finally:
+            for p in (holder, gate):
+                if p is not None and p.poll() is None:
+                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                    p.wait()
 
 
 if __name__ == '__main__':

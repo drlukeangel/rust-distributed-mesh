@@ -7,6 +7,9 @@ MAIN="${RDM_MAIN:-$HOME/rust-distributed-mesh}"
 DEPLOY_ROOT="${RDM_DEPLOY:-$HOME/rust-distributed-mesh-deploy}"
 # Seat agent types live in the MAIN checkout's .claude/agents, where the lead's Claude Code session reads them.
 AGENTS_DIR="${RDM_AGENTS_DIR:-$MAIN/.claude/agents}"
+# The repo a lane's issue lives in: RDM's own (Luke), unless lane-dispatch.sh --repo recorded another in
+# $HOME/lane-queue/rdm/<n>/repo; a lane with no repo file was dispatched before the move and is rafka-v2.
+ISSUE_REPO="${RDM_ISSUE_REPO:-drlukeangel/rust-distributed-mesh}"
 lane_dir() { echo "$LANES_ROOT/$1"; }
 state_dir() { echo "$STATE_ROOT/$1"; }
 # A lane is busy while any process runs with its cwd inside the lane (a build, a cell, a gate, a node).
@@ -46,3 +49,4 @@ lane_warm() {
     || { echo "REFUSED: lane $1 does not build at $(git -C "$d" rev-parse --short HEAD)"; return 1; }
   echo "lane $1: warm at $(git -C "$d" rev-parse --short HEAD) in $(( $(date +%s)-s ))s"
 }
+lane_repo() { cat "$(state_dir "$1")/repo" 2>/dev/null || echo drlukeangel/rafka-v2; }

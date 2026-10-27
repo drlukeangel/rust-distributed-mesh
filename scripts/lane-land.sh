@@ -45,7 +45,7 @@ sha=$(echo "$out" | sed -n 's/^LANDED \([0-9a-f]*\).*/\1/p' | tail -1)
 [ $rc -eq 0 ] && [ -n "$sha" ] || { echo "NOT LANDED (exit $rc); issue #$I left as it is"; exit "${rc:-1}"; }
 body=$(sed "s/@SHA@/$sha/g" "$C")
 cd "$MAIN"
-if [ -n "${LAND_NOCLOSE:-}" ]; then gh issue comment "$I" --repo drlukeangel/rafka-v2 -b "$body" >/dev/null && echo "COMMENTED #$I"
-else gh issue close "$I" --repo drlukeangel/rafka-v2 -c "$body" >/dev/null && echo "CLOSED #$I"; fi
+if [ -n "${LAND_NOCLOSE:-}" ]; then gh issue comment "$I" --repo "$(lane_repo "$L")" -b "$body" >/dev/null && echo "COMMENTED #$I"
+else gh issue close "$I" --repo "$(lane_repo "$L")" -c "$body" >/dev/null && echo "CLOSED #$I"; fi
 rm -f "$(state_dir "$L")/seat"
 echo "LANDED-AND-RECORDED $sha lane $L issue #$I"

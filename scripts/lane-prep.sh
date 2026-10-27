@@ -19,6 +19,6 @@ lane_warm "$L" || exit 7
 mkdir -p "$s/inbox"
 prev=$(cat "$s/branch" 2>/dev/null || true)
 if [ -n "$prev" ] && ls "$s/inbox"/[0-9]*.md >/dev/null 2>&1; then mkdir -p "$s/inbox/done-$prev"; mv "$s/inbox"/[0-9]*.md "$s/inbox/done-$prev/"; fi
-rm -f "$s/plan.md" "$s/seat" "$s/issue"
+rm -f "$s/plan.md" "$s/seat" "$s/issue" "$s/repo"
 echo "$B" > "$s/branch"; echo "$d" > "$s/worktree"
 echo "PREPPED lane $L: $B at $(git -C "$d" rev-parse --short HEAD)"
