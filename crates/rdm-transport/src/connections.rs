@@ -1529,25 +1529,9 @@ impl Dialer {
         };
 
         let addr = iroh::EndpointAddr::new(resolved.endpoint_id).with_ip_addr(resolved.transport_addr);
-        let connect_fut = self
-            .registry
-            .inner
-            .endpoint
-            .connect(addr, &self.alpn.name)
-            .instrument(caller_span.clone());
-        let quic_conn = match connect_fut.await {
-            Ok(c) => c,
-            Err(e) => {
-                let reason = e.to_string();
-                self.record_direct_failure(own, destination, &reason, caller_span);
-                return Err(ConnectError::NotSent { reason });
-            }
-        };
-
-        let (mut ctrl_send, mut ctrl_recv) = match quic_conn.open_bi().instrument(caller_span.clone()).await {
-            Ok(bi) => bi,
-            Err(e) => {
-                let reason = e.to_string();
+        let (quic_conn, mut ctrl_send, mut ctrl_recv) = match self.dial(destination, addr, caller_span).await {
+            Ok(dialled) => dialled,
+            Err(reason) => {
                 self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
@@ -1730,24 +1714,10 @@ impl Dialer {
             })?;
 
         let addr = iroh::EndpointAddr::new(resolved.endpoint_id).with_ip_addr(resolved.transport_addr);
-        let quic_conn = self
-            .registry
-            .inner
-            .endpoint
-            .connect(addr, &self.alpn.name)
-            .instrument(tunnel_span.clone())
+        let (quic_conn, mut ctrl_send, mut ctrl_recv) = self
+            .dial(carrier, addr, &tunnel_span)
             .await
-            .map_err(|e| ConnectError::NotSent {
-                reason: e.to_string(),
-            })?;
-
-        let (mut ctrl_send, mut ctrl_recv) = quic_conn
-            .open_bi()
-            .instrument(tunnel_span.clone())
-            .await
-            .map_err(|e| ConnectError::NotSent {
-                reason: e.to_string(),
-            })?;
+            .map_err(|reason| ConnectError::NotSent { reason })?;
 
         let cert = self.registry.inner.member_cert.lock().unwrap().clone();
         let present = PresentFrame {
@@ -1905,6 +1875,56 @@ impl Dialer {
         }
     }
 
+    /// The transport connect and the connection's control stream, as a dial of their own. The
+    /// transport spawns a connection's driver task with the span current at its connect, and that
+    /// task lives as long as the connection, so the dial never runs where `opener` is current: its
+    /// span is a root linked (follows_from) to `opener`, the OpenTelemetry link for causally related
+    /// work that is not nested (telemetry.md: a call span's children are the serve span, the
+    /// handler's spans and the invocation's end), as the pooled dial's is. It is never the current
+    /// span while the dial runs: the dial runs on a task of its own, on the dispatcher of its span,
+    /// and the span ends with the dial, so neither it nor the opener's span, nor any span above it,
+    /// is held open past the open. A dropped open aborts its dial, as it ends its own connect.
+    async fn dial(
+        &self,
+        to: &Birth,
+        addr: iroh::EndpointAddr,
+        opener: &tracing::Span,
+    ) -> Result<(iroh::endpoint::Connection, iroh::endpoint::SendStream, iroh::endpoint::RecvStream), String> {
+        let span = tracing::info_span!(
+            parent: None,
+            "rdm.node.connections.create.via-dial",
+            destination = %to.name,
+            alpn = %String::from_utf8_lossy(&self.alpn.name),
+            outcome = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+        );
+        span.follows_from(opener);
+        let dispatch = tracing::Span::with_subscriber(&span, |(_, d): (&tracing::Id, &tracing::Dispatch)| d.clone());
+        let endpoint = self.registry.inner.endpoint.clone();
+        let alpn = self.alpn.name.clone();
+        let dial = async move {
+            let started = std::time::Instant::now();
+            let out: Result<_, String> = async {
+                let conn = endpoint.connect(addr, &alpn).await.map_err(|e| e.to_string())?;
+                let (send, recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+                Ok((conn, send, recv))
+            }
+            .await;
+            span.record("outcome", match &out { Ok(_) => "connected", Err(e) => e.as_str() });
+            span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+            drop(span);
+            out
+        };
+        let mut task = DialTask(match dispatch {
+            Some(d) => tokio::spawn(tracing::instrument::WithSubscriber::with_subscriber(dial, d)),
+            None => tokio::spawn(dial),
+        });
+        match (&mut task.0).await {
+            Ok(out) => out,
+            Err(e) => Err(format!("the dial ended without an outcome: {e}")),
+        }
+    }
+
     /// Owe the dial's `Failed` row (Q169): built when the writer takes it, from the held
     /// projection then, so a failing series of the birth dialled continues one ordinal up from the
     /// failure owed before it; anything else is a new incident at ordinal one. Never awaited.
@@ -1951,6 +1971,15 @@ impl Dialer {
             })
         });
         caller_span.in_scope(|| self.registry.inner.sink.record_row(build));
+    }
+}
+
+/// A [`Dialer`]'s dial task, aborted when the open awaiting it is dropped.
+struct DialTask<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for DialTask<T> {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
