@@ -3284,3 +3284,10 @@ Open with Luke or the architects (no unit until ruled):
 - The proposals docs/plans/proposal/query-page.md (query.md) and q235-node-config-flow.md: the architects' review and Luke's yes on the page text.
 
 Running outside the units: the learning-soak loop in lane 5 (each iteration kept under kept/soak-<sha>-<n>); the final tail at one SHA once the units above have landed.
+
+#### The audit of every ruling and proposal, 2026-10-27 (the lead)
+
+Every INDEX row whose state was not landed, decided or withdrawn (Q63-Q214, 48 rows) and every file in docs/plans/proposal/ was read against main. Rows found done are done; Q63, Q64, Q65, Q67, Q139 and Q140 are rafka-v2's. What remains, each now tracked:
+- #3244, the vocabulary sweep: banned words written before the bans remain in crates/ (Q214's departed tail, Q111's exit-proof residue, and the rest by count).
+- To Luke, a ruling or a withdrawal: the failure matrix (docs/plans/proposal/i143-failure-matrix.md says it lands as lifecycles/failure-matrix.md once approved; no ruling, no page); store-root-one-directory-per-entity.md (asks Luke's yes on R-SR1 to R-SR3; the code uses them and Q227 cited them; no INDEX row); Q110's open point (in standalone, an old node can write to the shared directory before it is refused; no recorded answer); ops-naming-proposal.md item 4 (gossip frame naming, waits on Luke's go-ahead); node-status-heartbeat-connections.md R-HB3 (parked post-beta).
+- Page sentences a ruling named and main no longer carries, each likely superseded by a later rewrite, to confirm: Q96 (the hand-back key), Q108 (the vacated seat line; the elections page was rewritten by Q107), Q94 (the envelope's "calls the winner"), Q76 (gossip.md §3.1's "node.delete replaces NodeStopped"), Q131 (the thawed-node rule has no page line).
