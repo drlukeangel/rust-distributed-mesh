@@ -151,7 +151,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
         republish: Default::default(), configure: Default::default(),
         pre_node_ready: Default::default(),
         rename: Default::default(),
-        row_moved: Default::default(), held_rows: Default::default(),
+        row_moved: Default::default(),
         loads: None,
         digest_view: Some(topology_view.digest_view.clone()),
         builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),

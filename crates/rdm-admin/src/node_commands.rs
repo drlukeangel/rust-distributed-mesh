@@ -130,17 +130,8 @@ impl CommandView {
     /// A rows sweep's turn to write: `None` while this admin replied `blocked` and is not unblocked yet,
     /// its rows held (storage.md §2 step 2; i149 R8).
     pub async fn row_writes(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
-        let (turn, blocked) = self.row_turn().await;
-        (!blocked).then_some(turn)
-    }
-
-    /// A row writer's turn, and whether this admin replied `blocked` and is not unblocked yet: a writer
-    /// that holds its row while blocked holds it under the turn, so the unblock, which takes the turn,
-    /// finds it held.
-    pub async fn row_turn(&self) -> (tokio::sync::MutexGuard<'_, ()>, bool) {
         let turn = self.row_writes.lock().await;
-        let blocked = *self.blocked.borrow();
-        (turn, blocked)
+        (!*self.blocked.borrow()).then_some(turn)
     }
 
     /// `mesh.unblock`: commands are issued again.
