@@ -327,6 +327,63 @@ pub struct PinnedBirth {
     pub incarnation: IncarnationId,
 }
 
+impl PinnedBirth {
+    /// The birth `n` is, when it holds an incarnation.
+    pub fn of(n: &crate::model::Node) -> Option<Self> {
+        n.incarnation_id.clone().map(|incarnation| Self { node_id: n.node_id.clone(), incarnation })
+    }
+
+    /// The executing mesh-primary's check before any effect of `operation` on `node` (build.md §4.4:
+    /// "The mesh-primary that runs it verifies that birth again against its own view at execution"):
+    /// the birth `view` holds that this pin names, which is the only birth the operation acts on.
+    /// `Ok(None)`: the view holds neither this birth nor any birth at `node`.
+    pub fn held_in(&self, view: &Topology, operation: &str, node: &PathName) -> Result<Option<crate::model::Node>, BirthReplaced> {
+        // The resolution the runner makes today: the birth by its incarnation alone.
+        if let Some(n) = view.births().find(|n| n.incarnation_id.as_ref() == Some(&self.incarnation)) {
+            return Ok(Some(n.clone()));
+        }
+        match view.node(node) {
+            Some(n) => Err(BirthReplaced { operation: operation.to_string(), node: node.clone(), expected: self.clone(), observed: Self::of(n) }),
+            None => Ok(None),
+        }
+    }
+}
+
+/// `birth-replaced`: the birth an operation was pinned to at acceptance is not the birth the executing
+/// mesh-primary's view holds (build.md §4.4). Nothing is done to the birth it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BirthReplaced {
+    /// The operation's key.
+    pub operation: String,
+    /// The path the operation acts on.
+    pub node: PathName,
+    /// The birth the gates pinned.
+    pub expected: PinnedBirth,
+    /// The birth the view holds instead, `None` when it holds one with no incarnation.
+    pub observed: Option<PinnedBirth>,
+}
+
+impl BirthReplaced {
+    /// The refusal's name.
+    pub fn reason(&self) -> &'static str {
+        "birth-replaced"
+    }
+}
+
+impl fmt::Display for BirthReplaced {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let observed = self.observed.as_ref().map(|b| format!("birth {} at incarnation {}", b.node_id, b.incarnation.as_str())).unwrap_or_else(|| "a birth with no incarnation".into());
+        write!(
+            f,
+            "birth-replaced: {} acts on {} pinned to birth {} at incarnation {}, and this view holds {observed} there; nothing is done to it",
+            self.operation,
+            self.node,
+            self.expected.node_id,
+            self.expected.incarnation.as_str()
+        )
+    }
+}
+
 /// The exact exited birth a node recovery acts for: the node.id and incarnation its mesh-primary
 /// proved exited (node-recovery.md "Detection and proof").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
