@@ -815,3 +815,62 @@ async fn a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_ex
     estate.shutdown().await;
     let _ = std::fs::remove_dir_all(&added);
 }
+
+/// CONTRACT (build.md §4.4, closing rule: "The operation carries the exact birth the gates pinned (node id
+/// and incarnation). The mesh-primary that runs it verifies that birth again against its own view at
+/// execution, so a birth replaced between acceptance and execution is refused there, by name"; Q218; Q228,
+/// decided by Q218 and Q221: a replacement's delete of a birth the Reconcile's acceptance saw carries the
+/// acceptance pin): a two-mesh fabric's request changes its gateways' executables. mesh1's replacement is
+/// held by its executor's fault door at its first gateway's create `Complete` (the attempt holds mesh1
+/// alone). Meanwhile mesh2's non-primary gateway, pinned at acceptance, is killed and its own
+/// mesh-primary recovers it at the same `path.name` under a new node id. Released, the Build reaches
+/// mesh2: the gateway's replacement delete carries the birth the acceptance pinned, and mesh2's primary
+/// refuses it `birth-replaced` (span `rdm.node_admin.node.reject.via-birth-replaced`, naming the pinned
+/// and the observed birth). The recovered birth is untouched: the same node id and incarnation,
+/// ReadyForTraffic, on the executable it was recovered on. Must NOT happen: the delete resolving the
+/// birth now at the path and replacing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replacements_delete_of_a_birth_replaced_after_acceptance_is_refused_birth_replaced_and_the_new_birth_is_untouched() {
+    let estate = role_fabric("a_replacements_delete_of_a_birth_replaced_after_acceptance_is_refused_birth_replaced_and_the_new_birth_is_untouched").await;
+    let before = fabric_nodes(&estate).await;
+    let p1 = before.values().find(|v| v.mesh == "mesh1" && v.kind == NodeKind::NodeAdmin && v.is_primary).map(|v| v.name.to_string()).expect("mesh1's primary admin");
+    let first = before.values().find(|v| v.mesh == "mesh1" && v.kind == NodeKind::Gateway && !v.is_primary).map(|v| v.name.to_string()).expect("mesh1's non-primary gateway");
+    let target = before.values().find(|v| v.mesh == "mesh2" && v.kind == NodeKind::Gateway && !v.is_primary).map(|v| v.name.to_string()).expect("mesh2's non-primary gateway");
+    let pinned = before[&target].clone();
+    let door = Door::at(&estate, &p1).await;
+    door.arm("mesh1-gateway-created", json!({"kind": "receipt", "step": "Complete", "operation": format!("node.create:{first}")})).await;
+    let gateway = pinned.executable.clone().expect("a gateway's row records its executable");
+    let next = another_build(&estate, &gateway, "next");
+    let (based_on, request) = gateways_on(&estate, &next).await;
+
+    // Accepted with every gateway's birth pinned; mesh1's replacement held at its first create's Complete.
+    let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await;
+    let build = stream.build_id().to_string();
+    let held = door.wait_held("mesh1-gateway-created").await;
+    assert_eq!(s(&held["hit"]["build_id"]), build, "{p1} is held inside the Build's mesh1 replacement: {held}");
+    assert_eq!(estate.node_value(&target).await["node_id"], json!(pinned.node_id), "{target} is the birth the acceptance pinned, not replaced yet");
+
+    // The pinned birth is replaced outside the Build: killed, and recovered by mesh2's own primary.
+    estate.kill_node(&target).await;
+    let recovered = estate.until_node(&target, &format!("{target} recovered under a new node id"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.node_id != pinned.node_id).cloned()).await;
+    door.release("mesh1-gateway-created").await;
+
+    // The Build reaches mesh2: the replacement's delete carries the acceptance pin and is refused there.
+    let refused = rdm_test::estate::wait_for("the replacement's delete refused birth-replaced", SETTLE, || {
+        let (spans, at) = (estate.spans(), target.clone());
+        async move { spans.into_iter().find(|sp| sp["name"] == "rdm.node_admin.node.reject.via-birth-replaced" && s(&sp["attributes"]["node"]) == at) }
+    })
+    .await;
+    let a = &refused["attributes"];
+    assert_eq!((s(&a["operation"]), s(&a["node_id"]), s(&a["incarnation_id"])), (format!("node.delete:{target}"), pinned.node_id.to_string(), pinned.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default()), "the delete names the birth the acceptance pinned: {refused}");
+    assert_eq!((s(&a["observed_node_id"]), s(&a["observed_incarnation_id"])), (recovered.node_id.to_string(), recovered.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default()), "and the birth mesh2's primary holds: {refused}");
+    eprintln!("span rdm.node_admin.node.reject.via-birth-replaced trace_id={} service={} {a}", s(&refused["trace_id"]), s(&refused["service"]));
+
+    // The recovered birth is untouched by the Build.
+    let now = estate.until_node(&target, &format!("{target} as recovered"), SETTLE, |n| n.cloned()).await;
+    assert_eq!((&now.node_id, &now.incarnation_id, now.status), (&recovered.node_id, &recovered.incarnation_id, rdm_client::NodeStatus::ReadyForTraffic), "{target}: the recovered birth stands");
+    assert_eq!(exe_of(&estate, &target).await, gateway.executable, "{target} runs the executable it was recovered on");
+    let steps = receipts(&estate, &build).await;
+    assert!(receipts_of(&steps, &format!("node.delete:{target}"), "NodeDeleting").is_empty(), "the Build began no delete of {target}: {:?}", receipts_of(&steps, &format!("node.delete:{target}"), "NodeDeleting"));
+    estate.shutdown().await;
+}
