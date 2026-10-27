@@ -859,13 +859,15 @@ impl ControlPlane {
     /// Open the termination of the deleted birth `(node_id, incarnation)` at `path`, heard again and
     /// reported (node-investigation.md: "The node that refused it reports it to the fabric-primary, which
     /// terminates its runtime"; Q110, Q128), as the next attempt of the current Build, executed by this
-    /// fabric-primary. Only a birth a node workflow deleted is terminated this way (any other is not
-    /// known here: `UnknownNode`); one whose termination completed answers `AlreadyApplied`.
+    /// fabric-primary. Only a deleted birth is terminated this way: one a node workflow deleted, or one
+    /// this fabric-primary's atlas holds deleted, whose recovery's re-create has not completed (Q217:
+    /// "if they come back and they are deleted they get actually deleted"); any other is not known here
+    /// (`UnknownNode`). One whose termination completed answers `AlreadyApplied`.
     pub async fn open_terminate(&self, span: tracing::Span, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
         let outer = tracing::Span::current();
         async {
             self.require_fabric_primary(route).await?;
-            if self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {
+            if !self.atlas.holds_deleted(&node_id, &incarnation) && self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));

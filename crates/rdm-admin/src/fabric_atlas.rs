@@ -372,6 +372,15 @@ impl FabricAtlas {
         self.held.lock().unwrap().records.get(node_id).cloned()
     }
 
+    /// Whether the atlas holds the birth `(node_id, incarnation)` deleted: its node's record deleted
+    /// with that birth, or a node.delete of that birth completed (Q217: such a birth that comes back is
+    /// deleted, its runtime terminated).
+    pub(crate) fn holds_deleted(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+        let held = self.held.lock().unwrap();
+        let recorded = held.records.get(node_id).is_some_and(|r| matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn) && r.birth(incarnation).is_some());
+        recorded || held.effects.get(incarnation.as_str()).is_some_and(|e| e.lifecycle == Lifecycle::Deleted)
+    }
+
     /// The record the atlas holds at `path`: the one whose node holds the name now.
     pub fn record_at(&self, path: &PathName) -> Option<NodeRow> {
         self.held.lock().unwrap().records.values().find(|r| r.name == *path).cloned()

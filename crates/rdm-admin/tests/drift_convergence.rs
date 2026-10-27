@@ -1982,3 +1982,44 @@ fn exit_records() -> rdm_admin::admin::Records {
     r.set_status(std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), std::sync::Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), std::sync::Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rdm_core::NodeId::mint());
     r
 }
+
+mod refused_caller_terminate {
+    use super::*;
+    use rdm_admin::control_plane::{ControlPlane, Recovery, Refusal};
+
+    /// CONTRACT (Q217, Luke: "if they come back and they are deleted they get actually deleted";
+    /// node-investigation.md): a birth whose recovery wrote its record deleted and whose re-create has
+    /// not completed (the path node recovery still owes a re-create) comes back and is decided
+    /// `delete-deleted-birth`; its report for `node.terminate` is admitted by the fabric-primary, whose
+    /// atlas holds its record deleted, as the next attempt of the current Build. Must NOT happen: the
+    /// terminate refused `unknown-node` because the recovery's workflow has not completed, the caller's
+    /// runtime left running. A birth whose record is live and that no workflow deleted is still
+    /// refused `unknown-node`.
+    #[tokio::test]
+    async fn a_deleted_birth_whose_re_create_has_not_completed_is_admitted_for_node_terminate() {
+        let e = estate().await;
+        let me: PathName = e.fabric_primary().await.parse().unwrap();
+        let mut cp = ControlPlane::new(e.builds.clone(), e.accepted.clone(), me.clone(), e.view.read().await.clone(), crate::adopted_time());
+        cp.topology = e.view.clone();
+        let _ = cp.node_rows.set(crate::records_of(&*e.view.read().await).await);
+        let cp = Arc::new(cp);
+        let before = e.builds.current().await.unwrap().unwrap();
+        let path: PathName = secondary_rpc(&e, &me.mesh).await.parse().unwrap();
+        let n = e.view.read().await.node(&path).cloned().unwrap();
+        let incarnation = n.incarnation_id.clone().unwrap();
+        // Live and deleted by no workflow: not one node.terminate acts on.
+        let live = cp.open_terminate(tracing::Span::none(), "returned-birth", path.clone(), n.node_id.clone(), incarnation.clone()).await;
+        assert!(matches!(live, Err(Refusal::Reject(rdm_admin::build::BuildReject::UnknownNode { .. }))), "a live birth no workflow deleted is refused unknown-node: {live:?}");
+        // Its recovery's node.delete wrote its record deleted; the re-create has not completed.
+        let mut row = rdm_admin::storage::NodeRow::new(path.clone(), n.node_id.clone(), NodeStatus::Deleted);
+        row.birth_mut(&incarnation, &path);
+        cp.atlas.write_record(&row);
+        let opened = match cp.open_terminate(tracing::Span::none(), "returned-birth", path.clone(), n.node_id.clone(), incarnation.clone()).await {
+            Ok(Recovery::Opened(o)) => o,
+            other => panic!("the deleted birth's node.terminate is admitted as the next attempt: {other:?}"),
+        };
+        assert_eq!((opened.build_id.clone(), opened.attempt), (before.build_id.clone(), before.attempt + 1), "the next attempt of the current Build");
+        let action = e.builds.current().await.unwrap().unwrap().action;
+        assert!(format!("{action:?}").contains("Terminate"), "the attempt terminates the exact birth: {action:?}");
+    }
+}
