@@ -454,7 +454,11 @@ fn probe_call(estate: &Estate, args: &[&str]) -> Call {
     // root unless the root was still open when the process ended (recorded per call, never hidden).
     let tp = s(&out["traceparent"]);
     let trace_id = tp.split('-').nth(1).filter(|x| x.len() == 32).map(String::from).unwrap_or_else(|| panic!("the probe {args:?} printed no traceparent: {out}"));
-    assert!(spans.iter().all(|sp| s(&sp["trace_id"]) == trace_id), "one probe invocation is one trace: {args:?}");
+    // One invocation is one trace, but for its pooled dials: a dial is its own root, linked to the call that
+    // started it (D2, telemetry.md:41/:72 list the call's children without the dial).
+    let linked_to_call = |sp: &Value| sp["name"] == "rdm.node_rpc.connection.create.via-dial" && sp["links"].as_array().is_some_and(|ls| ls.iter().any(|l| s(&l["trace_id"]) == trace_id));
+    let dial_traces: std::collections::BTreeSet<String> = spans.iter().filter(|sp| linked_to_call(sp)).map(|sp| s(&sp["trace_id"])).collect();
+    assert!(spans.iter().all(|sp| s(&sp["trace_id"]) == trace_id || dial_traces.contains(&s(&sp["trace_id"]))), "one probe invocation is one trace and its dials' linked traces: {args:?}");
     let root_exported = spans.iter().any(|sp| sp["name"] == "rdm.node_rpc.proof_store.resolve.via-probe");
     Call { args: args.iter().map(|a| a.to_string()).collect(), out, trace_id, started_ms, finished_ms, root_exported }
 }
