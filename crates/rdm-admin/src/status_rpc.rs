@@ -1179,7 +1179,7 @@ impl StatusAuthority {
                     Err(e) => rdm_core::reply::status::bounded_source_failed("nodes.storage", req.op(), &e),
                 };
             }
-            StatusRequest::RenewCert { incarnation, cert, .. } => return self.renew_own_cert(&view, incarnation, cert).await,
+            StatusRequest::RenewCert { incarnation, cert, .. } => return self.renew_own_cert(&view, incarnation, cert, req).await,
             StatusRequest::UpdateIssuer { incarnation, key, cert, .. } => {
                 let from = sender.as_ref().map(|n| n.name.to_string()).or_else(|| peer.map(|k| k.fmt_short().to_string())).unwrap_or_default();
                 return self.update_own_issuer(&view, &from, incarnation, key, cert).await;
@@ -1251,7 +1251,7 @@ impl StatusAuthority {
 
     /// `node.cert.renew` of this admin's exact birth (node-cert-renew.md step 4): installed on the
     /// app protocols it opens connections on, as a node installs it.
-    async fn renew_own_cert(&self, view: &Topology, incarnation: &IncarnationId, cert: &[u8]) -> StatusReply {
+    async fn renew_own_cert(&self, view: &Topology, incarnation: &IncarnationId, cert: &[u8], req: &StatusRequest) -> StatusReply {
         let me = match self.own_birth(view, incarnation) {
             Ok(me) => me.clone(),
             Err(refused) => return refused,
@@ -1262,10 +1262,8 @@ impl StatusAuthority {
         };
         // A mesh-primary writes its own record: the dates of the cert it installed, issued by the
         // fabric-primary (node-cert-renew.md Row).
-        if let (StatusReply::CertRenewed { expires_at, .. }, Some(certs), Ok(signed)) = (&reply, &self.certs, rdm_core::certs::cert_from_bytes(cert)) {
-            if crate::node_rows::writes_for(view, &self.node_id, &me.mesh) {
-                let issued_at = certs.now_ms().unwrap_or(0);
-                let dates = crate::storage::CertDates { issued_at, expires_at: *expires_at, issuer_expires_at: signed.issuer.cert.expiry_ms, renew_at: rdm_core::certs::renew_at(&self.node_id, incarnation, issued_at, *expires_at, certs.policy().renew_at_permille) };
+        if let (StatusReply::CertRenewed { .. }, Some(certs)) = (&reply, &self.certs) {
+            if let (true, Some(dates)) = (crate::node_rows::writes_for(view, &self.node_id, &me.mesh), crate::cert_renewal::installed_dates(req, certs)) {
                 if let Err(why) = self.write_own(&me, incarnation, |b| b.cert = Some(dates)).await {
                     return rdm_core::reply::status::not_ready(format!("{}: the cert is installed and its dates could not be written on its record: {why}", self.me));
                 }

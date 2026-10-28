@@ -49,6 +49,20 @@ pub fn dates_of(issue: &MemberIssue) -> CertDates {
     CertDates { issued_at: issue.issued_at, expires_at: issue.expires_at, issuer_expires_at: issue.issuer_expires_at, renew_at: issue.renew_at }
 }
 
+/// The member cert dates a mesh-primary writes on its own record when it installs the cert `req`
+/// (`RenewCert`) carried to it, judged on `receiver`, its own issuer (node-cert-renew.md Row: "A
+/// mesh-primary's own cert, issued by the fabric-primary, it writes on its own record when it installs
+/// it"; Q141: "that cert's `issued_at`, `expires_at` and `renew_at`"); nothing for another request or a
+/// cert that does not decode.
+pub fn installed_dates(req: &StatusRequest, receiver: &CertIssuer) -> Option<CertDates> {
+    let StatusRequest::RenewCert { cert, .. } = req else { return None };
+    // The birth is the cert's, which the install checked is this one (`NodeSelf::renew_cert`).
+    let signed = rdm_core::certs::cert_from_bytes(cert).ok()?;
+    let issued_at = receiver.now_ms().unwrap_or(0);
+    let expires_at = signed.cert.expiry_ms;
+    Some(CertDates { issued_at, expires_at, issuer_expires_at: signed.issuer.cert.expiry_ms, renew_at: rdm_core::certs::renew_at(&signed.cert.node_id, &signed.cert.incarnation, issued_at, expires_at, receiver.policy().renew_at_permille) })
+}
+
 /// The signing cert dates of the issuing key `mint` minted.
 pub fn signing_dates(mint: &IssuerMint) -> SigningCertDates {
     SigningCertDates { issued_at: mint.issued_at, expires_at: mint.expires_at, renew_at: mint.renew_at }
@@ -519,6 +533,33 @@ async fn update_one(r: &Renewals, mesh: &str, admin: &Node, carrier: Option<&Nod
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn time_at(ms: u64) -> rdm_transport::clock::RafkaTime {
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(ms);
+        time
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT (node-cert-renew.md Row: "A mesh-primary's own cert, issued by the fabric-primary, it
+    /// writes on its own record when it installs it"; Q141: on `CertRenewed` the row holds "that cert's
+    /// `issued_at`, `expires_at` and `renew_at`"): the fabric-primary renews mesh2's primary, whose
+    /// rafka-time is behind its own (gate 3 at e47aa813f: mesh2.admin.1's heartbeat `clock_skew_ms=-1`;
+    /// here a second, so the clocks' own ticks between the two reads cannot hide it). The dates mesh2's
+    /// primary writes on installing the cert are the issue's, `dates_of(&issue)`, whole: never its own
+    /// clock beside the issue's expiry.
+    #[test]
+    fn a_mesh_primary_installing_its_renewed_cert_writes_the_issues_own_dates() {
+        let root = rdm_core::certs::mint_key();
+        let ca = |root: &rdm_core::certs::SigningKey| rdm_core::certs::CaKey::mint(root, rdm_core::certs::CA_CERT_TTL_SECS, 1_793_169_000_000);
+        let fabric_primary = CertIssuer::with_root(root.clone(), ca(&root), None, time_at(1_793_169_598_407));
+        let mesh_primary = CertIssuer::with_root(root.clone(), ca(&root), None, time_at(1_793_169_597_407));
+        let name: PathName = "mesh2.admin.1".parse().unwrap();
+        let birth = BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: name.mesh.clone(), name, endpoint_key: rdm_core::EndpointId("k".into()) };
+        let issue = fabric_primary.renewal(&birth).expect("the fabric-primary issues mesh2's primary a renewed cert");
+        let req = StatusRequest::RenewCert { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), cert: issue.bytes.clone() };
+        assert_eq!(installed_dates(&req, &mesh_primary), Some(dates_of(&issue)), "the row mesh2's primary writes is the issue's dates, whole");
+    }
 
     fn row(_node: &NodeId, _inc: &IncarnationId, issued_at: u64) -> CertDates {
         CertDates { issued_at, expires_at: issued_at + 12_000, issuer_expires_at: 1_000_000, renew_at: issued_at + 8_100 }
