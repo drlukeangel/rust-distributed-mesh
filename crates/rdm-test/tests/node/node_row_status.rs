@@ -55,7 +55,8 @@ fn row_status(root: &Path, node_id: &str) -> String {
 /// its table, Q233): pending and ready at its create; connections-deleting and
 /// connections-deleted; then node.stop's frames, its acknowledgement setting stopping over the
 /// connections-deleted row: stopping, connections-deleting, connections-deleted, leaving, left, stopped;
-/// then starting from the start's acknowledgement, pending and ready; then deleting from
+/// then starting from the start's acknowledgement, pending and ready, a starting that reaches it after the
+/// same start's pending or ready moving the row nowhere (node-start.md step 2, Q248); then deleting from
 /// node.delete's claim and the frames of the stop it composes, stopping through stopped (delete is the
 /// mesh-primary's workflow). The node's Stopped declaration may reach the mesh-primary before a stop
 /// stream's last frames, whichever first is applied (node-stop.md step 5): each frame after it leaves
@@ -98,10 +99,21 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let at = |sp: &Value| (sp["attributes"]["status"].as_str().unwrap_or_default().to_string(), sp["attributes"]["outcome"].as_str().unwrap_or_default().to_string());
     let all: Vec<(String, String)> = rows.iter().map(|sp| at(sp)).collect();
     let written = |statuses: &[&str]| statuses.iter().map(|s| (s.to_string(), "written".to_string())).collect::<Vec<_>>();
-    let (created, between) = (written(&["Pending", "Ready", "ConnectionsDeleting", "ConnectionsDeleted"]), written(&["Starting", "Pending", "Ready", "Deleting"]));
+    let created = written(&["Pending", "Ready", "ConnectionsDeleting", "ConnectionsDeleted"]);
+    // The start's join and its stream are two calls with no order between them (node-start.md step 2,
+    // Q248): starting written first, then pending and ready; or the join's pending first, the late
+    // starting moving the row nowhere, before or after the start's ready. Starting is written or
+    // unchanged, never dropped, and never moves the row back from pending or ready.
+    let unchanged = ("Starting".to_string(), "unchanged".to_string());
+    let starts: Vec<Vec<(String, String)>> = vec![
+        written(&["Starting", "Pending", "Ready"]),
+        [written(&["Pending"]), vec![unchanged.clone()], written(&["Ready"])].concat(),
+        [written(&["Pending", "Ready"]), vec![unchanged]].concat(),
+    ];
+    let deleting = written(&["Deleting"]);
     let stops = crate::node_stop::stop_row_writes();
     assert!(
-        stops.iter().any(|stop| stops.iter().any(|deleted| created.iter().chain(stop).chain(&between).chain(deleted).eq(all.iter()))),
+        stops.iter().any(|stop| starts.iter().any(|start| stops.iter().any(|deleted| created.iter().chain(stop).chain(start).chain(&deleting).chain(deleted).eq(all.iter())))),
         "{path}'s mesh-primary wrote each status from the node's frame or its own receipt, in states.md's order, each stop's frames moving the row until the node's stopped is taken: {all:?}"
     );
 }
