@@ -38,7 +38,9 @@ BASE=$(git -C "$d" rev-parse origin/main); HEAD_SHA=$(git -C "$d" rev-parse HEAD
 PATCH=$(git -C "$d" diff "$BASE" HEAD -- . ':(exclude)docs/reference/rdm/*.md' | git -C "$d" patch-id --stable | cut -d' ' -f1); PATCH=${PATCH:-empty}
 out=$(bash "$d/scripts/rdm-gate-at.sh" "$d" fast 2>&1); echo "$out" | grep -E "^FAIL|^DONE|^TIMINGS" | tail -12
 T=$(git -C "$d" rev-parse HEAD^{tree})
-if grep -q "^$T " "$DEPLOY_ROOT/green-trees" 2>/dev/null; then
+# GREEN is this run's own verdict: no FAIL line and a DONE with its seconds. A tree an earlier run
+# proved is never GREEN for a run that failed (rdm#126: lane 2 printed GREEN with two red stems).
+if ! echo "$out" | grep -q "^FAIL" && echo "$out" | grep -qE "^DONE [0-9]+s$" && grep -q "^$T " "$DEPLOY_ROOT/green-trees" 2>/dev/null; then
   echo "$T $PATCH $BASE $HEAD_SHA $(date -Is)" >> "$DEPLOY_ROOT/green-ranges"
   echo "GREEN lane $L $(git -C "$d" rev-parse --short HEAD) tree $T"
 else echo "RED lane $L $(git -C "$d" rev-parse --short HEAD): read the red, fix it in the lane, never re-run it"; exit 2; fi
