@@ -235,6 +235,21 @@ pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, records
     nodes_answer_with_status(me, view, loads, records, &Ok(BTreeMap::new()), filter, &|_| {}).await
 }
 
+/// Whether `n` matches `filter` with the labels it holds in the active tags index (lifecycles/
+/// node-replace.md "Inherited": "The successor's tag-index entries use its own id. Retained predecessor
+/// labels are removed from the active index, not erased from its row"): a record marked `inherited_by`
+/// a successor, the retained `<name>.old` row, carries no active label, so a `tags` pair never names it;
+/// the row it is answered with keeps its labels. Every other pair is matched on the row as answered.
+fn matches_active(filter: &Filter, records: &Atlas, n: &NodeView) -> bool {
+    let names_tags = filter.pairs.iter().any(|(p, _)| p == "tags");
+    if names_tags && !n.tags.is_empty() && records.record(&n.node_id).is_some_and(|r| r.inherited_by.is_some()) {
+        let mut active = n.clone();
+        active.tags.clear();
+        return filter.matches(&active);
+    }
+    filter.matches(n)
+}
+
 /// [`nodes_answer`] with `planned`, the current Build's paths, naming where a birth the view no
 /// longer holds is answered from its record (R-FM1, R-FM2), and `amend`, what the answering admin
 /// adds to each row before it is matched (the app types its own channels hold).
@@ -270,7 +285,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         }
         let mut nodes = nodes(view, &loads(), records, &planned);
         nodes.iter_mut().for_each(amend);
-        nodes.retain(|n| filter.matches(n));
+        nodes.retain(|n| matches_active(filter, records, n));
         let count = nodes.len();
         span.record("nodes", count as u64);
         let reply = StatusReply::within_reply_bound(StatusReply::Nodes { nodes }, read);
