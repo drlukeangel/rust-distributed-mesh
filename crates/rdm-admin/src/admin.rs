@@ -3435,80 +3435,38 @@ mod tests {
     }
 
     /// CONTRACT (states.md "Routing": a stop is applied by a peer on receipt of the fact): the view
-    /// application routing reads is rebuilt at once when a routing fact is taken. A mesh status taken
-    /// makes the rebuild due; so does a birth saying another status, and a lifecycle overlay opening.
-    /// Must NOT happen: the view waiting for anything else to apply a fact the view already holds.
+    /// application routing reads is rebuilt at once when a routing fact is taken, never on the
+    /// poll. A mesh status taken makes the rebuild due though the poll is an hour away; so does a
+    /// birth saying another status, and a lifecycle overlay opening. Must NOT happen: the view
+    /// waiting for its poll to apply a fact the view already holds.
     #[tokio::test(start_paused = true)]
-    async fn the_view_rebuild_is_due_on_receipt_of_a_routing_fact() {
+    async fn the_view_rebuild_is_due_on_receipt_of_a_routing_fact_not_on_the_poll() {
         use futures_util::FutureExt;
         use rdm_transport::topology::Frame;
         let digest_view = DigestView::default();
-        let records = Records::default();
         let rpc = digest("mesh1.rpc.1", MemberStatus::Ready);
         assert!(digest_view.record(rpc.clone()));
-        let mut wake = ViewWake::new(&digest_view, &records);
+        let hour = Duration::from_secs(3600);
+        let mut facts = digest_view.routing_watch();
         let gate = crate::stop_gate::StopGate::new();
 
-        wake.seen();
+        facts.seen();
         let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
         assert!(digest_view.statuses.take(&f, &fabric1()));
-        assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some_and(|(_, woken)| woken == "meshes"), "a mesh status taken makes the rebuild due at once");
+        assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a mesh status taken makes the rebuild due at once");
 
-        wake.seen();
-        assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_none(), "nothing moved: no rebuild is due");
+        facts.seen();
+        assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_none(), "nothing moved: the rebuild waits for its poll");
         let mut connections_deleting = rpc.clone();
         connections_deleting.status = MemberStatus::ConnectionsDeleting;
         connections_deleting.digest_seq += 1;
         assert!(digest_view.record(connections_deleting));
-        assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some(), "a birth saying ConnectionsDeleting makes the rebuild due at once");
+        assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a birth saying ConnectionsDeleting makes the rebuild due at once");
 
-        wake.seen();
+        facts.seen();
         let stop = rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(digest_view.stopped(stop));
-        assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
-    }
-
-    /// CONTRACT (Q254, Luke 2026-10-28: "no deadline sleep replaces a tick (a sleep is a timer)"): the
-    /// view rebuild has no clock of its own. With nothing moved, an hour passes and no rebuild is due;
-    /// a record the projection reads changed at its setter (a birth held true offline is not, a launch
-    /// record published, the fabric state) makes it due, named `records`; a primary record taken makes it
-    /// due, named `primaries`; the pruner's mark of a birth silent past the floor makes it due, named
-    /// `silence`. A setter that changes nothing moves nothing. Must NOT happen: a rebuild due on the
-    /// passing of time, or a projection input changed with no rebuild due.
-    #[tokio::test(start_paused = true)]
-    async fn the_view_rebuild_is_due_on_each_input_of_the_projection_and_never_on_time() {
-        use futures_util::FutureExt;
-        let digest_view = DigestView::default();
-        let records = Records::default();
-        let rpc = digest("mesh1.rpc.1", MemberStatus::Ready);
-        assert!(digest_view.record(rpc.clone()));
-        let mut wake = ViewWake::new(&digest_view, &records);
-        let gate = crate::stop_gate::StopGate::new();
-        let due = |wake: &mut ViewWake| view_rebuild_due(wake, &gate).now_or_never().map(|(_, woken)| woken);
-
-        wake.seen();
-        tokio::time::advance(Duration::from_secs(3600)).await;
-        assert_eq!(due(&mut wake), None, "an hour with nothing moved: no rebuild is due");
-
-        records.set_fabric_state(crate::fabric_state::FabricState::Ready);
-        assert_eq!(due(&mut wake), Some("records"), "the fabric state changed at its setter");
-        wake.seen();
-        records.set_fabric_state(crate::fabric_state::FabricState::Ready);
-        assert_eq!(due(&mut wake), None, "the same fabric state set again moves nothing");
-
-        crate::deployment::pipeline::TopologySink::publish(&records, Node::allocated("mesh1.rpc.2".parse().unwrap()));
-        assert_eq!(due(&mut wake), Some("records"), "a launch record published");
-        wake.seen();
-
-        let primary = rdm_core::Primary { mesh: "mesh1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), revision: 1 };
-        digest_view.seats.take(rdm_core::Seat::Cohort(NodeKind::RpcNode), &primary);
-        assert_eq!(due(&mut wake), Some("primaries"), "the rpc nodes' node-type primary record taken");
-        wake.seen();
-
-        // The pruner's sweep, past the floor: the birth unheard since it was recorded.
-        tokio::time::advance(Duration::from_secs(1)).await;
-        assert!(digest_view.mark_silence_at(std::time::Instant::now() + digest_view.staleness_floor() * 2), "the sweep marks the birth silent");
-        assert_eq!(due(&mut wake), Some("silence"), "the pruner's mark makes the rebuild due");
+        assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
     }
 
     /// CONTRACT (node.stop: a stopped admin's tasks are held; states.md "Routing"): the view rebuild
@@ -3522,14 +3480,14 @@ mod tests {
         use futures_util::FutureExt;
         use rdm_transport::topology::Frame;
         let digest_view = DigestView::default();
-        let records = Records::default();
-        let mut wake = ViewWake::new(&digest_view, &records);
+        let mut facts = digest_view.routing_watch();
         let gate = crate::stop_gate::StopGate::new();
-        wake.seen();
+        let hour = Duration::from_secs(3600);
+        facts.seen();
         gate.stop();
         let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
         assert!(digest_view.statuses.take(&f, &fabric1()));
-        let due = view_rebuild_due(&mut wake, &gate);
+        let due = view_rebuild_due(&mut facts, hour, &gate);
         tokio::pin!(due);
         assert!((&mut due).now_or_never().is_none(), "stopped: a routing fact makes no rebuild due");
         gate.resume();

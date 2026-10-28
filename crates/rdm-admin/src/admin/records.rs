@@ -387,13 +387,6 @@ pub struct Records {
     pub(crate) me: std::sync::OnceLock<NodeId>,
     /// Moves each time the installed view changed: what a checklist waits on to see a target reachable again.
     pub(crate) view_tick: tokio::sync::watch::Sender<u64>,
-    /// Moves each time a record the projection reads changes here, at its setter (Q254: each cause
-    /// raises its own event at its source): a launch record published or removed, a mesh id held, a
-    /// birth held true offline or no longer, the planned births, the meshes heard ready or dead, a
-    /// mesh deleted, the fabric state, a peer mesh's recovery, the adopted or published `degraded`,
-    /// the entry read answered. What the view rebuild waits on beside the digest view's routing watch
-    /// and the primary records the election reads ([`crate::admin::ViewWake`]); nothing is sent.
-    pub(crate) inputs: tokio::sync::watch::Sender<u64>,
     /// The writer of the node rows of each mesh this admin writes for (`crate::node_rows`): the
     /// executor's claims, moves and Deleted rows, and a birth its view holds for the first time
     /// that no create of it claimed. Set once at start.
@@ -473,7 +466,6 @@ impl Records {
         let changed = std::mem::replace(&mut *self.planned.lock().unwrap(), planned.clone()) != planned;
         if changed {
             self.wake.poke();
-            self.inputs_moved();
         }
         changed
     }
@@ -554,16 +546,6 @@ impl Records {
         self.view_tick.subscribe()
     }
 
-    /// A record the projection reads changed here: the view's rebuild is due ([`Self::inputs`]).
-    pub fn inputs_moved(&self) {
-        self.inputs.send_modify(|v| *v += 1);
-    }
-
-    /// The watch a view rebuild arms on to see a record the projection reads change ([`Self::inputs`]).
-    pub fn subscribe_inputs(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.inputs.subscribe()
-    }
-
     /// The fabric state as it changes: a waiter arms on it to see the state change.
     pub fn subscribe_fabric_state(&self) -> tokio::sync::watch::Receiver<crate::fabric_state::FabricState> {
         self.fabric_state_watch.subscribe()
@@ -571,9 +553,7 @@ impl Records {
 
     /// Hold which meshes were last heard ready.
     pub fn set_heard_ready(&self, meshes: BTreeSet<String>) {
-        if std::mem::replace(&mut *self.heard_ready.lock().unwrap(), meshes.clone()) != meshes {
-            self.inputs_moved();
-        }
+        *self.heard_ready.lock().unwrap() = meshes;
     }
 
     /// Whether `mesh` was last heard ready.
@@ -591,36 +571,25 @@ impl Records {
     /// digest); a fact bound before keeps its id; a fact no longer held is dropped (a newer status of
     /// the mesh, or its MeshLeft).
     pub fn set_heard_dead(&self, facts: Vec<(String, String, u64)>, id_of: impl Fn(&str, &str) -> Option<MeshId>) {
-        let moved = {
-            let mut held = self.heard_dead.lock().unwrap();
-            let before = held.clone();
-            held.retain(|k, _| facts.contains(k));
-            for f in facts {
-                let bound = held.entry(f.clone()).or_insert(None);
-                if bound.is_none() {
-                    *bound = id_of(&f.0, &f.1);
-                }
+        let mut held = self.heard_dead.lock().unwrap();
+        held.retain(|k, _| facts.contains(k));
+        for f in facts {
+            let bound = held.entry(f.clone()).or_insert(None);
+            if bound.is_none() {
+                *bound = id_of(&f.0, &f.1);
             }
-            *held != before
-        };
-        if moved {
-            self.inputs_moved();
         }
     }
 
     /// Hold that this fabric-primary accepted mesh.deleted for the mesh `id` (a validated `MeshDeleted`),
     /// or read its Mesh record Dead (a fabric-primary that took over after the mesh.delete).
     pub fn hold_mesh_deleted(&self, id: &MeshId) {
-        if self.deleted_meshes.lock().unwrap().insert(id.clone()) {
-            self.inputs_moved();
-        }
+        self.deleted_meshes.lock().unwrap().insert(id.clone());
     }
 
     /// Drop the mesh `id` from the meshes this fabric-primary accepted mesh.deleted for (its mesh-left).
     pub fn deleted_meshes_forget(&self, id: &MeshId) {
-        if self.deleted_meshes.lock().unwrap().remove(id) {
-            self.inputs_moved();
-        }
+        self.deleted_meshes.lock().unwrap().remove(id);
     }
 
     /// Whether this fabric-primary accepted mesh.deleted for the mesh `id`.
@@ -653,7 +622,6 @@ impl Records {
         if changed {
             self.wake.poke();
             self.fabric_state_watch.send_replace(state);
-            self.inputs_moved();
         }
     }
 
@@ -697,7 +665,6 @@ impl Records {
     /// already open for that mesh is replaced by this one; another mesh's is left as it is.
     pub fn open_peer_recovery(&self, recovery: PeerRecovery) {
         self.peer_recovery.lock().unwrap().insert(recovery.mesh.clone(), recovery);
-        self.inputs_moved();
     }
 
     /// The fabric primary `me` gives `recovery.mesh` a new node-admin and, at that same moment, authors
@@ -717,7 +684,6 @@ impl Records {
             }
             open.insert(mesh.clone(), recovery);
         }
-        self.inputs_moved();
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         tracing::info_span!("rdm.node_admin.mesh.create.via-recovery", node = %me, mesh = %mesh, at, fabric_status = "degraded", verdict_rafka_ms = ?verdict_rafka_ms, verdict)
             .in_scope(|| tracing::info!("the fabric primary gives the mesh a new node-admin and authors degraded"));
@@ -726,17 +692,12 @@ impl Records {
 
     /// Close the recovery of `mesh`: its new primary reported its checklist.
     pub fn close_peer_recovery(&self, mesh: &str) {
-        if self.peer_recovery.lock().unwrap().remove(mesh).is_some() {
-            self.inputs_moved();
-        }
+        self.peer_recovery.lock().unwrap().remove(mesh);
     }
 
     /// Close every recovery: this admin no longer holds the fabric-primary role.
     pub fn clear_peer_recoveries(&self) {
-        let held = std::mem::take(&mut *self.peer_recovery.lock().unwrap());
-        if !held.is_empty() {
-            self.inputs_moved();
-        }
+        self.peer_recovery.lock().unwrap().clear();
     }
 
     /// The fabric is `degraded` because this admin took the fabric-primary role while it was.
@@ -746,11 +707,7 @@ impl Records {
 
     /// Hold (or clear) the adopted `degraded`; whether the value changed.
     pub fn set_adopted_degraded(&self, on: bool) -> bool {
-        let changed = self.adopted_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on;
-        if changed {
-            self.inputs_moved();
-        }
-        changed
+        self.adopted_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on
     }
 
     /// The topology view whose deleted births leave these records (set once, at start).
@@ -782,9 +739,7 @@ impl Records {
 
     /// The admin has been told (or needs no telling of) who holds the seats: elections run.
     pub fn set_entering(&self, entering: bool) {
-        if self.entering.swap(entering, std::sync::atomic::Ordering::SeqCst) != entering {
-            self.inputs_moved();
-        }
+        self.entering.store(entering, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Whether this admin has not yet been told who holds the seats (its entry read has not answered).
@@ -799,9 +754,7 @@ impl Records {
 
     /// Hold (or clear) the published `degraded`.
     pub fn set_published_degraded(&self, on: bool) {
-        if self.published_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on {
-            self.inputs_moved();
-        }
+        self.published_degraded.store(on, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// May this admin declare its Mesh ready (see the field)?
@@ -898,12 +851,10 @@ impl TopologySink for Records {
         // (`MeshRowsWriter`, the writer ladder).
         self.removed.lock().unwrap().remove(&(node.name.clone(), node.incarnation_id.clone()));
         self.nodes.lock().unwrap().insert(node.name.clone(), node);
-        self.inputs_moved();
     }
     fn remove(&self, name: &PathName) {
         let gone = self.nodes.lock().unwrap().remove(name);
         self.removed.lock().unwrap().insert((name.clone(), gone.and_then(|n| n.incarnation_id)));
-        self.inputs_moved();
     }
     fn remove_birth(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
         // Only the exact birth leaves the records; another birth held at the path (the new node a
@@ -913,9 +864,7 @@ impl TopologySink for Records {
         if nodes.get(name).is_some_and(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(incarnation)) {
             nodes.remove(name);
         }
-        drop(nodes);
         self.removed.lock().unwrap().insert((name.clone(), Some(incarnation.clone())));
-        self.inputs_moved();
     }
     fn node_rows(&self) -> Option<Arc<crate::node_rows::NodeRows>> {
         self.rows.get().cloned()
