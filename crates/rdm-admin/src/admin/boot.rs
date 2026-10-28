@@ -3255,7 +3255,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             // fabric-primary role and held while it keeps it (`FabricTenureRows`).
                                             let mut fabric_rows = FabricTenureRows::default();
                                             loop {
-                                                wake.next().await;
+                                                let woken = wake.next().await;
+                                                // Each pass names the event that woke it: the count of these per admin is the
+                                                // loop's work, and a pass with no event before it is a tick.
+                                                tracing::info_span!("rdm.node_admin.build.update.via-reconcile-woken", node = %me, woken = woken.as_str())
+                                                    .in_scope(|| tracing::debug!("the reconcile loop runs a pass"));
                                                 // The drift seam's hold, awaited before the pass's turn and outside every lock, inside
                                                 // a span that names what held the pass and lasts as long as the hold.
                                                 if let Some(hold) = drift_seam.as_ref().and_then(|seam| seam.before_drift_pass(&me.to_string())) {

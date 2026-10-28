@@ -297,6 +297,20 @@ pub enum Woken {
     DriveEnded,
 }
 
+impl Woken {
+    /// The name the pass's span carries.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::First => "first",
+            Self::Submitted => "submitted",
+            Self::ViewInstalled => "view-installed",
+            Self::FabricState => "fabric-state",
+            Self::PeerMesh => "peer-mesh",
+            Self::DriveEnded => "drive-ended",
+        }
+    }
+}
+
 /// The reconcile loop's wait between two passes (Q253, amended by Luke 2026-10-28: "I hate timers;
 /// make this event driven"): the loop is `loop { wake.next().await; <pass> }`, and a pass runs on an
 /// event, never on a tick. Each event the pass decides on wakes it: a Build submitted, a view installed,

@@ -363,6 +363,9 @@ pub struct Drive {
     state: Mutex<DriveState>,
     wake: Notify,
     running: AtomicBool,
+    /// An ensure found this drive's run in progress: the run is made once more when it ends waiting
+    /// ([`Drives::ensure`]).
+    again: AtomicBool,
     /// What the node rows recorded of each member's executable when this drive's pass last read them:
     /// a replacement's plan ([`crate::accepted::plan_with_replacements`]); `None` until a pass of a Build
     /// that plans replacements read them.
@@ -406,7 +409,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), again: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -782,8 +785,24 @@ impl Drives {
             let parent = tracing::Span::current();
             let task = tokio::spawn(
                 async move {
-                    let end = env.run(&d).await;
-                    d.running.store(false, Ordering::SeqCst);
+                    let end = loop {
+                        d.again.store(false, Ordering::SeqCst);
+                        let end = env.run(&d).await;
+                        // An ensure that found this run in progress (an event's pass, a submit) is run
+                        // now: the run may have read the world before that event and ended waiting on
+                        // it. Decided under the tasks' lock, which every ensure decides under.
+                        let again = {
+                            let tasks = drives.tasks.lock().unwrap();
+                            let again = matches!(end, DriveEnd::Stalled(_)) && !tasks.1 && d.again.swap(false, Ordering::SeqCst);
+                            if !again {
+                                d.running.store(false, Ordering::SeqCst);
+                            }
+                            again
+                        };
+                        if !again {
+                            break end;
+                        }
+                    };
                     // The Build's end is what the drift check waits on: the reconcile loop runs its next
                     // pass on it.
                     if end == DriveEnd::Terminal {
@@ -802,6 +821,10 @@ impl Drives {
                 .with_current_subscriber(),
             );
             tasks.0.insert(drive.build_id.clone(), task);
+        } else {
+            // Its run is in progress and may have read the world before what this ensure was asked
+            // for: it runs once more when it ends waiting.
+            drive.again.store(true, Ordering::SeqCst);
         }
         drive
     }
