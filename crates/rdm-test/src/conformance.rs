@@ -4,7 +4,7 @@
 //! `serve_app` shape, `FnOnce(ServerBuilder) -> ServerBuilder`), with the production frames and a
 //! shortened delivery schedule, and reads the runtime's counters on both sides, never the handler's.
 //!
-//! The checks: each named refusal answered (the six reserved constructors classified, the runtime's
+//! The checks: each named refusal answered (the reserved constructors classified, the runtime's
 //! `not_ready`, `busy` and `connections_deleting`, the protocol's own named refusals); the request
 //! over its ceiling refused `Malformed(TooLarge)`, and one no variant decodes
 //! `Malformed(UnknownVariant)`; a duplicate delivery suppressed; a reply lost after acceptance
@@ -86,8 +86,9 @@ pub struct Streaming<P: StreamingProtocol> {
 /// One check of the harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Check {
-    /// The six reserved constructors build replies classified as their refusal, named by their
-    /// standard name, that decode back to themselves (and, streaming, are refusal frames).
+    /// The reserved constructors the runtime answers with (`peer_unresolved`, `not_ready`, `busy`,
+    /// `connections_deleting`, `malformed`) build replies classified as their refusal, named by
+    /// their standard name, that decode back to themselves (and, streaming, are refusal frames).
     ReservedRefusals,
     /// A request the handler answers is answered with a success, dispatched once.
     Answered,
@@ -570,23 +571,25 @@ fn in_order(seen: &[(FrameKind, Option<(DeliveryId, u32)>)]) -> Result<(), Strin
 
 // ---- the checks ----
 
-/// The six reserved constructors: each classified as its refusal, named by the name the runtime's
-/// refusal carries, decoding back to its own bytes and, for a stream, a refusal frame of its class.
+/// The reserved constructors the runtime answers with: each classified as its refusal, named by the
+/// name the runtime's refusal carries, decoding back to its own bytes and, for a stream, a refusal
+/// frame of its class. `unauthorized` holds its codec position only (no mesh receiver sends it), and
+/// its reply is built only in a protocol's definition and its `#[test]` cells (the name check's
+/// reserved-code rule): the protocol's wire-pin cell proves it.
 fn reserved_refusals<P>(frame_kind: Option<fn(&P::Reply) -> FrameKind>) -> Result<(), String>
 where
     P: NodeProtocol,
 {
     let r = || "conformance".to_string();
-    let six: [(&str, P::Reply, ReplyKind, &str); 6] = [
+    let five: [(&str, P::Reply, ReplyKind, &str); 5] = [
         ("peer_unresolved", P::peer_unresolved(r()), ReplyKind::PeerUnresolved, "peer-unresolved"),
         ("not_ready", P::not_ready(r()), ReplyKind::NotReady, "not-ready"),
         ("busy", P::busy(r()), ReplyKind::Busy, "busy"),
         ("connections_deleting", P::connections_deleting(r()), ReplyKind::ConnectionsDeleting, "connections-deleting"),
         ("malformed", P::malformed(MalformedKind::TooLarge), ReplyKind::Malformed(MalformedKind::TooLarge), "malformed"),
-        ("unauthorized", P::unauthorized(r()), ReplyKind::Unauthorized, "unauthorized"),
     ];
     let mut off = Vec::new();
-    for (ctor, reply, kind, name) in &six {
+    for (ctor, reply, kind, name) in &five {
         let (k, n) = (P::classify_reply(reply), P::reply_detail(reply));
         if (k, n) != (*kind, *name) {
             off.push(format!("{ctor}: classified {n} ({}), expected {name} ({})", k.code().name(), kind.code().name()));
