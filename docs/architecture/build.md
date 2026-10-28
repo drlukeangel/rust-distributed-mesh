@@ -141,7 +141,7 @@ records and applies every property that differs, each by its own operation. It d
 |---|---|
 | a path added / removed | `node.create` / `node.delete`: a resize |
 | `executable` | the node's replacement: a new birth at the same `path.name` ([build-deployment.md §3](build-deployment.md#3-changing-a-nodes-executable)) |
-| `config` | in place, as `node.config.update` applies a map: the row first, then the node |
+| `config` | in place, as a caller's `node.config.update` applies a map: the row first, then the node. The Build's map supersedes the node's current one, whoever set it: every write is a PUT, and the submitter reads the node's current config (`nodes.get`) before it composes (Q236) |
 | `tags` | in place: the node's tag rows |
 | `storage`, `placement` | onto the row, effective at the node's next birth; with an executable change they ride that re-birth (Q157) |
 

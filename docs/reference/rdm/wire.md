@@ -160,7 +160,7 @@ A carrier's answer to a Forward call.
 | `NAME` | `"status"` |
 | `FORWARDABLE` | `true` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `34` |
+| `REQUEST_VARIANTS` | `35` |
 | `REPLY_VARIANTS` | `58` |
 | `MAX_REQUEST_FRAME_BYTES` | `MAX_STATUS_REQUEST_BYTES` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
@@ -169,7 +169,7 @@ A carrier's answer to a Forward call.
 
 ### `StatusRequest`
 
-`crates/rdm-core/src/status.rs` · enum · 34 variants · rdm-core
+`crates/rdm-core/src/status.rs` · enum · 35 variants · rdm-core
 
 A Status call.
 
@@ -273,10 +273,11 @@ A Status call.
 | 17.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose config is put. |
 | 17.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 17.2 | `config` | `BTreeMap<String, String>` |  |  | The whole config: a put replaces, it never merges. |
-| 18 | **`ApplyNodeConfig`** |  |  | `op() = "apply-node-config"` | Downward: the birth's mesh-primary tells the exact birth its config; the birth holds it and carries |
+| 18 | **`ApplyNodeConfig`** |  |  | `op() = "apply-node-config"` | Downward: the birth's mesh-primary tells the exact birth its config, the row's as written, and |
 | 18.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth told. |
 | 18.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 18.2 | `config` | `BTreeMap<String, String>` |  |  | The whole config. |
+| 18.3 | `revision` | `u64` |  |  | The row's revision the config was written at. |
 | 19 | **`ApplyNodeName`** |  |  | `op() = "apply-node-name"` | Downward: the node's mesh-primary, having written the renamed row, tells the exact birth |
 | 19.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth told. |
 | 19.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
@@ -331,6 +332,10 @@ A Status call.
 | 33.0 | `entity` | `crate::filter::Entity` → [`Entity`](#t-rdm_core-filter-Entity) |  |  | The entity read. |
 | 33.1 | `node` | `Option<(NodeId, IncarnationId)>` → [`NodeId`](#t-rdm_core-ids-NodeId), [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The exact birth a `connections.get` reads; `None` for every other entity. |
 | 33.2 | `filter` | `crate::filter::Filter` → [`Filter`](#t-rdm_core-filter-Filter) |  |  | The pairs every answered row matches. |
+| 34 | **`NodeConfigUpdated`** |  |  | `op() = "node-config-updated"` | Upward (node-config-update.md, a node's own update, step 3; Q235): a mesh-primary that is not |
+| 34.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The node whose row was written. |
+| 34.1 | `config` | `BTreeMap<String, String>` |  |  | The row's config as written. |
+| 34.2 | `revision` | `u64` |  |  | The row's revision as written (P1: every install is ordered by it). |
 
 <a id="t-rdm_core-status-StatusReply"></a>
 
@@ -390,6 +395,8 @@ The typed result of a Status call.
 | 21 | **`ConfigUpdated`** |  |  | `name() = "config-updated"` | The reply of an `UpdateNodeConfig`: the birth's mesh-primary wrote the node's row and the exact |
 | 21.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose config was put. |
 | 21.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 21.2 | `config` | `BTreeMap<String, String>` |  |  | The row's config as written. |
+| 21.3 | `revision` | `u64` |  |  | The row's revision as written. |
 | 22 | **`Reserved22`** |  |  | `name() = "reserved-22"` | Reserved position (Q203): never sent. |
 | 22.0 | `keys` | `u32` |  |  | Never read. |
 | 22.1 | `bytes` | `u32` |  |  | Never read. |
@@ -398,6 +405,8 @@ The typed result of a Status call.
 | 23 | **`ConfigRowRefused`** |  |  | `name() = "config-row-refused"` | The config put was not made: the nodes store refused the node's row, so nothing was told to |
 | 23.0 | `node` | `String` |  |  | The node's `path.name`, the row the store refused. |
 | 23.1 | `reason` | `String` |  |  | The store's refusal. |
+| 23.2 | `config` | `BTreeMap<String, String>` |  |  | The row's config as it stands (the write refused, it is what it was): a node's own update |
+| 23.3 | `revision` | `u64` |  |  | The row's revision as it stands; 0 when the writer holds no row. |
 | 24 | **`ConfigNotApplied`** |  |  | `name() = "config-not-applied"` | The mesh-primary wrote the node's row, and the exact birth did not apply the config: the |
 | 24.0 | `node` | `String` |  |  | The node's `path.name`. |
 | 24.1 | `answered` | `String` |  |  | The birth's reply to `apply-node-config` by name, or the call's end by name. |
@@ -723,6 +732,7 @@ One frame of a topology read.
 | 13.1 | `kind` | `Option<PrimaryKind>` → [`PrimaryKind`](#t-rdm_core-topology-PrimaryKind) |  |  | Which primary the target is, from the primaries it holds: the fabric-primary when it is, |
 | 14 | **`OwnRow`** |  |  | `name() = "own-row"` | The reader's own whole row as its mesh-primary's atlas holds it (Q234: every node property: |
 | 14.0 | `node` | `crate::views::NodeView` → [`NodeView`](#t-rdm_core-views-NodeView) |  |  | The reader's row. |
+| 14.1 | `revision` | `u64` |  |  | The row's revision (P1): the reader installs the row over an older revision. |
 
 ## 0x1F `build-facts`
 
@@ -1409,8 +1419,8 @@ A declare probe answer.
 | `NAME` | `"originate"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | trait default `false` |
-| `REQUEST_VARIANTS` | `9` |
-| `REPLY_VARIANTS` | `17` |
+| `REQUEST_VARIANTS` | `10` |
+| `REPLY_VARIANTS` | `18` |
 | `MAX_REQUEST_FRAME_BYTES` | `4096` |
 | `MAX_REPLY_FRAME_BYTES` | `65536` |
 
@@ -1418,7 +1428,7 @@ A declare probe answer.
 
 ### `OriginateRequest`
 
-`crates/rdm-test/src/originate.rs` · enum · 9 variants · rdm-test
+`crates/rdm-test/src/originate.rs` · enum · 10 variants · rdm-test
 
 An originate door call.
 
@@ -1447,12 +1457,14 @@ An originate door call.
 | 8 | **`BlockDirect`** |  |  | Block (`blocked: true`) or release this node's Direct dials toward `destination` on its one |
 | 8.0 | `destination` | `String` |  | The `path.name` whose Direct dials are blocked or released. |
 | 8.1 | `blocked` | `bool` |  | Block when true, release when false. |
+| 9 | **`UpdateOwnConfig`** |  |  | Put this node's own config, the whole map, through its own `node.config.update` |
+| 9.0 | `config` | `std::collections::BTreeMap<String, String>` |  | The whole map. |
 
 <a id="t-rdm_test-originate-OriginateReply"></a>
 
 ### `OriginateReply`
 
-`crates/rdm-test/src/originate.rs` · enum · 17 variants · rdm-test
+`crates/rdm-test/src/originate.rs` · enum · 18 variants · rdm-test
 
 An originate door answer.
 
@@ -1524,6 +1536,11 @@ An originate door answer.
 | 16.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who set it. |
 | 16.1 | `destination` | `String` |  | The `path.name` the block names. |
 | 16.2 | `blocked` | `bool` |  | Whether Direct dials toward it are now blocked. |
+| 17 | **`OwnConfigUpdated`** |  |  | The node's own config update answered by its mesh-primary: the reply by name, and the row as |
+| 17.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | The node that put it. |
+| 17.1 | `outcome` | `String` |  | The mesh-primary's reply by name, or how the call ended. |
+| 17.2 | `config` | `std::collections::BTreeMap<String, String>` |  | The row's config the reply carries. |
+| 17.3 | `revision` | `u64` |  | The row's revision the reply carries; 0 when it carries none. |
 
 ## 0x74 `pre-node-ready-pull`
 

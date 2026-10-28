@@ -363,7 +363,7 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `path`, `mesh`, `node_type` | the create spec | nothing: immutable for the node's life. `node.name.update` carries the name only, so the path cannot move by construction | — | — |
 | `name` | the create spec | **`node.name.update { node_id, incarnation, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready-for-traffic (R-CR1) | `node.name.updated` |
 | `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the claim) and on replace (from the retained predecessor row at the cutover rename) | `node.tags.create { label \| [labels] }` adds; `node.tags.delete { All \| [labels] }` removes. Additive and removal commands on keyed label rows, not a replacement of a tags property | none | `node.tags.created` / `node.tags.deleted` |
-| `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time; a Build whose spec names a different map applies it the same way (build.md §1) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
+| `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own goes up through its mesh-primary; a Build whose spec names a different map applies it as a caller's, superseding the node's current map (build.md §1, Q236) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
 | `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `nodes.get` answers it whole | — | — |
 | `held`, `held_hash` | RDM: the types the node has joined ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); equal to `types` for an ordinary node; for a node-admin the union of its nodes' declarations and what it read from other node-admins. `held_hash` is blake3 of the sorted set and rides the row's digest (32 bytes; no list rides gossip) | RDM, as members join; grows, never shrinks within a birth; never a put. `nodes.get` answers `held` whole | — | — |
 | `is_primary` | the election's result, recorded by the mesh-primary | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
@@ -382,6 +382,14 @@ digest. RDM never reads it. The
 node's first config is its create spec's, written to its row at the claim; a node recovered or
 replaced at a path.name inherits the config of the row it takes over, with its tags; a rejoining
 node gets it back in its join answer.
+
+The row's revision, stepped by the mesh-primary on every write of the row, orders every install of
+the map (Q235): `ApplyNodeConfig`, `ConfigUpdated` and `ConfigRowRefused` carry it with the map, and a
+recipient installs a map only over an older revision. A node's own update is pushed up as
+`NodeConfigUpdated` ([Status](#status-op-0x1b-rdm) request position 34), upward from the node's
+mesh-primary to the fabric-primary and owed until answered: `Applied` when the fabric-primary's atlas
+took it, `AlreadyApplied` when the atlas holds that revision or a newer one, `RejectedNotPrimary` at
+any other admin.
 
 ### Open typed object questions
 
@@ -770,7 +778,7 @@ pub enum StatusRequest {
     Reserved15 { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 15, reserved (Q174): refused by name, never executed
     StartNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 16, reserved: refused by name, never executed
     UpdateNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
-    ApplyNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
+    ApplyNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String>, revision: u64 },
     ApplyNodeName { node_id: NodeId, incarnation: IncarnationId, name: String },
     UpdateName { node_id: NodeId, incarnation: IncarnationId, name: String },
     DeleteConnections { node_id: NodeId, incarnation: IncarnationId, scope: ConnectionScope },
@@ -786,6 +794,7 @@ pub enum StatusRequest {
     UpdateIssuer { node_id: NodeId, incarnation: IncarnationId, key: IssuingKeyHex, cert: String },
     GetAtlas,
     Get { entity: Entity, node: Option<(NodeId, IncarnationId)>, filter: Filter }, // position 33: the reads
+    NodeConfigUpdated { node_id: NodeId, config: BTreeMap<String, String>, revision: u64 }, // position 34: a node's row pushed up
 }
 
 // The reads (one read per entity): fabrics.get, meshes.get, nodes.get and connections.get { node }.
@@ -864,9 +873,9 @@ pub enum StatusReply {
     Started,
     StartFailed { step: String, reason: String },
     CurrentStopped { node_id: NodeId, incarnation: IncarnationId },
-    ConfigUpdated { node_id: NodeId, incarnation: IncarnationId },
+    ConfigUpdated { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String>, revision: u64 },
     Reserved22 { keys: u32, bytes: u32, max_keys: u32, max_bytes: u32 }, // position 22, reserved (Q203): never sent
-    ConfigRowRefused { node: String, reason: String },
+    ConfigRowRefused { node: String, reason: String, config: BTreeMap<String, String>, revision: u64 },
     ConfigNotApplied { node: String, answered: String, reason: String },
     Blocked { node_id: NodeId, incarnation: IncarnationId, reason: String, retry_on: RetryOn },
     NameUpdated { node_id: NodeId, incarnation: IncarnationId },
@@ -1178,7 +1187,7 @@ pub enum TopologyReply {
     Stored { mesh: String, mesh_id: Option<MeshId>, nodes: Vec<StoredNode> },
     Primaries { kind: PrimaryKind, primary: Primary, gone: bool },
     RafkaTime { ms: u64, kind: Option<PrimaryKind> },
-    OwnRow { node: NodeView },
+    OwnRow { node: NodeView, revision: u64 },
 }
 
 // A primary as the topology answers it (the election's result the mesh-primary
@@ -1216,8 +1225,9 @@ other meshes and holds none of the reader's own mesh as heard.
 OwnRow is reply position 14. A read by a node of its OWN mesh-primary answers one OwnRow,
 after RafkaTime and before End: the reader's whole row as the mesh-primary's Atlas holds it
 (every node property: config, tags, executable, storage, placement, listeners, status,
-primaries), never read from the store; it is not a mesh and End.meshes does not count it. The
-reader holds it on its own entry in its topology (Q234). A read served by any other node answers
+primaries) with the row's revision, never read from the store; it is not a mesh and End.meshes
+does not count it. The reader installs it on its own entry in its topology over an older
+revision (Q234). A read served by any other node answers
 no OwnRow. An OwnRow over the frame bound is not sent: the read span records `own_row` as
 `too-large` and the read still ends.
 Serving: `crates/rdm-node/src/topology_read.rs::StoredMap` and
