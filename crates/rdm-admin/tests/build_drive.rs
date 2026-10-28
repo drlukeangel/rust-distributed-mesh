@@ -2895,3 +2895,54 @@ async fn a_decided_recovery_admits_no_delete_of_a_node_admin_of_the_held_mesh() 
     assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("node.delete:mesh2.admin.2")), "the delete of mesh2's second admin waits for the mesh to be heard: {end:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing of the held mesh ran: {:?}", r.ran.0.lock().unwrap());
 }
+
+/// CONTRACT (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs it, without
+/// the half-floor wait, after the election has named the new mesh-primary"; "Execution": "the
+/// mesh-primary claims it ... the mesh-primary runs it"; node-identity-and-state.md: "The
+/// fabric-primary writes a row only as acting primary of a mesh with no primary"): the drive's claim of
+/// an unheard mesh-primary's recovery attempt, opened in the fabric lane and claimed by no one, follows
+/// the election's result as the claim at its open does. While the fabric-primary's view still names the
+/// unheard `mesh2.admin.1` mesh2's primary and mesh2 holds another node-admin (`mesh2.admin.2`, unheard
+/// in that view as all of mesh2 is), the drive claims nothing and stalls naming the mesh and that admin;
+/// once the view names `mesh2.admin.2` mesh2's primary, the attempt is claimed for it. Must NOT happen:
+/// the attempt claimed for the fabric-primary itself while mesh2 holds another node-admin.
+#[tokio::test]
+async fn the_drive_claims_an_unheard_mesh_primarys_recovery_for_the_mesh_primary_the_election_names() {
+    use rdm_admin::accepted::AttemptAction;
+    use rdm_admin::build_state::{AttemptOpened, AttemptReason};
+    let mut t = view();
+    for n in t.nodes.iter_mut() {
+        n.is_primary = n.name.to_string() == "mesh1.admin.1";
+    }
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    for (n, primary) in [("mesh2.admin.1", true), ("mesh2.admin.2", false), ("mesh2.rpc.1", false)] {
+        t.nodes.push(node(n, primary, false));
+    }
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
+    let r = rig_for(t, change, |ran, topology| Arc::new(Lands { ran, topology, lands: true })).await;
+    let first = Drive::detached(r.build.clone());
+    let end = r.env.run(&first).await;
+    assert!(matches!(end, DriveEnd::Terminal), "the Build's own attempt ends: {end:?}");
+
+    // mesh2 goes unheard in the fabric-primary's view, its primary still named there.
+    r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2").for_each(|n| n.status = NodeStatus::PendingReconnect);
+    let unheard = r.env.topology.read().await.node(&"mesh2.admin.1".parse().unwrap()).unwrap().clone();
+    let attempt = r.builds.read_build(&r.build).await.unwrap().attempt + 1;
+    let action = AttemptAction::Recover { path: unheard.name.clone(), node_id: unheard.node_id.clone(), from_incarnation: unheard.incarnation_id.clone().unwrap(), backbone: false };
+    r.builds
+        .open_attempt(&AttemptOpened { build_id: r.build.clone(), attempt, reason: AttemptReason::Recovery, action: Some(action), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, mesh: None, context: None })
+        .await
+        .unwrap();
+    let unnamed = Drive::detached(r.build.clone());
+    let end = tokio::time::timeout(Duration::from_secs(5), r.env.run(&unnamed)).await.expect("the drive ends");
+    let claimed = r.builds.read_build(&r.build).await.unwrap().attempt_executors;
+    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("mesh2") && why.contains("mesh2.admin.2")), "the drive stalls naming the mesh and the node-admin the election names here: {end:?}; claims: {claimed:?}");
+    assert_eq!(claimed.get(&attempt), None, "nothing is claimed before the view names mesh2's primary: {claimed:?}");
+
+    // The election named mesh2.admin.2: the view names it mesh2's primary, still unheard here.
+    r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin).for_each(|n| n.is_primary = n.name.to_string() == "mesh2.admin.2");
+    let named = Drive::detached(r.build.clone());
+    let _ = tokio::time::timeout(Duration::from_secs(5), r.env.run(&named)).await.expect("the drive ends");
+    let claimed = r.builds.read_build(&r.build).await.unwrap().attempt_executors;
+    assert_eq!(claimed.get(&attempt).map(String::as_str), Some("mesh2.admin.2"), "claimed for the mesh-primary the election named: {claimed:?}");
+}
