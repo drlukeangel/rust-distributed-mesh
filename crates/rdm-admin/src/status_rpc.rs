@@ -1147,14 +1147,21 @@ impl StatusAuthority {
             }
             // The reads (Q167): answered from what this admin holds, changing nothing.
             // A mesh-primary that is not the fabric-primary answers a read of its own mesh from its atlas
-            // and carries any other read up to the fabric-primary (query.md §1; Q224).
+            // and carries any other read up to the fabric-primary (query.md §1; Q224); a node-admin that
+            // is not a primary keeps no atlas and forwards every read but its own connections.get to its
+            // own mesh-primary, never to the fabric-primary (query.md §1; Q243).
             StatusRequest::Get { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
                 let read = req.as_read().expect("a read request is a read");
                 let held = self.atlas.get().map(|a| a.meshes()).unwrap_or_default();
-                if read_answered_at(&view, &self.node_id, &held, &read) == ReadAt::FabricPrimary {
+                let to = match read_answered_at(&view, &self.node_id, &held, &read) {
+                    ReadAt::Here => None,
+                    ReadAt::FabricPrimary => Some(crate::node_config::ReadTo::FabricPrimary),
+                    ReadAt::MeshPrimary => Some(crate::node_config::ReadTo::MeshPrimary),
+                };
+                if let Some(to) = to {
                     return match self.configs.get() {
-                        Some(configs) => configs.carry_read_up(&me_name, &self.node_id, &view, &read, req).await,
-                        None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet to carry {} up to the fabric-primary", read.entity.read())),
+                        Some(configs) => configs.carry_read(&me_name, &self.node_id, &view, &read, req, to).await,
+                        None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet to send {} on to {}", read.entity.read(), to.whom())),
                     };
                 }
                 let answer = self.read(&me_name, &view, &read).await;
@@ -1421,23 +1428,30 @@ impl StatusAuthority {
 /// Where a read sent to the admin born `me_id` is answered (query.md §1; Q224).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReadAt {
-    /// Here: the fabric-primary (its atlas holds every mesh), a mesh-primary's read of its own mesh, an
-    /// exact birth's `connections.get`, and an admin that holds no primary (kept: no page moves it).
+    /// Here: the fabric-primary (its atlas holds every mesh), a mesh-primary's read of its own mesh, and
+    /// an exact birth's `connections.get`.
     Here,
     /// Carried up to the fabric-primary: at a mesh-primary that is not it, a read its atlas does not
     /// hold.
     FabricPrimary,
+    /// Forwarded to its own mesh-primary: every read but `connections.get` at a node-admin that is not a
+    /// primary, which keeps no atlas (query.md §1; Q243).
+    MeshPrimary,
 }
 
 /// [`ReadAt`] of `read` at the admin born `me_id` in `view`, whose atlas holds the meshes `held` (a
-/// mesh-primary's: its own mesh). A `nodes.get` is of the mesh-primary's own mesh when one of its `mesh`
-/// pairs names only meshes its atlas holds, a `meshes.get` when one of its `name` (or `id`) pairs does;
-/// any other read, `fabrics.get` included, is the fabric-primary's.
+/// mesh-primary's: its own mesh). At a node-admin that is not a primary every read but `connections.get`
+/// is its mesh-primary's (Q243). At a mesh-primary, a `nodes.get` is of its own mesh when one of its
+/// `mesh` pairs names only meshes its atlas holds, a `meshes.get` when one of its `name` (or `id`) pairs
+/// does; any other read, `fabrics.get` included, is the fabric-primary's.
 pub(crate) fn read_answered_at(view: &Topology, me_id: &rdm_core::NodeId, held: &std::collections::BTreeSet<String>, read: &rdm_core::status::Read) -> ReadAt {
     use rdm_core::filter::Entity;
     let Some(me) = view.own(me_id) else { return ReadAt::Here };
-    if read.entity == Entity::Connections || view.is_fabric_primary(me_id) || !view.is_mesh_primary(&me.mesh, me_id) {
+    if read.entity == Entity::Connections || view.is_fabric_primary(me_id) {
         return ReadAt::Here;
+    }
+    if !view.is_mesh_primary(&me.mesh, me_id) {
+        return ReadAt::MeshPrimary;
     }
     let mesh_name_of_id = |id: &str| view.meshes.iter().find(|m| m.id.as_ref().is_some_and(|i| i.to_string() == id)).map(|m| m.name.clone());
     let of_held = |property: &str, by_id: bool| {
@@ -3912,9 +3926,10 @@ mod tests {
     /// any other read up to the fabric-primary"; Q224): the fabric-primary answers every read; mesh2's
     /// mesh-primary, its atlas holding mesh2, answers `nodes.get` whose `mesh` pair names only mesh2 and
     /// `meshes.get` of mesh2 by name or id, and carries up a read of mesh1, a read naming mesh1 and mesh2,
-    /// a read naming no mesh and `fabrics.get`; `connections.get` is the exact birth's; an admin that holds
-    /// no primary answers every read itself, as before (kept). Must NOT happen: a mesh-primary answering
-    /// another mesh from its own view; its own mesh's read carried up.
+    /// a read naming no mesh and `fabrics.get`; `connections.get` is the exact birth's; a node-admin that is
+    /// not a primary forwards every other read to its own mesh-primary (Q243). Must NOT happen: a
+    /// mesh-primary answering another mesh from its own view; its own mesh's read carried up; a node-admin
+    /// that is not a primary answering a read from its own view, or sending it to the fabric-primary.
     #[test]
     fn a_mesh_primary_answers_its_own_meshs_reads_and_carries_every_other_up() {
         use rdm_core::filter::{Entity, Filter};
@@ -3955,10 +3970,12 @@ mod tests {
         for (what, r, at) in &reads {
             assert_eq!(read_answered_at(&view, &mp.node_id, &mesh2, r), *at, "{what} at mesh2's mesh-primary");
             assert_eq!(read_answered_at(&view, &fp.node_id, &every, r), ReadAt::Here, "{what} at the fabric-primary");
-            assert_eq!(read_answered_at(&view, &other.node_id, &Default::default(), r), ReadAt::Here, "{what} at an admin that holds no primary (kept)");
+            assert_eq!(read_answered_at(&view, &other.node_id, &Default::default(), r), ReadAt::MeshPrimary, "{what} at a node-admin that is not a primary: forwarded to its mesh-primary");
         }
         let connections = Read { entity: Entity::Connections, node: Some((mp.node_id.clone(), mp.incarnation_id.clone().unwrap())), filter: Filter::new() };
         assert_eq!(read_answered_at(&view, &mp.node_id, &mesh2, &connections), ReadAt::Here, "connections.get is the exact birth's");
+        let own_connections = Read { entity: Entity::Connections, node: Some((other.node_id.clone(), other.incarnation_id.clone().unwrap())), filter: Filter::new() };
+        assert_eq!(read_answered_at(&view, &other.node_id, &Default::default(), &own_connections), ReadAt::Here, "connections.get at a node-admin that is not a primary is its own");
         assert_eq!(read_answered_at(&view, &mp.node_id, &Default::default(), &read(Entity::Nodes, Filter::new().eq("mesh", ["mesh2"]))), ReadAt::FabricPrimary, "a mesh-primary whose atlas does not hold its mesh yet carries the read up");
     }
 }

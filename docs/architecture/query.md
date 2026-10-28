@@ -13,7 +13,8 @@ which answers from its atlas: every
 mesh's node records, held in memory, filled from the node records once at its start or hand-over and
 written by each op after that (Q203, Q204, Q224). Only a primary keeps an atlas (Q224): a mesh-primary's
 holds its own mesh and nothing else, the fabric-primary's holds every mesh, and a node-admin that is
-not a primary keeps none. A mesh-primary answers a read of its own mesh from its atlas and carries any
+not a primary keeps none. A node that is not a primary, an rpc node or a node-admin without a seat, carries a
+read it receives to its own mesh-primary and never to the fabric-primary (Q243). A mesh-primary answers a read of its own mesh from its atlas and carries any
 other read up to the fabric-primary. A read makes no store read: the filter is matched
 against the atlas, and a nodes store that fails every read leaves the answer unchanged.
 

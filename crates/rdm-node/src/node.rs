@@ -1720,6 +1720,46 @@ pub(crate) struct Kicked {
 
 type KickSlot = Arc<std::sync::OnceLock<Arc<Kicked>>>;
 
+/// A `fabrics.get`, `meshes.get` or `nodes.get` sent to this node, which is not a primary and keeps no
+/// atlas, forwarded to its own mesh-primary and nowhere else, never to the fabric-primary (query.md §1;
+/// Q243): the mesh-primary answers it from its atlas or carries it up to the fabric-primary, and its
+/// answer is handed back as it is. One call with the caller's default budget, never owed (the read's
+/// owner is the caller's call), to the mesh-primary the primary record this birth holds names. No
+/// mesh-primary held, or a call that ends with no reply, is `NotReady` naming it. One span,
+/// `rdm.node.<entity>.serve.via-forward`, names the read, its pairs, the mesh-primary and the answer.
+async fn forward_read(me: &Kicked, read: &rdm_core::status::Read, req: &rdm_core::status::StatusRequest) -> rdm_core::status::StatusReply {
+    use rdm_core::filter::Entity;
+    use rdm_core::status::{Status, StatusReply};
+    let node = me.topology_view.held_name(&me.digest.node.name);
+    let op = read.entity.read();
+    let pairs = read.filter.pairs.iter().map(|(p, v)| format!("({p}, [{}])", v.join(", "))).collect::<Vec<_>>().join(" ");
+    let empty = tracing::field::Empty;
+    let span = match read.entity {
+        Entity::Nodes => tracing::info_span!("rdm.node.node.serve.via-forward", node = %node, read = op, pairs = %pairs, mesh_primary = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+        Entity::Meshes => tracing::info_span!("rdm.node.mesh.serve.via-forward", node = %node, read = op, pairs = %pairs, mesh_primary = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+        _ => tracing::info_span!("rdm.node.fabric.serve.via-forward", node = %node, read = op, pairs = %pairs, mesh_primary = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+    };
+    let forwarded = async {
+        let Some(primary) = me.topology_view.primaries().mesh(&me.digest.node.name.mesh) else {
+            return rdm_core::reply::status::not_ready(format!("{node} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.name.mesh));
+        };
+        let to = me.topology_view.digest_view.current(me.topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
+        tracing::Span::current().record("mesh_primary", to.as_str());
+        let (out, _) = me.own.client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), req, &rdm_transport::CallOptions::default()).await;
+        match out {
+            rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
+            other => rdm_core::reply::status::not_ready(format!("{node} forwarded {op} to its mesh-primary {to}: the call ended {} with no reply", other.name())),
+        }
+    };
+    let reply = tracing::Instrument::instrument(forwarded, span.clone()).await;
+    span.record("outcome", reply.name());
+    if let StatusReply::NotReady { reason } = &reply {
+        span.record("detail", reason.as_str());
+    }
+    span.in_scope(|| tracing::info!("a read at a node that is not a primary, forwarded to its own mesh-primary"));
+    reply
+}
+
 fn node_state_of(s: MemberStatus) -> rdm_core::status::NodeState {
     use rdm_core::status::NodeState as N;
     match s {
@@ -1756,9 +1796,9 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 
 
 /// Serve `Status` on an rpc node: the downward exact-node operations, answered once this node
-/// has joined (until then `NotReady`). An rpc node is never an authority: every upward
-/// declaration, every mesh or fabric operation and every view read (`node.get`, `mesh.get`,
-/// `fabric.get`, which a node-admin answers from its view) is refused by name. A `NodeLeft`, never
+/// has joined (until then `NotReady`). An rpc node is never a primary: every upward declaration and
+/// every mesh or fabric operation is refused by name, and a `nodes.get`, `meshes.get` or `fabrics.get`
+/// it receives is forwarded to its own mesh-primary ([`forward_read`]; query.md §1, Q243). A `NodeLeft`, never
 /// sent, is refused as every receiver refuses it ([`crate::node_self::refuse_node_left`]).
 /// `node.connections.get` of this exact birth is answered with the connections it holds.
 ///
@@ -1803,12 +1843,13 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let name = me.topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.name.to_string()).unwrap_or_default();
                 return Ok(crate::node_self::refuse_node_left(&me.topology_view.held_name(&me.digest.node.name).to_string(), &name, &sender_name, &req));
             }
-            // A read (Q167): `connections.get { node }` is this birth's; every other entity is a
-            // node-admin's, not handled here.
+            // A read (Q167): `connections.get { node }` is this birth's; every other read is forwarded to
+            // its own mesh-primary and nowhere else: this node is not a primary and keeps no atlas
+            // (query.md §1; Q243).
             let read = req.as_read();
             if let Some(r) = &read {
                 if r.entity != rdm_core::filter::Entity::Connections {
-                    return Ok(crate::node_self::request_not_handled(&me.topology_view.held_name(&me.digest.node.name).to_string(), &req));
+                    return Ok(forward_read(&me, r, &req).await);
                 }
                 if r.node.is_none() {
                     return Ok(rdm_core::reply::status::bounded_rejected_filter("connections.get names no node: the exact birth (id, incarnation) is the read's address"));

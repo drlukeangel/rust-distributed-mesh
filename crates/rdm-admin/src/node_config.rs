@@ -423,35 +423,43 @@ fn primary_route(view: &Topology, mesh: &str, primary: &rdm_core::NodeId, me_id:
 }
 
 impl NodeConfigs {
-    /// A read `req` (query.md §1; Q224) this admin, a mesh-primary that is not the fabric-primary, does not
-    /// answer from its atlas (a read of another mesh, a read naming no mesh, `fabrics.get`), carried up to
-    /// the fabric-primary `view` names, whose atlas holds every mesh: its answer, handed back as it is.
-    /// One call with the caller's default budget, never owed (node-rpc.md, Owed: "A command with an
-    /// owner's bound keeps a finite budget"; the read's owner is the caller's call): direct first, then
-    /// through each other live node-admin of the fabric-primary's mesh on Forward `0x1A`. A view naming no
-    /// fabric-primary, or a call that ends with no reply, is `NotReady` naming it. One span,
-    /// `rdm.node_admin.<entity>.serve.via-forward`, names the read, its pairs, the fabric-primary and the
-    /// answer.
-    pub async fn carry_read_up(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, read: &rdm_core::status::Read, req: &StatusRequest) -> StatusReply {
+    /// A read `req` (query.md §1) this admin does not answer from an atlas, sent on to the primary `to`
+    /// names in `view`: at a mesh-primary that is not the fabric-primary, a read its atlas does not hold
+    /// (a read of another mesh, a read naming no mesh, `fabrics.get`; Q224) is carried up to the
+    /// fabric-primary, whose atlas holds every mesh; at a node-admin that is not a primary, which keeps
+    /// no atlas, every read but its own `connections.get` is forwarded to its own mesh-primary and never
+    /// to the fabric-primary (Q243). The answer is handed back as it is. One call with the caller's
+    /// default budget, never owed (node-rpc.md, Owed: "A command with an owner's bound keeps a finite
+    /// budget"; the read's owner is the caller's call): direct first, then through each other live
+    /// node-admin of the primary's mesh on Forward `0x1A`. A view naming no such primary, or a call that
+    /// ends with no reply, is `NotReady` naming it. One span, `rdm.node_admin.<entity>.serve.via-forward`,
+    /// names the read, its pairs, the primary (`fabric_primary` or `mesh_primary`) and the answer.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn carry_read(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, read: &rdm_core::status::Read, req: &StatusRequest, to: ReadTo) -> StatusReply {
         use rdm_core::filter::Entity;
         let op = read.entity.read();
         let pairs = crate::views::pairs(&read.filter);
         let empty = tracing::field::Empty;
         let span = match read.entity {
-            Entity::Nodes => tracing::info_span!("rdm.node_admin.node.serve.via-forward", node = %me, read = op, pairs = %pairs, fabric_primary = empty, route = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
-            Entity::Meshes => tracing::info_span!("rdm.node_admin.mesh.serve.via-forward", node = %me, read = op, pairs = %pairs, fabric_primary = empty, route = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
-            _ => tracing::info_span!("rdm.node_admin.fabric.serve.via-forward", node = %me, read = op, pairs = %pairs, fabric_primary = empty, route = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+            Entity::Nodes => tracing::info_span!("rdm.node_admin.node.serve.via-forward", node = %me, read = op, pairs = %pairs, fabric_primary = empty, mesh_primary = empty, route = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+            Entity::Meshes => tracing::info_span!("rdm.node_admin.mesh.serve.via-forward", node = %me, read = op, pairs = %pairs, fabric_primary = empty, mesh_primary = empty, route = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+            _ => tracing::info_span!("rdm.node_admin.fabric.serve.via-forward", node = %me, read = op, pairs = %pairs, fabric_primary = empty, mesh_primary = empty, route = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
         };
+        let whom = to.whom();
         let carried = async {
-            let Some(fp) = view.fabric_primary() else {
-                return rdm_core::reply::status::not_ready(format!("{me} answers {op} of its own mesh only, and its view names no fabric-primary to carry this one up to"));
+            let primary = match to {
+                ReadTo::FabricPrimary => view.fabric_primary(),
+                ReadTo::MeshPrimary => view.own(me_id).and_then(|own| view.node_type_primary(&own.mesh, rdm_core::NodeKind::NodeAdmin)),
             };
-            span.record("fabric_primary", fp.name.to_string().as_str());
-            let opts = CallOptions { route: Some(primary_route(view, &fp.mesh, &fp.node_id, me_id)), ..CallOptions::default() };
-            let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(fp.node_id.clone()), req, &opts).await;
+            let Some(primary) = primary else {
+                return rdm_core::reply::status::not_ready(format!("{me} answers no {op} from an atlas, and its view names no {whom} to send this one on to"));
+            };
+            span.record(to.field(), primary.name.to_string().as_str());
+            let opts = CallOptions { route: Some(primary_route(view, &primary.mesh, &primary.node_id, me_id)), ..CallOptions::default() };
+            let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(primary.node_id.clone()), req, &opts).await;
             match out {
                 rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
-                other => rdm_core::reply::status::not_ready(format!("{me} carried {op} up to the fabric-primary {}: the call ended {} with no reply", fp.name, other.name())),
+                other => rdm_core::reply::status::not_ready(format!("{me} sent {op} on to {whom} {}: the call ended {} with no reply", primary.name, other.name())),
             }
         };
         let reply = tracing::Instrument::instrument(carried, span.clone()).await;
@@ -459,8 +467,38 @@ impl NodeConfigs {
         if let StatusReply::NotReady { reason } = &reply {
             span.record("detail", reason.as_str());
         }
-        span.in_scope(|| tracing::info!("a read this mesh-primary's atlas does not hold, carried up to the fabric-primary"));
+        span.in_scope(|| match to {
+            ReadTo::FabricPrimary => tracing::info!("a read this mesh-primary's atlas does not hold, carried up to the fabric-primary"),
+            ReadTo::MeshPrimary => tracing::info!("a read at a node-admin that is not a primary, forwarded to its own mesh-primary"),
+        });
         reply
+    }
+}
+
+/// Where [`NodeConfigs::carry_read`] sends a read on to (query.md §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadTo {
+    /// Up to the fabric-primary, from a mesh-primary whose atlas does not hold it (Q224).
+    FabricPrimary,
+    /// To its own mesh-primary, from a node-admin that is not a primary (Q243).
+    MeshPrimary,
+}
+
+impl ReadTo {
+    /// The primary, as a reason names it.
+    pub fn whom(self) -> &'static str {
+        match self {
+            ReadTo::FabricPrimary => "the fabric-primary",
+            ReadTo::MeshPrimary => "its mesh-primary",
+        }
+    }
+
+    /// The span field naming the primary.
+    fn field(self) -> &'static str {
+        match self {
+            ReadTo::FabricPrimary => "fabric_primary",
+            ReadTo::MeshPrimary => "mesh_primary",
+        }
     }
 }
 
