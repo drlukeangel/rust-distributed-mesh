@@ -58,8 +58,27 @@ def cells_runs(deploy, lane, since):
     return out
 
 
+def last_landing(path, lane):
+    """When `lane` last landed, from the landings ledger; 0 when it never did."""
+    at = 0
+    try:
+        for line in open(path):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if str(r.get("lane")) == str(lane):
+                at = max(at, int(r.get("landed_at", 0)))
+    except OSError:
+        pass
+    return at
+
+
 def record(path, deploy, lane, issue, branch, sha, plan, launched, first, commits):
     now = int(time.time())
+    # A lane's plan file stays until the next dispatch: a unit the lead lands without one starts at the
+    # lane's last landing, so the earlier unit's gates and time are never counted again.
+    plan = max(plan, last_landing(path, lane))
     runs = gate_runs(deploy, lane, plan)
     cells = cells_runs(deploy, lane, plan)
     row = {"landed_at": now, "lane": lane, "issue": int(issue), "branch": branch, "sha": sha, "plan_at": plan, "launched_at": launched,
