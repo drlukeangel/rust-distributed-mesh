@@ -111,13 +111,15 @@ impl Estate {
         }
     }
 
-    /// Read `mesh.nodes.get` at every node-admin the estate knows of, each answering for this Fabric within
-    /// its bound, and learn what each lists.
+    /// Read the fabric's views ([`views_of`]: `nodes.get` at the fabric-primary) through the first
+    /// node-admin the estate knows of that answers for this Fabric within its bound, and learn what they
+    /// list.
     async fn relearn(&self, peers: &Peers) {
         let admins: Vec<PathName> = self.births.lock().unwrap().keys().cloned().collect();
         for admin in admins {
             if let Some(views) = node_views_of(peers, &admin, &self.fabric_id).await {
                 self.note(peers, &views);
+                return;
             }
         }
     }
@@ -145,10 +147,32 @@ impl Estate {
         fabric_view_of(self.peers().await.as_ref(), admin, &self.fabric_id).await
     }
 
-    /// `mesh.nodes.get` of every node of every mesh `admin` holds, as that admin's view holds them, `None`
-    /// when it does not answer for this Fabric within 2 s.
+    /// `nodes.get` of every node of every mesh, sent to the fabric-primary `fabrics.get` at `admin` names
+    /// ([`views_of`]; query.md §1), `None` when `admin` or the fabric-primary does not answer for this
+    /// Fabric within 2 s. What one particular node holds is [`Self::held_topology_at`].
     pub async fn node_views_at(&self, admin: &PathName) -> Option<Vec<NodeView>> {
         self.views_at(admin).await.ok()
+    }
+
+    /// What the node `node` holds itself, never a primary's atlas (query.md §2: a node queries its own
+    /// topology): every birth it holds of every mesh, with the status it holds for each, and the
+    /// primaries it records, read over `node.topology.get` (op `0x1E`) of every mesh. A cell asking what
+    /// one particular node holds reads this, never `nodes.get` at it, which a node that is not a primary
+    /// forwards to its own mesh-primary (query.md §1; Q243). `None` when the node does not answer within
+    /// 2 s.
+    pub async fn held_topology_at(&self, node: &PathName) -> Option<HeldTopology> {
+        let carrier = self.peers().await.carrier_at(node.clone());
+        let (rpc, target, opts) = (rdm_client::NodeRpc::new(carrier.client()), rdm_transport::NodeTarget::CurrentPath(node.clone()), rdm_transport::CallOptions::default());
+        let frames = tokio::time::timeout(std::time::Duration::from_secs(2), rpc.topology_get(&target, None, None, &opts)).await.ok()?.ok()?;
+        let mut held = HeldTopology::default();
+        for frame in frames {
+            match frame {
+                rdm_core::topology::TopologyReply::Snapshot { digests, .. } => held.members.extend(digests.into_iter().map(rdm_core::MeshDigest::from)),
+                rdm_core::topology::TopologyReply::Primaries { kind, primary, gone } => held.primaries.push((kind, primary, gone)),
+                _ => {}
+            }
+        }
+        Some(held)
     }
 
     /// [`Self::node_views_at`], naming the read that ended ([`views_of`]).
@@ -883,8 +907,8 @@ pub async fn fabric_view_of(peers: &Peers, admin: &PathName, fabric_id: &str) ->
     (f.id.to_string() == fabric_id).then_some(f)
 }
 
-/// `mesh.nodes.get` of every mesh `admin` holds, over `peers`, as that admin's view holds them:
-/// `None` when it does not answer for the Fabric `fabric_id` within 2 s a call.
+/// [`views_of`] over `peers`: `nodes.get` of every mesh at the fabric-primary `admin`'s `fabrics.get`
+/// names, `None` when a read does not answer for the Fabric `fabric_id` within 2 s a call.
 pub async fn node_views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Option<Vec<NodeView>> {
     views_of(peers, admin, fabric_id).await.ok()
 }
@@ -895,6 +919,29 @@ pub async fn node_views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> 
 /// fabric-primary"). The read is not answered yet, and a wait goes on to its own bound.
 pub fn not_yet(end: &CallEnd) -> bool {
     matches!(end, CallEnd::Rejected { reason, .. } if reason == "not-ready")
+}
+
+/// What one node holds itself ([`Estate::held_topology_at`]; query.md §2): the births it holds and the
+/// primaries it records.
+#[derive(Debug, Clone, Default)]
+pub struct HeldTopology {
+    /// Every birth the node holds, of every mesh, with the status it holds for each.
+    pub members: Vec<rdm_core::MeshDigest>,
+    /// Every primary the node records: which primary, the record, and whether it holds that exact birth
+    /// as gone.
+    pub primaries: Vec<(rdm_core::topology::PrimaryKind, rdm_core::Primary, bool)>,
+}
+
+impl HeldTopology {
+    /// The node the node records as `mesh`'s mesh-primary.
+    pub fn mesh_primary(&self, mesh: &str) -> Option<&rdm_core::NodeId> {
+        self.primaries.iter().find(|(k, p, _)| *k == rdm_core::topology::PrimaryKind::MeshPrimary && p.mesh == mesh).map(|(_, p, _)| &p.node_id)
+    }
+
+    /// The node the node records as the fabric-primary.
+    pub fn fabric_primary(&self) -> Option<&rdm_core::NodeId> {
+        self.primaries.iter().find(|(k, _, _)| *k == rdm_core::topology::PrimaryKind::FabricPrimary).map(|(_, p, _)| &p.node_id)
+    }
 }
 
 /// How a read of an admin's views ended without them, naming the read that ended.
@@ -914,8 +961,12 @@ impl std::fmt::Display for ViewsEnd {
     }
 }
 
-/// [`node_views_of`], naming the read that ended: `fabrics.get` first, then `nodes.get [mesh: m]` of
-/// each mesh the fabric names, each bounded at 2 s.
+/// [`node_views_of`], naming the read that ended: `fabrics.get` at `admin` first, then `nodes.get [mesh: m]`
+/// of each mesh the fabric names, sent to the fabric-primary that answer names, as a caller outside the
+/// node sends it (query.md §1), never to a node-admin that is not a primary, which forwards it to its own
+/// mesh-primary (Q243); each bounded at 2 s. A fabric-primary whose node the caller holds no address
+/// for (none at its name, or another node id than the answer's) is reached as
+/// [`Peers::carrier_following`] reaches one, from `admin`'s node list.
 pub async fn views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Result<Vec<NodeView>, ViewsEnd> {
     let ended = |read: String, e: CallEnd| if not_yet(&e) { ViewsEnd::NotYet(format!("{read} at {admin} is not answered yet: {e}")) } else { ViewsEnd::Ended(format!("{read} at {admin} ended: {e}")) };
     let fabrics = Fabrics::new(peers.carrier_at(admin.clone()));
@@ -925,13 +976,27 @@ pub async fn views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Resul
         Ok(Ok(f)) if f.id.to_string() != fabric_id => return Err(ViewsEnd::Ended(format!("fabrics.get at {admin} answered the Fabric {}, not {fabric_id}", f.id))),
         Ok(Ok(f)) => f,
     };
-    let nodes = Nodes::new(peers.carrier_at(admin.clone()));
+    // The fabric-primary's node id, from its control API base (`rdm://<node id>`): a birth the caller
+    // holds at its name under another id is a node that left the path.
+    let fp_id = f.admin_api_base.as_deref().and_then(|b| b.strip_prefix("rdm://")).map(str::to_string);
+    let (at, carrier) = match f.fabric_primary.clone() {
+        Some(fp) if fp != *admin && peers.node_at(&fp).map(|id| id.to_string()) != fp_id => match tokio::time::timeout(std::time::Duration::from_secs(2), peers.carrier_following(admin, &fp)).await {
+            Err(_) => return Err(ViewsEnd::Ended(format!("the birth of {fp}, the fabric-primary, read at {admin} did not answer within 2 s"))),
+            Ok(Err(e)) => return Err(ended(format!("the birth of {fp}, the fabric-primary,"), e)),
+            Ok(Ok(carrier)) => (fp, carrier),
+        },
+        Some(fp) => (fp.clone(), peers.carrier_at(fp)),
+        // A view naming no fabric-primary (its last mesh deleted): the admin answers what it holds.
+        None => (admin.clone(), peers.carrier_at(admin.clone())),
+    };
+    let nodes = Nodes::new(carrier);
     let mut all = Vec::new();
     for mesh in f.meshes.iter().filter(|m| !m.nodes.is_empty()) {
         let read = format!("nodes.get [mesh: {}]", mesh.name);
         match tokio::time::timeout(std::time::Duration::from_secs(2), mesh_nodes(&nodes, &mesh.name)).await {
-            Err(_) => return Err(ViewsEnd::Ended(format!("{read} at {admin} did not answer within 2 s"))),
-            Ok(Err(e)) => return Err(ended(read, e)),
+            Err(_) => return Err(ViewsEnd::Ended(format!("{read} at {at} did not answer within 2 s"))),
+            Ok(Err(e)) if not_yet(&e) => return Err(ViewsEnd::NotYet(format!("{read} at {at}, the fabric-primary {admin} names, is not answered yet: {e}"))),
+            Ok(Err(e)) => return Err(ViewsEnd::Ended(format!("{read} at {at}, the fabric-primary {admin} names, ended: {e}"))),
             Ok(Ok(views)) => all.extend(views),
         }
     }

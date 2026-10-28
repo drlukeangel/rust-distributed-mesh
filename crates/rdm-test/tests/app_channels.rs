@@ -212,12 +212,14 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
         let expected = BTreeSet::from([BASE.into(), LATE.into()]);
         until_held(&joiner, &expected).await;
         let first = own_view(&root).await;
-        let second = own_view(&joiner).await;
+        // What the joiner holds itself (query.md §2): it is not a primary, so nodes.get sent to it is
+        // forwarded to its mesh-primary (query.md §1; Q243) and answers that primary's record of it.
+        let second = &joiner.topology_view;
         assert_eq!(first.types, BTreeSet::from([BASE.into()]));
-        assert_eq!(second.types, BTreeSet::from([LATE.into()]));
+        assert_eq!(second.app_types(), BTreeSet::from([LATE.into()]));
         assert_eq!(first.held, expected);
-        assert_eq!(second.held, expected);
-        assert_eq!(second.held_hash, rdm_core::app_types::hash(&expected));
+        assert_eq!(second.held_types(), expected);
+        assert_eq!(second.held_hash(), rdm_core::app_types::hash(&expected));
         tokio::time::timeout(BOUND, joiner.pre_node_ready().unwrap().settled())
             .await
             .unwrap();

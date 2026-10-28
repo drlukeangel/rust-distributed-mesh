@@ -90,6 +90,11 @@ impl Peers {
         }
     }
 
+    /// The node id a call by `name` reaches now, when a birth at `name` was learned.
+    pub fn node_at(&self, name: &PathName) -> Option<NodeId> {
+        self.held.lock().unwrap().get(name).cloned()
+    }
+
     /// The Build carrier whose calls start at the fabric-primary `fabric_primary`, when the caller
     /// is told where the seat is: a stream that ended `FabricPrimaryMoved` names the admin that holds it now
     /// (node-rpc-envelope.md TakeSeats: "the caller resubmits the same `build_id` to N"). Its birth

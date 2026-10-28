@@ -90,13 +90,17 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let late_name = late.name.clone();
 
     // A lower NodeId never displaces a living holder: the incumbent keeps every seat, seen from
-    // both admins, for several gossip intervals.
+    // both admins, for several gossip intervals: what each admin holds itself (query.md §2), never
+    // nodes.get, which the late admin, not a primary, forwards to its mesh-primary (Q243).
     for _ in 0..12 {
         for admin in [&incumbent_admin, &late_name] {
-            let view = estate.node_views_at(admin).await.unwrap_or_else(|| panic!("{admin} does not answer node.get"));
-            let held = |name: &rdm_client::PathName| view.iter().find(|n| n.name == *name).map(|n| (n.is_primary, n.is_fabric_primary));
-            assert_eq!(held(&incumbent_admin), Some((true, true)), "the incumbent keeps both seats ({admin}): {view:#?}");
-            assert_eq!(held(&late_name), Some((false, false)), "the lower NodeId holds none ({admin}): {view:#?}");
+            let held = estate.held_topology_at(admin).await.unwrap_or_else(|| panic!("{admin} does not answer node.topology.get"));
+            for n in [&incumbent, &late] {
+                assert!(held.members.iter().any(|d| d.node.node_id == n.node_id), "{admin} holds {}: {held:#?}", n.name);
+            }
+            let seats = |id: &rdm_core::NodeId| (held.mesh_primary("mesh1") == Some(id), held.fabric_primary() == Some(id));
+            assert_eq!(seats(&incumbent.node_id), (true, true), "the incumbent keeps both seats ({admin}): {held:#?}");
+            assert_eq!(seats(&late.node_id), (false, false), "the lower NodeId holds none ({admin}): {held:#?}");
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
