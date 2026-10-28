@@ -31,6 +31,9 @@ anyhow = "1"
 # The node-admin's own `pre_node_ready` (rdm_node::node_hooks::PreNodeReady) keeps the process's Node RPC
 # client for the state-sync hook's call to the system gateway.
 async-trait = "0.1"
+# The consumer example (src/consumer_example.rs): its protocols' enums and its operations record.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # The executable binding re-hashes every bound file at every launch and every admin birth hashes the
 # whole set; an unoptimised sha2 takes 4.4 s per 430 MB debug executable (RDM's own workspace sets
@@ -63,9 +66,12 @@ path = "src/bin/rshape_gateway.rs"
 name = "rshape-broker"
 path = "src/bin/rshape_broker.rs"
 
+[[bin]]
+name = "rshape-example"
+path = "src/bin/rshape_example.rs"
+
 [dev-dependencies]
 postcard = { version = "1", features = ["alloc"] }
-serde_json = "1"
 # The state-sync cell's desired shape (FabricDesired, MeshDesired) on the testkit's process estate.
 rdm-client = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "0dd1c3c27be5474fb27889d03d7d5faaff67ecc7" }
 # The consumer's own tracing subscriber (the one-trace primer): RDM's spans through the consumer's
