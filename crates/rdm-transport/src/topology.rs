@@ -1873,13 +1873,36 @@ struct View {
 
 impl View {
     /// The sources this node serves on a topology read, one per mesh: what it forwards as its
-    /// mesh's primary, else what its receivers hold.
+    /// mesh's primary, else the newer of what its two receivers hold (R-RX3, gossip.md §3.1: one held
+    /// version per source, whichever channel or read it arrives by). A node-admin hears a peer mesh on
+    /// the backbone and, forwarded, on its mesh channel; a forwarded frame the backbone already moved
+    /// past is ignored, so the mesh channel's copy can stay behind the version the node holds (rdm#154).
     fn held_sources(&self) -> Vec<SourceSnapshot> {
         if self.primary.load(Ordering::Relaxed) {
-            self.forwarder.lock().unwrap().snapshots()
-        } else {
-            self.mesh_rx.lock().unwrap().snapshots()
+            return self.forwarder.lock().unwrap().snapshots();
         }
+        let channel = self.mesh_rx.lock().unwrap().snapshots();
+        let backbone = self.backbone_rx.lock().unwrap().snapshots();
+        let order = self.order.lock().unwrap();
+        let mut by_mesh: std::collections::BTreeMap<String, SourceSnapshot> = Default::default();
+        for s in channel.into_iter().chain(backbone) {
+            let held = order.installed_snapshot(&s.mesh).map(|(publisher, version, ..)| (publisher.clone(), version));
+            let is_held = |c: &SourceSnapshot| held.as_ref().is_some_and(|(p, v)| &c.publisher == p && c.topology_version == *v);
+            match by_mesh.entry(s.mesh.clone()) {
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(s);
+                }
+                std::collections::btree_map::Entry::Occupied(mut e) => {
+                    let kept = e.get();
+                    // The one this node holds of the source; else, of one publisher, the higher version.
+                    let newer = !is_held(kept) && (is_held(&s) || (s.publisher == kept.publisher && s.topology_version > kept.topology_version));
+                    if newer {
+                        e.insert(s);
+                    }
+                }
+            }
+        }
+        by_mesh.into_values().collect()
     }
 
     fn new(mesh: &str, node: &str) -> Self {
