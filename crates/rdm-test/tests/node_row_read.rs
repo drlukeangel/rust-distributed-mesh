@@ -39,9 +39,11 @@ fn launch(dir: &Path, fabric: &FabricId, name: &str, admin: &rdm_test::rig::Admi
     }
 }
 
-/// The folds of the fabric's `nodes.jsonl` the cell's capture holds, each with the span it ran under.
+/// The folds of the fabric's `nodes.jsonl` the cell's capture holds, in the order they began, each with
+/// the span it ran under.
 fn nodes_folds(spans: &crate::common::Spans) -> Vec<Option<String>> {
-    spans.0.lock().unwrap().values().filter(|(n, _, f)| n == FOLD && f.get("file").is_some_and(|p| p.ends_with("nodes.jsonl"))).map(|(_, parent, _)| parent.clone()).collect()
+    let held: BTreeMap<u64, _> = spans.0.lock().unwrap().clone().into_iter().collect();
+    held.into_values().filter(|(n, _, f)| n == FOLD && f.get("file").is_some_and(|p| p.ends_with("nodes.jsonl"))).map(|(_, parent, _)| parent).collect()
 }
 
 // @feature: node-lifecycle
@@ -101,7 +103,7 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
         gw1.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
     });
-    let held: std::collections::BTreeMap<u64, _> = spans.0.lock().unwrap().clone().into_iter().collect();
+    let held: BTreeMap<u64, _> = spans.0.lock().unwrap().clone().into_iter().collect();
     let reads: Vec<_> = held.values().filter(|(n, _, _)| n == READ).map(|(_, _, f)| f.clone()).collect();
     let outcomes: Vec<(String, String)> = reads.iter().map(|f| (f.get("by").cloned().unwrap_or_default(), f.get("outcome").cloned().unwrap_or_default())).collect();
     assert_eq!(outcomes, vec![("name".into(), "found".into()), ("id".into(), "found".into()), ("name".into(), "none".into())], "{reads:?}");

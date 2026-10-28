@@ -3272,7 +3272,7 @@ Each open i143 unit, its rafka-v2 issue and where it stands. A unit leaves this 
 | #3237 | Q227/Q234: node-admins read no store at start, join and hydration; OwnRow | lane 3: inventory accepted (item 7 moved to rdm#84), building the race path first |
 | rdm#83 | Q233 code: the row's status from the node's ack and completion; delete the mesh-primary's | open; next free lane |
 | rdm#84 | a mesh-primary's Atlas filled from the fabric-primary; put_runtime only by primaries; rehydrate unused | open; after #3237 |
-| rdm#85 | Q237: a node's point read of another node's row from the store | open; after rdm#78 |
+| rdm#85 | Q237: a node's point read of another node's row from the store | built in lane 3 (i143-rdm85-node-row-read): `RunningNode::node_row(id | name)`; the row family and its file reader moved to `rdm_node::nodes_storage`, the store opened on the first read; query.md §1's node paragraph and line; for the lead's review |
 | rdm#86 | Q224: a mesh-primary's own Atlas answers its mesh's reads, passing others up | open; with rdm#84 |
 | rdm#87 | Q167 R-RD5: builds.get with the filter | open; its source waits on Luke's answer below |
 
