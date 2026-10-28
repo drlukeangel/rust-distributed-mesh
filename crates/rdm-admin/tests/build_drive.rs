@@ -2998,3 +2998,66 @@ async fn a_remote_executors_reported_receipts_are_written_by_the_claim_record_an
     assert_eq!((attrs.get("attempt").map(String::as_str), attrs.get("held_attempt").map(String::as_str), attrs.get("executor").map(String::as_str)), (Some("2"), Some("1"), Some("mesh1.admin.2")), "{attrs:?}");
     eprintln!("span rdm.node_admin.build.reject.via-stale-claim trace_id={} {:?}", refused[0].0, attrs);
 }
+
+/// Creates that take a while, counting how many run at once; the create of `fails` ends failed.
+struct AtOnce {
+    ran: Arc<Creates>,
+    running: std::sync::atomic::AtomicUsize,
+    most: std::sync::atomic::AtomicUsize,
+    fails: Option<&'static str>,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for AtOnce {
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
+        let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(now, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        self.running.fetch_sub(1, Ordering::SeqCst);
+        if self.fails.is_some_and(|f| op.key() == format!("node.create:{f}")) {
+            self.ran.0.lock().unwrap().push(op.key());
+            return Err(rdm_admin::executor::RunEnd::failed(format!("{}: the launch was refused", op.key())));
+        }
+        self.ran.run(build, lane, attempt, op).await
+    }
+}
+
+async fn at_once(fails: Option<&'static str>) -> (Rig, Arc<AtOnce>) {
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 5)]) };
+    let runner: Arc<Mutex<Option<Arc<AtOnce>>>> = Arc::default();
+    let held = runner.clone();
+    let r = rig_for(view(), change, move |ran, _| -> Arc<dyn OperationRunner> {
+        let at = Arc::new(AtOnce { ran, running: Default::default(), most: Default::default(), fails });
+        *held.lock().unwrap() = Some(at.clone());
+        at
+    })
+    .await;
+    let at = runner.lock().unwrap().clone().unwrap();
+    (r, at)
+}
+
+/// CONTRACT (Q245): the member creates of a mesh that one admin executes run at once, never one after
+/// another. mesh1 grows by four rpc nodes; its mesh primary runs the four creates together.
+#[tokio::test]
+async fn a_meshs_member_creates_run_at_once() {
+    let (r, at) = at_once(None).await;
+    let drive = Drive::detached(r.build.clone());
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    let mut ran = r.ran.0.lock().unwrap().clone();
+    ran.sort();
+    assert_eq!(ran, ["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].map(String::from).to_vec());
+    assert_eq!(at.most.load(Ordering::SeqCst), 4, "the four creates ran at once");
+}
+
+/// CONTRACT (Q245): a member create that fails stops none of the others: each of the four runs to its
+/// own end, and the attempt ends once every one has.
+#[tokio::test]
+async fn a_failed_member_create_stops_none_of_the_others() {
+    let (r, at) = at_once(Some("mesh1.rpc.3")).await;
+    let drive = Drive::detached(r.build.clone());
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    let mut ran = r.ran.0.lock().unwrap().clone();
+    ran.sort();
+    assert_eq!(ran, ["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].map(String::from).to_vec(), "every create ran to its end");
+    assert_eq!(at.most.load(Ordering::SeqCst), 4);
+}

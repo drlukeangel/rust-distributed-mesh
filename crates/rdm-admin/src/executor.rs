@@ -61,6 +61,9 @@ impl std::fmt::Display for RunEnd {
     }
 }
 
+/// The most member creates of one attempt that run at once (Q245).
+const CREATES_AT_ONCE: usize = 8;
+
 /// Realises one planned operation (the deployment and lifecycle pipelines).
 #[async_trait::async_trait]
 pub trait OperationRunner: Send + Sync {
@@ -514,7 +517,9 @@ impl BuildExecutor {
         };
         let operations = &plan.operations;
         span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
-        for (i, op) in operations.iter().enumerate() {
+        let mut i = 0;
+        while i < operations.len() {
+            let op = &operations[i];
             // A fabric.delete accepted after this Build interrupts it (build.md §1): the operation admitted
             // before ended within its bound and its receipts stand, and nothing further is opened. The run
             // hands back to the fabric-primary, which writes the Build's terminal naming the delete.
@@ -532,6 +537,26 @@ impl BuildExecutor {
                     return self.hand_off(builds, &build, attempt, operations[..i].to_vec(), to.to_string()).await;
                 }
             }
+            // A run of member creates this admin executes runs concurrently (Q245): the nodes of a
+            // mesh are born together, never one after another. A mesh's node-admin is created on its
+            // own: the first one is the birth the view hands the mesh's members to. A create that ends
+            // short of complete stops none of the others; the attempt ends once every one has ended.
+            let group = self.create_group(&operations[i..], lane).await;
+            if group > 1 {
+                let ended = self.run_group(&build.build_id, lane, attempt, &operations[i..i + group]).await;
+                let ran: Vec<BuildOperation> = operations[..i].iter().chain(ended.iter().filter(|(_, r)| r.is_ok()).map(|(op, _)| *op)).cloned().collect();
+                if let Some((op, reason, code)) = ended.iter().find_map(|(op, r)| match r { Err(RunEnd::Failed { reason, code }) => Some((*op, reason.clone(), *code)), _ => None }) {
+                    if let Ok(Some(delete)) = crate::build_state::interrupted_by(builds, &build).await {
+                        return self.interrupted(builds, &build, attempt, ran, op, Some(&reason), &delete.build_id, span).await;
+                    }
+                    return self.finish(builds, &build, attempt, Err((op.key(), reason, code))).await;
+                }
+                if let Some((op, reason)) = ended.iter().find_map(|(op, r)| match r { Err(RunEnd::Incomplete(reason)) => Some((*op, reason.clone())), _ => None }) {
+                    return self.hand_back(builds, &build, attempt, ran, op, reason, span).await;
+                }
+                i += group;
+                continue;
+            }
             match self.runner.run(&build.build_id, lane, attempt, op).await {
                 Ok(()) => {}
                 Err(RunEnd::Failed { reason, code }) => {
@@ -545,6 +570,7 @@ impl BuildExecutor {
                 }
                 Err(RunEnd::Incomplete(reason)) => return self.hand_back(builds, &build, attempt, operations[..i].to_vec(), op, reason, span).await,
             }
+            i += 1;
         }
         // More of the plan follows the run. The planner named the next executor from its own view,
         // taken before this run's operations, and they can move a seat or stop the planner itself
@@ -565,6 +591,27 @@ impl BuildExecutor {
             };
         }
         self.finish(builds, &build, attempt, Ok(operations.clone())).await
+    }
+
+    /// How many of `ops`, from the first, are member creates this admin executes in its view now
+    /// (Q245): node creates of any kind but node-admin, each of whose executor is this admin.
+    async fn create_group(&self, ops: &[BuildOperation], lane: Option<&str>) -> usize {
+        let now = self.held_name().await;
+        let t = self.topology.read().await;
+        ops.iter()
+            .take_while(|op| matches!(op, BuildOperation::CreateNode { node, .. } if node.kind != NodeKind::NodeAdmin) && (lane.is_some() || executor_for(op, &t).is_none_or(|to| to.to_string() == now)))
+            .count()
+    }
+
+    /// Runs `ops` concurrently, at most [`CREATES_AT_ONCE`] at a time, each to its own end; answers
+    /// each with how it ended, in plan order.
+    async fn run_group<'a>(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, ops: &'a [BuildOperation]) -> Vec<(&'a BuildOperation, Result<(), RunEnd>)> {
+        use futures_util::StreamExt;
+        // Boxed where each is made: the creates' futures are the runner's, sent to the worker that runs the attempt.
+        let runs: Vec<futures_util::future::BoxFuture<'_, (usize, Result<(), RunEnd>)>> = ops.iter().enumerate().map(|(k, op)| -> futures_util::future::BoxFuture<'_, _> { Box::pin(async move { (k, self.runner.run(build_id, lane, attempt, op).await) }) }).collect();
+        let mut ended: Vec<(usize, Result<(), RunEnd>)> = futures_util::stream::iter(runs).buffer_unordered(CREATES_AT_ONCE).collect().await;
+        ended.sort_by_key(|(k, _)| *k);
+        ended.into_iter().map(|(k, r)| (&ops[k], r)).collect()
     }
 
     /// `op` ended incomplete (R-BI4): a participant of it was lost, or the proof its resume needs is
