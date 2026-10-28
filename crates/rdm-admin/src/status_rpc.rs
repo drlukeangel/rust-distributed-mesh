@@ -273,7 +273,8 @@ impl Declared {
 /// The status rows of this admin's own mesh, which it folds into what it applied when it takes
 /// the mesh's seat.
 pub struct SeatFold {
-    /// The records this admin writes, filled from storage when it takes its mesh's seat.
+    /// The records this admin writes: the copy its create, start and join hydrated, which it folds when
+    /// it takes its mesh's seat (Q227, Q260).
     caches: crate::record_cache::Caches,
     nodes: Arc<dyn crate::storage::NodesStorage>,
     meshes: Arc<dyn crate::storage::MeshStorage>,
@@ -309,14 +310,19 @@ impl SeatFold {
         &self.nodes
     }
 
+    /// The mesh store the mesh records are written to.
+    pub fn meshes(&self) -> &Arc<dyn crate::storage::MeshStorage> {
+        &self.meshes
+    }
+
     /// The mesh whose status rows this fold reads.
     pub fn mesh(&self) -> &str {
         &self.mesh
     }
 
     /// The view `now` is being installed: when it names this admin its mesh's primary and this
-    /// tenure has not folded the mesh's rows, fold them into `declared` (R14 item 7: the rebuild on
-    /// a seat change reads the shared root). Every other admin of the mesh folds none of them: what
+    /// tenure has not folded the mesh's rows, fold them into `declared` from this admin's caches, reading no storage (Q227,
+    /// Q260). Every other admin of the mesh folds none of them: what
     /// it holds is only what it applied itself. Called under the view's write lock, so two installs
     /// never fold at once. A read that fails leaves the tenure unfolded, named in the span.
     ///
@@ -349,16 +355,11 @@ impl SeatFold {
             fabric_event_rows = tracing::field::Empty,
             error = tracing::field::Empty,
         );
-        // The seat is write ownership of the mesh's records: they are read whole now and held, the
-        // copy every later write of them starts from (storage-whole-records.md, "The rule").
-        let read = async {
-            let meshes = self.meshes.meshes().await.map_err(|e| format!("Mesh records: {e}"))?;
-            let fabric = self.fabric.fabric().await.map_err(|e| format!("the Fabric record: {e}"))?;
-            self.caches.nodes.fill(&*self.nodes, &self.mesh).await.map_err(|e| format!("node records of {}: {e}", self.mesh))?;
-            self.caches.fill_meshes_and_fabric(&*self.meshes, &*self.fabric).await?;
-            Ok::<_, String>((meshes, fabric, self.caches.nodes.rows_of(&self.mesh)))
-        };
-        match tracing::Instrument::instrument(read, span.clone()).await {
+        // A node-admin taking its mesh's seat reads no storage (Q227, Q242, Q260): it folds the records its
+        // create, start and join hydrated into its caches, the copy every later write of them starts from.
+        // Storage is read only by a re-born fabric-primary that is the lone node of a single mesh.
+        let read = Ok::<_, String>((self.caches.meshes.all(), self.caches.fabric.all().into_iter().next(), self.caches.nodes.rows_of(&self.mesh)));
+        match read {
             Ok((meshes, fabric, nodes)) => {
                 // Acquisition belongs to the exact births in the incoming view,
                 // including predecessors still held there, never to a path.name.
