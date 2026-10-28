@@ -5,7 +5,7 @@
 //! of its operations as an [`OperationStore`]: what it records is durable when the call returns, and
 //! it decides nothing. [`Operations`] decides over it, the same way in every handler and every start:
 //!
-//! - **Acceptance** ([`Operations::accept`]): the operation's id is looked up first. A new id is
+//! - **Acceptance** ([`Operations::decide`]): the operation's id is looked up first. A new id is
 //!   recorded, then the request is accepted (`Acceptance::accepted`), so the runtime acks it only
 //!   once the accepted work is recoverable. An id the store holds with its work not completed is
 //!   [`Decision::InFlight`], and one completed is [`Decision::Completed`] with its recorded output:
@@ -18,8 +18,8 @@
 //!   was lost (`Indeterminate`) asks by the operation id and gets the recorded result, never a
 //!   second execution.
 //! - **The restart** ([`Operations::pending`]): every operation the store holds accepted and not
-//!   completed, read in the node's `pre_node_ready` so its work is finished before the node is
-//!   Ready.
+//!   completed, read in the node's `pre_node_ready` so its work is started again before the node is
+//!   Ready; each finishes in [`Operations::complete`].
 //!
 //! What stays the application's: the work itself, run by its own mechanism; the atomicity of an
 //! effect and its completion record (its transaction or idempotent operation, §5 step 3); and the
@@ -66,7 +66,7 @@ pub trait OperationStore: Send + Sync + 'static {
     async fn pending(&self) -> Result<Vec<(String, Self::Input)>, Self::Error>;
 }
 
-/// What [`Operations::accept`] decided for one request.
+/// What [`Operations::decide`] decided for one request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision<O> {
     /// New: recorded and accepted now. The handler starts its work.
@@ -135,7 +135,7 @@ impl<S: OperationStore> Operations<S> {
     /// Decide the request for `operation` on `input` and, unless it is a [`Decision::Conflict`],
     /// accept it once the store holds it (see the module docs). An `Err` is the store's: nothing was
     /// accepted, and the handler answers it as its fault.
-    pub async fn accept(&self, acceptance: &Acceptance, operation: &str, input: &S::Input) -> Result<Decision<S::Output>, S::Error> {
+    pub async fn decide(&self, acceptance: &Acceptance, operation: &str, input: &S::Input) -> Result<Decision<S::Output>, S::Error> {
         let span = tracing::info_span!("rdm.node_rpc.operation.create.via-accept", operation, decision = tracing::field::Empty, error = tracing::field::Empty);
         async {
             let _one = self.decide.lock().await;
@@ -209,8 +209,8 @@ impl<S: OperationStore> Operations<S> {
     }
 
     /// Every operation the store holds accepted and not completed, with its input: what a start
-    /// finishes before the node is Ready (the node's `pre_node_ready`). Each is named on the span's
-    /// events.
+    /// resumes before the node is Ready (the node's `pre_node_ready`), each finishing in
+    /// [`Operations::complete`]. Each is named on the span's events.
     pub async fn pending(&self) -> Result<Vec<(String, S::Input)>, S::Error> {
         let span = tracing::info_span!("rdm.node_rpc.operation.update.via-resume", pending = tracing::field::Empty, error = tracing::field::Empty);
         async {

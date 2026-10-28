@@ -250,10 +250,10 @@ RDM's recovery helpers, `rdm_node::operation`, make steps 1, 2 and 4 and the rea
 over persistence the application provides. Implement `OperationStore` (`get`, `put_accepted`,
 `put_completed`, `pending`) on Rafka's record: persistence only, each put durable when it returns,
 deciding nothing. Hold one `Operations` over it in the application service.
-`Operations::accept(&peer.acceptance, id, input)` looks the id up, records a new operation and then
+`Operations::decide(&peer.acceptance, id, input)` looks the id up, records a new operation and then
 accepts the request, and answers `Recorded` (start the work), `InFlight`, `Completed(output)` (the
 recorded result) or `Conflict` (answer your named refusal); `complete` records a result once; `read`
-answers a read by id; `pending` names what a start finishes in `pre_node_ready`. Each is a span naming
+answers a read by id; `pending` names what a start resumes in `pre_node_ready`. Each is a span naming
 the `operation` (`rdm.node_rpc.operation.create.via-accept`, `.update.via-complete`,
 `.serve.via-read`, `.update.via-resume`). The work itself, and an effect recorded atomically with its
 completion (step 3), stay Rafka's.

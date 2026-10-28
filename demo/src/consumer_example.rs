@@ -17,7 +17,7 @@
 //!   (`ServerBuilder::serve_gated`); the streaming handler reads the same gate itself.
 //! - **A mutating handler that records, then accepts** (§3, §5), on RDM's recovery helpers
 //!   (`rdm_node::operation`): the record is the application's [`OperationStore`] ([`ExampleRecord`]),
-//!   and `Submit` is decided by `Operations::accept`, which records a new operation and syncs it,
+//!   and `Submit` is decided by `Operations::decide`, which records a new operation and syncs it,
 //!   then calls `peer.acceptance.accepted()`; a repeat answers the recorded state or result, and its
 //!   id with another input is refused `Conflict`. `Get` is `Operations::read`.
 //! - **A restart that recovers the pending work** (§5 step 4): [`Resume`], the node's
@@ -417,7 +417,7 @@ pub fn register(b: ServerBuilder, service: Arc<ExampleService>, gate: PreNodeRea
                     WorkRequest::Submit { operation, input } => {
                         // Recorded and synced before it is accepted: the runtime acks the request
                         // only once its work is recoverable. A repeat answers what the record holds.
-                        let decision = svc.operations().accept(&peer.acceptance, &operation, &input).await.map_err(faulted)?;
+                        let decision = svc.operations().decide(&peer.acceptance, &operation, &input).await.map_err(faulted)?;
                         Ok(match decision {
                             Decision::Recorded => {
                                 svc.start(operation.clone(), input);

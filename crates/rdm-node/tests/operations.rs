@@ -111,17 +111,17 @@ fn an_operation_is_recorded_then_accepted_and_its_result_is_recovered_by_its_id(
         assert_eq!(ops.read("op-1").await.unwrap(), State::Unknown);
 
         let first = request(&store);
-        assert_eq!(ops.accept(&first, "op-1", &"in".to_string()).await.unwrap(), Decision::Recorded);
+        assert_eq!(ops.decide(&first, "op-1", &"in".to_string()).await.unwrap(), Decision::Recorded);
         assert!(first.is_accepted(), "a recorded operation is accepted");
         assert_eq!(store.accepted_before_put.lock().unwrap().clone(), Vec::<String>::new(), "accepted only once its record was durable");
 
         let repeat = request(&store);
-        assert_eq!(ops.accept(&repeat, "op-1", &"in".to_string()).await.unwrap(), Decision::InFlight);
+        assert_eq!(ops.decide(&repeat, "op-1", &"in".to_string()).await.unwrap(), Decision::InFlight);
         assert!(repeat.is_accepted(), "its acceptance record is durable already");
         assert_eq!(ops.read("op-1").await.unwrap(), State::InFlight);
 
         let other = request(&store);
-        assert_eq!(ops.accept(&other, "op-1", &"other".to_string()).await.unwrap(), Decision::Conflict);
+        assert_eq!(ops.decide(&other, "op-1", &"other".to_string()).await.unwrap(), Decision::Conflict);
         assert!(!other.is_accepted(), "a conflict is the protocol's refusal, accepted at its reply");
 
         assert!(ops.complete("op-1", &"OUT".to_string()).await.unwrap(), "the completion is recorded");
@@ -129,7 +129,7 @@ fn an_operation_is_recorded_then_accepted_and_its_result_is_recovered_by_its_id(
         assert!(!ops.complete("never-accepted", &"x".to_string()).await.unwrap(), "nor one of an operation never accepted");
         assert_eq!(ops.read("op-1").await.unwrap(), State::Completed("OUT".into()));
         let after = request(&store);
-        assert_eq!(ops.accept(&after, "op-1", &"in".to_string()).await.unwrap(), Decision::Completed("OUT".into()));
+        assert_eq!(ops.decide(&after, "op-1", &"in".to_string()).await.unwrap(), Decision::Completed("OUT".into()));
         assert!(after.is_accepted());
         assert_eq!(store.puts(), vec!["accepted op-1".to_string(), "completed op-1".to_string()], "one acceptance and one completion");
     });
@@ -154,8 +154,8 @@ fn an_operation_accepted_before_a_restart_is_pending_after_it() {
         let before = Store::default();
         {
             let ops = Operations::new(before.clone());
-            assert_eq!(ops.accept(&request(&before), "op-1", &"in".to_string()).await.unwrap(), Decision::Recorded);
-            assert_eq!(ops.accept(&request(&before), "op-2", &"in".to_string()).await.unwrap(), Decision::Recorded);
+            assert_eq!(ops.decide(&request(&before), "op-1", &"in".to_string()).await.unwrap(), Decision::Recorded);
+            assert_eq!(ops.decide(&request(&before), "op-2", &"in".to_string()).await.unwrap(), Decision::Recorded);
             assert!(ops.complete("op-2", &"OUT".to_string()).await.unwrap());
         }
         let ops = Operations::new(before.after_restart());
@@ -180,7 +180,7 @@ fn two_invocations_of_one_new_operation_record_it_once() {
         let calls: Vec<_> = (0..8)
             .map(|_| {
                 let ops = ops.clone();
-                tokio::spawn(async move { ops.accept(&Acceptance::detached(), "op-1", &"in".to_string()).await.unwrap() })
+                tokio::spawn(async move { ops.decide(&Acceptance::detached(), "op-1", &"in".to_string()).await.unwrap() })
             })
             .collect();
         let mut decisions = Vec::new();
@@ -204,11 +204,11 @@ fn a_record_the_store_refuses_leaves_the_request_unaccepted() {
         let ops = Operations::new(store.clone());
         *store.fail.lock().unwrap() = true;
         let refused = request(&store);
-        let err = ops.accept(&refused, "op-1", &"in".to_string()).await.expect_err("the store's failure is the call's");
+        let err = ops.decide(&refused, "op-1", &"in".to_string()).await.expect_err("the store's failure is the call's");
         assert!(err.contains("the disk refused"), "{err}");
         assert!(!refused.is_accepted(), "nothing durable: not accepted");
         let again = request(&store);
-        assert_eq!(ops.accept(&again, "op-1", &"in".to_string()).await.unwrap(), Decision::Recorded);
+        assert_eq!(ops.decide(&again, "op-1", &"in".to_string()).await.unwrap(), Decision::Recorded);
         assert!(again.is_accepted());
     });
     let spans = capture.spans().expect("the cell's spans");

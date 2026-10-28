@@ -38,7 +38,7 @@ fn passed_gate() -> PreNodeReadyGate {
 /// connections-deleting, its own named refusals (`unknown`, `conflict`), the request over its
 /// ceiling refused `Malformed(TooLarge)`, a duplicate delivery suppressed, and a reply lost after
 /// acceptance delivered once. Each check serves a record of its own holding `seeded`, so the
-/// reply-lost check's `Submit` is new: `Operations::accept` records it, then accepts it, its reply is
+/// reply-lost check's `Submit` is new: `Operations::decide` records it, then accepts it, its reply is
 /// lost and resent, and its record holds it once. One trace per check, under
 /// `rdm.test.conformance.serve.via-check`, the accept's `rdm.node_rpc.operation.create.via-accept`
 /// in it.
@@ -102,7 +102,7 @@ fn the_example_records_op_passes_the_conformance_harness() {
         // A record of 100 accepted operations: the long read hands over more than 64 frames.
         let service = ExampleService::open(&record_dir("records"), Duration::from_secs(3600)).expect("the record opens");
         for i in 0..100 {
-            assert_eq!(service.operations().accept(&Acceptance::detached(), &format!("op-{i}"), &"x".into()).await.unwrap(), Decision::Recorded);
+            assert_eq!(service.operations().decide(&Acceptance::detached(), &format!("op-{i}"), &"x".into()).await.unwrap(), Decision::Recorded);
         }
         let gate = passed_gate();
         let fixture = rdm_test::conformance::Streaming::<ExampleRecords> {
@@ -130,7 +130,7 @@ fn the_example_records_op_passes_the_conformance_harness() {
 /// the request was accepted.
 async fn submit(svc: &ExampleService) -> (Decision<String>, bool) {
     let acceptance = Acceptance::detached();
-    (svc.operations().accept(&acceptance, "op-1", &"hello".into()).await.unwrap(), acceptance.is_accepted())
+    (svc.operations().decide(&acceptance, "op-1", &"hello".into()).await.unwrap(), acceptance.is_accepted())
 }
 
 /// CONTRACT: an operation accepted and not completed when its service ends is completed by the next
