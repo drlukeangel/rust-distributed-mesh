@@ -1862,7 +1862,7 @@ async fn a_mesh_primary_that_is_not_the_fabric_primary_recovers_its_member_with_
     let spans = estate.spans();
     let unreadable = named(&spans, "rdm.node_admin.build.reject.via-build-store-unreadable");
     assert!(unreadable.is_empty(), "no admin names the builds store unreadable: {unreadable:#?}");
-    let turned: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-filled").into_iter().filter(|sp| sp["attributes"]["node"] == mesh_primary.as_str() && sp["attributes"]["mesh_primary"] == true).collect();
+    let turned: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-filled").into_iter().filter(|sp| sp["attributes"]["node"] == mesh_primary.as_str() && sp["attributes"]["mesh_primary"] == "true").collect();
     assert!(!turned.is_empty(), "{mesh_primary}'s hierarchy took its mesh-primary role");
     for (file, own) in admin_spans_but(&estate, fp_pid) {
         let read: Vec<&Value> = own.iter().filter(|sp| (sp["name"] == "rdm.node.store.resolve.via-fold" && s(&sp["attributes"]["file"]).ends_with("builds.jsonl")) || sp["name"] == "rdm.node_admin.build.resolve.via-records-read").collect();
