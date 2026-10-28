@@ -155,3 +155,136 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
         let _ = std::fs::remove_dir_all(&base);
     })
 }
+
+/// The folds of the fabric's four topology stores (`fabric`, `meshes`, `nodes`, `builds` .jsonl) the
+/// capture holds, in the order they began: each fold's file name, its caller's span and its outcome.
+fn topology_folds(spans: &crate::common::Spans) -> Vec<(String, String, String)> {
+    const FOLD: &str = "rdm.node.store.resolve.via-fold";
+    let held: std::collections::BTreeMap<u64, _> = spans.0.lock().unwrap().clone().into_iter().collect();
+    held.into_values()
+        .filter_map(|(n, _, f)| {
+            let file = f.get("file")?.rsplit('/').next()?.to_string();
+            (n == FOLD && TOPOLOGY_STORES.contains(&file.as_str())).then(|| (file, f.get("caller").cloned().unwrap_or_default(), f.get("outcome").cloned().unwrap_or_default()))
+        })
+        .collect()
+}
+
+/// The node-admin's four topology stores on the fabric's store root (rdm#89).
+const TOPOLOGY_STORES: [&str; 4] = ["fabric.jsonl", "meshes.jsonl", "nodes.jsonl", "builds.jsonl"];
+
+/// Change one byte in the middle of the first line of each of `files` under `store`: the line no longer
+/// matches its checksum, so any fold from byte 0 refuses the file by name, while a reader that has read
+/// past it (the Day-0 admin, its writer) meets nothing of it. Answers each file's length, the byte's
+/// offset and the byte written.
+fn unreadable_from_byte_0(store: &std::path::Path, files: &[&str]) -> Vec<(std::path::PathBuf, usize, usize, u8)> {
+    files
+        .iter()
+        .map(|file| {
+            let path = store.join(file);
+            let bytes = std::fs::read(&path).unwrap();
+            let start = bytes.iter().position(|b| *b != b'\n').unwrap_or_else(|| panic!("{} holds a line", path.display()));
+            let end = start + bytes[start..].iter().position(|b| *b == b'\n').unwrap_or_else(|| panic!("{}'s first line is ended", path.display()));
+            let at = start + (end - start) / 2;
+            let changed = if bytes[at] == b'0' { b'1' } else { b'0' };
+            std::os::unix::fs::FileExt::write_at(&std::fs::OpenOptions::new().write(true).open(&path).unwrap(), &[changed], at as u64).unwrap();
+            (path, bytes.len(), at, changed)
+        })
+        .collect()
+}
+
+/// A Day-0 node-admin that does not reconcile, ready, and the launch of mesh1.admin.2 by it, its first
+/// join expected: the base dir, the root, the launch and the fabric's store root dir.
+async fn root_and_launch(tag: &str) -> (std::path::PathBuf, Running, Launch, std::path::PathBuf) {
+    let base = std::env::temp_dir().join(format!("{tag}-{}", NodeId::mint()));
+    let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
+    std::fs::create_dir_all(&root_dir).unwrap();
+    let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+    root.stop_reconciling().await;
+    until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
+    let launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir);
+    let _ = root.runner.joins.expect(deployed(&launch));
+    let store = nodes_file(&root_dir, &root).parent().unwrap().to_path_buf();
+    (base, root, launch, store)
+}
+
+async fn start_launched(launch: &Launch) -> Result<Running, String> {
+    let env = launch.to_env();
+    let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
+    start_with(admin_cfg, Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (Q227: "no node reads anything from the store on create, start or rejoin"; rdm#89: a
+/// node-admin's topology stores open without folding): a Day-0 node-admin (mesh1.admin.1) is ready, then
+/// the first line of the fabric's `fabric.jsonl` no longer matches its checksum, so no fold from byte 0
+/// reads it (mesh1.admin.1 has read past it), and mesh1.admin.2, launched by it, starts. Its start opens
+/// all four topology stores and folds no `fabric.jsonl`: it comes up ReadyForTraffic, holding its own
+/// row from its mesh-primary's hydration sync; the folds its start makes are its reads', each folded:
+/// `meshes` and `nodes` by the recorded primaries' read (boot.rs, Q149) and `builds` by the current
+/// Build's (boot.rs, #3237's mesh ids). A reader's first read of `fabric.jsonl` then folds it and is
+/// refused by name, naming the file, and the file is left as written. Must NOT happen: the start refused, or held, by a store it never needed
+/// to start (before rdm#89, the open folded each whole file and refused the line,
+/// `TopologyStorageHandle::open`).
+#[test]
+fn a_launched_admin_starts_with_its_fabric_store_unreadable() {
+    let cell = "a_launched_admin_starts_with_its_fabric_store_unreadable";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let (base, root, launch, store) = root_and_launch("admin-unread-stores").await;
+        let written = unreadable_from_byte_0(&store, &["fabric.jsonl"]);
+        let folds_before = topology_folds(&spans).len();
+
+        let admin = start_launched(&launch).await.unwrap_or_else(|e| panic!("mesh1.admin.2 starts with its fabric store unreadable: {e}"));
+        until_ready("mesh1.admin.2", || admin.digest.lock().unwrap().clone()).await;
+        let own = admin.topology_view.own_row().expect("mesh1.admin.2 holds its own row from its hydration sync");
+        assert_eq!(own.node_id, launch.node_id, "the row held is the node's own: {own:?}");
+        let since = topology_folds(&spans).split_off(folds_before);
+        assert!(since.iter().all(|(f, _, o)| f != "fabric.jsonl" && o == "folded"), "the start folds no fabric store; its folds are its reads' of meshes, nodes and builds: {since:?}");
+
+        // A reader's first read of fabric.jsonl folds it, and the line refuses it by name.
+        let root_dir = store.parent().unwrap();
+        let fabric_id = rdm_core::FabricId::parse(store.file_name().unwrap().to_str().unwrap()).unwrap();
+        let reader = rdm_admin::fabric_storage::FileFabricStorage::open(&rdm_admin::store_root::StoreRoot::open(root_dir, &fabric_id).unwrap(), &rdm_node::store_log::LogWriter::mint()).await.expect("the fabric store opens, reading nothing");
+        let refused = rdm_admin::fabric_storage::FabricStorage::fabric(&reader).await.expect_err("the first read of fabric.jsonl folds it and meets the line");
+        assert!(refused.to_string().contains("fabric.jsonl") && refused.to_string().contains("byte offset"), "refused by name, naming the file and the offset: {refused}");
+        let fabric_folds: Vec<_> = topology_folds(&spans).split_off(folds_before).into_iter().filter(|(f, _, _)| f == "fabric.jsonl").collect();
+        assert_eq!(fabric_folds.iter().map(|(_, _, o)| o.as_str()).collect::<Vec<_>>(), vec!["refused"], "the one fold of fabric.jsonl is the read's: {fabric_folds:?}");
+        for (path, len, at, changed) in &written {
+            let now = std::fs::read(path).unwrap();
+            assert!(now.len() >= *len && now[*at] == *changed, "{} is left as written: nothing of it is removed or rewritten", path.display());
+        }
+
+        admin.leave().await;
+        root.leave().await;
+        let _ = std::fs::remove_dir_all(&base);
+    })
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (rdm#89; Q149 arm A: every admin's boot reads the recorded primaries off the node records
+/// before its first resolve): a Day-0 node-admin is ready, then the first line of the fabric's
+/// `meshes.jsonl` no longer matches its checksum, and mesh1.admin.2, launched by it, starts. Its open of
+/// the stores reads nothing; the recorded primaries' read folds `meshes.jsonl` and is refused by name,
+/// naming the file, and that refused fold is the start's one fold of the four topology stores. Must NOT
+/// happen: the start refused by any other fold, or a refusal that does not name the file.
+#[test]
+fn a_launched_admins_start_is_refused_by_name_at_the_recorded_primaries_read_of_an_unreadable_meshes_store() {
+    let cell = "a_launched_admins_start_is_refused_by_name_at_the_recorded_primaries_read_of_an_unreadable_meshes_store";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let (base, root, launch, store) = root_and_launch("admin-unread-meshes").await;
+        unreadable_from_byte_0(&store, &["meshes.jsonl"]);
+        let folds_before = topology_folds(&spans).len();
+        let refused = match start_launched(&launch).await {
+            Ok(_) => panic!("mesh1.admin.2 started over a meshes store no fold from byte 0 reads"),
+            Err(e) => e,
+        };
+        assert!(refused.contains("meshes.jsonl") && refused.contains("byte offset"), "refused by name, naming the file and the offset: {refused}");
+        let since = topology_folds(&spans).split_off(folds_before);
+        assert_eq!(since.iter().map(|(f, _, o)| (f.as_str(), o.as_str())).collect::<Vec<_>>(), vec![("meshes.jsonl", "refused")], "the start's one fold is the recorded primaries' read of meshes.jsonl: {since:?}");
+        root.leave().await;
+        let _ = std::fs::remove_dir_all(&base);
+    })
+}
