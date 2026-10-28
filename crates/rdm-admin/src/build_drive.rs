@@ -92,6 +92,12 @@ pub trait Gate: Send + Sync {
     /// fabric-primary's atlas as its frame streams up `build.attempt.run`, before the frame is
     /// passed on (fabric-atlas.md R-FA2), whichever admin executed it.
     async fn receipt_streamed(&self, _build_id: &BuildId, _attempt: u32, _operation: &str) {}
+    /// [`Self::receipt_streamed`] of an attempt numbered in mesh `lane`'s lane (a section, Q250).
+    async fn receipt_streamed_in(&self, _lane: &str, _build_id: &BuildId, _attempt: u32, _operation: &str) {}
+    /// Now on the admin's clock, in milliseconds, for an attempt this drive opens (a section, Q250).
+    fn now_ms(&self) -> u64 {
+        0
+    }
     /// Attempt `attempt` of `build_id` ended `Failed`: what it accepted is no longer executing.
     async fn attempt_failed(&self, _build_id: &BuildId, _attempt: u32) {}
     /// What the node rows record of each member of `topology`'s executable, for a replacement's plan
@@ -280,6 +286,24 @@ pub trait Dispatcher: Send + Sync {
     }
 }
 
+/// What a pass's sections did (Q250).
+enum Sections {
+    /// No section was owed: the fabric lane goes on as it is.
+    None,
+    /// Every owed section ran (or failed for the first time): the pass plans again.
+    Ran,
+    /// The drive ends here.
+    End(DriveEnd),
+}
+
+/// How a section ended short of complete.
+enum SectionEnd {
+    /// Its verdict is `Failed`, with why.
+    Failed(String),
+    /// It holds its mesh, or could not be opened, claimed or ended: why.
+    Held(String),
+}
+
 /// Why a drive ended without the seat: what the old seat says, and the admin the committed fabric
 /// seat record names as the seat's holder now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,6 +362,12 @@ pub struct Drive {
     /// this drive's pass last read it ([`Gate::atlas_birth`]); `None` for any other attempt, or a gate
     /// with no atlas.
     atlas: Mutex<Option<crate::accepted::AtlasBirth>>,
+    /// Each mesh's last section failure (Q250), as `operation|reason`: the same failure again stalls
+    /// the drive rather than sending the same section once more.
+    section_failed: Mutex<HashMap<String, String>>,
+    /// The operations a section this drive sent completed, its run reported by its verdict (Q250): done,
+    /// as a reported fabric-lane run's are ([`left`]).
+    section_done: Mutex<HashSet<String>>,
 }
 
 fn frame_key(f: &BuildReply) -> Option<String> {
@@ -357,7 +387,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), atlas: Mutex::new(None) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -867,7 +897,8 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
     // A standalone action plans from the birth the atlas row held at this pass ([`Gate::atlas_birth`]).
     let atlas = drive.atlas.lock().unwrap().clone();
     let plan = crate::accepted::plan_for_build_with(p, t, drive.recorded.lock().unwrap().as_ref(), atlas.as_ref());
-    plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
+    let sections = drive.section_done.lock().unwrap().clone();
+    plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a)) && !sections.contains(&op.key())).collect()
 }
 
 /// Whether `p` is a Build that owes the replacements its rows say are left (a complete-topology
@@ -1328,6 +1359,13 @@ impl DriveEnv {
                     if let Some(lost) = p.executor.as_deref().and_then(parse_path) {
                         self.release_mesh(&id, p.attempt, &lost).await;
                     }
+                }
+                // The meshes whose own mesh-primary executes what is left of them are sent their sections,
+                // all at once (Q250); the fabric lane then plans what is left again.
+                match self.run_sections(&me, &turn, drive, &p, &crashed).await {
+                    Sections::None => {}
+                    Sections::Ran => continue,
+                    Sections::End(end) => return end,
                 }
                 match self.claim_next(&me, drive, &p, handed_to.take(), &crashed).await {
                     Ok(c) => c,
@@ -1844,6 +1882,173 @@ impl DriveEnv {
     /// ended, packed into Build messages, but not its step receipts (those are
     /// the recovery contract of the projection). What an executor needs to fold the same current
     /// attempt and to plan, carried by the call, so a run never waits for the store root.
+    /// The sections of what is left of `p` (Q250): by mesh, in plan order, the plain creates whose
+    /// executor is that mesh's own mesh-primary, never this fabric-primary. A mesh with any other
+    /// operation left, or held unheard (R-D1), sends no section: the fabric lane keeps its order.
+    fn sections(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology, crashed: &HashSet<String>) -> Vec<(PathName, Vec<BuildOperation>)> {
+        if p.deletes_fabric() || p.action.is_some() {
+            return Vec::new();
+        }
+        let mut by: std::collections::BTreeMap<String, (PathName, Vec<BuildOperation>)> = Default::default();
+        let mut kept: HashSet<String> = HashSet::new();
+        for op in left(drive, p, t) {
+            let Some(node) = op.node().cloned() else { continue };
+            let to = crate::executor::executor_for(&op, t);
+            match to {
+                Some(to) if to != *me && !kept.contains(&node.mesh) && crate::executor::section_create(&op, t, &to) && self.peer_mesh_held(p, &op, crashed).is_none() => {
+                    by.entry(node.mesh.clone()).or_insert_with(|| (to, Vec::new())).1.push(op);
+                }
+                _ => {
+                    by.remove(&node.mesh);
+                    kept.insert(node.mesh.clone());
+                }
+            }
+        }
+        by.into_values().collect()
+    }
+
+    /// Send every section of what is left of `p` to its mesh-primary at once, when two meshes or more
+    /// are owed one, and wait for each to end (Q250). A section that fails stops none of the others; its mesh's operations are planned again
+    /// on the next pass, and the same failure twice running stalls the drive naming it.
+    async fn run_sections(self: &Arc<Self>, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection, crashed: &HashSet<String>) -> Sections {
+        let sections = {
+            let t = self.topology.read().await.clone();
+            self.sections(me, drive, p, &t, crashed)
+        };
+        // One mesh's section gains nothing over the fabric lane's own attempt at its mesh-primary: sections
+        // are sent when two meshes or more are owed one.
+        if sections.len() < 2 {
+            return Sections::None;
+        }
+        let intent = self.intent_of(&p.build_id).await;
+        let ended = futures_util::future::join_all(sections.into_iter().map(|(executor, ops)| {
+            let intent = intent.clone();
+            async move { (executor.mesh.clone(), self.run_section(me, turn, drive, &p.build_id, &executor, ops, intent).await) }
+        }))
+        .await;
+        let mut held = Vec::new();
+        for (mesh, end) in ended {
+            match end {
+                Ok(()) => {
+                    drive.section_failed.lock().unwrap().remove(&mesh);
+                }
+                Err(SectionEnd::Failed(failure)) => {
+                    let again = drive.section_failed.lock().unwrap().insert(mesh.clone(), failure.clone()).as_deref() == Some(failure.as_str());
+                    if again {
+                        held.push(format!("mesh {mesh}'s section failed the same way twice running ({failure})"));
+                    }
+                }
+                Err(SectionEnd::Held(why)) => held.push(why),
+            }
+        }
+        if held.is_empty() {
+            return Sections::Ran;
+        }
+        let why = format!("{me}: Build {}: {}", p.build_id, held.join("; "));
+        self.blocked(drive, p.attempt, "", "section", &why);
+        Sections::End(self.stalled(me, drive, why))
+    }
+
+    /// One section (Q250): its attempt opened in `executor`'s mesh's lane and claimed by this
+    /// fabric-primary, dispatched to the mesh-primary, every receipt it reports written in the lane, its
+    /// verdict written, and the mesh's in-flight row released.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_section(&self, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, id: &BuildId, executor: &PathName, operations: Vec<BuildOperation>, intent: Vec<Vec<u8>>) -> Result<(), SectionEnd> {
+        use crate::build_state::{AttemptOpened, AttemptReason, BuildStepReceipt, StepOutcome};
+        let mesh = executor.mesh.clone();
+        let lane = crate::build_run::LaneBuilds::of(&self.builds, Some(&mesh));
+        let keys = operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",");
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-section", build_id = %id.log(), lane = %mesh, attempt = tracing::field::Empty, executor = %executor, node = %me, operations = %keys, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let ended = async {
+            let attempt = match lane.read_build(id).await {
+                Ok(l) => l.attempt + 1,
+                Err(e) => return Err(SectionEnd::Held(format!("mesh {mesh}'s lane of {id} could not be read: {e}"))),
+            };
+            tracing::Span::current().record("attempt", attempt);
+            let opened = AttemptOpened { build_id: id.clone(), attempt, reason: AttemptReason::Requested, action: None, opened_by: me.to_string(), opened_at_ms: self.gate.now_ms(), mesh: Some(mesh.clone()), context: None };
+            if let Err(e) = lane.open_attempt(&opened).await {
+                return Err(SectionEnd::Held(format!("attempt {attempt} of mesh {mesh}'s lane of {id} could not be opened: {e}")));
+            }
+            match self.door.claim_in(&executor.to_string(), id, Some(&mesh), attempt).await {
+                BuildClaimReply::Won { .. } => {}
+                other => return Err(SectionEnd::Held(format!("attempt {attempt} of mesh {mesh}'s lane of {id} was not claimed for {executor}: {}", claim_refusal(&other)))),
+            }
+            let context = self.door.contexts.get_lane(id, Some(&mesh), attempt).await.ok().flatten().unwrap_or_default();
+            let keys: Vec<String> = operations.iter().map(BuildOperation::key).collect();
+            let plan = RunPlan { operations, hand_off_to: None };
+            let mut completed: Vec<String> = Vec::new();
+            let outcome = match self.dispatcher.dispatch_in(turn, executor, &mesh, id, attempt, context, intent, plan).await {
+                Dispatched::Refused(r) => AttemptOutcome::Failed { reason: format!("{executor} refused the section: {}", describe(&r)), code: rdm_core::outcome::Code::Unavailable },
+                Dispatched::Unreached(why) => match self.departure.proven(executor).await {
+                    Ok(()) => AttemptOutcome::Failed { reason: format!("{executor} exited with the section unfinished: {why}"), code: rdm_core::outcome::Code::Unavailable },
+                    Err(not) => return Err(SectionEnd::Held(format!("the section of mesh {mesh} at {executor} was not reached ({why}) and its departure is not proven ({not}): attempt {attempt} holds the mesh"))),
+                },
+                Dispatched::Stream(mut stream) => loop {
+                    match stream.next().await {
+                        InnerItem::Frame(BuildReply::Step { operation, step, attempt: a, receipt, .. }) => {
+                            if let Some(r) = receipt.as_deref().and_then(|b| serde_json::from_slice::<BuildStepReceipt>(b).ok()) {
+                                if let Err(e) = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, mesh: Some(mesh.clone()), ..r }).await {
+                                    tracing::info!(error = %e, operation = %operation, step = %step, "a reported step receipt could not be written: a later attempt runs the step again");
+                                }
+                            }
+                            stream.accepted().await;
+                            if step == "Complete" {
+                                self.gate.receipt_streamed_in(&mesh, id, attempt, &operation).await;
+                                completed.push(operation.clone());
+                            }
+                            self.step(drive, BuildReply::Step { build_id: id.to_string(), attempt: a, operation, step, receipt: None }).await;
+                        }
+                        InnerItem::Frame(f @ BuildReply::Blocked { .. }) => {
+                            stream.accepted().await;
+                            drive.push(f);
+                        }
+                        InnerItem::Frame(BuildReply::Complete { .. }) => break AttemptOutcome::Converged,
+                        InnerItem::Frame(BuildReply::HandedOff { to, .. }) => break AttemptOutcome::HandedOff { to },
+                        InnerItem::Frame(BuildReply::Failed { operation, step, reason, code, .. }) => {
+                            let _ = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, operation: operation.clone(), step, outcome: StepOutcome::Failed { reason: reason.clone(), code }, output: None, executor: Some(executor.to_string()), mesh: Some(mesh.clone()) }).await;
+                            break AttemptOutcome::Failed { reason: format!("{operation}: {reason}"), code };
+                        }
+                        InnerItem::Frame(other) => break AttemptOutcome::Failed { reason: format!("{executor}'s section ended {}", other.name()), code: rdm_core::outcome::Code::Unavailable },
+                        InnerItem::Ended | InnerItem::Broke(_) => match self.departure.proven(executor).await {
+                            Ok(()) => break AttemptOutcome::Failed { reason: format!("{executor} exited with the section unfinished"), code: rdm_core::outcome::Code::Unavailable },
+                            Err(not) => return Err(SectionEnd::Held(format!("the section of mesh {mesh} at {executor} was lost and its departure is not proven ({not}): attempt {attempt} holds the mesh"))),
+                        },
+                    }
+                },
+            };
+            let failed = match &outcome {
+                AttemptOutcome::Failed { reason, .. } => Some(reason.clone()),
+                _ => None,
+            };
+            // A section that converged ran every one of its operations (`Reconciled::Converged`); one that
+            // ended otherwise completed what its Complete frames named.
+            if matches!(outcome, AttemptOutcome::Converged) {
+                completed = keys;
+            }
+            if let Err(e) = lane.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome, mesh: Some(mesh.clone()) }).await {
+                return Err(SectionEnd::Held(format!("the verdict of attempt {attempt} of mesh {mesh}'s lane of {id} could not be written: {e}")));
+            }
+            // Reported by its verdict: what the section completed is done.
+            drive.section_done.lock().unwrap().extend(completed);
+            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: Some(mesh.clone()), attempt, claimant: me.to_string(), claimant_node: None };
+            if let Err(e) = self.door.claims.release_in_flight(&mesh, &row).await {
+                tracing::info!(error = %e, "the section ended and its mesh's in-flight row could not be released: the mesh stays held by it");
+            }
+            match failed {
+                Some(reason) => Err(SectionEnd::Failed(reason)),
+                None => Ok(()),
+            }
+        }
+        .instrument(span.clone())
+        .await;
+        span.record("outcome", match &ended { Ok(()) => "complete", Err(SectionEnd::Failed(_)) => "failed", Err(SectionEnd::Held(_)) => "held" });
+        if let Err(SectionEnd::Failed(why) | SectionEnd::Held(why)) = &ended {
+            span.record("reason", why.as_str());
+        }
+        span.in_scope(|| tracing::info!("a section of the Build ran at its mesh's mesh-primary"));
+        ended
+    }
+
     async fn intent_of(&self, id: &BuildId) -> Vec<Vec<u8>> {
         intent_frames(&*self.builds, id).await
     }

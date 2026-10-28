@@ -123,6 +123,12 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
     }
 }
 
+/// Whether `op`, executed by `to` in view `t`, is a section's (Q250): a plain node create (no node
+/// recovery's, no replacement's) of a mesh whose own mesh-primary is `to`.
+pub fn section_create(op: &BuildOperation, t: &Topology, to: &PathName) -> bool {
+    matches!(op, BuildOperation::CreateNode { node, over: None, .. } if node.mesh == to.mesh && t.node_type_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == *to))
+}
+
 /// The executor of a node op (delete, connections delete, stop, start, delete, and a
 /// Build's step) on `node` in view `t`.
 fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Option<PathName> {
@@ -517,14 +523,25 @@ impl BuildExecutor {
         };
         let operations = &plan.operations;
         span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
+        // The plain creates of a mesh whose own mesh-primary executes them are that mesh's section
+        // (Q250): this fabric-lane run passes them over, and the fabric-primary sends each mesh-primary
+        // its section, all at once.
+        let mut skipped: std::collections::BTreeSet<usize> = Default::default();
+        let mut skipped_meshes: std::collections::HashSet<String> = Default::default();
+        let ran = |upto: usize, skipped: &std::collections::BTreeSet<usize>| -> Vec<BuildOperation> { operations[..upto].iter().enumerate().filter(|(k, _)| !skipped.contains(k)).map(|(_, op)| op.clone()).collect() };
         let mut i = 0;
         while i < operations.len() {
             let op = &operations[i];
+            if lane.is_none() && op.created_node().is_some_and(|n| skipped_meshes.contains(&n.mesh)) {
+                skipped.insert(i);
+                i += 1;
+                continue;
+            }
             // A fabric.delete accepted after this Build interrupts it (build.md §1): the operation admitted
             // before ended within its bound and its receipts stand, and nothing further is opened. The run
             // hands back to the fabric-primary, which writes the Build's terminal naming the delete.
             if let Ok(Some(delete)) = crate::build_state::interrupted_by(builds, &build).await {
-                return self.interrupted(builds, &build, attempt, operations[..i].to_vec(), op, None, &delete.build_id, span).await;
+                return self.interrupted(builds, &build, attempt, ran(i, &skipped), op, None, &delete.build_id, span).await;
             }
             // After the first operation the view can name another executor for the rest: the run
             // seated a mesh's first admin, which executes that mesh's members from then on. The
@@ -533,8 +550,15 @@ impl BuildExecutor {
             // always the fabric-primary's plan.
             if i > 0 && lane.is_none() {
                 let now = self.held_name().await;
-                if let Some(to) = executor_for(op, &*self.topology.read().await).filter(|to| to.to_string() != now) {
-                    return self.hand_off(builds, &build, attempt, operations[..i].to_vec(), to.to_string()).await;
+                let t = self.topology.read().await.clone();
+                if let Some(to) = executor_for(op, &t).filter(|to| to.to_string() != now) {
+                    if section_create(op, &t, &to) {
+                        skipped_meshes.insert(to.mesh.clone());
+                        skipped.insert(i);
+                        i += 1;
+                        continue;
+                    }
+                    return self.hand_off(builds, &build, attempt, ran(i, &skipped), to.to_string()).await;
                 }
             }
             // A run of member creates this admin executes runs concurrently (Q245): the nodes of a
@@ -544,7 +568,7 @@ impl BuildExecutor {
             let group = self.create_group(&operations[i..], lane).await;
             if group > 1 {
                 let ended = self.run_group(&build.build_id, lane, attempt, &operations[i..i + group]).await;
-                let ran: Vec<BuildOperation> = operations[..i].iter().chain(ended.iter().filter(|(_, r)| r.is_ok()).map(|(op, _)| *op)).cloned().collect();
+                let ran: Vec<BuildOperation> = ran(i, &skipped).into_iter().chain(ended.iter().filter(|(_, r)| r.is_ok()).map(|(op, _)| (*op).clone())).collect();
                 if let Some((op, reason, code)) = ended.iter().find_map(|(op, r)| match r { Err(RunEnd::Failed { reason, code }) => Some((*op, reason.clone(), *code)), _ => None }) {
                     if let Ok(Some(delete)) = crate::build_state::interrupted_by(builds, &build).await {
                         return self.interrupted(builds, &build, attempt, ran, op, Some(&reason), &delete.build_id, span).await;
@@ -564,11 +588,11 @@ impl BuildExecutor {
                     // bound (build.md §1): its failure stands in its receipts and the run hands back, so the
                     // Build's `Failed` names the delete.
                     if let Ok(Some(delete)) = crate::build_state::interrupted_by(builds, &build).await {
-                        return self.interrupted(builds, &build, attempt, operations[..i].to_vec(), op, Some(&reason), &delete.build_id, span).await;
+                        return self.interrupted(builds, &build, attempt, ran(i, &skipped), op, Some(&reason), &delete.build_id, span).await;
                     }
                     return self.finish(builds, &build, attempt, Err((op.key(), reason, code))).await;
                 }
-                Err(RunEnd::Incomplete(reason)) => return self.hand_back(builds, &build, attempt, operations[..i].to_vec(), op, reason, span).await,
+                Err(RunEnd::Incomplete(reason)) => return self.hand_back(builds, &build, attempt, ran(i, &skipped), op, reason, span).await,
             }
             i += 1;
         }
@@ -578,10 +602,10 @@ impl BuildExecutor {
         // and stops it). So the run hands back to the fabric primary of the view it ends with, the
         // one driver of the Build, whose next claim names the executor of what is left in its own
         // view (`build_drive` claim_next).
-        if plan.hand_off_to.is_some() {
+        if plan.hand_off_to.is_some() || !skipped.is_empty() {
             let driver = self.topology.read().await.fabric_primary().map(|n| n.name.to_string());
             return match driver {
-                Some(to) => self.hand_off(builds, &build, attempt, operations.clone(), to).await,
+                Some(to) => self.hand_off(builds, &build, attempt, ran(operations.len(), &skipped), to).await,
                 // No operation failed: the receipt names none, so no step is blamed for it.
                 None => {
                     let last = operations.last().map(BuildOperation::key).unwrap_or_else(|| "no operation".into());

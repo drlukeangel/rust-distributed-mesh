@@ -30,6 +30,8 @@ pub struct Loopback {
     own: Mutex<BTreeMap<String, Arc<MemoryBuildStateAdapter>>>,
     /// Every executor a dispatch reached, in order: `(executor, attempt)`.
     pub dispatched: Mutex<Vec<(String, u32)>>,
+    /// Every section a dispatch reached (Q250), in order: `(executor, lane, attempt)`.
+    pub sections: Mutex<Vec<(String, String, u32)>>,
 }
 
 /// An executor's runner on its own log: each operation's `Complete` receipt is written through the
@@ -51,7 +53,7 @@ impl OperationRunner for OwnReceipts {
 
 impl Loopback {
     pub fn new(builds: Arc<dyn BuildStateAdapter>, local: Arc<dyn LocalBuildLog>, topology: Arc<RwLock<Topology>>, runner: Arc<dyn OperationRunner>) -> Arc<Self> {
-        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(BTreeMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), own: Mutex::new(BTreeMap::new()), dispatched: Mutex::new(Vec::new()) })
+        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(BTreeMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), own: Mutex::new(BTreeMap::new()), dispatched: Mutex::new(Vec::new()), sections: Mutex::new(Vec::new()) })
     }
 
     /// `executor` keeps its own Build log (returned): the intent a call carries is absorbed there, its
@@ -104,6 +106,13 @@ impl Dispatcher for Loopback {
         }
         self.dispatched.lock().unwrap().push((executor.to_string(), attempt));
         local_dispatched(self.door(executor).attempt_run(build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
+    }
+    async fn dispatch_in(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, lane: &str, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rdm_admin::executor::RunPlan) -> Dispatched {
+        if self.lost.lock().unwrap().contains(&executor.to_string()) {
+            return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
+        }
+        self.sections.lock().unwrap().push((executor.to_string(), lane.to_string(), attempt));
+        local_dispatched(self.door(executor).attempt_run_in(Some(lane), build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
     }
 }
 

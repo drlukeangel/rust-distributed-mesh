@@ -3080,3 +3080,41 @@ async fn a_further_node_admin_is_created_with_its_meshs_other_nodes() {
     assert_eq!(ran, ["node.create:mesh1.admin.3", "node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4"].map(String::from).to_vec());
     assert_eq!(at.most.load(Ordering::SeqCst), 4, "the further node-admin's create ran with the rpc nodes'");
 }
+
+/// The fixture view with mesh2 and mesh3 beside mesh1, each its own mesh-primary's: `mesh1.admin.1` is the
+/// fabric-primary and mesh1's primary, `mesh2.admin.1` and `mesh3.admin.1` the primaries of theirs.
+fn three_meshes() -> Topology {
+    Topology {
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: ["mesh1", "mesh2", "mesh3"].map(|m| Mesh { id: Some(MeshId::mint()), name: m.into(), status: ScopeStatus::Ready }).to_vec(),
+        nodes: vec![node("mesh1.admin.1", true, true), node("mesh2.admin.1", true, false), node("mesh2.rpc.1", false, false), node("mesh3.admin.1", true, false), node("mesh3.rpc.1", false, false)],
+    }
+}
+
+/// CONTRACT (Q250): a Build grows mesh2 and mesh3, each by two rpc nodes, each mesh's nodes its own
+/// mesh-primary's to create. The fabric-primary sends each mesh-primary its section at once, each an attempt
+/// of that mesh's lane: the two sections' creates run together, and the Build completes. Must NOT happen:
+/// mesh3's creates waiting for mesh2's attempt to end.
+#[tokio::test]
+async fn each_meshs_section_is_sent_to_its_mesh_primary_at_once() {
+    let fabric = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1)]), MeshDesired::of("mesh2", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 3)]), MeshDesired::of("mesh3", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 3)])] };
+    let runner: Arc<Mutex<Option<Arc<AtOnce>>>> = Arc::default();
+    let held = runner.clone();
+    let r = rig_for(three_meshes(), TopologyChange::ReconcileFabric { desired: fabric }, move |ran, _| -> Arc<dyn OperationRunner> {
+        let at = Arc::new(AtOnce { ran, running: Default::default(), most: Default::default(), fails: None });
+        *held.lock().unwrap() = Some(at.clone());
+        at
+    })
+    .await;
+    let at = runner.lock().unwrap().clone().unwrap();
+    let drive = Drive::detached(r.build.clone());
+    let ended = tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s");
+    assert_eq!(ended, DriveEnd::Terminal);
+    let mut ran = r.ran.0.lock().unwrap().clone();
+    ran.sort();
+    assert_eq!(ran, ["node.create:mesh2.rpc.2", "node.create:mesh2.rpc.3", "node.create:mesh3.rpc.2", "node.create:mesh3.rpc.3"].map(String::from).to_vec());
+    let mut lanes: Vec<(String, String)> = r.dispatch.sections.lock().unwrap().iter().map(|(e, l, _)| (e.clone(), l.clone())).collect();
+    lanes.sort();
+    assert_eq!(lanes, vec![("mesh2.admin.1".to_string(), "mesh2".to_string()), ("mesh3.admin.1".to_string(), "mesh3".to_string())], "each mesh-primary was sent its mesh's section, in its mesh's lane");
+    assert_eq!(at.most.load(Ordering::SeqCst), 4, "the two sections' creates ran together");
+}

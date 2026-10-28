@@ -1355,10 +1355,11 @@ impl AdminRunner {
         // state (R-BI7): a drift attempt's in its mesh's lane, a fabric attempt's in the fabric lane.
         let builds = crate::build_run::LaneBuilds::of(&self.builds, lane);
         if let Some(mesh) = lane {
-            // A mesh's drift lane carries a node recovery's attempts only (its open is
-            // `ControlPlane::open_recovery`'s): any other operation is not one this lane runs.
-            if !matches!(op, BuildOperation::DeleteLiveNode { exited: Some(_), .. } | BuildOperation::CreateNode { over: Some(_), .. }) {
-                return Err(crate::executor::RunEnd::failed(format!("{me}: {} is not an operation of a node recovery, the only work mesh {mesh}'s drift lane runs (attempt {attempt} of {build_id})", op.key())));
+            // A mesh's lane carries a node recovery's attempts (its open is `ControlPlane::open_recovery`'s)
+            // and the fabric-primary's section of a Build for the mesh, its plain creates (Q250): any
+            // other operation is not one this lane runs.
+            if !matches!(op, BuildOperation::DeleteLiveNode { exited: Some(_), .. } | BuildOperation::CreateNode { .. }) {
+                return Err(crate::executor::RunEnd::failed(format!("{me}: {} is neither an operation of a node recovery nor a create of a section, the work mesh {mesh}'s lane runs (attempt {attempt} of {build_id})", op.key())));
             }
         }
         // A mesh-primary that replied `blocked` to a storage change runs no other operation until it is

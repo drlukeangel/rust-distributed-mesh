@@ -137,6 +137,16 @@ impl crate::build_drive::Gate for SeatGate {
         self.control.take_streamed_receipt(&*self.builds, build_id, attempt, operation).await;
     }
 
+    fn now_ms(&self) -> u64 {
+        self.control.time.now_ms()
+    }
+
+    async fn receipt_streamed_in(&self, lane: &str, build_id: &crate::build::BuildId, attempt: u32, operation: &str) {
+        let builds: Arc<dyn crate::build_state::BuildStateAdapter> = self.builds.clone();
+        let lane = crate::build_run::LaneBuilds::of(&builds, Some(lane));
+        self.control.take_streamed_receipt(&*lane, build_id, attempt, operation).await;
+    }
+
     async fn attempt_failed(&self, build_id: &crate::build::BuildId, attempt: u32) {
         self.control.atlas.ended(build_id, attempt);
     }
