@@ -426,15 +426,20 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     })
     .await;
     intact();
+    // The teardown begins here: what its signals cause (an admin that outlives another submits its recovery)
+    // is the teardown's work, not the executor's, so what is read below ends at this instant.
+    let stop_at = now_ns();
     estate.stop().await;
     let spans = estate.spans();
+    let before_stop = |sp: &Value| at(sp) < stop_at;
     // Nothing was opened, deleted or marked against the fabric-primary's birth, in any process.
-    let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == fp_id).collect();
+    let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| before_stop(sp) && attr(sp, "node_id") == fp_id).collect();
     assert!(opened.is_empty(), "no recovery was opened for the running fabric-primary: {opened:#?}");
-    let rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| attr(sp, "node_id") == fp_id).collect();
+    let rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| before_stop(sp) && attr(sp, "node_id") == fp_id).collect();
     assert!(rows.is_empty(), "no row of the running fabric-primary was written deleted: {rows:#?}");
     let marks: Vec<&Value> = spans
         .iter()
+        .filter(|sp| before_stop(sp))
         .filter(|sp| sp["name"].as_str().is_some_and(|n| n.ends_with(".via-deleted-birth") || n.ends_with(".via-node-deleted") || n.ends_with(".via-node-deleting")))
         .filter(|sp| sp["attributes"].to_string().contains(&fp_id) || sp["attributes"].to_string().contains(&fp_inc))
         .collect();
@@ -477,9 +482,9 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     assert!(paced > 0, "{victim} failed a recovery of a mesh2 birth and submitted it again under the cut, so the backoff was read: {cut_submits:?}");
     // The held recovery of the cut admin is accepted and unfinished: mesh2's primary follows it and never
     // submits it as competing work (Q209); every open the fabric-primary makes for that birth names one attempt.
-    let attempts: std::collections::BTreeSet<(String, String)> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| at(sp) >= cut_at && attr(sp, "node_id") == victim_id).map(|sp| (bare(attr(sp, "build_id")), attr(sp, "attempt"))).collect();
+    let attempts: std::collections::BTreeSet<(String, String)> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| at(sp) >= cut_at && before_stop(sp) && attr(sp, "node_id") == victim_id).map(|sp| (bare(attr(sp, "build_id")), attr(sp, "attempt"))).collect();
     assert_eq!(attempts.len(), 1, "one attempt for {victim}'s accepted, unfinished recovery: {attempts:?}");
-    let mut followed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| at(sp) >= cut_at && attr(sp, "submitter") == mesh2_primary && attr(sp, "node_id") == victim_id).collect();
+    let mut followed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| at(sp) >= cut_at && before_stop(sp) && attr(sp, "submitter") == mesh2_primary && attr(sp, "node_id") == victim_id).collect();
     followed.sort_by_key(|sp| at(sp));
     assert!(followed.windows(2).all(|p| at(p[1]) >= end(p[0])), "{mesh2_primary} never submits {victim} while its submit is in flight: {followed:#?}");
     if let Some(run) = ran.first() {
