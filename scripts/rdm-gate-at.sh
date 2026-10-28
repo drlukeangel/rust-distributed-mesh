@@ -94,10 +94,14 @@ for x in glob.glob("target/debug/deps/*"):
 print(f"[gate] pruned {gone} stale test executables")
 PY
 
-# 1b. Test discovery ratchet: run --list for every test executable of every workspace package on
-# origin/main and on the candidate, and refuse any drop in test discovery naming the package and binary.
+# 1b. Test discovery ratchet: run --list for every test executable of every workspace package on the
+# main the candidate was built on (its merge-base with origin/main) and on the candidate, and refuse any
+# drop in test discovery naming the package and binary. Tests main gained after that base are not the
+# candidate's to have: a landing during the gate no longer reddens it (8 of 30 red gates on 2026-10-28
+# were that); lane-land.sh re-proves a tip whose files main moved in.
 discover_check(){
-    MAIN_SHA=$(git rev-parse --short origin/main)
+    BASE=$(git merge-base HEAD origin/main)
+    MAIN_SHA=$(git rev-parse --short "$BASE")
     MAIN_DISC="$DEPLOY/discovery-$MAIN_SHA.json"
     CAND_DISC="$D/discovery-candidate.json"
     python3 - "$D/artifacts.json" "$CAND_DISC" <<'PY'
@@ -125,9 +129,9 @@ PY
     # A main whose code equals an earlier main's (a docs-only push) has that main's tests: reuse its
     # discovery rather than building main's whole workspace again.
     if [ ! -f "$MAIN_DISC" ]; then
-        for c in $(git rev-list --max-count=200 origin/main); do
+        for c in $(git rev-list --max-count=200 "$BASE"); do
             cs=$(git rev-parse --short $c); f="$DEPLOY/discovery-$cs.json"
-            if [ -f "$f" ] && git diff --quiet $c origin/main -- crates tools Cargo.toml Cargo.lock demo 2>/dev/null; then cp "$f" "$MAIN_DISC"; break; fi
+            if [ -f "$f" ] && git diff --quiet $c "$BASE" -- crates tools Cargo.toml Cargo.lock demo 2>/dev/null; then cp "$f" "$MAIN_DISC"; break; fi
         done
     fi
     if [ ! -f "$MAIN_DISC" ]; then
@@ -136,7 +140,7 @@ PY
         else
             MAIN_REPO="$HOME/rust-distributed-mesh"
             git -C "$MAIN_REPO" fetch -q origin
-            git -C "$MAIN_REPO" checkout -q origin/main
+            git -C "$MAIN_REPO" checkout -q "$BASE"
             MAIN_MEMBERS=$(cargo metadata --manifest-path "$MAIN_REPO/Cargo.toml" --no-deps --format-version 1 2>/dev/null | python3 -c 'import json,sys; print(" ".join("-p "+p["name"] for p in json.load(sys.stdin)["packages"]))')
             (cd "$MAIN_REPO" && CARGO_BUILD_INCREMENTAL=true cargo build --message-format=json --tests --bins $MAIN_MEMBERS > "$D/main-artifacts.json")
             python3 - "$D/main-artifacts.json" "$MAIN_DISC" "$MAIN_REPO/Cargo.toml" <<'PY'
@@ -165,7 +169,7 @@ PY
     # Cells deleted with their code are named in the landing's commit bodies, one per line,
     # `removed: <module>::<cell>` (the name `--list` prints), and only those may leave discovery.
     REMOVED="$D/discovery-removed.txt"
-    git log --format=%b origin/main..HEAD 2>/dev/null | sed -n 's/^removed: *//p' > "$REMOVED"
+    git log --format=%b "$BASE"..HEAD 2>/dev/null | sed -n 's/^removed: *//p' > "$REMOVED"
     python3 - "$MAIN_DISC" "$CAND_DISC" "$REMOVED" <<'PY'
 import collections, json, sys
 base = json.load(open(sys.argv[1]))

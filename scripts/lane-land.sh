@@ -64,21 +64,15 @@ if ! git -C "$d" merge-base --is-ancestor origin/main HEAD; then
   echo "$T2 $PATCH $(git -C "$d" rev-parse origin/main) $H2 $(date -Is) stands-on $T" >> "$DEPLOY_ROOT/green-ranges"
   echo "STANDS lane $L: the GREEN of tree $T stands for $(git -C "$d" rev-parse --short HEAD) (tree $T2): same patch, main moved in none of the branch's files but the generated pages"
 fi
-# time_spent: where a unit's time went, from the lane's plan (lane-dispatch.sh writes it) to now,
-# read from what the lane scripts already keep: the plan's time, the seat's commits, and this lane's
-# post-land-gate.sh logs since the plan (each log's DONE seconds; a log naming a FAIL is a red gate).
-# One JSON line per landing goes to $DEPLOY_ROOT/landings.jsonl; landings_trend.py prints the trend.
+# time_spent: where a unit's time went, recorded from what the lane scripts keep: the plan's time
+# (lane-dispatch.sh), the seat's launch (lane-launched.sh), the seat's commits, and every post-land-gate.sh
+# log of this lane since the plan. landings_trend.py appends one JSON line to $DEPLOY_ROOT/landings.jsonl
+# and prints the phases, every gate and the trend as tables.
 time_spent() {
-  local plan="$(state_dir "$L")/plan.md" now start g n=0 red=0 secs=0 s
-  now=$(date +%s); start=$(stat -c %Y "$plan" 2>/dev/null || echo "$now")
-  for g in "$DEPLOY_ROOT"/gates-"$L"-*.log; do
-    [ -f "$g" ] && [ "$(stat -c %Y "$g")" -ge "$start" ] || continue
-    n=$((n+1)); s=$(sed -n 's/^DONE \([0-9]*\)s$/\1/p' "$g" | tail -1); secs=$((secs+${s:-0}))
-    grep -q "FAIL" "$g" && red=$((red+1))
-  done
-  printf '{"landed_at":%s,"lane":"%s","issue":%s,"branch":"%s","sha":"%s","plan_at":%s,"first_commit_at":%s,"commits":%s,"gates":%s,"red":%s,"gate_s":%s,"total_s":%s}\n' \
-    "$now" "$L" "$I" "$B" "$sha" "$start" "${FIRST:-null}" "${COMMITS:-0}" "$n" "$red" "$secs" "$((now-start))" >> "$DEPLOY_ROOT/landings.jsonl"
-  python3 "$(dirname "$0")/landings_trend.py" "$DEPLOY_ROOT/landings.jsonl" 10
+  local st plan launched
+  st=$(state_dir "$L"); plan=$(stat -c %Y "$st/plan.md" 2>/dev/null || date +%s)
+  launched=$(cat "$st/launched" 2>/dev/null || echo -)
+  python3 "$(dirname "$0")/landings_trend.py" record "$DEPLOY_ROOT/landings.jsonl" "$DEPLOY_ROOT" "$L" "$I" "$B" "$sha" "$plan" "$launched" "${FIRST:--}" "${COMMITS:-0}"
 }
 git -C "$MAIN" fetch -q origin && c=$(mktemp /tmp/rdm-land-run.XXXXXX) && git -C "$MAIN" show origin/main:scripts/rebase-gate-land.sh > "$c" \
   || { echo "REFUSED: origin/main's scripts/rebase-gate-land.sh could not be read"; exit 6; }
