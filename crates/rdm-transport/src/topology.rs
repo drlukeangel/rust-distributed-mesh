@@ -4262,19 +4262,18 @@ impl RoutingWatch {
         self.meshes.borrow_and_update();
     }
 
-    /// Returns when a fact moved since [`RoutingWatch::seen`], naming the watch that moved (`heard`,
-    /// `births`, `overlays`, `meshes`). A view that is gone moves nothing: this never returns then.
-    pub async fn moved(&mut self) -> &'static str {
-        let (ok, which) = tokio::select! {
-            r = self.heard.changed() => (r.is_ok(), "heard"),
-            r = self.births.changed() => (r.is_ok(), "births"),
-            r = self.overlays.changed() => (r.is_ok(), "overlays"),
-            r = self.meshes.changed() => (r.is_ok(), "meshes"),
+    /// Returns when a fact moved since [`RoutingWatch::seen`]. A view that is gone moves nothing:
+    /// this never returns then.
+    pub async fn moved(&mut self) {
+        let ok = tokio::select! {
+            r = self.heard.changed() => r.is_ok(),
+            r = self.births.changed() => r.is_ok(),
+            r = self.overlays.changed() => r.is_ok(),
+            r = self.meshes.changed() => r.is_ok(),
         };
         if !ok {
             std::future::pending::<()>().await;
         }
-        which
     }
 }
 

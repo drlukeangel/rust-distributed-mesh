@@ -3183,16 +3183,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let mut held: BTreeSet<PathName> = BTreeSet::new();
                                             let mut facts = digest_view.routing_watch();
                                             let mut turn = rebuild_gate.turn("view-rebuild").await;
-                                            let mut woken = "start";
                                             loop {
                                                 facts.seen();
                                                 let me_now = digest_view.held_path_name().unwrap_or_else(|| me.clone());
-                                                let installed = *records.view_tick.borrow();
                                                 let t = records.install_read(&me_now, &topology, &digest_view, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &digest_view, &records, reads)).await;
-                                                // Each rebuild names what made it due: the count of these per admin is the
-                                                // rebuild's work, and one with no event before it is a poll.
-                                                tracing::info_span!("rdm.node_admin.topology.update.via-view-rebuild", node = %me_now, woken, changed = *records.view_tick.borrow() != installed)
-                                                    .in_scope(|| tracing::info!("the view is rebuilt from the digest view and the records"));
                                                 elections.observe_as(&me_now, &t);
                                                 // A name this view held and now lacks: the exclusion is named from the same
                                                 // inputs at the moment it happens, not reconstructed later.
@@ -3203,7 +3197,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 held = now;
                                                 drop(turn);
-                                                (turn, woken) = view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
+                                                turn = view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
                                             }
                                         }));
                                     }
