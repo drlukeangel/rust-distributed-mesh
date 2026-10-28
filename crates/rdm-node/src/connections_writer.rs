@@ -92,8 +92,10 @@ struct Inner {
     storage: Arc<dyn ConnectionsStorage>,
     held: Arc<Mutex<ConnectionsHeld>>,
     runtime: tokio::runtime::Handle,
-    /// The last stamp this writer gave a row: every row it writes carries a later one, so two
-    /// facts in one millisecond never tie (the held projection keeps one stamp per key).
+    /// The last stamp this writer gave a row, or the stamp of a row it recorded
+    /// ([`ConnectionsWriter::record`]) when that is later: every row it writes after carries a
+    /// later one, so two facts in one millisecond never tie (the held projection keeps one stamp
+    /// per key, and a Failed row wins a tie).
     last_stamp: Mutex<u64>,
     /// Owed writes queued and not yet landed; [`ConnectionsWriter::observations_landed`] waits for
     /// this to reach zero, `idle` wakes it when a write finishes.
@@ -271,6 +273,11 @@ impl ConnectionsWriter {
         let _gate = self.inner.write_gate.lock().await;
         self.own_now();
         self.persist(&row).await?;
+        // A row this writer writes after this one is stamped later than it.
+        {
+            let mut last = self.inner.last_stamp.lock().unwrap();
+            *last = (*last).max(row.logged_at_ms);
+        }
         let _ = self.inner.held.lock().unwrap().apply(row);
         self.sync_recovery();
         Ok(())
@@ -573,8 +580,9 @@ impl ConnectionsWriter {
             let own = w.own_now();
             let Some(mut row) = build(w, own) else {
                 drop(gate);
+                drop(parent);
                 w.inner.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                    w.inner.idle.notify_waiters();
+                w.inner.idle.notify_waiters();
                 return;
             };
             row.logged_at_ms = w.stamp();
@@ -591,6 +599,7 @@ impl ConnectionsWriter {
                     kind = kind_name(row.kind),
                     state = state_name(row.state),
                     reason = %row.reason.clone().unwrap_or_default(),
+                    logged_at_ms = row.logged_at_ms,
                     recovery_round = tracing::field::Empty,
                     attempt_ordinal = tracing::field::Empty,
                     origin = *origin,
@@ -637,6 +646,9 @@ impl ConnectionsWriter {
                 let _ = tracing::Instrument::instrument(w.settle_owed(), span.clone()).await;
             }
             drop(span);
+            // The span of the call that owed the write goes before the write is counted landed:
+            // once `observations_landed` resolves, the writer holds no span of a landed write.
+            drop(parent);
             w.inner.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             w.inner.idle.notify_waiters();
         }
