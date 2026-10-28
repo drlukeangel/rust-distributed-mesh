@@ -265,10 +265,17 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
     // 4. Spans: the two tunnels, the first a cold discovery that names its cost; no Direct dial in
     // the second open's trace.
     let spans = estate.spans();
-    // The source's own tunnel spans: the carrier's splice span names the same source, and records no kind.
+    // The source's own tunnel spans: the carrier's tunnel span names the same source, and records no kind.
     let tunnels: Vec<&Value> = named(&spans, "rdm.node.connections.create.via-tunnel").into_iter().filter(|sp| sp["attributes"]["source"] == SOURCE && sp["attributes"]["destination"] == DEST && sp["attributes"]["kind"] == "proxy").collect();
     assert_eq!(tunnels.len(), 2, "two tunnels from the source: {tunnels:#?}");
     let (cold, held_open) = (tunnels[0], tunnels[1]);
+    // Each tunnel's carrier span is its child (telemetry.md §3), exported though both tunnels are
+    // still open when the estate stops: it ends once its tunnel opens, never at the tunnel's end.
+    for tunnel in [cold, held_open] {
+        let carried: Vec<&Value> = named(&spans, "rdm.node.connections.create.via-tunnel").into_iter().filter(|sp| sp["parent_span_id"] == tunnel["span_id"]).collect();
+        assert_eq!(carried.len(), 1, "the carrier's tunnel span is the source tunnel's child: {tunnel} {carried:#?}");
+        assert_eq!((s(&carried[0]["attributes"]["carrier"]), s(&carried[0]["attributes"]["entry"]), s(&carried[0]["attributes"]["outcome"])), (CARRIER.to_string(), s(&tunnel["attributes"]["entry"]), "opened".to_string()), "{}", carried[0]);
+    }
     assert_eq!((s(&cold["attributes"]["carrier"]), s(&cold["attributes"]["kind"]), s(&cold["attributes"]["state"])), (CARRIER.to_string(), "proxy".to_string(), "connected".to_string()), "{cold}");
     let cost = cold["attributes"]["effective_route_cold_discovery_ms"].as_u64().or_else(|| s(&cold["attributes"]["effective_route_cold_discovery_ms"]).parse().ok());
     assert!(cost.is_some(), "the cold discovery names its cost (connections.md §12): {cold}");

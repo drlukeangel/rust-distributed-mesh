@@ -22,7 +22,6 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, watch};
-use tracing::Instrument;
 
 const CLOSE_CODE_PEER_LEFT: u32 = 400;
 const CLOSE_CODE_CONNECTIONS_DELETED: u32 = 410;
@@ -873,7 +872,6 @@ impl std::fmt::Debug for AlpnProtocolHandler {
 impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), iroh::protocol::AcceptError> {
         let floor = rdm_core::cadence::staleness_floor();
-        let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
         let Some(admit::Admitted { mut ctrl_send, mut ctrl_recv, present }) = admit::admit(&self.registry, &self.alpn, &connection).await else {
             return Ok(());
         };
@@ -996,204 +994,7 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
                 alpn,
                 via: None,
             } => {
-                let own_now = self.registry.inner.sink.own_birth();
-                let tunnel_span = tracing::info_span!(
-                    "rdm.node.connections.create.via-tunnel",
-                    source = %origin.name,
-                    carrier = %own_now.name,
-                    destination = %destination.name,
-                    alpn = %alpn_str,
-                );
-                if let Some(tp) = present.traceparent.as_deref() {
-                    crate::set_parent(&tunnel_span, tp);
-                }
-                tunnel_span.in_scope(|| tracing::info!("carrier splicing data-plane proxy tunnel to destination"));
-                let carrier_tp = crate::traceparent_of(&tunnel_span).or(present.traceparent.clone());
-
-                let has_active_direct = {
-                    let held = self.registry.inner.sink.held();
-                    let g = held.lock().unwrap();
-                    matches!(
-                        g.active_direct_for(&own_now.name, &destination.name, &self.alpn.name),
-                        Some(Some(_))
-                    )
-                };
-                if !has_active_direct {
-                    let _ = write_control_msg(
-                        &mut ctrl_send,
-                        &ControlAnswer::Refused {
-                            reason: INVALID_CARRIER_EDGE_LOST.to_string(),
-                        },
-                    )
-                    .await;
-                    let _ = ctrl_send.finish();
-                    let _ = tokio::time::timeout(floor, connection.closed()).await;
-                    return Ok(());
-                }
-                #[cfg(feature = "testkit-gossip")]
-                if self
-                    .registry
-                    .inner
-                    .blocked_direct_dials
-                    .lock()
-                    .unwrap()
-                    .contains(&(destination.name.clone(), self.alpn.name.clone()))
-                {
-                    let _ = ctrl_send.finish();
-                    return Ok(());
-                }
-
-                let resolved_dest = self
-                    .registry
-                    .inner
-                    .resolver
-                    .resolve(&NodeTarget::ExactNode(destination.node_id.clone()))
-                    .or_else(|_| {
-                        self.registry
-                            .inner
-                            .resolver
-                            .resolve(&NodeTarget::CurrentPath(destination.name.clone()))
-                    });
-                let Ok(resolved_dest) = resolved_dest else {
-                    let _ = write_control_msg(
-                        &mut ctrl_send,
-                        &ControlAnswer::Refused {
-                            reason: INVALID_CARRIER_EDGE_LOST.to_string(),
-                        },
-                    )
-                    .await;
-                    let _ = ctrl_send.finish();
-                    let _ = tokio::time::timeout(floor, connection.closed()).await;
-                    return Ok(());
-                };
-
-                let dst_addr =
-                    iroh::EndpointAddr::new(resolved_dest.endpoint_id).with_ip_addr(resolved_dest.transport_addr);
-                let Ok(Ok(dst_conn)) = tokio::time::timeout(
-                    floor,
-                    self.registry
-                        .inner
-                        .endpoint
-                        .connect(dst_addr, &self.alpn.name)
-                        .instrument(tunnel_span.clone()),
-                )
-                .await
-                else {
-                    let _ = write_control_msg(
-                        &mut ctrl_send,
-                        &ControlAnswer::Refused {
-                            reason: INVALID_CARRIER_EDGE_LOST.to_string(),
-                        },
-                    )
-                    .await;
-                    let _ = ctrl_send.finish();
-                    let _ = tokio::time::timeout(floor, connection.closed()).await;
-                    return Ok(());
-                };
-
-                let Ok(Ok((mut dst_ctrl_send, mut dst_ctrl_recv))) =
-                    tokio::time::timeout(floor, dst_conn.open_bi().instrument(tunnel_span.clone())).await
-                else {
-                    let _ = write_control_msg(
-                        &mut ctrl_send,
-                        &ControlAnswer::Refused {
-                            reason: INVALID_CARRIER_EDGE_LOST.to_string(),
-                        },
-                    )
-                    .await;
-                    let _ = ctrl_send.finish();
-                    let _ = tokio::time::timeout(floor, connection.closed()).await;
-                    return Ok(());
-                };
-
-                let cert = self.registry.inner.member_cert.lock().unwrap().clone();
-                let dst_present = PresentFrame {
-                    caller: own_now.clone(),
-                    cert,
-                    traceparent: carrier_tp,
-                };
-                tunnel_span.in_scope(|| {
-                    tracing::info_span!(
-                        "rdm.node.connections.update.via-presented",
-                        destination = %destination.name,
-                        alpn = %alpn_str,
-                        cert_expires_at = 0u64,
-                    )
-                    .in_scope(|| tracing::info!("carrier presented member credential to destination"));
-                });
-                if write_control_msg(&mut dst_ctrl_send, &dst_present).await.is_err() {
-                    return Ok(());
-                }
-
-                let dst_verdict: AdmitVerdict =
-                    match tokio::time::timeout(floor, read_control_msg(&mut dst_ctrl_recv)).await {
-                        Ok(Ok(Some(v))) => v,
-                        _ => return Ok(()),
-                    };
-                match dst_verdict {
-                    AdmitVerdict::Refused { reason } => {
-                        let _ = write_control_msg(
-                            &mut ctrl_send,
-                            &ControlAnswer::Refused {
-                                reason: reason.clone(),
-                            },
-                        )
-                        .await;
-                        let _ = ctrl_send.finish();
-                        dst_conn.close(
-                            iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED),
-                            reason.as_bytes(),
-                        );
-                        let _ = tokio::time::timeout(floor, connection.closed()).await;
-                        return Ok(());
-                    }
-                    AdmitVerdict::Admitted => {}
-                }
-
-                let dst_intent = ControlIntent::Tunnel {
-                    id,
-                    origin,
-                    destination: destination.clone(),
-                    alpn,
-                    via: Some(own_now),
-                };
-                if write_control_msg(&mut dst_ctrl_send, &dst_intent).await.is_err() {
-                    return Ok(());
-                }
-
-                let dst_answer: ControlAnswer =
-                    match tokio::time::timeout(floor, read_control_msg(&mut dst_ctrl_recv)).await {
-                        Ok(Ok(Some(a))) => a,
-                        _ => return Ok(()),
-                    };
-                if write_control_msg(&mut ctrl_send, &dst_answer).await.is_err() {
-                    return Ok(());
-                }
-
-                let opened_exact = match &dst_answer {
-                    ControlAnswer::Opened { peer } => {
-                        peer.incarnation == destination.incarnation && peer.node_id == destination.node_id
-                    }
-                    ControlAnswer::Refused { .. } => false,
-                };
-                if !opened_exact {
-                    let _ = ctrl_send.finish();
-                    let _ = tokio::time::timeout(floor, connection.closed()).await;
-                    dst_conn.close(
-                        iroh::endpoint::VarInt::from_u32(CLOSE_CODE_PEER_LEFT),
-                        b"tunnel-rejected",
-                    );
-                    return Ok(());
-                }
-
-                self.registry
-                    .inner
-                    .carrier_legs
-                    .lock()
-                    .unwrap()
-                    .push((connection.clone(), dst_conn.clone()));
-                let _keep_ctrl = (ctrl_send, ctrl_recv, dst_ctrl_send, dst_ctrl_recv);
-                splice_tunnel(connection, dst_conn).await;
+                self.carry(connection, ctrl_send, ctrl_recv, present.traceparent, id, origin, destination, alpn).await;
             }
         }
         Ok(())
@@ -1201,6 +1002,241 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
 
     async fn shutdown(&self) {
         self.registry.shutdown_all();
+    }
+}
+
+/// What the carrier's open of a tunnel came to (connections.md §7).
+enum CarrierOpen {
+    /// Opened: the destination's leg, and its control streams, kept for the tunnel's life.
+    Opened {
+        dst_conn: iroh::endpoint::Connection,
+        dst_ctrl: (iroh::endpoint::SendStream, iroh::endpoint::RecvStream),
+    },
+    /// Not opened, the source answered (a refusal by name, or the destination's answer as another
+    /// birth): the source's leg is held until it closes, within the staleness floor.
+    Answered { outcome: String },
+    /// Not opened, nothing answered: the source's leg ends as the handler returns.
+    Ended { outcome: String },
+}
+
+impl AlpnProtocolHandler {
+    /// The carrier's side of a Proxy (connections.md §7). Its tunnel span
+    /// `rdm.node.connections.create.via-tunnel`, the opener's child (telemetry.md §3), ends once the
+    /// tunnel is opened or not, never held for the tunnel's life (§4). An opened tunnel is carried
+    /// until either leg closes; the carrier then closes the other and spans the tunnel's end,
+    /// `rdm.node.connections.delete.via-carrier-tunnel-ended`, in the opener's trace.
+    #[allow(clippy::too_many_arguments)]
+    async fn carry(
+        &self,
+        connection: iroh::endpoint::Connection,
+        mut ctrl_send: iroh::endpoint::SendStream,
+        ctrl_recv: iroh::endpoint::RecvStream,
+        traceparent: Option<String>,
+        id: ConnectionId,
+        origin: Birth,
+        destination: Birth,
+        alpn: Vec<u8>,
+    ) {
+        let floor = rdm_core::cadence::staleness_floor();
+        let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
+        let own_now = self.registry.inner.sink.own_birth();
+        let tunnel_span = tracing::info_span!(
+            "rdm.node.connections.create.via-tunnel",
+            source = %origin.name,
+            carrier = %own_now.name,
+            destination = %destination.name,
+            alpn = %alpn_str,
+            entry = %id,
+            outcome = tracing::field::Empty,
+        );
+        if let Some(tp) = traceparent.as_deref() {
+            crate::set_parent(&tunnel_span, tp);
+        }
+        tunnel_span.in_scope(|| tracing::info!("carrier splicing data-plane proxy tunnel to destination"));
+        let carrier_tp = crate::traceparent_of(&tunnel_span).or(traceparent);
+        let ended_names = (origin.name.to_string(), own_now.name.to_string(), destination.name.to_string(), id.to_string());
+        let opened = self
+            .open_carrier_legs(&mut ctrl_send, carrier_tp.clone(), id, origin, destination, alpn, own_now, &tunnel_span)
+            .await;
+        tunnel_span.record(
+            "outcome",
+            match &opened {
+                CarrierOpen::Opened { .. } => "opened",
+                CarrierOpen::Answered { outcome } | CarrierOpen::Ended { outcome } => outcome.as_str(),
+            },
+        );
+        drop(tunnel_span);
+        match opened {
+            CarrierOpen::Opened { dst_conn, dst_ctrl } => {
+                self.registry.inner.carrier_legs.lock().unwrap().push((connection.clone(), dst_conn.clone()));
+                let _keep_ctrl = (ctrl_send, ctrl_recv, dst_ctrl);
+                let (closed_by, closed) = splice_tunnel(&connection, &dst_conn).await;
+                self.registry
+                    .inner
+                    .carrier_legs
+                    .lock()
+                    .unwrap()
+                    .retain(|(src, _)| src.stable_id() != connection.stable_id());
+                let (source, carrier, destination, entry) = ended_names;
+                let ended = tracing::info_span!(
+                    "rdm.node.connections.delete.via-carrier-tunnel-ended",
+                    source = %source,
+                    carrier = %carrier,
+                    destination = %destination,
+                    alpn = %alpn_str,
+                    entry = %entry,
+                    closed_by = closed_by,
+                    closed = %closed,
+                );
+                if let Some(tp) = carrier_tp.as_deref() {
+                    crate::set_parent(&ended, tp);
+                }
+                ended.in_scope(|| tracing::info!("carrier closed both legs of the proxy tunnel"));
+            }
+            CarrierOpen::Answered { .. } => {
+                let _ = ctrl_send.finish();
+                let _ = tokio::time::timeout(floor, connection.closed()).await;
+            }
+            CarrierOpen::Ended { .. } => {}
+        }
+    }
+
+    /// The carrier's open of the destination's leg: the checks of connections.md §7-§8, the dial, the
+    /// carrier's presentation, the destination's verdict and answer, passed back to the source.
+    #[allow(clippy::too_many_arguments)]
+    async fn open_carrier_legs(
+        &self,
+        ctrl_send: &mut iroh::endpoint::SendStream,
+        carrier_tp: Option<String>,
+        id: ConnectionId,
+        origin: Birth,
+        destination: Birth,
+        alpn: Vec<u8>,
+        own_now: Birth,
+        tunnel_span: &tracing::Span,
+    ) -> CarrierOpen {
+        let floor = rdm_core::cadence::staleness_floor();
+        let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
+        async fn refuse(ctrl_send: &mut iroh::endpoint::SendStream, reason: &str) -> CarrierOpen {
+            let _ = write_control_msg(ctrl_send, &ControlAnswer::Refused { reason: reason.to_string() }).await;
+            CarrierOpen::Answered { outcome: format!("refused: {reason}") }
+        }
+
+        let has_active_direct = {
+            let held = self.registry.inner.sink.held();
+            let g = held.lock().unwrap();
+            matches!(
+                g.active_direct_for(&own_now.name, &destination.name, &self.alpn.name),
+                Some(Some(_))
+            )
+        };
+        if !has_active_direct {
+            return refuse(ctrl_send, INVALID_CARRIER_EDGE_LOST).await;
+        }
+        #[cfg(feature = "testkit-gossip")]
+        if self
+            .registry
+            .inner
+            .blocked_direct_dials
+            .lock()
+            .unwrap()
+            .contains(&(destination.name.clone(), self.alpn.name.clone()))
+        {
+            let _ = ctrl_send.finish();
+            return CarrierOpen::Ended { outcome: "not-opened: the direct dial is blocked".to_string() };
+        }
+
+        let resolved_dest = self
+            .registry
+            .inner
+            .resolver
+            .resolve(&NodeTarget::ExactNode(destination.node_id.clone()))
+            .or_else(|_| {
+                self.registry
+                    .inner
+                    .resolver
+                    .resolve(&NodeTarget::CurrentPath(destination.name.clone()))
+            });
+        let Ok(resolved_dest) = resolved_dest else {
+            return refuse(ctrl_send, INVALID_CARRIER_EDGE_LOST).await;
+        };
+
+        let dst_addr =
+            iroh::EndpointAddr::new(resolved_dest.endpoint_id).with_ip_addr(resolved_dest.transport_addr);
+        // The destination's leg is dialled as a root linked to the tunnel span, so its driver never
+        // holds the tunnel span for the leg's life (telemetry.md §4).
+        let Ok(Ok((dst_conn, mut dst_ctrl_send, mut dst_ctrl_recv))) = tokio::time::timeout(
+            floor,
+            dial_root(&self.registry.inner.endpoint, &self.alpn.name, &destination, dst_addr, tunnel_span),
+        )
+        .await
+        else {
+            return refuse(ctrl_send, INVALID_CARRIER_EDGE_LOST).await;
+        };
+
+        let cert = self.registry.inner.member_cert.lock().unwrap().clone();
+        let dst_present = PresentFrame {
+            caller: own_now.clone(),
+            cert,
+            traceparent: carrier_tp,
+        };
+        tunnel_span.in_scope(|| {
+            tracing::info_span!(
+                "rdm.node.connections.update.via-presented",
+                destination = %destination.name,
+                alpn = %alpn_str,
+                cert_expires_at = 0u64,
+            )
+            .in_scope(|| tracing::info!("carrier presented member credential to destination"));
+        });
+        if write_control_msg(&mut dst_ctrl_send, &dst_present).await.is_err() {
+            return CarrierOpen::Ended { outcome: "not-opened: the presentation to the destination was not written".to_string() };
+        }
+
+        let dst_verdict: AdmitVerdict =
+            match tokio::time::timeout(floor, read_control_msg(&mut dst_ctrl_recv)).await {
+                Ok(Ok(Some(v))) => v,
+                _ => return CarrierOpen::Ended { outcome: "not-opened: the destination's verdict did not arrive".to_string() },
+            };
+        if let AdmitVerdict::Refused { reason } = dst_verdict {
+            dst_conn.close(iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED), reason.as_bytes());
+            return refuse(ctrl_send, &reason).await;
+        }
+
+        let dst_intent = ControlIntent::Tunnel {
+            id,
+            origin,
+            destination: destination.clone(),
+            alpn,
+            via: Some(own_now),
+        };
+        if write_control_msg(&mut dst_ctrl_send, &dst_intent).await.is_err() {
+            return CarrierOpen::Ended { outcome: "not-opened: the intent to the destination was not written".to_string() };
+        }
+
+        let dst_answer: ControlAnswer =
+            match tokio::time::timeout(floor, read_control_msg(&mut dst_ctrl_recv)).await {
+                Ok(Ok(Some(a))) => a,
+                _ => return CarrierOpen::Ended { outcome: "not-opened: the destination's answer did not arrive".to_string() },
+            };
+        if write_control_msg(ctrl_send, &dst_answer).await.is_err() {
+            return CarrierOpen::Ended { outcome: "not-opened: the answer to the source was not written".to_string() };
+        }
+
+        match &dst_answer {
+            ControlAnswer::Opened { peer } if peer.incarnation == destination.incarnation && peer.node_id == destination.node_id => {
+                CarrierOpen::Opened { dst_conn, dst_ctrl: (dst_ctrl_send, dst_ctrl_recv) }
+            }
+            answer => {
+                dst_conn.close(iroh::endpoint::VarInt::from_u32(CLOSE_CODE_PEER_LEFT), b"tunnel-rejected");
+                CarrierOpen::Answered {
+                    outcome: match answer {
+                        ControlAnswer::Refused { reason } => format!("refused: {reason}"),
+                        ControlAnswer::Opened { .. } => "not-opened: the destination answered as another birth".to_string(),
+                    },
+                }
+            }
+        }
     }
 }
 
@@ -1284,10 +1320,14 @@ fn propagate_leg_close(
     }
 }
 
+/// Carry a tunnel's streams between its two legs until either leg closes, then close the other
+/// with the close it carries ([`propagate_leg_close`]). Returns which leg closed first and the reason
+/// it closed with. The accept loops end when a leg closes, so the tunnel's end is always a leg's
+/// close, never a loop's: the other leg is never left open.
 async fn splice_tunnel(
-    src_conn: iroh::endpoint::Connection,
-    dst_conn: iroh::endpoint::Connection,
-) {
+    src_conn: &iroh::endpoint::Connection,
+    dst_conn: &iroh::endpoint::Connection,
+) -> (&'static str, String) {
     let s_to_d = {
         let src = src_conn.clone();
         let dst = dst_conn.clone();
@@ -1314,16 +1354,21 @@ async fn splice_tunnel(
             }
         }
     };
-    tokio::select! {
-        _ = s_to_d => {}
-        _ = d_to_s => {}
-        err = src_conn.closed() => {
-            propagate_leg_close(&err, &dst_conn);
-        }
-        err = dst_conn.closed() => {
-            propagate_leg_close(&err, &src_conn);
-        }
-    }
+    let carried = async {
+        tokio::join!(s_to_d, d_to_s);
+        std::future::pending::<std::convert::Infallible>().await
+    };
+    let (closed_by, err, other_leg) = tokio::select! {
+        err = src_conn.closed() => ("source", err, dst_conn),
+        err = dst_conn.closed() => ("destination", err, src_conn),
+        never = carried => match never {},
+    };
+    propagate_leg_close(&err, other_leg);
+    let reason = match &err {
+        iroh::endpoint::ConnectionError::ApplicationClosed(frame) => String::from_utf8_lossy(&frame.reason).into_owned(),
+        other => other.to_string(),
+    };
+    (closed_by, reason)
 }
 
 /// One registered ALPN's dial and accept handle. Not `Clone`: there is one accept owner at
@@ -1901,39 +1946,7 @@ impl Dialer {
         addr: iroh::EndpointAddr,
         opener: &tracing::Span,
     ) -> Result<(iroh::endpoint::Connection, iroh::endpoint::SendStream, iroh::endpoint::RecvStream), String> {
-        let span = tracing::info_span!(
-            parent: None,
-            "rdm.node.connections.create.via-dial",
-            destination = %to.name,
-            alpn = %String::from_utf8_lossy(&self.alpn.name),
-            outcome = tracing::field::Empty,
-            elapsed_ms = tracing::field::Empty,
-        );
-        span.follows_from(opener);
-        let dispatch = tracing::Span::with_subscriber(&span, |(_, d): (&tracing::Id, &tracing::Dispatch)| d.clone());
-        let endpoint = self.registry.inner.endpoint.clone();
-        let alpn = self.alpn.name.clone();
-        let dial = async move {
-            let started = std::time::Instant::now();
-            let out: Result<_, String> = async {
-                let conn = endpoint.connect(addr, &alpn).await.map_err(|e| e.to_string())?;
-                let (send, recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
-                Ok((conn, send, recv))
-            }
-            .await;
-            span.record("outcome", match &out { Ok(_) => "connected", Err(e) => e.as_str() });
-            span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-            drop(span);
-            out
-        };
-        let mut task = DialTask(match dispatch {
-            Some(d) => tokio::spawn(tracing::instrument::WithSubscriber::with_subscriber(dial, d)),
-            None => tokio::spawn(dial),
-        });
-        match (&mut task.0).await {
-            Ok(out) => out,
-            Err(e) => Err(format!("the dial ended without an outcome: {e}")),
-        }
+        dial_root(&self.registry.inner.endpoint, &self.alpn.name, to, addr, opener).await
     }
 
     /// Owe the dial's `Failed` row (Q169): built when the writer takes it, from the held
@@ -1985,7 +1998,52 @@ impl Dialer {
     }
 }
 
-/// A [`Dialer`]'s dial task, aborted when the open awaiting it is dropped.
+/// A data-plane connection's dial: `rdm.node.connections.create.via-dial`, a root linked (follows_from)
+/// to `opener`, run on a task of its own so the connection's driver takes the dial's span, never the
+/// opener's (telemetry.md §4). The source's open and the carrier's leg to the destination dial here.
+async fn dial_root(
+    endpoint: &iroh::Endpoint,
+    alpn: &[u8],
+    to: &Birth,
+    addr: iroh::EndpointAddr,
+    opener: &tracing::Span,
+) -> Result<(iroh::endpoint::Connection, iroh::endpoint::SendStream, iroh::endpoint::RecvStream), String> {
+    let span = tracing::info_span!(
+        parent: None,
+        "rdm.node.connections.create.via-dial",
+        destination = %to.name,
+        alpn = %String::from_utf8_lossy(alpn),
+        outcome = tracing::field::Empty,
+        elapsed_ms = tracing::field::Empty,
+    );
+    span.follows_from(opener);
+    let dispatch = tracing::Span::with_subscriber(&span, |(_, d): (&tracing::Id, &tracing::Dispatch)| d.clone());
+    let endpoint = endpoint.clone();
+    let alpn = alpn.to_vec();
+    let dial = async move {
+        let started = std::time::Instant::now();
+        let out: Result<_, String> = async {
+            let conn = endpoint.connect(addr, &alpn).await.map_err(|e| e.to_string())?;
+            let (send, recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+            Ok((conn, send, recv))
+        }
+        .await;
+        span.record("outcome", match &out { Ok(_) => "connected", Err(e) => e.as_str() });
+        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        drop(span);
+        out
+    };
+    let mut task = DialTask(match dispatch {
+        Some(d) => tokio::spawn(tracing::instrument::WithSubscriber::with_subscriber(dial, d)),
+        None => tokio::spawn(dial),
+    });
+    match (&mut task.0).await {
+        Ok(out) => out,
+        Err(e) => Err(format!("the dial ended without an outcome: {e}")),
+    }
+}
+
+/// A dial's task ([`dial_root`]), aborted when the open awaiting it is dropped.
 struct DialTask<T>(tokio::task::JoinHandle<T>);
 
 impl<T> Drop for DialTask<T> {
