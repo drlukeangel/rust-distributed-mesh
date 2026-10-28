@@ -686,6 +686,8 @@ impl BuildExecutor {
     /// it ran stands, and `next` is either never opened (`failed` is `None`) or ended within its bound by
     /// failing (`failed` names why, its receipts standing). The attempt is handed to the fabric-primary of
     /// the view the run ends with, which ends the Build `Failed` naming the delete once its attempts ended.
+    /// Nothing is framed to the caller (node-rpc-envelope.md: Blocked's only source is the subject's
+    /// Status `Blocked`): the interruption is on the run's span and its `via-interrupted` span.
     #[allow(clippy::too_many_arguments)]
     async fn interrupted(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, next: &BuildOperation, failed: Option<&str>, delete: &BuildId, span: &tracing::Span) -> Reconciled {
         let reason = crate::build_state::interrupted_reason(&build.build_id, delete);
@@ -697,7 +699,6 @@ impl BuildExecutor {
                 None => tracing::info!("a fabric.delete accepted after this Build interrupts it: the next operation is not opened and the attempt is handed to the fabric-primary"),
                 Some(_) => tracing::info!("a fabric.delete accepted after this Build interrupts it: the operation admitted before it failed within its bound, and the attempt is handed to the fabric-primary"),
             });
-        builds.note_blocked(&build.build_id, None, attempt, &next.key(), "interrupted", &reason).await;
         self.hand_off(builds, build, attempt, ran, to).await
     }
 

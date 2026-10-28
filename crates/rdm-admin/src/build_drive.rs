@@ -1120,7 +1120,10 @@ impl DriveEnv {
         }
     }
 
-    /// A blocker the drive itself holds: framed once for a new reason.
+    /// The fabric's change the Build waits on (states.md "Resize and executable replacement": "while the
+    /// fabric changes, the Build reports Blocked naming the change"): framed once for a new reason. Every
+    /// other wait of the drive is named on its span, never framed to the caller (node-rpc-envelope.md:
+    /// Blocked's only source is the subject's Status `Blocked` reply to the executor's ProbeNodeState).
     fn blocked(&self, drive: &Arc<Drive>, attempt: u32, operation: &str, step: &str, reason: &str) {
         drive.push(BuildReply::Blocked { build_id: drive.build_id.to_string(), attempt, operation: operation.into(), step: step.into(), reason: crate::build_run::bounded_reason(reason.into()) });
     }
@@ -1182,7 +1185,7 @@ impl DriveEnv {
     }
 
     /// The drive stops at the target on `op` by name: once per mesh, operation and verdict on its own
-    /// span, framed as the attempt's blocker, and stalled until the investigation's state changes.
+    /// span, never framed to the caller, and stalled until the investigation's state changes.
     fn stop_at_peer_mesh_held(&self, me: &PathName, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool), crashed: &HashSet<String>) -> DriveEnd {
         let unreachable = self.gate.peer_mesh(&node.mesh).is_some_and(|m| m.unreachable_decided);
         let why = format!(
@@ -1203,7 +1206,6 @@ impl DriveEnv {
             tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id.log(), attempt, node = %me, operation = %op.key(), target = %node, mesh = %node.mesh, unheard_ms, recovery_decided = decided)
                 .in_scope(|| tracing::info!("the drive claims and dispatches nothing for a node of a peer mesh held unheard"));
         }
-        self.blocked(drive, attempt, &op.key(), "unheard-mesh", &why);
         DriveEnd::Stalled(why)
     }
 
@@ -1515,7 +1517,6 @@ impl DriveEnv {
                 Inner::Refused(r) => {
                     dspan.record("outcome", r.name());
                     let why = format!("{executor} refused attempt {attempt} of Build {id}: {}", describe(&r));
-                    self.blocked(drive, attempt, "", "dispatch", &why);
                     return self.stalled(&me, drive, why);
                 }
                 Inner::SeatYielded => {
@@ -1543,7 +1544,6 @@ impl DriveEnv {
                         }
                         Err(not_proven) => {
                             let why = format!("executor {executor} is {class} ({detail}); its departure is not proven ({not_proven}); the attempt is not claimed for another admin");
-                            self.blocked(drive, attempt, "", "departure-proof", &why);
                             return self.stalled(&me, drive, why);
                         }
                     }
@@ -1570,7 +1570,7 @@ impl DriveEnv {
     }
 
     /// The fabric.delete `delete` opens its teardown only once every Build it interrupts has its
-    /// terminal (build.md §1): `Some` stalls the delete's drive, blocked naming the attempt it waits for.
+    /// terminal (build.md §1): `Some` stalls the delete's drive, naming the attempt it waits for on its span.
     async fn interrupted_ended(&self, me: &PathName, drive: &Arc<Drive>, delete: &BuildProjection) -> Option<DriveEnd> {
         let active = match self.builds.list_active().await {
             Ok(active) => active,
@@ -1578,7 +1578,6 @@ impl DriveEnv {
         };
         for p in active.iter().filter(|b| (b.submitted_at_ms, &b.build_id) < (delete.submitted_at_ms, &delete.build_id)) {
             if let Interrupted::Open(why) = self.end_interrupted(me, p, delete).await {
-                self.blocked(drive, delete.attempt_to_drive(), "", "interrupted-build", &why);
                 return Some(self.stalled(me, drive, why));
             }
         }
@@ -1674,17 +1673,18 @@ impl DriveEnv {
     }
 
     /// Every node.primary.update that precedes an operation of `plan`, acknowledged through the gate
-    /// ([`Gate::primaries_updated`]); `Some` ends the drive stalled, the attempt blocked naming the
-    /// updates and why, when one was not.
+    /// ([`Gate::primaries_updated`]); `Some` ends the drive stalled, naming the updates and why on its
+    /// span, when one was not.
     async fn updates_acknowledged(&self, me: &PathName, drive: &Arc<Drive>, plan: &RunPlan, attempt: u32, run: u32) -> Option<DriveEnd> {
         let mut updates: Vec<(String, PrecedingUpdate)> = plan.operations.iter().flat_map(|op| preceding_updates(op, &drive.build_id, run).into_iter().map(move |u| (op.key(), u))).collect();
         updates.dedup();
-        let Some((first, _)) = updates.first().cloned() else { return None };
+        if updates.is_empty() {
+            return None;
+        }
         let asked: Vec<PrecedingUpdate> = updates.into_iter().map(|(_, u)| u).collect();
         let why = self.gate.primaries_updated(&asked, &drive.build_id, attempt).await.err()?;
         let names = asked.iter().map(|u| format!("{} under mesh {}", u.operation, u.mesh)).collect::<Vec<_>>().join(", ");
         let why = format!("{me}: attempt {attempt} of Build {} dispatches nothing until node.primary.updated is acknowledged for the update that precedes it (one of {names}): {why}", drive.build_id);
-        self.blocked(drive, attempt, &first, "primary-update", &why);
         Some(self.stalled(me, drive, why))
     }
 
@@ -1712,7 +1712,6 @@ impl DriveEnv {
             BuildClaimReply::Won { context } => context,
             other => {
                 let why = format!("{me}: the seats of {} move before {} as a step of attempt {attempt} of Build {id}, and that attempt was not claimed for {me}: {}", m.holder.name, op.key(), claim_refusal(&other));
-                self.blocked(drive, attempt, &op.key(), "primary-update", &why);
                 return Err(self.stalled(me, drive, why));
             }
         };
@@ -1766,7 +1765,6 @@ impl DriveEnv {
                 // the election's installed result names another fabric-primary.
                 let why = format!("{me}: node.primary.update to {to} before {} did not complete: {why}", op.key());
                 dspan.record("reason", why.as_str());
-                self.blocked(drive, attempt, &op.key(), "primary-update", &why);
                 Ok(true)
             }
             (moved, true) => {
@@ -1775,7 +1773,6 @@ impl DriveEnv {
                     Ok(()) => format!("{me}: node.primary.update of {} answered, and this view still names it the holder of the seat {} moves", m.holder.name, op.key()),
                 };
                 dspan.record("reason", why.as_str());
-                self.blocked(drive, attempt, &op.key(), "primary-update", &why);
                 if let Ok(ended) = self.builds.read_build(id).await {
                     drive.set_idle(Some(Idle { attempt, world: world(drive, &ended, &after, self.gate.fabric_ready()), why: why.clone() }));
                 }
@@ -1839,7 +1836,6 @@ impl DriveEnv {
                 None => {
                     let admins: Vec<String> = crate::executor::held_admins(&path.mesh, Some(path), &view).into_iter().map(|n| format!("{} ({:?})", n.name, n.status)).collect();
                     let why = format!("{me}: attempt {attempt} of Build {id} recovers {path}, mesh {}'s unheard mesh-primary: this view names no mesh-primary of mesh {} in its place and the mesh holds node-admin(s) {}, so the election has not named it here; nothing is claimed for {}", path.mesh, path.mesh, admins.join(", "), op.key());
-                    self.blocked(drive, attempt, "", "mesh-primary-not-named", &why);
                     return Err(self.stalled(me, drive, why));
                 }
             },
@@ -1878,7 +1874,6 @@ impl DriveEnv {
                 Some(op) => format!("{me}: no admin can execute what is left of Build {id} in this view: {}", crate::executor::why_no_executor(op, &t)),
                 None => format!("{me}: no admin can execute what is left of Build {id} in this view"),
             };
-            self.blocked(drive, attempt, "", "successor-held", &why);
             return Err(self.stalled(me, drive, why));
         };
         match self.door.claim(&lead.to_string(), id, attempt).await {
@@ -1900,7 +1895,6 @@ impl DriveEnv {
             // dispatched; the next pass claims once its verdict releases the mesh.
             BuildClaimReply::BuildInProgress { current_build_id, mesh, held_by } => {
                 let why = format!("{me}: attempt {attempt} of Build {id} acts in mesh {mesh}, which an attempt of Build {current_build_id} holds (claimed by {}): one attempt in flight per mesh", held_by.as_deref().unwrap_or("no recorded claimant"));
-                self.blocked(drive, attempt, "", "mesh-in-flight", &why);
                 Err(self.stalled(me, drive, why))
             }
             other => Err(self.stalled(me, drive, format!("{me}: the claim of attempt {attempt} of Build {id} was not decided: {}", other.name()))),
@@ -1982,7 +1976,6 @@ impl DriveEnv {
             return Sections::Ran;
         }
         let why = format!("{me}: Build {}: {}", p.build_id, held.join("; "));
-        self.blocked(drive, p.attempt, "", "section", &why);
         Sections::End(self.stalled(me, drive, why))
     }
 
