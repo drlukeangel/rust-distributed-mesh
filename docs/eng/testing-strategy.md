@@ -18,11 +18,15 @@ is the short form; this page is the long one.
 
 ## Host prerequisites
 
-The committed `.cargo/config.toml` requires, on every Linux build:
+The committed `.cargo/config.toml` uses two optional tools, each when it is in `PATH`, and falls back
+without it, naming the fallback once at the build's start (README.md, "Build and test"):
 
-- `sccache` in `PATH`: the rustc wrapper (`scripts/rustc-wrapper.sh`) sends vendor crates through
-  it, and `CC`/`CXX` are `sccache cc`/`sccache c++`;
-- `mold`: the linker for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`.
+- `sccache`: the rustc wrapper (`scripts/rustc-wrapper.sh`) sends vendor crates through it, and
+  `CC`/`CXX` (`scripts/cc-wrapper.sh`) are `sccache cc`/`sccache c++`; without it, plain `rustc`,
+  `cc` and `c++` compile;
+- `mold`: the linker on Linux, passed by the rustc wrapper; without it, the default linker links.
+
+The gate (`scripts/rdm-gate-at.sh`) requires both and refuses by name without them.
 
 It also sets `jobs = 10` per cargo invocation and `incremental = true`.
 

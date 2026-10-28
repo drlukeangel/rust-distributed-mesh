@@ -191,4 +191,5 @@ scratch `$HOME`, with a stub gate, `gh` and `rdm-docgen`). Detail and examples:
 | `scripts/i143-rshape-build-consumer.sh` | builds the independent consumer workspace (`demo/`) at one exact RDM commit; the release gate runs it first |
 | `scripts/docs-site.sh <rafka-v2 checkout>` | regenerates the RDM reference pages with `rdm-docgen` into a rafka-v2 checkout, checks them against what it holds, builds the mdBook site and lists dead links |
 | `scripts/prebuilt-test.py` | runs a `cargo test` selection from the gate's existing artifacts, without cargo |
-| `scripts/rustc-wrapper.sh` | the rustc wrapper: vendor crates through sccache, workspace crates through plain rustc |
+| `scripts/rustc-wrapper.sh` | the rustc wrapper: vendor crates through sccache, workspace crates through plain rustc, every link through mold; without sccache or mold, plain rustc and the default linker, named once per cargo run |
+| `scripts/cc-wrapper.sh` (and its link `scripts/c++-wrapper.sh`) | `CC` and `CXX`: `sccache cc` / `sccache c++` when sccache is in `PATH`, plain `cc` / `c++` otherwise |
