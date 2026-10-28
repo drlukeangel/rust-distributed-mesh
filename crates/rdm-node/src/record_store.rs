@@ -386,7 +386,7 @@ mod tests {
     }
 
     /// CONTRACT (R14 item 4): a writer whose caller is cancelled while its disk job is issued keeps
-    /// the store's write lock until the disk job finishes, so taking the lock once (the drain) waits
+    /// the store's write lock until the disk job finishes, so taking the lock once (the flush) waits
     /// for every issued write and no cancellation releases it early.
     #[test]
     fn a_cancelled_writer_holds_the_store_lock_until_its_disk_job_finishes() {
@@ -398,7 +398,7 @@ mod tests {
             assert!(r.0.write.try_lock().is_err(), "the cancelled caller released the store's write lock while its disk job was still issued");
             release.send(()).unwrap();
             r.finish_issued_writes().await;
-            assert_eq!(r.read::<String>("a", "thing/1").await.unwrap().as_deref(), Some("one"), "the drain returned before the cancelled write landed");
+            assert_eq!(r.read::<String>("a", "thing/1").await.unwrap().as_deref(), Some("one"), "the flush returned before the cancelled write landed");
         });
     }
 

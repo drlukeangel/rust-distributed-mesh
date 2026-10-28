@@ -656,7 +656,7 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     const SHAPE1: [(&str, u32, u32); 1] = [("mesh1", 2, 1)];
     const BLOCKED: &str = "mesh1.rpc.2";
     const A: &str = "the rows of orders are not yet published";
-    const B: &str = "the authority of orders is draining";
+    const B: &str = "the authority of orders is connections-deleting";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let (carrier, shape_frames) = born_framed(&estate, &caller, &SHAPE1).await;

@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Whether this process is stopped: it was stopped and not yet started. A stopped process exits at
-/// once on a termination signal (nothing is left to drain); only a delete ends it.
+/// once on a termination signal (nothing is left to wait for); only a delete ends it.
 pub struct ProcessStop {
     stopped: std::sync::atomic::AtomicBool,
 }
@@ -145,7 +145,7 @@ impl From<StartFailed> for String {
 /// stop and start that differs by node kind.
 #[async_trait::async_trait]
 pub trait Session: Send + Sync {
-    /// Hold this process's own tasks for its stop, once its drain is done: no turn begins, and this
+    /// Hold this process's own tasks for its stop, once its connections delete is done: no turn begins, and this
     /// resolves once every turn already past its wait point has ended, so nothing a turn does
     /// follows the stop's declaration or its cut. A surface whose tasks need no holding has nothing
     /// to wait for. `commanded_by` is the Build whose run on this node commanded this stop (a node
@@ -269,7 +269,7 @@ pub struct NodeSelf {
     pub incarnation: IncarnationId,
     /// This birth's `path.name` at its birth; the name it holds is [`Self::held_name`].
     pub name: PathName,
-    /// This birth's Node RPC server: it refuses new calls while draining and counts the work in flight.
+    /// This birth's Node RPC server: it refuses new calls while connections-deleting and counts the work in flight.
     pub server: NodeRpcServer,
     /// The process's one Node RPC client.
     pub client: Arc<NodeRpcClient>,
@@ -1395,7 +1395,7 @@ impl NodeSelf {
             };
             let reply = match joined {
                 Ok(()) => {
-                    // A new cycle: its next drain is a new drain.
+                    // A new cycle: its next connections delete is a new connections delete.
                     let mut cycle = self.cycle.lock().unwrap();
                     *cycle = Cycle::Live(Some((op.build_id.clone(), op.operation.clone())));
                     drop(cycle);

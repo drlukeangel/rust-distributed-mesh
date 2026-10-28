@@ -1,5 +1,5 @@
 //! A node.delete of a stopped node (lifecycles/node-delete.md step 1, node-stop.md step 6): the stopped
-//! birth already ran its whole stop (drain receipt, connection cut, `stopped`, `NodeStopped`), so
+//! birth already ran its whole stop (connections delete receipt, connection cut, `stopped`, `NodeStopped`), so
 //! its delete composes nothing of that stop again. It goes from the `NodeDeleting` pre-notice
 //! straight to the provider's exact runtime exit proof, then `NodeDeleted`, and releases no storage
 //! (node-delete.md "Storage": "Retain data dir and endpoint key"). The cell drives the retire

@@ -145,7 +145,7 @@ fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_pri
 }
 
 /// One authority (`me`) serving Status (and core ping, so a non-status call can be refused while
-/// draining) on its own endpoint, over a view holding `me` and `others`.
+/// connections-deleting) on its own endpoint, over a view holding `me` and `others`.
 struct Rig {
     me: Birth,
     server: rdm_transport::NodeRpcServer,
@@ -329,10 +329,10 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2805): after the exact birth's server drains, its status door stays admitted while
+/// CONTRACT (#2805): after the exact birth's server deletes its connections, its status door stays admitted while
 /// every other call is refused `ConnectionsDeleting`: a probe answers the current state. A node command
 /// classifies as exactly one CommandAdmission arm and a refusal is never admitted: Refused (a
-/// stale incarnation, `ApplyNodeState` as a drain), NotSent (cut before the send), Indeterminate
+/// stale incarnation, `ApplyNodeState` as a connections delete), NotSent (cut before the send), Indeterminate
 /// (the reply lost). The completion wait of an admitted command that never completes is the retire
 /// pipeline's Deadline arm, never a success.
 #[test]
@@ -356,13 +356,13 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     // This cell still proves the admitted status door, its refusal and transport certainty arms.
     let command = |inc: IncarnationId| StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation: inc, build_id: "8pe1w1tk1f0n".into(), attempt: 1, operation: "node.stop:mesh1.admin.2".into() };
 
-    // Healthy control before draining: a ping is served.
+    // Healthy control before connections-deleting: a ping is served.
     let c = client_of(&rig, &executor).await;
     let target = NodeTarget::ExactNode(node_id.clone());
     let (ping, _) = c.call::<Ping>(&target, &PingRequest::Ping { payload: b"before".to_vec() }, &CallOptions::default()).await;
     assert!(matches!(&ping, RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { .. })), "{ping:?}");
 
-    // The server drains: every ordinary call is refused as ConnectionsDeleting, the status door stays admitted.
+    // The server deletes its connections: every ordinary call is refused as ConnectionsDeleting, the status door stays admitted.
     rig.server.begin_connections_delete();
     let (refused_ping, _) = c.call::<Ping>(&target, &PingRequest::Ping { payload: b"after".to_vec() }, &CallOptions::default()).await;
     assert!(matches!(&refused_ping, RpcOutcome::Reply(r) if matches!(r.value(), PingReply::ConnectionsDeleting { .. })), "a non-status call is refused as ConnectionsDeleting: {refused_ping:?}");
@@ -370,7 +370,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     let probed = reply(&call(&rig, &executor, &probe, &CallOptions::default()).await);
     assert!(matches!(&probed, StatusReply::Current { node_id: n, .. } if *n == node_id), "{probed:?}");
 
-    // ApplyNodeState is not a drain command: refused with the held state, never admitted.
+    // ApplyNodeState is not a connections delete command: refused with the held state, never admitted.
     let apply = StatusRequest::ApplyNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ConnectionsDeleting };
     let applied = call(&rig, &executor, &apply, &CallOptions::default()).await;
     assert!(matches!(reply(&applied), StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready }), "{applied:?}");
@@ -402,7 +402,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
         "cell": cell,
         "subject": node_id.to_string(),
         "ping_before": "pong",
-        "ping_while_draining": "draining",
+        "ping_while_connections_deleting": "connections-deleting",
         "probe": format!("{probed:?}"),
         "arms": {
             "apply_node_state": format!("{apply_arm:?}"),
@@ -411,7 +411,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
             "indeterminate": format!("{indeterminate:?}"),
             "deadline": format!("{deadline:?}"),
         },
-        "server_draining_refusals": rig.server.stats().draining.load(Ordering::SeqCst),
+        "server_connections_deleting_refusals": rig.server.stats().connections_deleting.load(Ordering::SeqCst),
         "command_spans": commands,
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
@@ -451,9 +451,9 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         }
     }
     /// The birth admits every command and never calls a completion back.
-    struct NeverDrained;
+    struct NeverConnectionsDeleted;
     #[async_trait::async_trait]
-    impl NodeObserver for NeverDrained {
+    impl NodeObserver for NeverConnectionsDeleted {
         async fn send_command(&self, _: &Node, _: rdm_admin::node_commands::NodeCommand, _: &rdm_admin::deployment::pipeline::CommandContext) -> rdm_admin::deployment::pipeline::CommandAdmission {
             rdm_admin::deployment::pipeline::CommandAdmission::Admitted {}
         }
@@ -507,7 +507,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
     let pipeline = DeploymentPipeline {
         provider: &Running,
         joins: &joins,
-        observer: &NeverDrained,
+        observer: &NeverConnectionsDeleted,
         sink: &Discard,
         lifecycle: &NoLifecycleEvents,
         builds: &builds,

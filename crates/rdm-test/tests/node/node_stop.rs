@@ -1,7 +1,7 @@
 //! product=mesh, feature=node-lifecycle, subfeature=node-stop, rung=MN, provider=process.
 //!
 //! Stop leaves the process stopped and start rejoins (node-stop.md, node-start.md), driven through the `node` objects:
-//! `node.stop` drains the exact birth, cuts its mesh connections and stops the live process; the
+//! `node.stop` deletes the exact birth's connections, cuts its mesh connections and stops the live process; the
 //! node's `left` is the reply of the stop call, never a gossip frame; the mesh primary publishes
 //! `NodeStopped` from it. `node.start` makes that same process rejoin as itself.
 
@@ -64,7 +64,7 @@ async fn view_of(nodes: &Nodes, node: &PathName) -> NodeView {
     rdm_test::typed::mesh_nodes(nodes, &node.mesh).await.expect("nodes.get [mesh]").into_iter().find(|n| &n.name == node).unwrap_or_else(|| panic!("nodes.get [mesh: {}] lists no {node}", node.mesh))
 }
 
-/// CONTRACT: `node.stop` of a live node answers, on its reply stream, the drain, the hard cut of its
+/// CONTRACT: `node.stop` of a live node answers, on its reply stream, the connections delete, the hard cut of its
 /// mesh connections and `left`, and ends `Complete`: the process is stopped, alive, with the same node
 /// id, incarnation, endpoint key and port; `node.get` shows it `leaving` and `stopped`. The node
 /// gossips nothing for the stop: the mesh primary publishes `NodeStopped`, and every other node of the
@@ -729,7 +729,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
 /// Build); the delete runs as a delete does: the provider's exit proof of the stopped process
 /// (TerminateRuntime complete), NodeDeleted, and `node.get` lists no `mesh1.rpc.1`. The other stopped
 /// period never started: nothing else is deleted. Must NOT happen: a delete before one ttl, a second
-/// delete Build, a collection the sweep made itself without a Build, or a seat transfer, drain or stop
+/// delete Build, a collection the sweep made itself without a Build, or a seat transfer, connections delete or stop
 /// sent again to the stopped birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
@@ -1585,7 +1585,7 @@ async fn signal_stop_with_primary_held(test: &str, bound_ms: &str, release_after
 /// outcome span"; node-connections-delete.md): an rpc node holds owed declarations to its mesh-primary (its
 /// mesh-primary is held, answering nothing) when it receives SIGTERM. Its stop waits for them: its process is
 /// still alive after the signal and for as long as the mesh-primary stays silent, inside
-/// `RDM_CONNECTIONS_DELETE_DEADLINE_MS`. The mesh-primary continued, the queue drains in the order owed and the
+/// `RDM_CONNECTIONS_DELETE_DEADLINE_MS`. The mesh-primary continued, the queue empties in the order owed and the
 /// stop ends on its outcome span `rdm.node_admin.node.update.via-stop-declarations`, outcome `ended`, naming what
 /// was delivered (`ConnectionsDeleting,Stopped`) and leaving nothing. Must NOT happen: the process ending
 /// before its declarations are answered, or an outcome span that names neither what was delivered nor

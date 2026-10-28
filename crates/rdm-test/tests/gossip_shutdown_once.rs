@@ -4,7 +4,7 @@
 //! that also calls `Gossip::shutdown` itself sends the gossip actor a second `Shutdown` after
 //! the first one stopped it: that second call can only fail (iroh-gossip warns
 //! `error while shutting down gossip`) or, when its message lands in the actor's channel after the
-//! actor's receiver drained it, wait forever on a reply nobody can send, holding the router's run
+//! actor's receiver emptied it, wait forever on a reply nobody can send, holding the router's run
 //! loop inside `protocols.shutdown()` and the stop with it.
 //!
 //! Each cell runs on a current-thread runtime, so every task (the router's run loop, the gossip

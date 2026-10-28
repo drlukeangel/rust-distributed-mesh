@@ -421,7 +421,7 @@ pub trait DeploymentProvider: Send + Sync {
     /// The state of the runtime `handle`.
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus;
 
-    /// Stage one of the stop ladder: ask the runtime to drain and stop
+    /// Stage one of the stop ladder: ask the runtime to delete its connections and stop
     /// (SIGTERM). A runtime already gone is not an error.
     async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError>;
 

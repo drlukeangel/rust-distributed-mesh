@@ -43,7 +43,7 @@ pub struct Running {
     pub(crate) start_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// The gate a stop stops (`node_self`'s `Session::cut`) and a start opens.
     pub(crate) gate: crate::stop_gate::StopGate,
-    /// This admin as the subject of the drain, stop and start its mesh-admin commands.
+    /// This admin as the subject of the connections delete, stop and start its mesh-admin commands.
     pub(crate) node_self: Arc<crate::node_self::NodeSelf>,
     /// Asked before each leave announcement publish (a testkit executable's wiring; none in the product).
     pub(crate) leave_seam: Option<Arc<dyn crate::wiring::LeaveSeam>>,

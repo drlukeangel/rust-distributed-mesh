@@ -25,7 +25,7 @@ use tracing_subscriber::layer::SubscriberExt;
 
 type Log = Arc<Mutex<Vec<String>>>;
 
-/// The live observer, logging every drain it sends and every readiness it proves, in order.
+/// The live observer, logging every connections delete it sends and every readiness it proves, in order.
 struct Logged<'a> {
     inner: &'a LiveMesh,
     log: Log,
@@ -65,7 +65,7 @@ impl LifecycleEvents for Recorder {
     async fn deleted(&self, op: &LifecycleOp) {
         self.0.lock().unwrap().push(format!("NodeDeleted:{}:{}", op.node_id, op.operation));
     }
-    // A recovery publishes no stop, drain, leaving or mesh-deleted event; this cell records the removal
+    // A recovery publishes no stop, connections delete, leaving or mesh-deleted event; this cell records the removal
     // events it asserts, and states the rest as not recorded.
     async fn stopped(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _op: &LifecycleOp) {}
@@ -138,7 +138,7 @@ const CREATE_ORDER: [&str; 13] = [
 /// node-delete.md "Crashed target"; proposal node-properties-own-commands.md §5 item 8): node recovery
 /// runs the delete and create workflows, each as its own operation of the Build, in order. node.delete of the unreached birth (`node.delete:<path>`):
 /// NodeDeleting, `TerminateRuntime` reading the exact runtime at its instant (nothing sent to the
-/// process: no drain, no stop frames; nothing terminated, it reads exited), NodeDeleted once for the
+/// process: no connections delete, no stop frames; nothing terminated, it reads exited), NodeDeleted once for the
 /// exact birth, exactly that birth removed; the old birth is fenced before the new one is created;
 /// node.create at the same path.name (`node.create:<path>`): the same data dir (its storage still
 /// there) and the same endpoint key, a new node.id and incarnation, no supersedes, ready. No operation

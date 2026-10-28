@@ -128,7 +128,7 @@ fn lowest_ready(nodes: &[Node], members: &[usize], inc: &Incumbency) -> Option<u
 }
 
 /// Mark each cohort's primary and the fabric primary in `nodes`, with no holder record held: a
-/// fabric's first election, and a hypothetical (a successor asked for before any drain).
+/// fabric's first election, and a hypothetical (a successor asked for before any connections delete).
 pub fn resolve(nodes: &mut [Node]) {
     resolve_with(nodes, &Incumbency::default())
 }

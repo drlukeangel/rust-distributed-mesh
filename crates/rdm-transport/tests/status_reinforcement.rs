@@ -141,7 +141,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         assert!(matches!(&fwd, Frame::MeshStatus { mesh, publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, status } if mesh == "mesh1" && publisher == me && by == peer && status == "pending"));
         assert!(forward_of(first.clone(), me, "mesh1").is_none(), "a primary does not forward its own mesh's status");
         assert!(forward_of(fwd.clone(), "mesh3.admin.1", "mesh3").is_none(), "a forwarded copy is not forwarded again");
-        let fab = fabric_pub.observe("draining", None, true, base + ms(200_000), 30).unwrap();
+        let fab = fabric_pub.observe("connections-deleting", None, true, base + ms(200_000), 30).unwrap();
         let fab_fwd = forward_of(fab.clone(), peer, "mesh2").unwrap();
         assert!(matches!(&fab_fwd, Frame::FabricStatus { publisher, forwarded_by: Some(by), changed_at_rafka_ms: 30, .. } if publisher == me && by == peer));
         assert!(forward_of(fab, me, "mesh1").is_none(), "the fabric primary does not forward its own status");

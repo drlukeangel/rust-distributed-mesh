@@ -205,7 +205,7 @@ impl DeploymentProvider for Fleet {
     }
 }
 
-/// No birth is commanded over Node RPC here: every drain/stop command is `NotSent` and its wait is
+/// No birth is commanded over Node RPC here: every connections delete/stop command is `NotSent` and its wait is
 /// `NotAwaited`; the provider's terminal proof is what the workflows are judged by.
 struct NoRpc;
 #[async_trait::async_trait]

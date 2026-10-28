@@ -215,7 +215,7 @@ fn stop_rows() -> Vec<Row> {
     ]
 }
 
-/// node.delete's rows under its one key, `retire-node`: a live birth's drains and stops first; an
+/// node.delete's rows under its one key, `retire-node`: a live birth deletes its connections and stops first; an
 /// already stopped or proven-exited birth's runs no stop half and leaves no membership to remove
 /// (`stop_half`), the same operation.
 fn delete_rows() -> Vec<Row> {

@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn a_knob_rewrite_never_touches_the_file_a_reader_holds_open() {
         let root = std::env::temp_dir().join(format!("pre-node-ready-knob-rewrite-{}", rdm_core::NodeId::mint()));
-        let (a, b) = ("the rows of orders are not yet published", "the authority of orders is draining");
+        let (a, b) = ("the rows of orders are not yet published", "the authority of orders is connections-deleting");
         write_pre_node_ready_knob(&root, "mesh1.rpc.2", a).unwrap();
         let mut held = std::fs::File::open(pre_node_ready_knob_dir(&root).join("mesh1.rpc.2")).unwrap();
         write_pre_node_ready_knob(&root, "mesh1.rpc.2", b).unwrap();

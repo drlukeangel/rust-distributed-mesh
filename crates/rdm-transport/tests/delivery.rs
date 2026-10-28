@@ -1024,7 +1024,7 @@ async fn a_connections_deleting_endpoint_still_receives_an_owed_response() {
     let acked = tokio::time::timeout(Duration::from_secs(2), read_header(&mut rrecv, &mut pending)).await.unwrap();
     assert_eq!(acked, Some(TransportHeader::Ack { sender: r.me.clone(), delivery_seq: 1 }));
     assert_eq!(ran(&call.await.unwrap()), Some((19, 1)), "delivered while the endpoint is connections-deleting");
-    assert_eq!(get(&server.stats().draining), 0, "a response frame never meets admission");
+    assert_eq!(get(&server.stats().connections_deleting), 0, "a response frame never meets admission");
 }
 
 /// Cell 20. CONTRACT: reordering is bounded: a frame more than 64 positions past the next expected

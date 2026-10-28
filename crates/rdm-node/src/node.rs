@@ -323,7 +323,7 @@ pub type RafkaTimeKnobFn = Box<dyn FnOnce(&Launch, &rdm_transport::clock::RafkaT
 
 /// The stop signal of this process (SIGTERM or ctrl-c), latched from the moment [`listen_for_stop`]
 /// is first called. A node binary calls it on its first line: the handler then replaces the default
-/// disposition (which would end the process before its telemetry drained) for the whole boot, and a
+/// disposition (which would end the process before its telemetry flushed) for the whole boot, and a
 /// stop that arrives before anything awaits it is not lost.
 static STOP: std::sync::OnceLock<tokio::sync::watch::Receiver<bool>> = std::sync::OnceLock::new();
 

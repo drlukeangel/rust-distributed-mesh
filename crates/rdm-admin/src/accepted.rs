@@ -396,7 +396,7 @@ pub enum AttemptAction {
         /// The birth whose connections are deleted.
         from_incarnation: IncarnationId,
     },
-    /// Stop the exact birth at a path: it drains, cuts its mesh connections and stops, its process
+    /// Stop the exact birth at a path: it deletes its connections, cuts its mesh connections and stops, its process
     /// alive; no departure (node-stop.md).
     Stop {
         /// The node.
@@ -776,7 +776,7 @@ pub(crate) enum RecoveryProgress {
 impl ActionProgress {
     /// The progress of `build`'s action, `default` for an attempt that carries none.
     pub(crate) fn of(build: &crate::build_state::BuildProjection) -> Self {
-        // A standalone drain, stop, start or stopped delete: the receipts of its operation in an
+        // A standalone connections delete, stop, start or stopped delete: the receipts of its operation in an
         // attempt that carried this exact action (its `Opened` fact fenced the attempt to the birth)
         // are this birth's, from the attempt the request opened on (`opened`): an earlier request's run
         // of the same action (a stop, a start, then a second stop of one birth, Q183) is not this
@@ -1228,7 +1228,7 @@ fn plan_with(
         }
         return BuildPlan { operations: ops };
     }
-    // A standalone drain or stop is its one operation and nothing else: the topology is unchanged,
+    // A standalone connections delete or stop is its one operation and nothing else: the topology is unchanged,
     // and the path it acts on is neither created nor repaired by this attempt. It is planned while
     // the view holds the exact birth, or while its receipts say it began (a stop's view drops the
     // Leaving birth), and not once its `Complete` receipt names the birth.

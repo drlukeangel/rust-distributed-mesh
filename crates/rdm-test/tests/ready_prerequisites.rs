@@ -149,7 +149,7 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
             provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
         }
     }
-    // Whatever runs for this node stops with the test, by signal: it drains, stops and exports its
+    // Whatever runs for this node stops with the test, by signal: it deletes its connections, stops and exports its
     // queued spans before it exits.
     let handle: rdm_admin::deployment::provider::DeploymentHandle = view
         .steps

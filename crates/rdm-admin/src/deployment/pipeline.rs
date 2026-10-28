@@ -238,7 +238,7 @@ pub enum RetireStep {
     /// `node.connections.delete { All }` to the exact birth through its mesh-primary: graceful
     /// closure of every open connection; the process keeps running.
     DeleteConnections,
-    /// `stop-node` to the exact birth: enter `Leaving` and shut down, with no implicit drain.
+    /// `stop-node` to the exact birth: enter `Leaving` and shut down, with no implicit connections delete.
     StopNode,
     /// Wait, bounded, for node-left: the `Stopped` reply of the birth's `stop-node` call (R-ON1;
     /// the birth makes no upward node-left call).
@@ -708,7 +708,7 @@ pub fn command_admission(out: &rdm_core::outcome::RpcOutcome<rdm_core::status::S
 pub enum Completion {
     /// The matching completion call was accepted.
     Received {},
-    /// The lifecycle drain deadline passed with no completion call.
+    /// The lifecycle connections delete deadline passed with no completion call.
     Deadline {},
     /// This deployment's own runtime exited before any completion call came.
     RuntimeExited {},
@@ -2037,7 +2037,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// A standalone stop (node-stop.md): `node.stop:<path>` is the stop-node command, whose reply is the
-    /// exact birth's `stopped`: it drained, cut its mesh connections and is stopped, its process alive.
+    /// exact birth's `stopped`: it deleted its connections, cut its mesh connections and is stopped, its process alive.
     /// The mesh primary publishes `NodeStopped` from that reply, and `Complete` names the birth and the
     /// rafka-time it stopped at. No
     /// runtime exit is asked and no departure is published.
@@ -2130,7 +2130,7 @@ impl DeploymentPipeline<'_> {
         Ok(())
     }
 
-    /// The `Complete` receipt of a standalone drain or start (a stop's commits its lifecycle op). It commits no output: the attempt it
+    /// The `Complete` receipt of a standalone connections delete or start (a stop's commits its lifecycle op). It commits no output: the attempt it
     /// belongs to carried the action fenced to the exact birth (its `Opened` fact,
     /// `BuildProjection::attempt_actions`), so a later attempt's plan reads it as that birth's and
     /// plans nothing more for it.
@@ -2248,7 +2248,7 @@ impl DeploymentPipeline<'_> {
             // step's instant, and nothing waits for a proof of termination.
             self.terminate_step_when(&mut run, &node, handle, unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?
         } else if node.stopped {
-            // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
+            // A delete of a stopped birth: its whole stop already ran (its seats moved, its connections delete
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
             // fabricated again. The delete proceeds to the exact runtime's exit proof
             // (lifecycles/node-delete.md 1-2, node-stop.md 6).
@@ -2265,7 +2265,7 @@ impl DeploymentPipeline<'_> {
             // terminal proof.
             self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
-        // The departure: the step above. Nothing earlier (the node's Leaving, its drained reply, the
+        // The departure: the step above. Nothing earlier (the node's Leaving, its connections-deleted reply, the
         // claim) is.
         let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
         let op = self
@@ -2389,7 +2389,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
-    /// drain), the wait for node-left (the `Stopped` reply of that call), the mesh primary's
+    /// connections delete), the wait for node-left (the `Stopped` reply of that call), the mesh primary's
     /// `NodeStopped` from that matching reply, then, by `end`, the stopped process or the provider's
     /// stop and inspection of the exact runtime, whose `Exited` alone is terminal proof. `proof` says
     /// what the wait step must have seen to complete (a standalone
@@ -2406,7 +2406,7 @@ impl DeploymentPipeline<'_> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         let publish_stopped = matches!(end, StopEnd::Stop { publish_stopped: true } | StopEnd::Terminate { publish_stopped: true });
-        // `stop-node` is held until the birth is stopped, and its reply is `stopped`: the birth drained,
+        // `stop-node` is held until the birth is stopped, and its reply is `stopped`: the birth deleted its connections,
         // cut its mesh connections and entered Leaving. The command is `Stopped` or it is not complete.
         // The mesh-primary sets the birth stopping on the stop call's admission and never before it
         // (states.md "Who sets each state"): a command the birth never held sets nothing.

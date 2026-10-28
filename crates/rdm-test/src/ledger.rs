@@ -431,8 +431,8 @@ mod tests {
         assert_eq!(c(json!({"outcome": "Reply", "reply": {"result": {"stored": true}}})).reply_success, true);
         let mismatch = c(json!({"outcome": "Reply", "reply": {"result": {"swapped": false, "current": null}}}));
         assert_eq!((mismatch.bucket, mismatch.reply_success), (Bucket::Reply, false));
-        let draining = c(json!({"outcome": "Reply", "reply": {"result": {"refused": "ConnectionsDeleting { reason: \"x\" }"}}}));
-        assert_eq!((draining.bucket, draining.detail.as_str(), draining.reply_success), (Bucket::Reply, "ConnectionsDeleting", false));
+        let connections_deleting = c(json!({"outcome": "Reply", "reply": {"result": {"refused": "ConnectionsDeleting { reason: \"x\" }"}}}));
+        assert_eq!((connections_deleting.bucket, connections_deleting.detail.as_str(), connections_deleting.reply_success), (Bucket::Reply, "ConnectionsDeleting", false));
         assert_eq!(c(json!({"outcome": "NotSent", "reason": "Deadline"})).bucket, Bucket::NotSent);
         assert_eq!(c(json!({"outcome": "Unserved", "reason": "x"})).bucket, Bucket::Unserved);
         assert_eq!(c(json!({"outcome": "RejectedStale", "target_node_id": "n"})).bucket, Bucket::RejectedStale);

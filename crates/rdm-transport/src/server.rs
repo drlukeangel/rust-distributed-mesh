@@ -198,14 +198,14 @@ pub struct ServerStats {
     /// Requests refused typed `Busy` by admission.
     pub busy: AtomicU64,
     /// Requests refused with `ConnectionsDeleting` while admission is closed.
-    pub draining: AtomicU64,
+    pub connections_deleting: AtomicU64,
     /// Requests refused typed `NotReady` by a closed ready gate.
     pub not_ready: AtomicU64,
     /// Requests reset as protocol violations.
     pub violations: AtomicU64,
     /// Handlers that failed or panicked.
     pub faults: AtomicU64,
-    /// Handlers dispatched and not yet finished (a drained node waits for it to reach zero).
+    /// Handlers dispatched and not yet finished (a connections-deleted node waits for it to reach zero).
     pub in_flight: AtomicU64,
 }
 
@@ -404,7 +404,7 @@ impl ServerBuilder {
                 handlers: self.handlers,
                 admission: self.admission,
                 ready: self.ready,
-                draining: AtomicBool::new(false),
+                connections_deleting: AtomicBool::new(false),
                 stats: Arc::new(ServerStats::default()),
                 birth,
                 inbound: self.inbound,
@@ -495,7 +495,7 @@ struct Inner {
     handlers: HashMap<u8, Arc<dyn Erased>>,
     admission: Admission,
     ready: Option<Arc<AtomicBool>>,
-    draining: AtomicBool,
+    connections_deleting: AtomicBool,
     stats: Arc<ServerStats>,
     birth: ServedBirth,
     inbound: Option<Inbound>,
@@ -590,12 +590,12 @@ impl NodeRpcServer {
 
     /// Enter connections-deleting: new calls receive a typed `ConnectionsDeleting` refusal.
     pub fn begin_connections_delete(&self) {
-        self.inner.draining.store(true, Ordering::SeqCst);
+        self.inner.connections_deleting.store(true, Ordering::SeqCst);
     }
 
     /// Leave connections-deleting: a stopped birth that starts again takes new calls.
     pub fn resume(&self) {
-        self.inner.draining.store(false, Ordering::SeqCst);
+        self.inner.connections_deleting.store(false, Ordering::SeqCst);
     }
 
     /// The process's delivery state.
@@ -800,10 +800,10 @@ impl NodeRpcServer {
                         tracing::info_span!("rdm.node_rpc.request.reject.via-not-ready", op, peer = %peer, code = "UNAVAILABLE", detail = "not-ready")
                             .in_scope(|| tracing::info!(op, "the node's ready gate is closed: typed NotReady"));
                         refusal = Some(Refusal::NotReady("this node is not ready: its authority is not filled yet".into()));
-                    } else if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(op).is_some_and(|e| e.served_while_connections_deleting) {
+                    } else if self.inner.connections_deleting.load(Ordering::SeqCst) && !self.catalog().lookup(op).is_some_and(|e| e.served_while_connections_deleting) {
                         // Connections-deleting refuses every new call except the lifecycle control the catalog
                         // marks served while connections-deleting: the authority's probe and apply still land.
-                        stats.draining.fetch_add(1, Ordering::SeqCst);
+                        stats.connections_deleting.fetch_add(1, Ordering::SeqCst);
                         refusal = Some(Refusal::ConnectionsDeleting("node is connections-deleting".into()));
                     } else {
                         match self.inner.admission.try_admit(op, &peer.to_string()) {

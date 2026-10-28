@@ -561,7 +561,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rdm_transport::ALPN, rpc_server).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
     // The admin side publishes its digest as a real node-admin does on joining: a node addresses a
-    // drain's completion and its start's join to the admin its topology view holds.
+    // connections delete's completion and its start's join to the admin its topology view holds.
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
     let admin_digest = rdm_core::digest::MeshDigest { held_hash: topology_view.held_hash(),
         fabric_id: fabric.clone(),

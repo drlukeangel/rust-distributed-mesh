@@ -418,7 +418,7 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     assert_eq!(row.state, NodeState::Ready);
 }
 
-/// Drain admission never prevents an authority from receiving the upward certainty calls
+/// Connections delete admission never prevents an authority from receiving the upward certainty calls
 /// that finish lifecycle work. The status handler still decides each for its subject: a
 /// declaration sent by another node is decided for the subject it names (here already applied),
 /// and a subject the view does not hold is refused by name.

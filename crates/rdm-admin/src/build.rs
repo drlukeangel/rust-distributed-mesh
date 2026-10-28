@@ -131,7 +131,7 @@ pub enum BuildOperation {
         from_incarnation: IncarnationId,
     },
     /// Stop the exact birth `from_incarnation` of `node` (node-stop.md): `stop-node`, its node-left
-    /// reply and the provider's Exited proof. No implicit drain, no departure.
+    /// reply and the provider's Exited proof. No implicit connections delete, no departure.
     StopNode {
         /// The node to stop.
         node: PathName,
@@ -189,7 +189,7 @@ pub enum BuildOperation {
         birth: Option<PinnedBirth>,
     },
     /// Shut a whole mesh down (mesh-delete.md): the fabric-primary owns the workflow, the mesh's
-    /// primary drains and stops every other member, and the fabric-primary stops the final primary
+    /// primary deletes its connections and stops every other member, and the fabric-primary stops the final primary
     /// and records the departure. The operation key names the mesh by its minted id.
     ShutdownMesh {
         /// The mesh's name.

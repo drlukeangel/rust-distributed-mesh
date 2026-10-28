@@ -1649,7 +1649,7 @@ impl Channel {
                 let held = targets();
                 // A birth under an open removal: this channel keeps no address for
                 // its key and never hands it out again. The birth's iroh paths stay open: its
-                // typed drain is in flight over them, and they are retired at the proven exit.
+                // typed connections delete is in flight over them, and they are retired at the proven exit.
                 for key in &held.retired {
                     if retired.insert(*key) {
                         me.location_view.forget(*key);
@@ -6989,7 +6989,7 @@ mod tests {
     fn a_node_joining_after_the_leaving_meshs_members_said_connections_deleting_and_leaving_installs_their_own_states_and_routes_none_of_them() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let m1 = MeshId::mint();
-        let (admin, draining, leaving) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1), born("mesh1", "rpc.2", None, 1));
+        let (admin, connections_deleting, leaving) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1), born("mesh1", "rpc.2", None, 1));
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() };
         let mesh_topology = |version: u64, digests: Vec<MeshDigest>| Frame::MeshTopology {
             mesh: "mesh1".into(),
@@ -7018,7 +7018,7 @@ mod tests {
         // mesh1's primary published mesh1 ready before the leave; the joiner learns it
         // from the replay.
         primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }, &fabric, "backbone");
-        for (version, digests) in [(1, vec![admin.clone(), draining.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&draining, MemberStatus::ConnectionsDeleting), said(&leaving, MemberStatus::Leaving)])] {
+        for (version, digests) in [(1, vec![admin.clone(), connections_deleting.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&connections_deleting, MemberStatus::ConnectionsDeleting), said(&leaving, MemberStatus::Leaving)])] {
             let taken = primary.take_snapshot(&mesh_topology(version, digests), &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
             let (mesh, from, v, full) = taken.source.expect("a complete source snapshot");
             let _ = primary.forwarder.lock().unwrap().source("mesh2.admin.1", &mesh, &from, v, &full, version);
@@ -7062,11 +7062,11 @@ mod tests {
         }
         let status = |d: &MeshDigest| joiner.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
         assert_eq!(
-            (status(&admin), status(&draining), status(&leaving)),
+            (status(&admin), status(&connections_deleting), status(&leaving)),
             (Some(MemberStatus::Ready), Some(MemberStatus::ConnectionsDeleting), Some(MemberStatus::Leaving)),
             "the joiner installed each member at its address with the member's own state"
         );
-        assert!(!joiner.digest_view.routable(draining.node.node_id.as_str()), "a member saying ConnectionsDeleting takes no new work");
+        assert!(!joiner.digest_view.routable(connections_deleting.node.node_id.as_str()), "a member saying ConnectionsDeleting takes no new work");
         assert!(!joiner.digest_view.routable(leaving.node.node_id.as_str()), "a member saying Leaving takes no new work");
         assert!(joiner.digest_view.routable(admin.node.node_id.as_str()), "a member still saying Ready, of a mesh the joiner holds ready, is selected");
     }
@@ -7157,11 +7157,11 @@ mod tests {
         let digest_view = DigestView::default();
         let (lower, holder) = two_admins(&digest_view, Instant::now());
         digest_view.seats.take(Seat::MeshPrimary, &primary_of(&lower, 3));
-        let mut draining = lower.clone();
-        draining.status = MemberStatus::ConnectionsDeleting;
-        draining.digest_seq += 1;
-        draining.emitted_at_rafka_ms += 1;
-        assert!(digest_view.record(draining));
+        let mut connections_deleting = lower.clone();
+        connections_deleting.status = MemberStatus::ConnectionsDeleting;
+        connections_deleting.digest_seq += 1;
+        connections_deleting.emitted_at_rafka_ms += 1;
+        assert!(digest_view.record(connections_deleting));
         let _ = holder;
         assert_eq!(digest_view.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
     }

@@ -34,7 +34,7 @@ pub(crate) struct MapNode {
     pub endpoint_id: EndpointId,
     pub transport_addr: SocketAddr,
     pub incarnation: IncarnationId,
-    /// The lifecycle transition the source held the birth in (being born, drained or leaving), or
+    /// The lifecycle transition the source held the birth in (being born, connections-deleted or leaving), or
     /// `None` for a settled birth. Every birth of the own mesh is pinged on entry; the status is
     /// what the view learns of a birth in transition that answers, never `Ready`.
     pub transition: Option<crate::model::NodeStatus>,
@@ -228,7 +228,7 @@ pub(crate) fn sweep_targets(map: &[MapNode]) -> Vec<MapNode> {
 
 /// The candidates for the local node a current topology is read from (node-admin-lifecycle.md
 /// §4.1 step 5), in the order they are tried: settled births first, then births in transition, each
-/// in path order. A draining node refuses `GetTopology` (node-rpc-envelope.md: "A draining node
+/// in path order. A connections-deleting node refuses `GetTopology` (node-rpc-envelope.md: "A connections-deleting node
 /// refuses new non-status calls"), so a settled node that answers is the one to read from.
 pub(crate) fn local_candidates(map: &[MapNode]) -> Vec<MapNode> {
     let mut v = map.to_vec();
@@ -353,7 +353,7 @@ mod tests {
     }
 
     /// CONTRACT (node-admin-lifecycle.md §4.1 step 5: "Read GetTopology from a LOCAL node of the
-    /// recovering admin's own mesh"; node-rpc-envelope.md: "A draining node refuses new non-status
+    /// recovering admin's own mesh"; node-rpc-envelope.md: "A connections-deleting node refuses new non-status
     /// calls"): the local node is tried settled births first, then births in transition, each in
     /// path order, so a ConnectionsDeleting node ahead of a Ready one in path order is never the one
     /// the current topology is read from while the ready one answers.

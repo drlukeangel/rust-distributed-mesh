@@ -779,7 +779,7 @@ impl StatusAuthority {
 
     /// The node a call's authenticated endpoint is, from the view this authority decides from: a
     /// birth the view holds, or `None` for an endpoint it holds no birth for. It names the caller in
-    /// spans and is where a reply owed later goes (a drain's completion, a leave's handoff); it
+    /// spans and is where a reply owed later goes (a connections delete's completion, a leave's handoff); it
     /// decides nothing (node-rpc.md §14): a call from an endpoint the view does not hold is decided
     /// as any other.
     pub async fn sender_of(&self, peer: &EndpointId) -> Option<crate::model::Node> {

@@ -476,7 +476,7 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     let removed = primary_of(&nodes, &admin2).unwrap();
     let removed_id = id_of(&nodes, &removed);
     complete(&format!("node.delete of {removed}"), estate.nodes_obj().await.delete(&path(&removed)).await).await;
-    // The removed primary keeps its seat while it drains and leaves: a seat moves only by an
+    // The removed primary keeps its seat while it deletes its connections and leaves: a seat moves only by an
     // explicit transfer or a proven loss, never by its holder's status (R-EL1). The view is
     // read once the seat has left the removed birth.
     let nodes = estate

@@ -76,7 +76,7 @@ pub async fn run_on(service: &str, providers: impl FnOnce(&AdminConfig) -> crate
             r = start_on(cfg, wiring, storage).instrument(tracing::Span::none()) => r,
             () = stop_requested() => {
                 // Stopped before it booted: the boot ends by name and the process exits through its
-                // telemetry drain (the guard drops as this returns).
+                // telemetry flush (the guard drops as this returns).
                 boot.in_scope(|| tracing::info!("stopped by signal before the node-admin booted"));
                 drop(boot);
                 tracing::info_span!("rdm.mesh.node.delete.via-signal", booted = false).in_scope(|| tracing::info!("stopping"));
@@ -89,7 +89,7 @@ pub async fn run_on(service: &str, providers: impl FnOnce(&AdminConfig) -> crate
                 boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
                 eprintln!("{service}: {e}");
                 // The refused boot's spans (the reason it exits for) reach the evidence file and the
-                // collector: the boot span closes, then the exporters drain before the exit.
+                // collector: the boot span closes, then the exporters flush before the exit.
                 drop(boot);
                 rdm_transport::flush_before_exit();
                 std::process::exit(3);

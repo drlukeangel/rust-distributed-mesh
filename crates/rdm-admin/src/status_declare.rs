@@ -557,7 +557,7 @@ fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
 pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &crate::model::IncarnationId, own: rdm_core::MemberStatus, mesh_checklist_done: bool, own_mesh_held: Option<MeshState>, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
     // This admin's own birth, to its own mesh's primary, which sets its status from the report
     // (node-status.md "Status report"): its node.started once it is ready, and its ConnectionsDeleting once it
-    // drains (a drain command, or the fabric shutdown freezing it): its heartbeat says neither.
+    // deletes its connections (a connections delete command, or the fabric shutdown freezing it): its heartbeat says neither.
     use rdm_core::MemberStatus as M;
     let reports: &[NodeState] = match own {
         M::Pending => &[],
@@ -936,7 +936,7 @@ mod tests {
     }
 
     /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets
-    /// its status"; gossip.md §3.1: a Digest "carries no status"): a node-admin that drains (a drain
+    /// its status"; gossip.md §3.1: a Digest "carries no status"): a node-admin that deletes its connections (a connections delete
     /// command, or the fabric shutdown freezing it) owes its ConnectionsDeleting to its own mesh's primary after
     /// its node.started (node-rpc.md §43, Q210), so the other admins hold it ConnectionsDeleting from that primary's projection. Must NOT
     /// happen: an admin deleting its connections whose ConnectionsDeleting no other admin can learn.

@@ -73,7 +73,7 @@ pub enum BuildChange {
         /// The node.
         node: PathName,
     },
-    /// Stop the live birth at `node` with no implicit drain and no departure.
+    /// Stop the live birth at `node` with no implicit connections delete and no departure.
     Stop {
         /// The node.
         node: PathName,

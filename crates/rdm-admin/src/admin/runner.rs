@@ -940,7 +940,7 @@ impl AdminRunner {
     /// (iroh/src/socket.rs:1408-1420) returns at once when no actor runs for the key, else sends one
     /// message into the actor's 64-slot inbox (socket/remote_map/remote_state.rs:246) and awaits its
     /// oneshot. The actor's loop (remote_state.rs:300-360) runs only synchronous arm bodies and
-    /// drains one inbox message per turn through the synchronous `handle_message` (:387); the
+    /// takes one inbox message per turn through the synchronous `handle_message` (:387); the
     /// `ReplaceDirectAddrs` arm (:403-405) retires the paths in the synchronous
     /// `handle_msg_replace_direct_addrs` (:529) and answers in the same turn. An actor that ends drops
     /// its inbox (and the queued message's oneshot, :372), so the send or the reply resolves with an
@@ -969,7 +969,7 @@ impl AdminRunner {
             rpc.resolver.mark_exited(&record.node_id, incarnation);
         }
         // The exit is proven: the exited birth's direct paths are retired. Until now they stayed
-        // open for the typed drain.
+        // open for the typed connections delete.
         if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
             // Not awaited: the endpoint's actor for this key answers when it is free, and the
             // retire does not wait for a dead peer's actor (the same call the topology view spawns).

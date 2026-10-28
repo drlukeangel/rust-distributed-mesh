@@ -73,7 +73,7 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
 /// steps 2-4 as its own subject and waits on no answer: it owes its connections-deleting to its
 /// mesh-primary, leaves its mesh (its gossip neighbours left, its Node RPC pool cut), then owes its
 /// stopped state, in that order, and its process ends before the estate's bound. Must NOT happen: a
-/// runtime the bound kills, a heartbeat of a stopping node after its leave, or the retired drain.
+/// runtime the bound kills, a heartbeat of a stopping node after its leave, or the retired connections delete.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before_the_kill() {
     let test = "an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before_the_kill";
@@ -105,7 +105,7 @@ async fn an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before
         assert!(published_after.is_empty(), "{node} published nothing after it left its mesh: {published_after:?}");
         evidence.push(json!({"node": node, "connections_deleting_owed": deleting["trace_id"], "left": leaving[0]["trace_id"], "stopped_owed": stopped["trace_id"]}));
     }
-    let drained: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-drain").collect();
-    assert!(drained.is_empty(), "no node runs the retired drain: {drained:?}");
+    let connections_deleted: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-drain").collect();
+    assert!(connections_deleted.is_empty(), "no node runs the retired connections delete: {connections_deleted:?}");
     estate.artifact("signal-stop.json", &json!({"rpc_nodes": evidence}));
 }

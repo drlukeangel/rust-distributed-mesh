@@ -73,7 +73,7 @@ async fn main() {
             r = started => r,
             () = node::stop_requested() => {
                 // Stopped before it booted: the boot ends by name and the process exits through
-                // its telemetry drain (the guard drops as main returns).
+                // its telemetry flush (the guard drops as main returns).
                 boot.in_scope(|| tracing::info!("stopped by signal before the node booted"));
                 drop(boot);
                 tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = false)

@@ -632,7 +632,7 @@ mod tests {
         let first = blocked(1, "rows not yet published").probe_blocker().expect("blocked answers its blocker");
         assert_eq!(first, ("rows not yet published".to_string(), RetryOn::PrimaryAddressed), "the hook's own reason and event");
         assert_eq!(Some(first.clone()), blocked(7, "rows not yet published").probe_blocker(), "the attempt is not part of the blocker");
-        assert_ne!(Some(first), blocked(8, "the authority is draining").probe_blocker(), "a changed reason is a new blocker");
+        assert_ne!(Some(first), blocked(8, "the authority is connections-deleting").probe_blocker(), "a changed reason is a new blocker");
         for other in [PreNodeReadyState::Running { attempt: 2 }, PreNodeReadyState::Passed, PreNodeReadyState::Failed("x".into()), PreNodeReadyState::Cancelled] {
             assert_eq!(other.probe_blocker(), None, "only Blocked answers Blocked: {other:?}");
         }

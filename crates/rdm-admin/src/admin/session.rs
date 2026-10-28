@@ -105,13 +105,13 @@ pub fn take_over_blockers(held: &[MeshDigest], provider: &dyn crate::deployment:
         .collect()
 }
 
-/// Readiness, drain and admission seen through each member's own digest:
+/// Readiness, connections delete and admission seen through each member's own digest:
 /// a node publishes `Ready` once it serves, and `ConnectionsDeleting` right
 /// after it starts refusing new work with the typed `ConnectionsDeleting` refusal (node-rpc §35).
 pub struct TopologyObserver {
     /// The digest view the observer reads.
     pub digest_view: DigestView,
-    /// The process's one Node RPC client (ruling X), over which the typed drain reaches the
+    /// The process's one Node RPC client (ruling X), over which the typed connections delete reaches the
     /// exact birth; `None` only in a cell that observes without a transport.
     pub client: Option<Arc<rdm_transport::NodeRpcClient>>,
     /// The commands this admin sent and awaits a completion call for.

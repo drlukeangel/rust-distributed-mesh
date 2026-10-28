@@ -3,7 +3,7 @@
 //! ONE ordered sender carries every frame the primary puts on its mesh channel for the backbone:
 //! the forwarder's decisions (the backbone receiver, the own-mesh publication, the seat fulls) and the
 //! lifecycle frames it carries in. A decision is made under the forwarder's lock and queued while
-//! that lock is still held, so the queue's order is the decision order; a single task drains the
+//! that lock is still held, so the queue's order is the decision order; a single task empties the
 //! queue, finishing every frame of a decision (a chunked full is one decision) before it takes the
 //! next. A receiver applies a delta only at exactly the base it holds for that source, and installs
 //! a full only once it holds every chunk: what depends on a frame is the later frames of the SAME
@@ -73,7 +73,7 @@ impl ForwardPath {
         (Self { forwarder, queue, owes_full }, ForwardRx(rx))
     }
 
-    /// Start the single ordered sender task draining `rx` into `sink`.
+    /// Start the single ordered sender task emptying `rx` into `sink`.
     pub(crate) fn spawn_sender(&self, rx: ForwardRx, sink: Sink) {
         tokio::spawn(send_in_order(rx.0, sink, self.owes_full.clone(), self.forwarder.clone()));
     }

@@ -96,13 +96,13 @@ pub struct ModelMesh {
 pub enum Action {
     /// A Build adds one node of `class` to `mesh`, born at the lowest free ordinal.
     Grow { mesh: String, class: NodeClass },
-    /// A Build deletes the node (drain, then terminate).
+    /// A Build deletes the node (connections delete, then terminate).
     Shrink { node: String },
     /// node.stop then node.start of the node (Q183): the same NodeId and incarnation start again on the live process.
     Restart { node: String },
     /// A Build replaces the node: a new NodeId born at the same path.name.
     Replace { node: String },
-    /// A Build drains the mesh's seat holder; the remaining admins elect.
+    /// A Build deletes the connections of the mesh's seat holder; the remaining admins elect.
     HandOff { mesh: String },
     /// The provider cuts the mesh off from every other mesh.
     Unheard { mesh: String },

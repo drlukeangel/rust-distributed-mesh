@@ -148,8 +148,8 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
     (r, observer.sent.into_inner().unwrap(), steps, trace_id)
 }
 
-/// CONTRACT (lifecycles/node-connections-delete.md "Admission is not drain completion"; node-stop.md, the complete stop): a
-/// standalone drain or stop whose command never reached the birth (`NotSent`) established nothing:
+/// CONTRACT (lifecycles/node-connections-delete.md "Admission is not connections delete completion"; node-stop.md, the complete stop): a
+/// standalone connections delete or stop whose command never reached the birth (`NotSent`) established nothing:
 /// its wait step fails by name with the admission it got, and no `Complete` receipt names the birth.
 #[test]
 fn a_standalone_connections_delete_or_stop_whose_command_was_never_admitted_fails_by_name_and_completes_nothing() {

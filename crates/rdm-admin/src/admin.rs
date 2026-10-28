@@ -2768,7 +2768,7 @@ mod tests {
     }
 
     /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md §5 "a living holder keeps its seat"): the
-    /// view's readers name the primary the records this admin holds give, whatever its status. A holder that is Leaving (drained and stopped by its
+    /// view's readers name the primary the records this admin holds give, whatever its status. A holder that is Leaving (connections-deleted and stopped by its
     /// Build) whose yield this observer has not heard yet keeps both seats; once the yield is held
     /// (node.primary.updated: both records at the next revision naming the successor), the readers name
     /// the successor. Must NOT happen: an observer reading a Leaving primary as no primary (an
@@ -3375,10 +3375,10 @@ mod tests {
 
         facts.seen();
         assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_none(), "nothing moved: the rebuild waits for its poll");
-        let mut draining = rpc.clone();
-        draining.status = MemberStatus::ConnectionsDeleting;
-        draining.digest_seq += 1;
-        assert!(digest_view.record(draining));
+        let mut connections_deleting = rpc.clone();
+        connections_deleting.status = MemberStatus::ConnectionsDeleting;
+        connections_deleting.digest_seq += 1;
+        assert!(digest_view.record(connections_deleting));
         assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a birth saying ConnectionsDeleting makes the rebuild due at once");
 
         facts.seen();

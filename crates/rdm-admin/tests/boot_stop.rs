@@ -1,5 +1,5 @@
 //! A node-admin process stopped while it boots (#3047): the stop is heard and the process exits
-//! through its telemetry drain, so its evidence file holds the boot and the stop.
+//! through its telemetry flush, so its evidence file holds the boot and the stop.
 
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::{FabricId, IncarnationId, NodeId};
@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 /// CONTRACT: a launched `rdm-node-admin` that is held in its boot (no runtime record from its
 /// provider yet: `admin.rs` waits for it up to 10 s) and is sent SIGTERM ends its boot by name and
-/// exits 0 through its telemetry drain: its evidence file holds `rdm.mesh.node.create.via-deployment`
+/// exits 0 through its telemetry flush: its evidence file holds `rdm.mesh.node.create.via-deployment`
 /// and `rdm.mesh.node.delete.via-signal` with `booted=false`. What must NOT happen: the default
 /// SIGTERM disposition ending the process before its batch export, leaving the file empty, or the
 /// abandoned boot holding the exit past a Graceful stop's 5 s grace.

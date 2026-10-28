@@ -115,7 +115,7 @@ impl ServerBuilder {
 }
 
 /// A birth's retirement across its stopped cycles: the token the current cycle's hook and pulls end
-/// with. A stop (or drain) cancels it; a start renews it for the next cycle.
+/// with. A stop (or connections delete) cancels it; a start renews it for the next cycle.
 #[derive(Clone, Debug, Default)]
 pub struct Retirement {
     current: Arc<std::sync::Mutex<CancelToken>>,

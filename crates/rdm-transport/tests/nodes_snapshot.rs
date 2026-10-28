@@ -200,10 +200,10 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         heartbeat.iter_mut().for_each(|d| d.in_flight = Some(17));
         bumps.push(("loads alone", v.observe(&Full::new(heartbeat.clone(), vec![], vec![]))));
         bumps.push(("an unchanged republish", v.observe(&base)));
-        let mut draining = mesh2.digests(2);
-        draining[1].status = MemberStatus::ConnectionsDeleting;
-        bumps.push(("a status routing reads", v.observe(&Full::new(draining.clone(), vec![], vec![]))));
-        let mut moved = draining.clone();
+        let mut connections_deleting = mesh2.digests(2);
+        connections_deleting[1].status = MemberStatus::ConnectionsDeleting;
+        bumps.push(("a status routing reads", v.observe(&Full::new(connections_deleting.clone(), vec![], vec![]))));
+        let mut moved = connections_deleting.clone();
         moved[2].node.transport_addr = "127.0.0.1:49999".parse().unwrap();
         bumps.push(("an endpoint moved", v.observe(&Full::new(moved.clone(), vec![], vec![]))));
         let mut re_born = moved.clone();
