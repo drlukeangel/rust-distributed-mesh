@@ -3,7 +3,7 @@
 **Ruling (Luke 2026-10-16, Q24: A to the six page lines, with the a1 architect's five changes
 taken; "Record Q24 and proceed with the first packet before implementation").**
 
-- The fabric-primary candidate set is every ReadyForTraffic node-admin on the backbone; the seat
+- The fabric-primary candidate set is every Ready node-admin on the backbone; the seat
   stays in its holder's mesh while that mesh has a Ready node-admin; if only Pending admins survive
   the seat waits.
 - For the fabric seat alone: unreached by the tickle ladder, no surviving admin able to inspect the

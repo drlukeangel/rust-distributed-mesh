@@ -30,14 +30,14 @@ The row has one writer, the node's mesh-primary, which holds the whole record an
 
 ## 1. The node's properties and their commands
 
-Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` when not directly reachable), is refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic, and runs through that writer's defined storage operation.
+Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` when not directly reachable), is refused `fabric-not-ready` until the initial fabric has first reached ready, and runs through that writer's defined storage operation.
 
 | property | set by | changed by | precondition | completion |
 |---|---|---|---|---|
 | `node.id`, `incarnation`, `endpoint`, `transport_addr`, the runtime handle | RDM at birth | nothing | — | — |
 | `status` | RDM | [node status](../../architecture/lifecycles/node-status.md) only | — | that status's own completion |
 | `path`, `mesh`, `node_type` | the create spec | nothing: immutable for the node's life. `node.name.update` carries the name only, so the path cannot move by construction | — | — |
-| `name` | the create spec | **`node.name.update { node_id, incarnation, name }`** (§2) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready-for-traffic (R-CR1) | `node.name.updated` (§2.3) |
+| `name` | the create spec | **`node.name.update { node_id, incarnation, name }`** (§2) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1) | `node.name.updated` (§2.3) |
 | `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the claim) and on replace (from the retained predecessor row at the cutover rename) (§8) | `node.tags.create { label \| [labels] }` adds; `node.tags.delete { All \| [labels] }` removes. Additive and removal commands on keyed label rows, not a replacement of a tags property (unchanged, :244) | none | `node.tags.created` / `node.tags.deleted` |
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced (unchanged, :245) | none | `node.config.updated` |
 | `is_primary` | the committed seat record | `node.primary.update` ([node.primary.update proposal](node-primary-update-fabric-mesh-and-node-type.md) Part C); never a put | that proposal's Part C | `node.primary.updated` |
@@ -54,7 +54,7 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 |---|---|
 | Caller / executor | Caller to the node's mesh-primary, the only writer of its mesh's rows (Forward `0x1A` when not directly reachable). Before a mesh has a primary, the fabric-primary acts as its writer. The replace recipe calls it as a step; a caller may call it alone |
 | Entry | The exact `(node.id, incarnation)` and the new name. Nothing else: no path, no mesh, no type, no tags |
-| Precondition | The node admits no connection: its status is stopped, or this mesh-primary holds the birth's `node.connections.deleted` of an `All` made while the node was not ready-for-traffic and it holds zero connections. A ready-for-traffic node, or one still holding a connection, is refused. No new connection is admitted from the row write through `ApplyNodeName`, retries after an interruption included |
+| Precondition | The node admits no connection: its status is stopped, or this mesh-primary holds the birth's `node.connections.deleted` of an `All` made while the node was not ready and it holds zero connections. A ready node, or one still holding a connection, is refused. No new connection is admitted from the row write through `ApplyNodeName`, retries after an interruption included |
 | Validation | the exact birth matches the held record, else `RejectedStaleIncarnation { held }`; the receiver is the node's writer, else `ReceiverNotPrimary { needed }` (R-RX5); the precondition holds, else `RejectedAdmittingConnections { status, held_connections }`; the name is within the name grammar, else `RejectedName { reason }` (§9 decides which names) |
 | Claim and move | The new name is claimed by insert-and-fail on the kind's `path.name` index inside the store adapter; a held name answers `NameHeld { by: node.id }` and nothing is written. The move is two writes (`node_rows.rs:668` `move_row`): the row is put at the new key carrying `renamed_from: <old path.name>`, then the old key is released. Between them the node holds both keys, and the destination row says which is which: **a row whose `renamed_from` key still holds the same node id has a pending release, and the writer releases it.** The rule needs no clearing: once the source no longer holds the id it is false. It runs wherever a writer meets the row: a retry of the command, the Build attempt's resume of a replace or recovery step, and a mesh-primary's rebuild from its mesh's rows after a seat change (R13), which already reads every row of the mesh. A same-process retry is one case of it, not the mechanism |
 | Order | Row first, node second |
@@ -138,7 +138,7 @@ Each asserts the row, the node's published name and the completion:
 
 - stopped node renamed: claim, row, no apply, `node.name.updated` after the row; its next join publishes the new name;
 - running node, connections-deleted after `All`, zero held: claim, row, `ApplyNodeName` → `Applied`, `node.name.updated`;
-- ready-for-traffic node: refused `RejectedAdmittingConnections`, nothing written;
+- ready node: refused `RejectedAdmittingConnections`, nothing written;
 - connections-deleted node still holding one connection: refused `RejectedAdmittingConnections { held_connections: [id] }`, nothing written;
 - held name: `NameHeld { by }`, nothing written;
 - the put at the new key fails: nothing written, old name stands;

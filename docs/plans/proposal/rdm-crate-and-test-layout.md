@@ -173,7 +173,7 @@ rdm-test/tests/
   node/     create.rs start.rs stop.rs restart.rs delete.rs connections_delete.rs
             primary_update.rs name_update.rs topology_get.rs status.rs
   mesh/     delete.rs investigation.rs
-  fabric/   create.rs state_sync.rs state_commit.rs ready_for_traffic.rs primary_update.rs
+  fabric/   create.rs state_sync.rs state_commit.rs ready.rs primary_update.rs
             delete.rs recovery.rs
   build/    create.rs attempt_run.rs get.rs delete.rs
   gossip/   membership_backbone.rs held_member_repair.rs unheard_peer_mesh.rs   (gossip.md §14)

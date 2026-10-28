@@ -67,8 +67,8 @@ writes only the records its own attempt's operations require (Q122), as today.
 
 | Object | Key | What it holds | Writer | Cache that holds it |
 |---|---|---|---|---|
-| Fabric record | `fabric_id` | identity (id, name), immutable inside a record written on every fabric event; the fabric events applied (`ready-for-traffic`, `shutdown-initiated:<by>`) | the fabric-primary | the fabric-primary's applied set (`Declared.fabric` today) |
-| Mesh record | mesh id | id, name, dead; the states entered (Pending, ReadyForTraffic, Leaving, Dead) | the mesh's primary; the fabric-primary while the mesh has none | the writer's applied set (`Declared.meshes` today) |
+| Fabric record | `fabric_id` | identity (id, name), immutable inside a record written on every fabric event; the fabric events applied (`ready`, `shutdown-initiated:<by>`) | the fabric-primary | the fabric-primary's applied set (`Declared.fabric` today) |
+| Mesh record | mesh id | id, name, dead; the states entered (Pending, Ready, Leaving, Dead) | the mesh's primary; the fabric-primary while the mesh has none | the writer's applied set (`Declared.meshes` today) |
 | Node record | minted node id | today's node row (path.name, status, config, tags, allocated, executable, renamed_from, app types, inherited_by) and, per incarnation: the declared states, the operation effects, the silence mark, `data-dir-lost`, `data-dir-unreadable`, the member cert dates, a node-admin's signing cert dates; `predecessor`, the exact birth this node replaced, written at its create from the recovery attempt that named it (`inherited_by` points the other way and is not followed backwards). The record keeps the facts of its current incarnation and of the one a restart replaced (`RDM_SUPERSEDES`), nothing older; the predecessor is another node with its own record: the Build journal keeps the history, and a record rewritten on every silence mark stays small | the node's mesh-primary; the fabric-primary while the mesh has none | the writer's node rows (`node_rows::WrittenRows` today), into which `Declared.nodes`, `Declared.operations` and the silence memo fold |
 
 Outside the records, unchanged: the fabric name's claim, each mesh's in-flight row and each node's name
@@ -86,7 +86,7 @@ writer until the index acknowledges them; the retry never recomputes an empty di
 already-updated cache.
 
 A record's facts stay independent inside it, keyed by their full identity: one declared entry per state
-(a late Pending never removes ReadyForTraffic; the reader takes the greatest), one effect per
+(a late Pending never removes Ready; the reader takes the greatest), one effect per
 (build_id, attempt, operation). A start beginning a birth's next cycle clears that birth's declared states
 on the cached record and keeps its effects; the record is then written whole.
 
@@ -164,7 +164,7 @@ record is ever read, and no issue is ever confused with a receipt by a copy.
 ### Cells, RED first
 
 - one per key family: two facts of one birth under different keys both survive a compaction and a fold
-  (`declared/<state>` keeps `ReadyForTraffic` beside a late `Pending`; two attempts' operation effects
+  (`declared/<state>` keeps `Ready` beside a late `Pending`; two attempts' operation effects
   both stand; lost and unreadable data-dir facts both stand);
 - one per writer: the mesh-primary writes its nodes' facts, the fabric-primary writes them while the mesh
   has no primary and stops when one exists, the issuer writes cert dates for a member and for a

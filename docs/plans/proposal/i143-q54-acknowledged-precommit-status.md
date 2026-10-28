@@ -4,13 +4,13 @@ Ruled A by Luke, 2026-10-17. Q53's permission to fix the mesh stands; this is th
 
 ## 1. Spec
 
-[Q53 A](../rulings/i143-q53-successor-member-status.md) requires ReadyForTraffic applied and acknowledged, seat taken, and the successor's first complete version carrying ReadyForTraffic for the same exact birth; no re-fold or wait.
+[Q53 A](../rulings/i143-q53-successor-member-status.md) requires Ready applied and acknowledged, seat taken, and the successor's first complete version carrying Ready for the same exact birth; no re-fold or wait.
 
 [R14 item 9](../rulings/i143-r14-rdm-shared-store.md): “Before state-commit nothing changes: rows stay in the scratchpad”. At commit-state each writer publishes its held rows; subsequent writes go directly to the shared root. [States, Rounds](../../architecture/lifecycles/states.md#the-round-checklist) likewise puts required held writes at state-commit. Owner: each row's writer, the mesh-primary for these declared states. Required sequence under Q53: acknowledged Ready → successor acquires it from the shared root → complete projection. Required publication boundary under R14: private scratchpad → state-commit → shared root.
 
 ## 2. Issue
 
-The exact-birth successor cell acknowledges Ready through StatusAuthority, then loses that writer: the published control folds 1 row and projects ReadyForTraffic; the unpublished case folds 0 and projects Pending, in both RED runs (`291f705c`, timed evidence `6e1a69ee`); the pre-commit put was acknowledged in the private scratchpad and never reached the shared root.
+The exact-birth successor cell acknowledges Ready through StatusAuthority, then loses that writer: the published control folds 1 row and projects Ready; the unpublished case folds 0 and projects Pending, in both RED runs (`291f705c`, timed evidence `6e1a69ee`); the pre-commit put was acknowledged in the private scratchpad and never reached the shared root.
 
 ## 3. Flame
 
@@ -19,12 +19,12 @@ Observations from the product span pipeline, real FileStatusStorage, StatusAutho
 [Unpublished case](http://localhost:16686/trace/371d28b9a8272d5934de9a6b98325460):
 
 ```text
-rdm.node_admin.status.update.via-declared-put holding="true" outcome="acknowledged" state="ReadyForTraffic" node_id="892agk4g7v5c" incarnation_id="7wgn06396wfn"
+rdm.node_admin.status.update.via-declared-put holding="true" outcome="acknowledged" state="Ready" node_id="892agk4g7v5c" incarnation_id="7wgn06396wfn"
 ```
 
 The exact node id and incarnation and the unabridged measured spans are in the retained JSONL; the put and fold belong to this one trace. The put succeeds, the writer reads its own row, the writer and scratchpad are dropped, and the independent successor reads no row.
 
-[Published control](http://localhost:16686/trace/b96f9ba477d979f3ec152f41aaac4753): same calls, with the existing Scratchpad::publish before the writer ends; the successor's fold has `node_declared_rows="1"`, its exact-birth projection ReadyForTraffic. The unpublished fold has `node_declared_rows="0"`, projection Pending.
+[Published control](http://localhost:16686/trace/b96f9ba477d979f3ec152f41aaac4753): same calls, with the existing Scratchpad::publish before the writer ends; the successor's fold has `node_declared_rows="1"`, its exact-birth projection Ready. The unpublished fold has `node_declared_rows="0"`, projection Pending.
 
 Canonical log `/home/admin/rust-distributed-mesh-deploy/q53-successor-timed-red.log`; original captured spans (with measured start/end), OTLP conversion and queried Jaeger responses `/home/admin/rust-distributed-mesh-deploy/kept/q53-successor-red/`; verification `/home/admin/rust-distributed-mesh-deploy/q53-successor-timed-flames.log`. The conversion renames the captured timestamp fields; it invents no timestamp or span.
 
@@ -35,7 +35,7 @@ The preceding live s88 failure has the same phase exposure: the old mesh2 primar
 - [code] `crates/rdm-admin/src/status_storage.rs:687`: `declared` opens through `root.records`, therefore uses the root's scratchpad before first publication.
 - [code] `crates/rdm-node/src/store_root.rs:104`: `records` opens a held FileRecords when the root has a scratchpad. `record_store.rs:370` holds the put and returns Ok, with no filesystem write.
 - [code] `crates/rdm-admin/src/status_rpc.rs:1130`: `persist_then_commit` accepts that successful put, updates the applied state, then returns Applied. The acknowledgement is real, but it does not promise a disk write before publication.
-- [flame] The put is `holding=true, outcome=acknowledged`; the successor folds zero. In the publication control the successor folds one and its first projection is ReadyForTraffic.
+- [flame] The put is `holding=true, outcome=acknowledged`; the successor folds zero. In the publication control the successor folds one and its first projection is Ready.
 - [code] `crates/rdm-admin/tests/status_seat_fold.rs:337`: the new cell uses an independently held writer root and successor disk root, the same exact RPC birth and no replacement report. No removal, wrong name or revision is introduced.
 - [code] `crates/rdm-admin/src/status_rpc.rs:224`: SeatFold reads the declared rows correctly from the successor's store. There is nothing to fold in the unpublished case; repeating or waiting on that read cannot recover the lost private row.
 

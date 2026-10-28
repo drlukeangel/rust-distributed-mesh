@@ -75,7 +75,7 @@ node.start
   [hydrate_before_ready]
   [node.topology.get, missing Build floor, rafka-time last]
   ← node.started
-  [mesh-primary sets ReadyForTraffic]
+  [mesh-primary sets Ready]
   ← Complete
 ```
 ```
@@ -91,8 +91,8 @@ StartNode { node_id, incarnation, build_id, attempt, operation }
   ← NodeJoined (Data; mesh-primary records pending)
   [hydrate_before_ready]
   [node.topology.get, missing Build floor, rafka-time last]
-  ← NodeStarted (Terminal; mesh-primary records ReadyForTraffic)
-  [outer Build Complete only after the ReadyForTraffic record]
+  ← NodeStarted (Terminal; mesh-primary records Ready)
+  [outer Build Complete only after the Ready record]
 ```
 ```
 
@@ -153,24 +153,24 @@ New:
 
 Old:
 ```text
-| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [Status 0x1B](#status-op-0x1b-rdm) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [Status 0x1B](#status-op-0x1b-rdm) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 ```
 
 New:
 ```text
-| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 ```
 
 ## docs/architecture/node-rpc-envelope.md
 
 Old:
 ```text
-| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Status 0x1B StopNode](#node-stop-command-pair); stopped rides the StopNode reply; the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Status 0x1B StopNode](#node-stop-command-pair); stopped rides the StopNode reply; the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 ```
 
 New:
 ```text
-| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → StopConnectionsDeleted (Data) → NodeStopped (Terminal); the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → StopConnectionsDeleted (Data) → NodeStopped (Terminal); the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 ```
 
 ## docs/architecture/node-rpc-envelope.md
@@ -289,7 +289,7 @@ before lifecycle acceptance:
 A refusal before acceptance is one refusal frame. `CommandAccepted` is admission and carries no
 lifecycle state: on a stop it makes the mesh-primary record stopping. `ConnectionsDeleting`
 records connections-deleting for connections.delete; `NodeStopped` records stopped, `NodeJoined`
-records pending, and `NodeStarted` records ReadyForTraffic after every start gate and before the
+records pending, and `NodeStarted` records Ready after every start gate and before the
 outer Build's Complete. Starting stays the executing authority's overlay. Nothing is written
 before CommandAccepted or for NotSent. There is no separate status declaration for an open start;
 the Q36 owed report remains when no stream is open. A stream lost after acceptance is incomplete.

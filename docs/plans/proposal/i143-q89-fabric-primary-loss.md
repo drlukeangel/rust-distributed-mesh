@@ -7,7 +7,7 @@ Ruled by Luke, 2026-10-20 (rulings INDEX, Q89). Asked from the red-team review o
 
 [fabric-recovery.md, "The loss of the fabric-primary while a node-admin lives"](../../architecture/lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives)
 is the page. In one line: a fabric-primary unheard past the staleness floor is superseded; the lowest
-ReadyForTraffic node-admin of its own mesh writes the one row at the first tick after the mark, every seat
+Ready node-admin of its own mesh writes the one row at the first tick after the mark, every seat
 the holder held; outside the mesh, every mesh-primary runs mesh investigation's ladder on the holder's mesh
 and the backbone rule writes only at the decision step, when no admin of that mesh answered either probe;
 the successor is the authority above the lost birth and the standing playbook runs down from it; once the
@@ -38,7 +38,7 @@ on the resumed fabric-primary's own clock:
 | 18:48:10.523 | 18:47:51.264 | `rdm.mesh.membership.update.via-cut-off` start |
 | 18:48:10.537 | 18:47:51.269 | `rdm.node_admin.fabric.remove.via-tenure-ended` |
 | 18:48:10.652 | 18:47:51.333 | first digest heard from mesh1.admin.2 (seq 55; the last before the hold, seq 9) |
-| 18:48:10.655 | 18:47:51.344 | `via-mesh-join-commanded` mesh1.admin.2, `held=ReadyForTraffic` |
+| 18:48:10.655 | 18:47:51.344 | `via-mesh-join-commanded` mesh1.admin.2, `held=Ready` |
 | 18:48:10.667 | 18:47:51.354 | `via-mesh-join-commanded` mesh1.rpc.1 |
 | 18:48:10.775 | 18:47:51.515 | `via-cut-off` stop |
 
@@ -76,13 +76,13 @@ Six gates encode Q24's lost-whole-mesh case; each changes to the page, no new me
    never to no holder. `release_lost_admin` runs only when no admin of the lost mesh was reached and the
    provider cannot inspect the birth (the whole-mesh arm, R-FM2); otherwise no exit proof and no Deleted
    at takeover, the birth stays a member of the view for the playbook.
-3. **`election.rs::named_fabric_successor`**: a same-mesh name is allowed; the condition is a ReadyForTraffic
+3. **`election.rs::named_fabric_successor`**: a same-mesh name is allowed; the condition is a Ready
    node-admin at that path.name, not `is_primary` (the row makes it primary). **`fabric_seat`**: unchanged
    in rule, but verify by cell that the recorded holder stays seated across the one-row commit when both
    seats move together; a holder of the fabric seat that is not its mesh's primary never arises.
 4. **`accepted.rs::handback_due`** (and `reconcile.rs`, `build_drive.rs` callers): owed whenever a committed
    row moved a seat off a path.name, by takeover or by the ordinary rule on a proven loss, to the node now
-   at that path.name, returned (same node.id) or re-created (new node.id), once it has been ReadyForTraffic
+   at that path.name, returned (same node.id) or re-created (new node.id), once it has been Ready
    for one staleness floor; drop `holder.mesh != lost.mesh` and `recreated.node_id != lost.node_id`; the
    handover row moves every seat the takeover took. The lost path.name comes from the row (`from`), not
    from `taken` alone.
@@ -111,7 +111,7 @@ Cells, RED first, each written to the page before the code moves:
 - `a_dead_fabric_primary_hands_the_seat_to_the_surviving_admin_of_its_own_mesh`, extended: the re-created
   admin at the original path.name gets both seats back one floor after Ready.
 - `a_node_admin_resumed_from_a_hold_commands_nobody_until_its_view_heals`: finding 2's cell, over the
-  cut-off and hung shapes; asserts no `via-mesh-join-commanded` with `held=ReadyForTraffic` and the named
+  cut-off and hung shapes; asserts no `via-mesh-join-commanded` with `held=Ready` and the named
   outcome instead.
 - The hung cell rewritten as `a_hung_fabric_primary_is_superseded_at_the_floor_and_terminated_only_after_the_hung_hold`;
   sticky_seat's `a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat` turns around to the new
@@ -143,7 +143,7 @@ five red):
 - **Nobody commanded the lost fabric-primary back when its mesh had no other admin.** The recovery tick's
   watched set is the admin's own mesh (`watched_births`); the lost fabric-primary, no seat holder any
   more, was outside every tick. Change: the fabric-primary's tick also watches the node-admins, held off
-  ready-for-traffic, of every mesh with no ReadyForTraffic node-admin
+  ready, of every mesh with no Ready node-admin
   (`recovery::admins_of_meshes_without_a_ready_admin`): it tickles them and commands them back (step 3,
   "the authority above the lost birth").
 - **An admins-only UDP cut is not the loss.** `sticky_seat`'s cut-off cell cuts the two meshes' node-admins
@@ -180,7 +180,7 @@ five red):
   record holds the seat: "no authority above it", `serve_join_mesh`), and a standby proposes the takeover
   only once its book has held the record's holder as the holder for a staleness floor
   (`SeatBook::fabric_held_for`): a record learned a moment ago names a holder whose silence predates it.
-- **The heard-again cell raced its own stop.** The released birth's first digest still said ReadyForTraffic
+- **The heard-again cell raced its own stop.** The released birth's first digest still said Ready
   (its own stale state), the helper took that for the re-entry and the cell stopped the estate 4 ms before
   the commanded join was admitted; read as Q90 at first, it was the cell's. The helper now waits for the
   mesh-primary's `via-cycle-begun` of the released birth, then its ready.

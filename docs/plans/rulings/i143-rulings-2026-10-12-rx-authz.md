@@ -19,13 +19,13 @@ node-rpc.md §14 ("nothing inside the mesh checks who is calling") already rule 
 - The audit (RDM main, read-only) lists each sender gate with file:line, its cells, the doc line that encodes it, and which data-validity
   rule covers the hazard it stood in for. The removal units follow from it.
 
-# R-PB1 — no seat moves before the initial fabric is ready-for-traffic (Luke 2026-10-12)
+# R-PB1 — no seat moves before the initial fabric is ready (Luke 2026-10-12)
 
 **Ruling (Luke 2026-10-12, asked whether the fabric-primary seat can move before the fabric's first state-commit; the window covers both
 pending and state-sync): "no seat move before RFT".**
 - No fabric-primary or mesh-primary seat moves while the initial fabric is pending, state-sync or state-commit.
-- A Build or update that would move a seat before ready-for-traffic is refused by name, then admitted as usual once the fabric is
-  ready-for-traffic.
+- A Build or update that would move a seat before ready is refused by name, then admitted as usual once the fabric is
+  ready.
 - Why: until state-commit the fabric's records (the Fabric row with `Fabric.build_id`, each mesh's Mesh row and members' Node rows) live
   only in their holders' scratchpads (states.md: "Before state-commit, RDM holds its rows in the scratchpad"). A seat that moved before
   then left the successor unable to read them:
@@ -34,20 +34,20 @@ pending and state-sync): "no seat move before RFT".**
 - Docs of record to carry it: `lifecycles/fabric-primary-update.md`, `build.md` (seat-moving admission), `lifecycles/states.md` (the
   initial fabric's states).
 
-# R-PC1 — mesh.delete and caller workflows are refused before the initial fabric is ready-for-traffic (A) (Luke 2026-10-12)
+# R-PC1 — mesh.delete and caller workflows are refused before the initial fabric is ready (A) (Luke 2026-10-12)
 
 **Ruling (Luke 2026-10-12: "a").**
-- Until the initial fabric is ready-for-traffic, the following are refused by name:
+- Until the initial fabric is ready, the following are refused by name:
   - mesh.delete;
   - every node workflow a caller submits that writes a row: node.stop, node.start, node.restart, node.delete, node.update, and the
     replace recipe.
-- The initial accepted Build, which creates the fabric's nodes and brings it to ready-for-traffic, runs as usual.
-- Once the fabric is ready-for-traffic these are admitted as usual.
+- The initial accepted Build, which creates the fabric's nodes and brings it to ready, runs as usual.
+- Once the fabric is ready these are admitted as usual.
 - Why: the same window as R-PB1. Before state-commit a row lives only in its holder's scratchpad. A mesh.delete started then wrote the
   mesh's Deleting row only to its primary's scratchpad. When that primary was lost, the surviving admin published the mesh as pending,
   backward from deleting (s49 lane).
 - One admission rule covers R-PB1 and R-PC1: nothing that moves a seat or writes caller state runs before the initial fabric is
-  ready-for-traffic.
+  ready.
 
 # R-BI1 — a node joining or leaving is a topology change and mints its own Build; workflows that leave the topology unchanged are attempts of the accepted Build (Luke 2026-10-12)
 

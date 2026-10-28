@@ -201,7 +201,7 @@ The pages:
 
 - [page] `lifecycles/states.md:134-137`: "node.start is the only transition out of stopped. It retains
   node.id, incarnation, endpoint key, bound port and bin and completes all start gates before
-  ready-for-traffic. node.restart composes that stop/start; it is not an exit and a new birth."
+  ready. node.restart composes that stop/start; it is not an exit and a new birth."
 - [page] `lifecycles/states.md:176-179`: "A new binary requires a replacement node with a new NodeId and
   incarnation; node.restart retains the same process and binary."
 - [page] `lifecycles/node-restart.md:7`: "It runs on the stopped process, which never exits."

@@ -1,10 +1,10 @@
 ## Q105: does a backbone takeover of the fabric seat also move the lost holder's own mesh seat while that mesh is alive across a cut?
 
 ### 1. Spec
-- `fabric-node-lifecycle-elections.md` §4.3 (lines 116–120): "A fabric-primary unheard past the staleness floor is superseded (Q89): the lowest ReadyForTraffic node-admin of its own mesh writes the seat row at the next revision, every seat the holder held in the one row, and publishes it; the seat leaves the mesh only when no node-admin of the mesh answers mesh investigation's ladder by its decision step: then the lowest ReadyForTraffic mesh-primary on the backbone writes it, and its mesh holds the seat".
+- `fabric-node-lifecycle-elections.md` §4.3 (lines 116–120): "A fabric-primary unheard past the staleness floor is superseded (Q89): the lowest Ready node-admin of its own mesh writes the seat row at the next revision, every seat the holder held in the one row, and publishes it; the seat leaves the mesh only when no node-admin of the mesh answers mesh investigation's ladder by its decision step: then the lowest Ready mesh-primary on the backbone writes it, and its mesh holds the seat".
 - Same page, §1 (line 25): "every other seat moves only on yield, a committed transfer or a proven loss, or with the fabric seat, when both are held by the lost mesh's node-admin and one takeover row moves both."
 - Same page, §5 (line 156): "silence … is not proof of death … a holder keeps its seat through it. The fabric-primary alone is superseded at the staleness floor by §4.3, every seat it held in one row".
-- `lifecycles/fabric-recovery.md` step 2 (lines 41–45): "Outside its mesh: … No answer from any of them by the decision step is the backbone rule, and the lowest ReadyForTraffic mesh-primary writes the row."
+- `lifecycles/fabric-recovery.md` step 2 (lines 41–45): "Outside its mesh: … No answer from any of them by the decision step is the backbone rule, and the lowest Ready mesh-primary writes the row."
 
 Owner: the far mesh's primary, which writes the backbone row. Sequence: the ladder gets no answer, then the decision step, then the backbone row moves every seat the lost holder held, then the lost holder's lane is sealed by that move.
 

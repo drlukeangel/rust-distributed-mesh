@@ -92,7 +92,7 @@ Q13's five (lost completion delivered; lost reply, AlreadyApplied, count stays o
 while owed; named refusal yields an unresolved result without a loop; the action runs once despite
 repeated sends), plus: a duplicate during execution; sender restart; receiver crash after ack;
 executor replacement; interrupted-stream replay; the backoff schedule. The live flame: the Q13 cell
-(a member suspended across the reconcile, continued, its check-in lost) reaching ready-for-traffic.
+(a member suspended across the reconcile, continued, its check-in lost) reaching ready.
 
 ## Pages
 
@@ -100,4 +100,4 @@ node-rpc.md gains §43 (the contract, once); §33 is rewritten around the transp
 §41 keeps its table with the request-versus-response distinction; the envelope's "Caller execution and
 certainty" keeps NotSent and Indeterminate as execution distinctions and says a retransmission
 continues the same invocation, never a new execution. The round checklist, state-commit, state-sync,
-ready-for-traffic and node-status pages cite §43. Luke's yes 2026-10-16 ("a"); §43, §33, §41 and the envelope paragraph applied the same day. The round-checklist, state-commit, state-sync, ready-for-traffic and node-status citations of §43 come with the dev's landing as exact old → new.
+ready and node-status pages cite §43. Luke's yes 2026-10-16 ("a"); §43, §33, §41 and the envelope paragraph applied the same day. The round-checklist, state-commit, state-sync, ready and node-status citations of §43 come with the dev's landing as exact old → new.

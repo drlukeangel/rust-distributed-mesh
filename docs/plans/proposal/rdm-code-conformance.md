@@ -80,7 +80,7 @@ page's order.
 | lifecycle page | in the code |
 |---|---|
 | fabric-create, fabric-delete, fabric-primary-update, fabric-recovery | workflow modules `fabric_create`, `fabric_delete`, `fabric_primary_update`, `fabric_recovery` |
-| fabric-state-sync, fabric-state-commit, fabric-ready-for-traffic | workflow modules `fabric_state_sync`, `fabric_state_commit`, `fabric_ready_for_traffic` (the fabric rounds) |
+| fabric-state-sync, fabric-state-commit, fabric-ready | workflow modules `fabric_state_sync`, `fabric_state_commit`, `fabric_ready` (the fabric rounds) |
 | mesh-delete, mesh-investigation, mesh-recovery | workflow modules `mesh_delete`, `mesh_investigation`, `mesh_recovery` |
 | node-create, node-start, node-stop, node-restart, node-delete, node-update, node-recovery | workflow modules `node_create`, `node_start`, `node_stop`, `node_restart`, `node_delete`, `node_update`, `node_recovery` |
 | node-replace | no RDM module: replace is Rafka's recipe over node.create / node.stop / node.update / node.start / node.delete |
@@ -139,7 +139,7 @@ Suggested layout: `src/workflows/<page>.rs` and `src/primitives/*`, folded into 
 | 16 | peer-mesh probe: exact mesh-primary first, then the other node-admins, direct then via a peer; thresholds in elapsed time | mesh-investigation.md; R-CK1 | landed in part (bd201c0c fence on elapsed t); probe order landed 67532dbe (#3097) |
 | 17 | stop/start frames are the node's only reports; the mesh-primary sets the status from them; delete of a crashed process skips the stop sends; a received `NodeLeft` is refused by name and its carry arms go | node-stop.md, node-start.md, node-delete.md | with item 14; NodeLeft refusal **[gossip]** (#3098) |
 | 18 | per-caller admission stays keyed by the caller's EndpointId, as the code has it; the doc now says so | node-rpc.md §17.1 | none (answered, §3 Q4) |
-| 19 | rename precondition: node.update's name change is refused by name unless the node is not ready-for-traffic and holds no connection (stopped, or `node.connections.deleted`); `ApplyNodeName` answers `Busy` naming held routes; `node.connections.delete { scope: All \| Connections([id, …]) }` as its own call, empty list refused, completion names closed and unknown ids; node.stop's cut calls the same core with All | R-CR1, R-CR1a, R-CR2, R-CR3 (rulings page) | landed b2ff768d (#3075) |
+| 19 | rename precondition: node.update's name change is refused by name unless the node is not ready and holds no connection (stopped, or `node.connections.deleted`); `ApplyNodeName` answers `Busy` naming held routes; `node.connections.delete { scope: All \| Connections([id, …]) }` as its own call, empty list refused, completion names closed and unknown ids; node.stop's cut calls the same core with All | R-CR1, R-CR1a, R-CR2, R-CR3 (rulings page) | landed b2ff768d (#3075) |
 | 20 | named typed refusals for an epoch overflow and a stale mesh-delete round (no codec variant today; never NotReady) | node-rpc-envelope.md Status | new story (#3099) |
 | 21 | a stop quiesces the stop gate (no gated turn in progress) before its final mesh topology and cut | node-stop.md step 4; R-ON1; gossip.md (last mesh topology carries itself Leaving) | landed e8e86195 (#3073) |
 | 22 | the election's lost set is read from durable exit-proof rows (never an in-memory feed); exit-row reads happen before the view lock; a proof once read is never withdrawn | CLAUDE.md read rule; elections §4.1 | s41 (in flight) |

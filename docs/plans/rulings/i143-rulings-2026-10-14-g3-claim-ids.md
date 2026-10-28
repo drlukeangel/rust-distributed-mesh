@@ -30,9 +30,9 @@
 
 - The four places that read the transport-authenticated sender or the seat book to attribute an incoming message or sample are not receiver authorization and stay as landed:
   1. round `heard_from` keyed on the sender (`status_rpc.rs:582`);
-  2. the `ReadyForTraffic` round report recorded under `Reporter::Birth(incarnation)` or `Reporter::Endpoint(peer)` (`status_rpc.rs:671`);
+  2. the `Ready` round report recorded under `Reporter::Birth(incarnation)` or `Reporter::Endpoint(peer)` (`status_rpc.rs:671`);
   3. the probe wake `wake.addressed_by(sender, peer)` (`status_rpc.rs:1028`);
-  4. rafka-time lineage: `from_mesh_primary_digest` and `from_fabric_primary_members` admit a stamp only from the digest or aggregate whose own payload birth is the seat book's holder and `ReadyForTraffic` (`rafka-mesh-transport/src/discipline.rs:42-78`). That is content against committed record, not sender attribution.
+  4. rafka-time lineage: `from_mesh_primary_digest` and `from_fabric_primary_members` admit a stamp only from the digest or aggregate whose own payload birth is the seat book's holder and `Ready` (`rafka-mesh-transport/src/discipline.rs:42-78`). That is content against committed record, not sender attribution.
 
 # R-SF1 — the staleness floor stays process-wide (Luke 2026-10-14, "i agree", option A)
 

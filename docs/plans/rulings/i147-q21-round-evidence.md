@@ -54,7 +54,7 @@ rdm.mesh.membership.update.via-round-frame kind="traffic-opened" fabric_id="qvf7
 then [hook receipt](http://localhost:16686/trace/d27ee7047bd0b2b5366d8826fbf5b56d):
 
 ```text
-rdm.mesh.membership.update.via-fabric-status fabric="r6zeqevz3kns" status="ready-for-traffic" publisher="mesh1.admin.1" changed_at_rafka_ms="10000" taken="true"
+rdm.mesh.membership.update.via-fabric-status fabric="r6zeqevz3kns" status="ready" publisher="mesh1.admin.1" changed_at_rafka_ms="10000" taken="true"
 ```
 
 The status has no round identity. Its receipt before the hook proves neither that it completed
@@ -84,7 +84,7 @@ that hook's round nor that it belongs to an earlier Build. The timestamp cannot 
 
 ### Inferred
 
-- [inferred] A blanket ready-for-traffic check would also suppress a hook from a subsequent Build
+- [inferred] A blanket ready check would also suppress a hook from a subsequent Build
   whose pending status this receiver has not heard. Fabric cycles and best-effort delivery permit
   that sequence; the frames alone cannot distinguish it from a delayed completed-round hook.
 - [inferred] Dedupe is implementable from current fields, but it cannot supply the missing

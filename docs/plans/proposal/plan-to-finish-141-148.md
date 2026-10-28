@@ -143,8 +143,8 @@ at the i145 SHA.
    - s8 #2920, local election, shape, drift and executor go (:757–758).
 5. **e4**:
    - s1 #2922, the Day-0 process cell `7a7876a3f2`;
-   - s2–s5 #2928–#2931: Day-0 self-adoption, RuntimeFact, the before_ready hook (re-sync after ready-for-traffic, Q69 = b), the Pending gate;
-   - `attempt_mesh_ready_for_traffic` goes (:700, :761).
+   - s2–s5 #2928–#2931: Day-0 self-adoption, RuntimeFact, the before_ready hook (re-sync after ready, Q69 = b), the Pending gate;
+   - `attempt_mesh_ready` goes (:700, :761).
 6. **U3**, the bindings with their own cells:
    - `Wiring` (types, `serve_app`, `before_ready`);
    - the deployment provider;

@@ -53,5 +53,5 @@ inflight").
 
 - Its page: node-identity-and-state.md beside the `DigestView` text, or build.md §4; the exact
   text goes to Luke before landing.
-- The existing `FabricState` (`fabric_state.rs`, the fabric's pending / ready-for-traffic state) keeps
+- The existing `FabricState` (`fabric_state.rs`, the fabric's pending / ready state) keeps
   its name.

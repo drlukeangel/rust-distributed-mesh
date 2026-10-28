@@ -77,7 +77,7 @@ life; a new executable is a new birth at the same `path.name`.**
    replaced first gets a second node-admin on the new executable at a new `path.name` of the node-admin
    type in that mesh (the next free one, `mesh1.admin.2`), whose entry the compiler adds to the accepted
    topology at acceptance, so every attempt and every read holds it and no attempt removes it as left
-   out; it is created, ReadyForTraffic and mesh-primary by node.primary.update before the original is
+   out; it is created, Ready and mesh-primary by node.primary.update before the original is
    replaced, and stays, since deleting a mesh's only admin would leave its own create with no executor. A path whose birth is under node recovery is replaced after that recovery's attempt
    completes, never in the same attempt: one attempt in flight per mesh (R-BI7) and the planner's
    recompute per attempt order the two. The successor's storage follows the path's config: `Persistent` inherits the
@@ -98,7 +98,7 @@ life; a new executable is a new birth at the same `path.name`.**
    `fabric.nodes.get` gets its wire mapping as the mesh selector's answer over every mesh, from the
    rows, no filter. Nothing about executables rides gossip or `node.topology.get`.
 
-Every Build that puts the fabric to pending completes only after its own ready-for-traffic state is set
+Every Build that puts the fabric to pending completes only after its own ready state is set
 (Q154); a replacement Build is one of them.
 
 ### 1. Removed, kept, corrected
@@ -211,13 +211,13 @@ with its guards: a type's non-primary members before its primary, the primary's 
 node.primary.update, the fabric-primary's move ending the caller's stream `FabricPrimaryMoved` and the
 caller resubmitting the same build_id, a type's only node replaced with no update (node-primary-update.md
 "No-successor cases"), and a mesh whose only node-admin is to be replaced first given a second node-admin
-at a new `path.name` of that type on the new executable, ReadyForTraffic and mesh-primary, which stays. A path under node recovery is
+at a new `path.name` of that type on the new executable, Ready and mesh-primary, which stays. A path under node recovery is
 replaced after that recovery's attempt completes, never in the same attempt. The successor's storage follows the path's config: `Persistent` inherits the
 predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one; config and tags come from
 the Deleted row (node-replace.md "Inherited"); a storage or placement change in the same request is the
 same re-birth with the new config. The row then records the new executable. node.restart keeps the executable
 (node-restart.md "Kept"); nothing changes a running birth's executable. A Build that puts the fabric
-back to pending completes only after its own ready-for-traffic state is set (states.md).
+back to pending completes only after its own ready state is set (states.md).
 
 ## 4. Recovery
 
@@ -315,18 +315,18 @@ New:
 ```
 ## Resize and roll
 
-A resize or roll puts the fabric back to pending; meshes already serving stay ready-for-traffic. During a bin roll, a member still on its
+A resize or roll puts the fabric back to pending; meshes already serving stay ready. During a bin roll, a member still on its
 old binary/identity does not satisfy its planned replacement. A new binary requires
 a replacement node with a new NodeId and incarnation; node.restart retains the same
 process and binary. The mesh cannot report
-ready-for-traffic, and the fabric cannot climb, until the roll's last planned birth checks
+ready, and the fabric cannot climb, until the roll's last planned birth checks
 in.
 ```
 New:
 ```
 ## Resize and executable replacement
 
-A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; a state's check-in or a hook that fails fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth checks in.
+A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; a state's check-in or a hook that fails fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready, and the fabric cannot change, until the replacement's last planned birth checks in.
 ```
 (The rest of the paragraph, on Rafka's state-sync answer, stands. This folds Q154's states.md sentence
 in, so Q154's own sentence is not added twice.)
@@ -382,11 +382,11 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
   broker, compute and admin untouched, same node.id and incarnation before and after, no stop, no restart;
 - the executor killed halfway through that replacement: the next attempt finishes the remaining gateways
   from the rows and the receipts, no gateway replaced twice, every broker, compute and admin still untouched;
-- a request replacing every node of a two-mesh fabric: Complete only after the ready-for-traffic state is set
+- a request replacing every node of a two-mesh fabric: Complete only after the ready state is set
   (Q154), Blocked naming the change meanwhile;
 - a one-broker mesh's broker replaced: one `node.delete` then the create, no refusal at any step;
 - a one-admin mesh whose admin's executable changes: a second admin created first on the new executable,
-  ReadyForTraffic and mesh-primary, then the original replaced, the added admin in the topology after;
+  Ready and mesh-primary, then the original replaced, the added admin in the topology after;
 - a recovery open on a path whose entry names a new executable: the recovery completes on the row's, then
   the replacement runs as the next attempt's step; never both in one attempt;
 - an admin restarted over a store whose current Build predates the field: it reads it as valid history

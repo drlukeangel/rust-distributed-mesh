@@ -385,11 +385,11 @@ Generated lists are a starting point: the lead reads each line before changing i
 - `docs/architecture/fabric-mesh-node-lifecycles.md:86` [keep: the investigation's provider step] | [node.runtime.inspect](lifecycles/node-runtime-inspect.md) (primitive) | The provider's answer about the exact runtime handle, the only exit proof; run by delete, recovery, investigation, mesh.delete and fabric.delete 
 - `docs/architecture/fabric-node-lifecycle-elections.md:25` [remove or rewrite: requires proof of termination] Equal candidate facts and equal seat records produce equal winners. The fabric seat alone may move without exit proof, under §4.3's staleness-floor rule and the store's authority [banned word]; every other seat moves only on yie
 - `docs/architecture/fabric-node-lifecycle-elections.md:92` [remove or rewrite: requires proof of termination] [tickle ladder](lifecycles/node-recovery.md#numbered-end-to-end-sequence). Only the provider's exit proof vacates a seat; no probe outcome does. The one exception is the fabric seat (§4.3, §5).
-- `docs/architecture/fabric-node-lifecycle-elections.md:115` [remove or rewrite: requires proof of termination] exact birth is proven gone, the lowest ReadyForTraffic node-admin NodeId of the same mesh fills it,
+- `docs/architecture/fabric-node-lifecycle-elections.md:115` [remove or rewrite: requires proof of termination] exact birth is proven gone, the lowest Ready node-admin NodeId of the same mesh fills it,
 - `docs/architecture/fabric-node-lifecycle-elections.md:123` [remove or rewrite: requires proof of termination] inherited data dir only with exit proof of the old birth; otherwise over a newly allocated data dir
 - `docs/architecture/fabric-node-lifecycle-elections.md:157` [remove or rewrite: requires proof of termination] - for a hung mesh-primary (`R-FM1`), the fabric-primary runs the `RDM_HUNG_HOLD_FLOORS` hold and, when it expires with the provider still reporting `Running`, submits the recovery Build whose `TerminateRuntime` step prov
 - `docs/architecture/fabric-node-lifecycle-elections.md:158` [remove or rewrite: requires proof of termination] - for a hung fabric-primary (`R-FM1`), no node below it commands its termination; its seats move by §4.3, and the holder that took them runs the hold (`RDM_HUNG_HOLD_FLOORS`) and the terminate as for any `held-running` m
-- `docs/architecture/fabric-node-lifecycle-elections.md:159` [remove or rewrite: requires proof of termination] - a holder that yields or whose exact birth is proven gone hands the seat to the lowest ReadyForTraffic NodeId of its own mesh;
+- `docs/architecture/fabric-node-lifecycle-elections.md:159` [remove or rewrite: requires proof of termination] - a holder that yields or whose exact birth is proven gone hands the seat to the lowest Ready NodeId of its own mesh;
 - `docs/architecture/fabric-node-lifecycle-elections.md:171` [remove or rewrite: requires proof of termination] A seat moves only by its holder's yield, a committed transfer (§4.4), a proven loss, or, for the fabric seat alone, §4.3's staleness-floor rule under the store's [banned word], never by a status (§5), so [fabric.delete](lifecycl
 - `docs/architecture/fabric-node-lifecycle-elections.md:224` [remove or rewrite: requires proof of termination] 13. A seat moves only by its holder's yield, a committed transfer or a proven loss, never by a status; fabric.delete moves none.
 - `docs/architecture/fabric-node-lifecycle-elections.md:237` [remove or rewrite: requires proof of termination] _ if h.is_proven_gone() => {}                                // proven gone: a vacancy
@@ -478,14 +478,14 @@ Generated lists are a starting point: the lead reads each line before changing i
 - `docs/architecture/lifecycles/node-runtime-inspect.md:109` [remove or rewrite: requires proof of termination] | Inspect | caller | `rdm.node_admin.node.resolve.via-provider-inspection` | node, node_id, incarnation_id, inspector, handle, verdict, exit_code, exit_proof (`put` / `held` / none), reason |
 - `docs/architecture/lifecycles/node-runtime-inspect.md:110` [remove or rewrite: requires proof of termination] | Row | caller | the store write of the exit-proof row; on `os-stopped`, node recovery's `os-stopped` row (`rdm.node_admin.node.update.via-os-stopped`, outcome `recorded` / `cleared` / `revalidated`) | node_id, incarnati
 - `docs/architecture/lifecycles/node-tickle.md:139` [remove or rewrite: requires proof of termination] recorded as the node's death. A caller that needs proof of exit runs
-- `docs/architecture/lifecycles/states.md:11` [remove or rewrite: requires proof of termination] - **Fabric:** `pending` → `state-sync` → `state-commit` → `ready-for-traffic`. FabricStatus also carries a `degraded` health marker, set by the fabric-primary at a peer mesh's carrier-edge-lost verdict or on the fully cr
+- `docs/architecture/lifecycles/states.md:11` [remove or rewrite: requires proof of termination] - **Fabric:** `pending` → `state-sync` → `state-commit` → `ready`. FabricStatus also carries a `degraded` health marker, set by the fabric-primary at a peer mesh's carrier-edge-lost verdict or on the fully cr
 - `docs/architecture/lifecycles/states.md:33` [remove or rewrite: requires proof of termination] | node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's exact provider exit proof |
 - `docs/architecture/lifecycles/states.md:37` [remove or rewrite: requires proof of termination] | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' exact exit proofs; never an op |
 - `docs/architecture/lifecycles/states.md:137` [remove or rewrite: requires proof of termination] an exit/relaunch. node.delete proceeds from stopped, as deleting, to exact provider exit proof
 - `docs/architecture/lifecycles/states.md:138` [remove or rewrite: requires proof of termination] and identity release, deleted. Silence is never exit proof.
 - `docs/architecture/lifecycles/states.md:163` [remove or rewrite: requires proof of termination] - A member leaves the checklist only through the accepted removal and a proven exit,
 - `docs/architecture/lifecycles/states.md:167` [remove or rewrite: requires proof of termination] primary's proven exit or accepted removal, or the member dropping it; re-owed to the new holder
-- `docs/architecture/node-admin-lifecycle.md:116` [remove or rewrite: requires proof of termination] | the fabric-primary's mesh loses every node-admin while other meshes live | the backbone's lowest ReadyForTraffic node-admin, seated by [elections §4.3](fabric-node-lifecycle-elections.md#43-fabric-primary) after the ho
+- `docs/architecture/node-admin-lifecycle.md:116` [remove or rewrite: requires proof of termination] | the fabric-primary's mesh loses every node-admin while other meshes live | the backbone's lowest Ready node-admin, seated by [elections §4.3](fabric-node-lifecycle-elections.md#43-fabric-primary) after the ho
 - `docs/architecture/node-identity-and-state.md:336` [remove or rewrite: requires proof of termination] ([node.primary.update](lifecycles/node-primary-update.md)) or, on proven loss, by
 - `docs/architecture/node-identity-and-state.md:551` [remove or rewrite: requires proof of termination] | **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after exact provider proof | on receipt |
 - `docs/architecture/node-identity-and-state.md:583` [remove or rewrite: requires proof of termination] | Effect | The delete's own: provider exit proof, row deleted, name released, NodeDeleted in the mesh topology, deleted retention, Gone |
@@ -873,7 +873,7 @@ Generated lists are a starting point: the lead reads each line before changing i
   - `:3747` [remove or rewrite] // the exited birth (its lifecycle operation), and each operation's Complete commits no output.
   - `:4092` [remove or rewrite] /// An attempt of `id` opened on `mesh`'s drift lane (R-BI7): the recovery of `path`'s exited birth.
 - `crates/rdm-admin/src/control_plane.rs` (15)
-  - `:76` [remove or rewrite] /// initial fabric before ready-for-traffic"), and each exited birth's exit-proof row is the durable
+  - `:76` [remove or rewrite] /// initial fabric before ready"), and each exited birth's exit-proof row is the durable
   - `:247` [remove or rewrite] /// The exit-proof row of the exact birth this admin's view names at `claimant` in `mesh`, a point
   - `:251` [remove or rewrite] async fn departure_of(&self, claimant: &PathName, mesh: &str) -> Result<Option<(crate::model::Node, crate::status_storage::NodeExitRow)>, Refusal> {
   - `:257` [remove or rewrite] Err(e) => Err(Refusal::Unavailable(format!("{me}: the exit-proof row of {claimant} ({}) at {} among mesh {mesh}'s status rows could not be read to prove its departure: {e}", n.node
@@ -955,7 +955,7 @@ Generated lists are a starting point: the lead reads each line before changing i
   - `:201` [remove or rewrite] /// it is proven gone (`crate::election`), and its own recovery is still its mesh's to run.
   - `:210` [remove or rewrite] /// The admin the election seats as `target`'s mesh primary once `target`'s exited birth is proven
   - `:211` [remove or rewrite] /// gone (elections §5: "a holder ... whose exact birth is proven gone hands the seat to the lowest
-  - `:212` [remove or rewrite] /// ReadyForTraffic NodeId of its own mesh"). A proven loss only: a planned move is node.primary.update.
+  - `:212` [remove or rewrite] /// Ready NodeId of its own mesh"). A proven loss only: a planned move is node.primary.update.
   - `:275` [remove or rewrite] let only_of_cohort = t.cohort(&node.mesh, node.kind).filter(|n| !n.exit_proven).all(|n| n.node_id == holder.node_id);
 - `crates/rdm-admin/src/fabric_builds.rs` (2)
   - `:197` [remove or rewrite] /// The record names this birth, names none, or names a birth proven gone: it ends nothing.
@@ -1314,7 +1314,7 @@ Generated lists are a starting point: the lead reads each line before changing i
 - `crates/rdm-admin/src/fabric_builds.rs` `a_recipe_attempt_travels_the_build_topic_with_its_steps_and_pinned_births` (lines 774)
 - `crates/rdm-admin/src/fabric_builds.rs` `a_moved_fabric_seat_record_refuses_the_old_seats_decisions_with_no_fence_write` (lines 798)
 - `crates/rdm-admin/src/fabric_rounds.rs` `a_new_attempt_of_the_accepted_build_commands_every_planned_primary_again_under_its_own_round` (lines 1668)
-- `crates/rdm-admin/src/fabric_state.rs` `a_pending_birth_is_not_commanded_until_it_reaches_ready_for_traffic` (lines 622)
+- `crates/rdm-admin/src/fabric_state.rs` `a_pending_birth_is_not_commanded_until_it_reaches_ready` (lines 622)
 - `crates/rdm-admin/src/investigate.rs` `a_peer_meshs_recovery_is_decided_only_by_a_recovery_decision` (lines 1302)
 - `crates/rdm-admin/src/mesh_delete.rs` `a_delete_mesh_from_a_successor_owner_takes_over_the_running_leaves_handoff` (lines 1780)
 - `crates/rdm-admin/src/mesh_delete.rs` `a_later_delete_mesh_joins_the_one_run_and_the_run_ends_naming_the_later_attempt` (lines 1828, 1846)

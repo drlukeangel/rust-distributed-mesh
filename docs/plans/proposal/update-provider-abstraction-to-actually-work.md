@@ -107,7 +107,7 @@ Had mesh2.admin.1 asked the provider at 8, the provider would have answered `run
 8.2      mesh2.compute.2 runs hydrate_before_ready.
 8.3      mesh2.compute.2 obtains complete topology (node.topology.get), any missing Build floor, and rafka-time last.
 8.4      mesh2.compute.2 emits node.started.
-8.5      mesh2.admin.1 takes node.started, sets mesh2.compute.2 ReadyForTraffic through the node status apply and gossips it.
+8.5      mesh2.admin.1 takes node.started, sets mesh2.compute.2 Ready through the node status apply and gossips it.
 8.6      node.started of the same (node.id, incarnation) ends NodeRestarting for every peer (gossip.md, node-stopped lifecycle overlay).
 8.7      mesh2.admin.1 emits node.restarted on the restart's stream.
 ```

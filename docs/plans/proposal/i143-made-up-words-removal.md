@@ -54,7 +54,7 @@ line that would need one is listed in §6 as his call.
 | takeover, take seats, `TakeSeats` | take over | Luke's verb ("taken over fabric-primary", 2026-10-20); 26 page lines already use it |
 | seat revision | the primary's `revision` | `revision` is the vocabulary (CLAUDE.md: "revision, never epoch") |
 | `Seated` frame, and the `primary updating` / `primary updated` frames | nothing: no frame announces a primary change; the successor's `Digest` carries `is_primary` and the mesh-primary's `MeshTopology` projection carries the recorded change (gossip.md, "A primary change on gossip"); `node.primary.updated` stays only as the direct reply of the operation |
-| seat watch, `seat_watch.rs` | the staleness-floor rule of every primary: a primary unheard past the floor is superseded by the lowest ReadyForTraffic node of its type in its mesh | Q107 (1); `fabric-node-lifecycle-elections.md` §4.3 for the fabric-primary; named by the operation it leads to, `node.primary.update` or `node.fabric-primary.update` |
+| seat watch, `seat_watch.rs` | the staleness-floor rule of every primary: a primary unheard past the floor is superseded by the lowest Ready node of its type in its mesh | Q107 (1); `fabric-node-lifecycle-elections.md` §4.3 for the fabric-primary; named by the operation it leads to, `node.primary.update` or `node.fabric-primary.update` |
 | `LeadershipView`, resolver | the leadership election and its result | Luke, Q107: "leadership election"; `fabric-node-lifecycle-elections.md` §1 |
 | lane, `LaneId`, `rev-<R>/<seq>` | the Build journal's records at their own keys | `build.md:413` "the Build journal"; Q109 items 12-13: one row at build_id, one at (build_id, mesh, attempt), one claim at (build_id, mesh, attempt) |
 | write cut-off, `StorageError::CutOff`, held rows, lift, restore | nothing: a primary finishes the writes it issued before it calls its successor | Q109 B, Luke's sentence |
@@ -275,7 +275,7 @@ mesh-delete.md (5 each); fabric-recovery.md (4); fabric-delete.md (3); node-iden
 node-rpc-envelope.md, gossip.md, fabric-certs.md (2 each); node-delete.md (1). CLAUDE.md line 102.
 Under Q107, Q110 and Q111 the sequence for an unheard primary is, in order:
 
-1. Unheard past the staleness floor, the lowest ReadyForTraffic node of its type in its mesh becomes
+1. Unheard past the staleness floor, the lowest Ready node of its type in its mesh becomes
    primary by the election (Q107 (1); Q89 for the fabric-primary, whose successor is its mesh's lowest
    Ready node-admin), announces it, and the mesh-primary records it (NA2 its own row, as the mesh's writer
    from that moment). No investigation runs before this (Q107 (2)).
@@ -319,4 +319,4 @@ machinery.
 - `on_retire` and `PersistentRetireDisposition` (`rdm-core/src/meta.rs`) become `on_delete`: the word is banned and delete is what happens.
 - `roll` in every identifier the executable-replacement landing keeps (`roll_operations`, `roll_progress`, the `roll::` cells): renamed with that landing, not here.
 - `climb` (Luke, 2026-10-24: the fabric's change; its three steps are its rounds): `ClimbInputs`, `climb_wake`, `climb_step`, `climb_of`, `two_mesh_climb`, `first_climb`, `second_climb`, every `climb`/`climbs`/`climbed` identifier (about 160 sites in 19 files) and the span `via-state-climb` become the change's names; the three page lines (fabric-create.md:7, states.md:180, fabric-primary.md:311) change with it, exact text in the rulings index Q158.
-- `round` (Luke, 2026-10-24: states, not rounds; a fabric state is set fabric-wide when every member has checked in): states.md "Rounds" and "The round checklist", fabric-state-sync.md, fabric-state-commit.md, fabric-ready-for-traffic.md and fabric-create.md's "rounds" prose, node-rpc-envelope.md's "fabric round command pairs", `fabric_rounds.rs`, the `via-round-command` span and every `round` identifier; exact page text with the sweep for Luke's yes.
+- `round` (Luke, 2026-10-24: states, not rounds; a fabric state is set fabric-wide when every member has checked in): states.md "Rounds" and "The round checklist", fabric-state-sync.md, fabric-state-commit.md, fabric-ready.md and fabric-create.md's "rounds" prose, node-rpc-envelope.md's "fabric round command pairs", `fabric_rounds.rs`, the `via-round-command` span and every `round` identifier; exact page text with the sweep for Luke's yes.

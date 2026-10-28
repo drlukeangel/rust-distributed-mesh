@@ -9,7 +9,7 @@ rest stays here.
 ## Why
 
 - **A real bug.** mesh1.admin.2 was stopped while its mesh-primary held its heartbeat 13; the stop
-  installed 13 as the mark. Heartbeat 14 (ReadyForTraffic, same incarnation, sent before the stop)
+  installed 13 as the mark. Heartbeat 14 (Ready, same incarnation, sent before the stop)
   arrived after it and ended the stop (gate b05c303b, node_stop admin cell: stop trace
   `1f019c9dc5c06a3cb9db7be229cb3340`; `rdm.mesh.membership.update.via-node-started` at seq 14 in trace
   `0164315174b5f3d478b34af76d519e94`). The defect is RDM's `stopped_refuses` in rafka-mesh-transport's
@@ -22,7 +22,7 @@ rest stays here.
 ## A. Settled in review (the shape every ask below assumes)
 
 1. **Heartbeat and status are separate facts on every path.** A heartbeat says only "this exact birth
-   published again"; it never says started, connections-deleted or ready-for-traffic. The
+   published again"; it never says started, connections-deleted or ready. The
    mesh-primary's status fact is the only thing that moves a member's status. Receivers hold both. A
    heartbeat with a higher number never clears stopped; deleted is terminal for the birth. This holds in
    Digests, mesh topologies, deltas, fulls, topology reads and join answers — otherwise another receive
@@ -105,8 +105,8 @@ ruling text. The code still lands with its Jaeger flame (CLAUDE.md rule 1).
 - **Events vs statuses.**
   - NodeStopped, NodeDeleting and NodeRestarting stay immediate events.
   - The other statuses in R-ST1's list arrive only through the projection, on change, with no
-    reinforcement frames. For a start, peers see pending, then ready-for-traffic (Luke: "wouldn't that
-    just be pending and ready-for-traffic").
+    reinforcement frames. For a start, peers see pending, then ready (Luke: "wouldn't that
+    just be pending and ready").
 - **The version field.** Each status fact carries its subject's `topology_version`. It lands as a named
   coordinated schema cut of the lifecycle frames: every reader and writer in one landing, fixtures
   resealed, `durable format moved`.
@@ -182,27 +182,27 @@ connections remain blocked through the name apply."
 ### R-ST1: status names follow their op
 
 Rule: a status is named for the lifecycle op that sets it (`-ing` while it runs, `-ed` when it holds);
-a sub-step gets no status; `pending` is the first state of the fabric and the mesh; `ready-for-traffic`
+a sub-step gets no status; `pending` is the first state of the fabric and the mesh; `ready`
 is the routing word; node.create includes node.start.
 
 | entity | op | today | proposed |
 |---|---|---|---|
 | node | node.start (inside node.create or on a stopped node) | pending | **starting** |
 | node | started, awaiting the mesh-primary | pending | **pending** |
-| node | the mesh-primary's decision | ready-for-traffic | ready-for-traffic |
+| node | the mesh-primary's decision | ready | ready |
 | node | node.connections.delete (R-CR4) | Draining | **connections-deleting → connections-deleted** |
 | node | node.stop | Leaving | **stopping → stopped** |
 | node | node.delete | overlay NodeDeleting, row Deleted | **deleting → deleted** |
 | node | observed | row Dead, PendingReconnect | unchanged |
 | mesh | mesh.delete | leaving → dead | **deleting → deleted** |
-| fabric | fabric.create, rounds | pending → state-sync → state-commit → ready-for-traffic | unchanged |
+| fabric | fabric.create, rounds | pending → state-sync → state-commit → ready | unchanged |
 
 Doc conflicts (old/new, states.md):
-- line 12, old: "**Mesh:** `pending` → `ready-for-traffic` → `leaving` → `dead`. … dead is final." new:
-  "`pending` → `ready-for-traffic` → `deleting` → `deleted`. … deleted is final." (also removes the clash
+- line 12, old: "**Mesh:** `pending` → `ready` → `leaving` → `dead`. … dead is final." new:
+  "`pending` → `ready` → `deleting` → `deleted`. … deleted is final." (also removes the clash
   with the node row's observer `Dead` mark)
-- line 13, old: "pending → ready-for-traffic → Draining → Leaving … Stopped is Leaving with a live
-  process; it is not a new status." new: "starting → pending → ready-for-traffic → connections-deleting →
+- line 13, old: "pending → ready → Draining → Leaving … Stopped is Leaving with a live
+  process; it is not a new status." new: "starting → pending → ready → connections-deleting →
   connections-deleted → stopping → stopped → deleting → deleted … stopped is a status: a live, stopped
   process."
 

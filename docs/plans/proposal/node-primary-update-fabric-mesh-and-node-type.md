@@ -19,7 +19,7 @@ Architecture doc edits land only on Luke's yes to this proposal; that yes is the
   - R14 (writer ladder, one store root per fabric);
   - R-OW1 (the mesh-primary writes its mesh's rows);
   - R-EL1 (a seat moves only by explicit yield or proven loss);
-  - R-PB1 (no seat moves before the initial fabric is ready-for-traffic);
+  - R-PB1 (no seat moves before the initial fabric is ready);
   - R-RX1 (no receiver checks who sent a call).
 - Pages: fabric-node-lifecycle-elections.md §4 to §6, lifecycles/node-stop.md, lifecycles/node-connections-delete.md, lifecycles/states.md "Leadership", node-rpc-envelope.md (Meta field groups; TakeSeats), gossip.md (SeatedTogether), node-identity-and-state.md §2.
 
@@ -54,7 +54,7 @@ Architecture doc edits land only on Luke's yes to this proposal; that yes is the
 
 ### B1. The rule
 
-- Every (mesh, node_type) cohort elects its primary by the one rule of elections §4.1 and §5: a living holder keeps its seat; a vacancy goes to the lowest ReadyForTraffic NodeId of the cohort.
+- Every (mesh, node_type) cohort elects its primary by the one rule of elections §4.1 and §5: a living holder keeps its seat; a vacancy goes to the lowest Ready NodeId of the cohort.
 - A node's `is_primary` means it is the primary of its own type's cohort in its mesh.
 - The mesh-primary is the primary of the mesh's `node-admin` cohort (§4.2).
 - The fabric-primary is its own property, `is_fabric_primary`, elected from the mesh-primaries (§4.3) and kept in its holder's mesh (§4.3, §6).
@@ -92,7 +92,7 @@ For the `node-admin` cohort the holder NA1 is the mesh-primary, so it is also th
 **Sequence** (NA1/NA2 for the `node-admin` cohort; for another cohort read "the mesh-primary" for every writer step and "B1/B2" for holder and successor). For a non-admin cohort the order of steps 1 and 5 swaps: the mesh-primary is writer and commander, so it pre-checks, announces and writes the row first (steps 2-5), and its command to the holder B1 comes after the row and carries it; B1 then makes the call of step 6. For the `node-admin` cohort the holder is commanded first because it is the writer:
 
 1. The holder is commanded from above, as a step of the Build that stops, deletes, restarts, replaces or runs `node.connections.delete { scope: All }` on it.
-2. The writer pre-checks from its own view: the cohort election over the holder's cohort with the holder excluded names a ReadyForTraffic successor. If it names none, the step is refused by name and nothing has changed, no cut-off, no row (the no-successor cases below).
+2. The writer pre-checks from its own view: the cohort election over the holder's cohort with the holder excluded names a Ready successor. If it names none, the step is refused by name and nothing has changed, no cut-off, no row (the no-successor cases below).
 3. The writer, as the mesh-primary and sole author of member status, publishes "primary updating": operation, cohort, the holder's and the successor's exact births, the current and next revisions. It states intent only; receivers keep the current holder until the committed row names the next revision.
 4. For the `node-admin` cohort, NA1 sets its write cut-off and drains every store write already issued (R14). The mesh seat's cut-off covers the mesh's rows (`meshes/<mesh>`, `nodes/<mesh>/`); the fabric seat's covers `fabric/` and Build acceptance; when both move, one drain covers both. A non-admin holder has no mesh rows to drain (its own `connections/<node>/` rows are its own, R14).
 5. The writer writes the one seat row at the next revision(s) naming the successor. This is the commit. From this write the holder is no longer primary.
@@ -104,7 +104,7 @@ For the `node-admin` cohort the holder NA1 is the mesh-primary, so it is also th
 
 - **Refused before the row** (step 2, or the writer's own pre-check of the call's revision): refused by name, nothing changed, the Build's step fails by name. Nothing was cut off, so nothing is restored.
 - **The seat-row write fails between the drain and the commit** (steps 4-5, `node-admin` cohort). The row is a local write, temp file, fsync, rename (R14's fs contract), and it answers a named error or succeeds. A named error is a confirmed non-commit: the step fails by name naming the error, and NA1 lifts its cut-off under the unchanged revision, because a primary that cannot write is a worse state than a failed step. The one uncertain case is NA1 dying between the drain and the rename; NA1 resolves it itself on restart by reading the row (committed: it is no longer primary; absent: it is, under the unchanged revision). Two cells.
-- **After the row, the successor is the committed holder whatever the call returns.** The receiver never refuses the call for the birth it names (R-UC1a, R-RX5: no receiver decides whether a call was meant for it); it installs the committed view from the row and answers, and whether it is the holder is a projection of the row against its own birth. A call that reached a process other than the named birth, a refusal or no answer is never an exit proof (elections §4.1: only the provider's exit proof vacates a seat; R-SW1: a failed probe never proves death). The holder's call fails by name, the workflow runs node-recovery's tickle ladder on the successor's exact birth and retries the call against the resolved birth; the seat vacates only on the provider's exit proof, and then the ordinary rule fills it (lowest ReadyForTraffic NodeId of the cohort). No row is rewritten.
+- **After the row, the successor is the committed holder whatever the call returns.** The receiver never refuses the call for the birth it names (R-UC1a, R-RX5: no receiver decides whether a call was meant for it); it installs the committed view from the row and answers, and whether it is the holder is a projection of the row against its own birth. A call that reached a process other than the named birth, a refusal or no answer is never an exit proof (elections §4.1: only the provider's exit proof vacates a seat; R-SW1: a failed probe never proves death). The holder's call fails by name, the workflow runs node-recovery's tickle ladder on the successor's exact birth and retries the call against the resolved birth; the seat vacates only on the provider's exit proof, and then the ordinary rule fills it (lowest Ready NodeId of the cohort). No row is rewritten.
 - **Indeterminate after the row:** the row resolves it. An identical retry of the call replays the committed result before any revision check; a call with a conflicting payload for the same operation is refused by name.
 - **The holder lost after the row, before "updated":** the successor and every reader take the seat from the row; the next writer to read the row publishes "updated". Completion needs neither gossip delivery nor the holder's survival.
 - **Discovery is not installation.** A later attempt that reads the committed row has discovered the commit, not installed it. The resuming executor installs the committed view locally and obtains the successor's `node.primary.updated` (its installation acknowledgement) before it commands the departing holder's destructive step. A successor whose birth is proven exited is a proven loss, handled above.
@@ -112,12 +112,12 @@ For the `node-admin` cohort the holder NA1 is the mesh-primary, so it is also th
 
 **The no-successor cases**, each named:
 
-- **No other node of the type in the mesh (ruled, Luke 2026-10-12; Q7):** `node.primary.update` commanded for a cohort with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, until a secondary is available. The holder stays primary, nothing is cut off, no row is written, and the workflow that commanded it (the stop, restart or delete of that node) fails by name with that reason. The one exception is R-MT1's: the delete of a mesh's only node skips the update. Consequence stated on the page: a mesh's sole `broker` cannot be stopped or restarted until a second broker is ReadyForTraffic. No yield row and no vacancy inferred from a stop (R-EL1).
+- **No other node of the type in the mesh (ruled, Luke 2026-10-12; Q7):** `node.primary.update` commanded for a cohort with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, until a secondary is available. The holder stays primary, nothing is cut off, no row is written, and the workflow that commanded it (the stop, restart or delete of that node) fails by name with that reason. The one exception is R-MT1's: the delete of a mesh's only node skips the update. Consequence stated on the page: a mesh's sole `broker` cannot be stopped or restarted until a second broker is Ready. No yield row and no vacancy inferred from a stop (R-EL1).
 - **No other mesh-primary for the fabric seat (Luke 2026-10-12):** the fabric arm's own refusal, C2.
 - **The last node-admin of a mesh:** mesh.delete's path, and mesh.delete never updates the mesh primary. The mesh-primary keeps its seat and keeps publishing through the whole teardown, and a separate node.delete with the fabric-primary as executor deletes it last (mesh-delete.md rows 21 and 25, step 7; R-NS1, R-MD1). If the mesh holds the fabric seat, that seat moves first by `node.fabric-primary.update` with the departing mesh excluded (mesh-delete.md step 1); nothing else moves.
 - **Fabric shutdown:** fabric.delete moves no seat (elections §6); seats remain until deletion.
 
-Before the initial fabric first reaches ready-for-traffic, every call is refused `fabric-not-ready` (R-PB1).
+Before the initial fabric first reaches ready, every call is refused `fabric-not-ready` (R-PB1).
 
 ### C2. node.fabric-primary.update
 
@@ -125,11 +125,11 @@ The fabric-primary seat is its own property, projected as `is_fabric_primary` (n
 
 **Successor search for the commanded transfer:**
 
-1. the holder's own mesh: the lowest ReadyForTraffic node-admin NodeId there, where the seat stays by preference (§4.3);
-2. only when that mesh has none, or it is the departing mesh under mesh.delete: the lowest NodeId among the other ReadyForTraffic mesh-primaries;
-3. **neither found: refused by name**, `cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh <mesh>, no other mesh-primary ReadyForTraffic`, naming both searches and what each found. The holder stays fabric-primary, nothing is cut off, no row is written, and the commanding workflow fails with that reason until a successor is available (Luke 2026-10-12).
+1. the holder's own mesh: the lowest Ready node-admin NodeId there, where the seat stays by preference (§4.3);
+2. only when that mesh has none, or it is the departing mesh under mesh.delete: the lowest NodeId among the other Ready mesh-primaries;
+3. **neither found: refused by name**, `cannot transfer fabric seat: no other node-admin Ready in mesh <mesh>, no other mesh-primary Ready`, naming both searches and what each found. The holder stays fabric-primary, nothing is cut off, no row is written, and the commanding workflow fails with that reason until a successor is available (Luke 2026-10-12).
 
-Where the refusal bites, stated on the page: a single-mesh fabric with one node-admin cannot stop, restart or delete its fabric-primary until a second node-admin is ReadyForTraffic; mesh.delete of the only mesh, or of the fabric-primary's mesh when no other mesh has a Ready primary, is refused the same way, and deleting the last mesh is fabric.delete's path.
+Where the refusal bites, stated on the page: a single-mesh fabric with one node-admin cannot stop, restart or delete its fabric-primary until a second node-admin is Ready; mesh.delete of the only mesh, or of the fabric-primary's mesh when no other mesh has a Ready primary, is refused the same way, and deleting the last mesh is fabric.delete's path.
 
 The ordinary election is untouched by this search: on a proven loss the seat waits while only Pending admins of the mesh survive and leaves the mesh only when every node-admin birth of the mesh is proven gone or has left (§4.3 :114). The search above is for the commanded transfer only.
 
@@ -198,8 +198,8 @@ The ordinary election is untouched by this search: on a proven loss the seat wai
     - the call after the row reaches a process that is not the named successor's birth, the successor alive: no refusal, the successor stays the committed holder, the retry against its resolved birth completes;
     - successor proven exited after the row: the seat vacates on the provider's proof and the ordinary rule fills it;
     - a non-admin cohort: the mesh-primary writes the row and announces, the broker holder makes the call, the broker successor installs;
-    - the sole member of a non-admin type stopped: refused `cannot transfer: no secondary of type …`, the holder still primary, no row, the stop failing with that reason; the same stop succeeds once a second member is ReadyForTraffic;
-    - the fabric-primary of a single-admin single-mesh fabric stopped: refused naming both searches; succeeds once a second node-admin of its mesh is ReadyForTraffic, both seats moving in one row;
+    - the sole member of a non-admin type stopped: refused `cannot transfer: no secondary of type …`, the holder still primary, no row, the stop failing with that reason; the same stop succeeds once a second member is Ready;
+    - the fabric-primary of a single-admin single-mesh fabric stopped: refused naming both searches; succeeds once a second node-admin of its mesh is Ready, both seats moving in one row;
     - mesh.delete of a mesh holding the fabric seat with another Ready mesh-primary: the fabric seat moves outside first, the mesh-primary stays primary and publishing until the fabric-primary's node.delete removes it;
     - mesh.delete of the only mesh: refused with the fabric-seat reason.
 
@@ -214,4 +214,4 @@ The ordinary election is untouched by this search: on a proven loss the seat wai
 - **Q5. node_type grammar.**
   - Recommendation: the tag-label grammar (A1), one grammar for both; whitespace refused, never trimmed.
 - **Q6. The default for a blank `node_type`. Ruled (Luke 2026-10-12): empty `node_type` = `node`.** An omitted or empty value is stored as `node` before grouping; whitespace is refused (A1).
-- **Q7. A transfer with no successor. Ruled (Luke 2026-10-12):** `node.primary.update` for a type with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, until a secondary is available; `node.fabric-primary.update` with no other node-admin ReadyForTraffic in the mesh and no other mesh-primary ReadyForTraffic is refused the same way, naming both searches. The holder stays primary, nothing is cut off, no row is written, and the commanding workflow fails with that reason. R-MT1's one exception stands: the delete of a mesh's only node skips the update. No yield row, no vacancy inferred from a stop (R-EL1). The consequences are stated on the page: a mesh's sole broker, and a single-admin single-mesh fabric's primary, cannot be stopped or restarted until a secondary is ReadyForTraffic.
+- **Q7. A transfer with no successor. Ruled (Luke 2026-10-12):** `node.primary.update` for a type with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, until a secondary is available; `node.fabric-primary.update` with no other node-admin Ready in the mesh and no other mesh-primary Ready is refused the same way, naming both searches. The holder stays primary, nothing is cut off, no row is written, and the commanding workflow fails with that reason. R-MT1's one exception stands: the delete of a mesh's only node skips the update. No yield row, no vacancy inferred from a stop (R-EL1). The consequences are stated on the page: a mesh's sole broker, and a single-admin single-mesh fabric's primary, cannot be stopped or restarted until a secondary is Ready.

@@ -54,11 +54,11 @@ public seams (`start_with(cfg, Wiring { .. })`, `start_with_rafka_time_before_re
 `scripts/demo-estate.sh up` (this landing): the Day-0 `rshape-node-admin` from the consumer's executables (bound by
 sha256 in a binding set, nothing built-in), the Admin UI entered at its printed birth, and the shape as one Build
 through the UI's own `/api/bootstrap`: **mesh1 and mesh2, each 2 node-admins, 2 computes, 3 gateways, 3 brokers;
-20 of 20 ready-for-traffic in 7-9 s**, every run. The whole formation is one trace on .99: the UI's call,
+20 of 20 ready in 7-9 s**, every run. The whole formation is one trace on .99: the UI's call,
 `build.create.via-node-rpc`, 3 reconciles, 19 `node.create.via-build`, 20 `deployment.update.via-pipeline`, 251
 steps, 19 `node.update.via-join` and every role's boot span `rdm.mesh.node.create.via-deployment` under it
 (`48d840913d47bbd2eff9f6f02c40fd15`, 951 spans, five services). The UI: overview (fabric-primary, Build, both
-meshes ready-for-traffic with their primaries), topology (20 nodes, kinds coloured), builds, timeline from the
+meshes ready with their primaries), topology (20 nodes, kinds coloured), builds, timeline from the
 evidence, the boot waterfall per node by its own trace id, and `/api/topology` edges from every node's
 `node.connections.get`.
 

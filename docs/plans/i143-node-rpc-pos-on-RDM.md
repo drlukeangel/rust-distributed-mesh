@@ -97,7 +97,7 @@ Fabric -> (FabricId, event)
 
 `LifecycleTransition.transition_id` remains exclusively the identity of one lifecycle-transition execution and its hook receipts.
 
-Election eligibility is current `ReadyForTraffic`; the winner is the lowest complete canonical NodeId. There is no committed/confirmed/authority-Applied Ready state or lifecycle/status provenance layer.
+Election eligibility is current `Ready`; the winner is the lowest complete canonical NodeId. There is no committed/confirmed/authority-Applied Ready state or lifecycle/status provenance layer.
 
 ### Fabric shutdown
 
@@ -150,7 +150,7 @@ i141 pins one exact RDM SHA only after the canonical RDM gates prove:
 - all five generic storage interfaces with durable restart proof;
 - RuntimeFact/runtime-metadata successor adoption;
 - provider-domain exact-runtime execution semantics;
-- ReadyForTraffic + NodeId-only leadership;
+- Ready + NodeId-only leadership;
 - create/recover/replace with authority != executor;
 - FabricShutdown freeze/drain/all-admin-restart behavior;
 - one-process Iroh Endpoint, stale-slot fencing, Direct/ViaPeer target preservation and generic Forward;

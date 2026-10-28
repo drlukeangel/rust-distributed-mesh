@@ -189,7 +189,7 @@ start         node.start                       the stopped (or just-created) pro
               > topology, and rafka-time again last, so both are current the moment the node
                 re-enters; build facts when the node is below the authority's floor
                 < node.started                 the node reports: hydrated, nothing pending
-              status ReadyForTraffic           the node.started frame is the node's report; the
+              status Ready           the node.started frame is the node's report; the
                                                mesh primary sets the status on it (old
                                                DeclareNodeState / ApplyNodeState, same
                                                exact-birth and transition rules); never set by
@@ -298,7 +298,7 @@ create        no mesh.create op                old create-mesh, demo: POST /api/
                                                create it" read-then-write: that races
               the mesh-primary is elected (lowest Ready node-admin, sticky seat); the first
               node-admin wins because it is the only candidate, never by appointing itself.
-              The fabric-primary sets the mesh's status ReadyForTraffic once every member is
+              The fabric-primary sets the mesh's status Ready once every member is
               (old DeclareMeshState / ApplyMeshState).
               A node-admin left alive after its mesh is deleted is node.delete'd; a new
               node.create brings the mesh back under a new mesh id.
@@ -362,10 +362,10 @@ create        fabric.create(spec)              none today: a fabric is born with
               mint                             fabric id minted; status pending
               > node.create                    each mesh's first node-admin (which creates the mesh);
                                                the first mesh's primary is fabric-primary
-              > the status changes below, once every mesh is ready-for-traffic
-                < fabric.created               the fabric is ready-for-traffic; create ends here
+              > the status changes below, once every mesh is ready
+                < fabric.created               the fabric is ready; create ends here
 ==============
-status        pending -> state-sync -> state-commit -> ready-for-traffic
+status        pending -> state-sync -> state-commit -> ready
               the fabric's status, set only by the fabric-primary (old ApplyFabricEvent)
               and carried down in rounds, fabric-primary -> mesh-primaries -> nodes; each
               member checks in with its primary, and a primary reports only once all of its
@@ -373,7 +373,7 @@ status        pending -> state-sync -> state-commit -> ready-for-traffic
               status changes, not calls; the hooks run on the status change.
               a resize or roll returns it to pending (states.md:9, :67)
 
-              state-sync                       every mesh is ready-for-traffic. Hook: the app
+              state-sync                       every mesh is ready. Hook: the app
                                                (Rafka) does its day-0 work, including the system
                                                org and the store RDM's rows go into; it answers
                                                when its work ends (old sync-state / state-synced)
@@ -381,7 +381,7 @@ status        pending -> state-sync -> state-commit -> ready-for-traffic
                                                that store: a separate status because the store
                                                does not exist until state-sync ends (old
                                                CommitState / StateCommitted)
-              ready-for-traffic                every node checked in (old OpenTraffic /
+              ready                every node checked in (old OpenTraffic /
                                                TrafficOpened). Hook: one notice to the app, which
                                                opens client traffic
 ==============
@@ -486,7 +486,7 @@ After step 0, as its own landing: **config in the digest.** `admin_api_base` lea
 
 Three tests make the contract real. Each ships with its Jaeger trace.
 
-1. **A failure names its step.** `node.start` on a node whose join fails: the stream carries `Started`, then `Failed { step: "node.join", reason }`, and neither `node.joined` nor `node.started` is ever emitted. The node's status never reaches ready-for-traffic.
+1. **A failure names its step.** `node.start` on a node whose join fails: the stream carries `Started`, then `Failed { step: "node.join", reason }`, and neither `node.joined` nor `node.started` is ever emitted. The node's status never reaches ready.
 2. **A broken stream is not a failure.** Cut the caller's stream mid-workflow. The caller's outcome is `NotSent` or `Indeterminate`, never an inferred step failure. For a Build-backed call, `build.get` returns the receipts of exactly the steps that completed, and resubmitting by `build_id` re-runs none of them.
 3. **Stop stops, start rejoins.** `node.stop` then `node.start`: the same `node.id`, `incarnation` and endpoint before and after; `node.get` answers `Current { parked }` in between; the mesh primary's `start` reaches the stopped node over node-RPC at the same endpoint (a fresh dial, since `connections.delete` cut the old ones); peers' books show the same birth throughout.
 

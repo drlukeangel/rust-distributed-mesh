@@ -1,4 +1,4 @@
-# Q171: the fabric goes from pending to ready-for-traffic
+# Q171: the fabric goes from pending to ready
 
 Luke, 2026-10-26: state-sync and state-commit are removed. Q171.1 (the `fabric-not-ready` refusal
 goes with the scratchpad) and the gossip change are approved with it. The node's `before_ready` hook
@@ -19,13 +19,13 @@ Landed `688c32241` (2026-10-26); PRD e12.s92.
 
 ## The steps
 
-- **R-S1. The fabric's states are `pending` → `ready-for-traffic`.** `FabricState` keeps `Pending`
-  and `ReadyForTraffic`; `StateSync` and `StateCommit` are deleted, with no compatibility read: a
+- **R-S1. The fabric's states are `pending` → `ready`.** `FabricState` keeps `Pending`
+  and `Ready`; `StateSync` and `StateCommit` are deleted, with no compatibility read: a
   stored row naming either value is from a fabric that no longer runs. When every mesh the accepted
-  Build names is ready-for-traffic, the fabric-primary runs the open-traffic check-ins
-  (`OpenTraffic` / `TrafficOpened`, unchanged), sets ready-for-traffic and sends the one
+  Build names is ready, the fabric-primary runs the open-traffic check-ins
+  (`OpenTraffic` / `TrafficOpened`, unchanged), sets ready and sends the one
   `traffic_opened` notice (unchanged). A resize or an executable replacement still puts the fabric
-  back to pending; its Build completes when the fabric is ready-for-traffic again.
+  back to pending; its Build completes when the fabric is ready again.
 - **R-S2. The `sync_state` hook goes.** The `SyncState` / `StateSynced` handoff, its operation
   `state-sync:<fabric_id>`, the `no-state-synced`, `state-sync-failed` and `state-synced-refused`
   blockers and their spans are deleted. RDM carries no Day-0 application work. Rafka runs its Day 0
@@ -40,10 +40,10 @@ Landed `688c32241` (2026-10-26); PRD e12.s92.
   is admitted at any time, as `node.config.update` is (Q166).
 - **R-S5. Gossip (approved).** `FabricStatus` loses its `state-sync` and `state-commit` values; the
   frame catalog loses `StateCommitting` and `StateCommitted`. A Day-0 flame is captured before and
-  after the change: pending → ready-for-traffic with the open-traffic check-ins.
+  after the change: pending → ready with the open-traffic check-ins.
 - **R-S6. Pages.** `lifecycles/fabric-state-sync.md` and `lifecycles/fabric-state-commit.md` are
   deleted. Every statement of the two states, the scratchpad, `sync_state` and `fabric-not-ready`
-  is removed from `states.md`, `fabric-create.md`, `fabric-ready-for-traffic.md`, `mesh-create.md`,
+  is removed from `states.md`, `fabric-create.md`, `fabric-ready.md`, `mesh-create.md`,
   `fabric-node-hooks.md`, `build.md` §10 and §11, `fabric-primary.md`, `gossip.md`,
   `node-rpc-envelope.md`, `node-identity-and-state.md`, `node-admin-lifecycle.md`, `telemetry.md`
   and the lifecycle index, in the same landing as the code.

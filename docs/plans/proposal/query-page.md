@@ -103,8 +103,8 @@ node.topology_view.nodes_get([["id", [me]]])                                  my
 
 ### 1. Spec
 
-- states.md "Who sets each state" (lines 23–35) lists as node states: starting, pending, ReadyForTraffic
-  (line 27; a node's state is `ready`, Luke 2026-10-27; ready-for-traffic is the mesh's and the
+- states.md "Who sets each state" (lines 23–35) lists as node states: starting, pending, Ready
+  (line 27; a node's state is `ready`, Luke 2026-10-27; ready is the mesh's and the
   fabric's), connections-deleting, connections-deleted, leaving, left, stopping, stopped, deleting, deleted.
   Each is set by the node's mesh-primary from a frame.
 - node-stop.md:22: "stopping from the stop's admission, then connections-deleting,

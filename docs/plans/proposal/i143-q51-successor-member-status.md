@@ -1,23 +1,23 @@
-# Q51 — successor publishes Pending over live births whose ReadyForTraffic was applied
+# Q51 — successor publishes Pending over live births whose Ready was applied
 
 Asked 2026-10-17. Unruled. Evidence: s88 concurrent release `5b485f228750f0b077a89132b1fc4541eb82e841`, rebased on main `ac1acf0d`. No product change for this defect is included.
 
 ## 1. Spec
 
-[node-status-heartbeat-connections.md §A.3](node-status-heartbeat-connections.md): “the successor acquires the held member statuses and publishes a complete projection”. [states.md, Who sets each state](../../architecture/lifecycles/states.md#who-sets-each-state) makes the mesh-primary set Pending from node.joined and ReadyForTraffic from node.started. [fabric-primary.md §7](../../architecture/fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition): “A successor mesh primary reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally.” Owner: the successor mesh-primary. Sequence: acquire the predecessor’s held statuses → publish the complete projection; authority changing is no new lifecycle transition.
+[node-status-heartbeat-connections.md §A.3](node-status-heartbeat-connections.md): “the successor acquires the held member statuses and publishes a complete projection”. [states.md, Who sets each state](../../architecture/lifecycles/states.md#who-sets-each-state) makes the mesh-primary set Pending from node.joined and Ready from node.started. [fabric-primary.md §7](../../architecture/fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition): “A successor mesh primary reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally.” Owner: the successor mesh-primary. Sequence: acquire the predecessor’s held statuses → publish the complete projection; authority changing is no new lifecycle transition.
 
 ## 2. Issue
 
-`container_peer_mesh_lost_recovers_under_same_mesh_id` fails its **healthy setup before its fault** at `typed.rs:425`: the same two RPC births remain Pending at the 60 s settling bound, after a successor’s full replaced their earlier ReadyForTraffic; 1/1 in release `5b485f22` (112.01 s total), versus green in the preceding release `127fb05e`. Tracking: i143 s88, existing acceptance job `i143-2784-chaos-container` / issue #2784. This is separate from Q50’s pre-expiry cut timing.
+`container_peer_mesh_lost_recovers_under_same_mesh_id` fails its **healthy setup before its fault** at `typed.rs:425`: the same two RPC births remain Pending at the 60 s settling bound, after a successor’s full replaced their earlier Ready; 1/1 in release `5b485f22` (112.01 s total), versus green in the preceding release `127fb05e`. Tracking: i143 s88, existing acceptance job `i143-2784-chaos-container` / issue #2784. This is separate from Q50’s pre-expiry cut timing.
 
 ## 3. Flame
 
 Observations, imported and queried from retained raw JSONL:
 
-- [Ready accepted by the authority](http://localhost:16686/trace/ca8b93b5ac5fdd6994aaccc1114186cf): `rdm.node_admin.status.update.via-declaration`, `node="mesh2.admin.1" op="declare-node-state" outcome="applied" receiver_is_primary="true" sender="mesh2.rpc.1" state="ReadyForTraffic"`.
-- [Earlier complete projection](http://localhost:16686/trace/e83755251052bae5522808e8bbace483): `rdm.mesh.membership.update.via-member-state`, `incarnation_id="k6334480xkg5" member="mesh2.rpc.1" member_id="k5n5e6agt1vx" node="mesh1.admin.1" prior="Pending" status="ReadyForTraffic"`.
+- [Ready accepted by the authority](http://localhost:16686/trace/ca8b93b5ac5fdd6994aaccc1114186cf): `rdm.node_admin.status.update.via-declaration`, `node="mesh2.admin.1" op="declare-node-state" outcome="applied" receiver_is_primary="true" sender="mesh2.rpc.1" state="Ready"`.
+- [Earlier complete projection](http://localhost:16686/trace/e83755251052bae5522808e8bbace483): `rdm.mesh.membership.update.via-member-state`, `incarnation_id="k6334480xkg5" member="mesh2.rpc.1" member_id="k5n5e6agt1vx" node="mesh1.admin.1" prior="Pending" status="Ready"`.
 - [Successor fold](http://localhost:16686/trace/15cb9cd91901c07ab8111839908d878b): `rdm.node_admin.status.resolve.via-seat-taken`, `mesh="mesh2" node="mesh2.admin.1" node_declared_rows="0" node_id="fysqe43rsgr2"`.
-- [Successor full and regression](http://localhost:16686/trace/1b56aa5ce40f7d173648b8955b64b6ef): `rdm.mesh.membership.update.via-snapshot-installed`, `new_revision="true" node="mesh1.admin.1" publisher="mesh2.admin.1:fysqe43rsgr2@cg8kefshmsx4" snapshot_id="1" topology_version="1"`; then `rdm.mesh.membership.update.via-member-state`, `incarnation_id="k6334480xkg5" member="mesh2.rpc.1" member_id="k5n5e6agt1vx" node="mesh1.admin.1" prior="ReadyForTraffic" status="Pending"`.
+- [Successor full and regression](http://localhost:16686/trace/1b56aa5ce40f7d173648b8955b64b6ef): `rdm.mesh.membership.update.via-snapshot-installed`, `new_revision="true" node="mesh1.admin.1" publisher="mesh2.admin.1:fysqe43rsgr2@cg8kefshmsx4" snapshot_id="1" topology_version="1"`; then `rdm.mesh.membership.update.via-member-state`, `incarnation_id="k6334480xkg5" member="mesh2.rpc.1" member_id="k5n5e6agt1vx" node="mesh1.admin.1" prior="Ready" status="Pending"`.
 
 The same full regresses `mesh2.rpc.2` (`t6a8bdfcknng`, incarnation `7exnccf8xwd0`). Raw span lines, whole traces, gate log, and queried Jaeger responses: `/home/admin/rust-distributed-mesh-deploy/kept/s88-q51/`; import/verification log: `/home/admin/rust-distributed-mesh-deploy/s88-q51-flames.log`. The earlier RPC Ready install is at `1792278426383750612 ns`; the regression at `1792278462236076439 ns`, 35.852 s later. The publisher’s node.id changed; both RPC births did not.
 
@@ -35,7 +35,7 @@ The same full regresses `mesh2.rpc.2` (`t6a8bdfcknng`, incarnation `7exnccf8xwd0
 
 ## 5. Delta
 
-Spec says the successor acquires the held member statuses then publishes its complete projection; flame shows its complete projection without those held statuses, replacing the same live births’ ReadyForTraffic with Pending.
+Spec says the successor acquires the held member statuses then publishes its complete projection; flame shows its complete projection without those held statuses, replacing the same live births’ Ready with Pending.
 
 ## 6. Arms
 

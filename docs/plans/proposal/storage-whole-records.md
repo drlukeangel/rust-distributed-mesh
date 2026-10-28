@@ -46,8 +46,8 @@ writes only the records its own attempt's operations require (Q122), as today.
 
 | Object | Key | What it holds | Writer | Cache that holds it |
 |---|---|---|---|---|
-| Fabric record | `fabric_id` | identity (id, name), immutable inside a record written on every fabric event; the fabric events applied (`ready-for-traffic`, `shutdown-initiated:<by>`) | the fabric-primary | the fabric-primary's applied set (`Declared.fabric` today) |
-| Mesh record | mesh id | id, name, dead; the states entered (Pending, ReadyForTraffic, Leaving, Dead) | the mesh's primary; the fabric-primary while the mesh has none | the writer's applied set (`Declared.meshes` today) |
+| Fabric record | `fabric_id` | identity (id, name), immutable inside a record written on every fabric event; the fabric events applied (`ready`, `shutdown-initiated:<by>`) | the fabric-primary | the fabric-primary's applied set (`Declared.fabric` today) |
+| Mesh record | mesh id | id, name, dead; the states entered (Pending, Ready, Leaving, Dead) | the mesh's primary; the fabric-primary while the mesh has none | the writer's applied set (`Declared.meshes` today) |
 | Node record | minted node id | today's node row (path.name, status, config, tags, allocated, executable, renamed_from, app types, inherited_by) and, per incarnation: the declared states, the operation effects, the silence mark, `data-dir-lost`, `data-dir-unreadable`, the member cert dates, a node-admin's signing cert dates; `predecessor`, the exact birth this node replaced, written at its create from the recovery attempt that named it (`inherited_by` points the other way and is not followed backwards). The record keeps the facts of its current incarnation and of the one a restart replaced (`RDM_SUPERSEDES`), nothing older; the predecessor is another node with its own record: the Build journal keeps the history, and a record rewritten on every silence mark stays small | the node's mesh-primary; the fabric-primary while the mesh has none | the writer's node rows (`node_rows::WrittenRows` today), into which `Declared.nodes`, `Declared.operations` and the silence memo fold |
 
 Outside the records, unchanged: the fabric name's claim, each mesh's in-flight row and each node's name
@@ -65,17 +65,17 @@ writer until the index acknowledges them; the retry never recomputes an empty di
 already-updated cache.
 
 A record's facts stay independent inside it, keyed by their full identity: one declared entry per state
-(a late Pending never removes ReadyForTraffic; the reader takes the greatest), one effect per
+(a late Pending never removes Ready; the reader takes the greatest), one effect per
 (build_id, attempt, operation). A start beginning a birth's next cycle clears that birth's declared states
 on the cached record and keeps its effects; the record is then written whole.
 
 ### Who writes what changes
 
-- **Mesh ReadyForTraffic.** Today the fabric-primary writes it on the mesh-primary's report. Under one
+- **Mesh Ready.** Today the fabric-primary writes it on the mesh-primary's report. Under one
   writer per object the mesh-primary writes it on its own mesh's record when the fabric-primary answers
   its `DeclareMeshState` `Applied`: the fabric-primary decides, the writer records. This changes what
   `Applied` guarantees, and the pages say so (Q144): the fabric-primary's `Applied` confirms its decision;
-  the mesh's ReadyForTraffic is durable when the mesh-primary's record write succeeds; the declaration stays
+  the mesh's Ready is durable when the mesh-primary's record write succeeds; the declaration stays
   owed until that write succeeds, under the one delivery rule; a successor mesh-primary that loads Pending
   with every planned birth ready declares again, and a repeated declaration receives `Applied` again even
   though the first was accepted. Mesh Pending is written
@@ -131,8 +131,8 @@ and is read by id.
 - new: "Before state-commit, RDM holds the Fabric and Mesh records in the scratchpad; state-commit publishes them to the configured stores. A Node record is written straight to the store, before state-commit too, because a declared state acknowledged as Applied is on it and is durable before the reply; a successor acquires that fact without creating a new lifecycle transition."
 
 `lifecycles/states.md:35`
-- old: "| mesh ReadyForTraffic | the fabric-primary | its mesh-primary's report that every planned birth is ready |"
-- new: "| mesh ReadyForTraffic | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144) | its mesh-primary's report that every planned birth is ready |"
+- old: "| mesh Ready | the fabric-primary | its mesh-primary's report that every planned birth is ready |"
+- new: "| mesh Ready | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144) | its mesh-primary's report that every planned birth is ready |"
 
 `lifecycles/states.md:82-84`
 - old: "The reason is that before state-commit the Fabric row, each mesh's Mesh row and its members' Node rows live only in their writers' scratchpads, so a primary change or a row written in that window is lost with its writer or cannot be read by its successor."
@@ -186,7 +186,7 @@ objects" and "Durability" sections; its map's rafka topics stand.
 - a write takes the cached object and writes it whole: a store wrapper records every put, and each put
   carries the whole record (every fact the cache held), never one fact; no read precedes a put;
 - two facts of one birth both stand on the record across a reload (a late Pending beside
-  ReadyForTraffic; two attempts' effects; lost and unreadable), on the memory and file backends;
+  Ready; two attempts' effects; lost and unreadable), on the memory and file backends;
 - the writers: the mesh-primary writes its nodes' and its mesh's records; the fabric-primary writes a
   mesh's records only while it has no primary; a mesh-primary writes its own cert and signing cert dates;
 - two different updates to one node overlapped in time (a declaration and a renewal), both present on the
@@ -198,8 +198,8 @@ objects" and "Durability" sections; its map's rafka topics stand.
 - Q54: Applied answered, the writer killed before state-commit, the declared state read back from the
   Node record by its successor;
 - a renewal answered, unanswered, and answered but lost before the write;
-- mesh ReadyForTraffic recorded by the mesh-primary on the fabric-primary's `Applied`; the mesh-primary
+- mesh Ready recorded by the mesh-primary on the fabric-primary's `Applied`; the mesh-primary
   killed after receiving `Applied` and before its write, the successor declares again, receives `Applied`
-  again and records ReadyForTraffic (Q144);
+  again and records Ready (Q144);
 - a record write that succeeds while a tag-index write fails: the retry writes the pending index moves,
   and the index matches the record afterwards.

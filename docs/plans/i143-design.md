@@ -175,7 +175,7 @@ Day-0/operator-started admin uses `adopt_current_runtime` or equivalent, registe
 
 A successor adopts a birth it did not launch from that birth's current digest (`AdminRunner::handle_for`); the `handles` map caches the result. No completed Build's `AllocateIdentity`/`DeployRuntime` receipt is read, and the Build topic still hands a new neighbour active Builds only.
 
-Authority-capable Ready, runtime part: a node-admin publishes `Pending` until every live birth it holds (but itself) publishes a fact its provider adopts in its own control domain (`authority_blockers`); only then does it commit `ReadyForTraffic` and become eligible for any seat. While blocked it reports `rafka.node_admin.runtime.reject.via-not-authority-capable` naming each blocking birth. The accepted-Build hydration part of this gate is #47's.
+Authority-capable Ready, runtime part: a node-admin publishes `Pending` until every live birth it holds (but itself) publishes a fact its provider adopts in its own control domain (`authority_blockers`); only then does it commit `Ready` and become eligible for any seat. While blocked it reports `rafka.node_admin.runtime.reject.via-not-authority-capable` naming each blocking birth. The accepted-Build hydration part of this gate is #47's.
 
 ### 2.2 Accepted topology, Build state, and storage
 
@@ -287,7 +287,7 @@ Drift checks compare the complete accepted Build with current births. A birth th
 A cohort is one kind's members in one mesh.
 
 ```text
-eligible = ReadyForTraffic candidates
+eligible = Ready candidates
 winner   = lowest complete canonical NodeId
 ```
 
@@ -327,7 +327,7 @@ No special primary assignment exists.
 
 Restart preserves NodeId, so a restarted lower NodeId may retake a seat once Ready. Permanent logical replacement mints a new NodeId and may or may not win.
 
-A node-admin may not commit `ReadyForTraffic` until it has hydrated:
+A node-admin may not commit `Ready` until it has hydrated:
 
 ```text
 current membership/topology
@@ -516,7 +516,7 @@ Conceptual `NodeView` includes:
   "runtime_locator_kind": "process",
   "runtime_locator_fingerprint": "...",
   "data_dir": "...",
-  "status": "pending|ready-for-traffic|draining|leaving|dead",
+  "status": "pending|ready|draining|leaving|dead",
   "is_primary": false,
   "is_fabric_primary": false,
   "admin_api_base": null,

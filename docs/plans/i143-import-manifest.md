@@ -74,7 +74,7 @@ Multi-host eligibility is not claimed: the remote-pool provider is proven only i
 
 | bullet | proving cell |
 |---|---|
-| only ReadyForTraffic candidates are eligible | `A/src/election.rs::tests::the_lowest_ready_node_id_wins_and_nothing_else_counts` |
+| only Ready candidates are eligible | `A/src/election.rs::tests::the_lowest_ready_node_id_wins_and_nothing_else_counts` |
 | node-admin Ready includes the current Build, RuntimeFacts and provider-domain hydration | `A/src/admin.rs::tests::an_admin_can_take_over_only_when_every_held_birth_is_adoptable_here`; `A/src/admin.rs::tests::an_admin_without_a_current_build_can_never_take_over` |
 | joining admins never self-Ready; only the Day-0 root establishes Ready without existing Ready authority | `A/src/admin.rs::tests::only_the_day0_root_applies_its_own_meshs_pending` |
 | the complete NodeId is the only election key | `A/src/election.rs::tests::ordinal_and_mesh_name_never_decide_a_primary`; `A/src/admin.rs::tests::ready_since_and_ordinal_never_change_a_winner` |

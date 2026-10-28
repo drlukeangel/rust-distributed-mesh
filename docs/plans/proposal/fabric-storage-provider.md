@@ -150,7 +150,7 @@ measured, never used as a safety timeout.
 - **R-SP11. Keep the previous provider.** It remains unchanged after commit, named in the Fabric
   row, and available to the fabric-primary. RDM deletes none of its records. Going back is another
   Build using this same blocking procedure.
-- **R-SP12. Serving state does not change.** Nodes, meshes and the fabric stay ready-for-traffic.
+- **R-SP12. Serving state does not change.** Nodes, meshes and the fabric stay ready.
   Progress is the Build's receipts and provider properties. This blocks storage changes, not nodes.
 - **R-SP13. Resolve failure by the commit record.** One insert-and-fail `commit` record for
   `(build_id, change_id)` on the new provider is the switch. Found, the change is switched and the

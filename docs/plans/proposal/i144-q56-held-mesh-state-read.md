@@ -8,7 +8,7 @@ assigned to i144 by Q54. Read on main `e278636c`.
 - [mesh-investigation.md, "A node-admin joins the live mesh"](../../architecture/lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh):
   step 2 "The node-admin calls JoinNode on its MAKER, the fabric-primary, then GetTopology on that
   maker. It installs complete topology snapshots and obtains its control/status context." Step 4:
-  "Ready waits for the sweep to finish … It then becomes ready-for-traffic and takes the
+  "Ready waits for the sweep to finish … It then becomes ready and takes the
   mesh-primary seat under the election; as the mesh's successor primary it adopts the mesh's held
   state."
 - [fabric-primary.md §7](../../architecture/fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition):
@@ -52,8 +52,8 @@ rdm.node_admin.mesh.update.via-pending-handoff node="mesh1.admin.1" target="mesh
   `via-build` span) supplies the mesh-state hook only when `first_admin_of(node)` holds in the
   fabric-primary's view at create time; `:630` (create over an exited birth) also needs `held_admins` empty.
 - [code] `crates/rdm-admin/src/topology.rs:166` `first_admin_of`: no other node-admin of the mesh
-  `is_live()` (Pending, ReadyForTraffic, ConnectionsDeleting). `crates/rdm-admin/src/executor.rs:164`
-  `held_admins` counts ReadyForTraffic, ConnectionsDeleting, PendingReconnect and Restarting.
+  `is_live()` (Pending, Ready, ConnectionsDeleting). `crates/rdm-admin/src/executor.rs:164`
+  `held_admins` counts Ready, ConnectionsDeleting, PendingReconnect and Restarting.
 - [code] `crates/rdm-admin/src/admin/boot.rs:1634` the created admin's Ready gate needs
   `records.declared.meshes` to hold its mesh, filled only by `commit_mesh_state` (`status_rpc.rs:528`,
   the hand-off's ApplyMeshState); `session.rs:67` `pending_gate` blocks a non-Day-0 admin whose own
