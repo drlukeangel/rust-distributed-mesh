@@ -261,7 +261,11 @@ fi
 # serial fsyncs before it is Ready, and with several lanes' gates writing to one ext4 journal each took
 # 0.5-3 s, so a 0.5 s boot passed its 10 s bound. The leftovers check below is unchanged.
 export TMPDIR=/dev/shm/rdm-lane-$(basename "$(pwd)")/gate
-rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"; trap 'rm -rf "$TMPDIR"' EXIT
+# An estate's reaper (rdm-test estate.rs) outlives a killed test binary in its own session and reads its
+# root under TMPDIR (the fabric_id whose containers it removes): TMPDIR goes once every reaper of this
+# gate has ended, waited for at most 60 s.
+rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
+trap 'for _ in $(seq 300); do pgrep -f "estate-reaper [0-9]+ $TMPDIR/" > /dev/null || break; sleep 0.2; done; rm -rf "$TMPDIR"' EXIT
 
 # 2. Every check and every scenario, in parallel, each a prebuilt test binary.
 exe(){ python3 - "$D/artifacts.json" "$@" <<'PY'

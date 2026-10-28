@@ -60,5 +60,9 @@ export RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS
 export TMPDIR=/dev/shm/rdm-lane-$(basename "$lane")/cells-$$
 rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
 cd "$dir" && CARGO_MANIFEST_DIR=$dir "$exe" "$@"; rc=$?
+# An estate's reaper (rdm-test estate.rs) outlives a killed test binary in its own session and reads
+# its root under TMPDIR (the fabric_id whose containers it removes): TMPDIR goes once every reaper of
+# this run has ended, waited for at most 60 s.
+for _ in $(seq 300); do pgrep -f "estate-reaper [0-9]+ $TMPDIR/" > /dev/null || break; sleep 0.2; done
 rm -rf "$TMPDIR"
 exit $rc
