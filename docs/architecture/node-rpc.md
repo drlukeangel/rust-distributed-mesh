@@ -752,7 +752,7 @@ There is no independent scope-join timeout. Shutdown's in-flight deadline is the
 The only sanctioned detachment is durable work:
 
 ```text
-enqueue durable job with job_id / claim_epoch / lease / verdict
+enqueue durable job with job_id / claim_revision / lease / verdict
 return job id
 ```
 
