@@ -1775,7 +1775,7 @@ What a caller submits. The fabric-primary compiles it once against the accepted 
 | 6 | **`Reserved6`** |  |  | Reserved position: the removed `node.restart` (Q183; callers run node.stop then node.start). |
 | 7 | **`DeleteConnections`** |  |  | `node.connections.delete { All }` of the live birth at `node`; it keeps running. |
 | 7.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
-| 8 | **`Stop`** |  |  | Stop the live birth at `node` with no implicit drain and no departure. |
+| 8 | **`Stop`** |  |  | Stop the live birth at `node` with no implicit connections delete and no departure. |
 | 8.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 9 | **`Start`** |  |  | Start the stopped birth at `node`: the same process rejoins as itself. |
 | 9.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
