@@ -2529,18 +2529,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let floor = rdm_transport::topology::staleness_floor();
                                             let mut written: WrittenSilence = HashMap::new();
                                             let mut heard_changes = recovery.digest_view.heard_changes();
+                                            let mut tenure_rows = TenureRows::default();
                                             loop {
                                                 // Held here while the admin is stopped: its own wait, outside every lock.
                                                 let turn = stop.turn("offline-tickle").await;
                                                 heard_changes.borrow_and_update();
                                                 let view = topology.read().await.clone();
                                                 let holds_seat = view.is_mesh_primary(&mesh, &me_id);
-                                                // Every admin watches the same set, the seat holder or not, so a successor tickles on
-                                                // the window already running; the durable rows are read each tick (one point in time).
+                                                // The births only a durable runtime row names (`TenureRows`).
                                                 let durable = {
-                                                    let rows = recovery.durable_rows().await;
+                                                    let rows = tenure_rows.for_tick(holds_seat, &*recovery.nodes_storage, &recovery.held_name(), &mesh).await;
                                                     let planned = records.planned();
-                                                    durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.digest_view.is_deleted(id))
+                                                    durable_births(&view, rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.digest_view.is_deleted(id))
                                                 };
                                                 *records.durable.lock().unwrap() = durable.clone();
                                                 let mut watched = watched_births(&view, &me_id, &mesh, &durable);

@@ -2121,7 +2121,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3051-runtime-rows-unreadable");
         let rows = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            recovery.durable_rows().await
+            TenureRows::default().for_tick(true, &*recovery.nodes_storage, &recovery.held_name(), "mesh2").await.to_vec()
         };
         assert!(rows.is_empty(), "no row is read from a refused store: the view's births only");
         let spans = capture.named("rdm.node_admin.node.reject.via-runtime-rows-unreadable");
@@ -3925,5 +3925,116 @@ mod tests {
         adopt_held_mesh_state(&entry_answer(vec![mesh_status("mesh2", "degraded")]), &unread, "mesh2", &id);
         assert!(unread.declared.lock().unwrap().meshes.is_empty(), "a word it does not read adopts nothing");
         assert!(mesh_state_of("degraded").unwrap_err().contains("\"degraded\""), "the refusal names the word");
+    }
+
+    /// A nodes store counting its reads of every runtime row, refusing them while `refusing` is set.
+    #[derive(Default)]
+    struct RuntimeReads {
+        inner: crate::storage::MemoryNodesStorage,
+        reads: std::sync::atomic::AtomicUsize,
+        refusing: std::sync::atomic::AtomicBool,
+    }
+
+    impl RuntimeReads {
+        fn reads(&self) -> usize {
+            self.reads.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::storage::NodesStorage for RuntimeReads {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_runtime(row).await
+        }
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::storage_error::StorageError::Io { file: "nodes.jsonl".into(), reason: "Input/output error (os error 5)".into() });
+            }
+            self.inner.runtimes().await
+        }
+        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+            self.inner.runtime(node_id, incarnation).await
+        }
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node(node_id).await
+        }
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_at(name).await
+        }
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.nodes(mesh).await
+        }
+        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node(row).await
+        }
+        async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.index_path(name, node_id).await
+        }
+        async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.index_tags(mesh, node_id, leaving, arriving).await
+        }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.inner.tagged(label).await
+        }
+        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.inner.name_claim(name).await
+        }
+        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
+            self.inner.claim_node_name(name, node_id).await
+        }
+        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.release_node_name(name, node_id).await
+        }
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and the verdict" step 2: "Only the mesh-primary acts";
+    /// fabric-node-lifecycle-elections.md §4.1: the mesh-primary runs node investigation; build.md §5.3:
+    /// the launching admin writes a birth's runtime row, and every attempt in a mesh with a running
+    /// mesh-primary is that mesh-primary's to run): the births only a durable runtime row names are
+    /// watched by the mesh-primary alone, from the rows of its own mesh read once as it takes the role
+    /// and held while it keeps it. An admin that is not its mesh's primary reads no runtime row on any
+    /// tick; one that loses the role holds none, and takes them again with the role; a refused read
+    /// holds none, so the next tick reads again. Must NOT happen: a read of every runtime row on every
+    /// tick of every admin (rust-distributed-mesh#99: 9 reads in 3 s on an admin that is no primary, 12
+    /// on the mesh-primary), or another mesh's rows held.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn the_offline_tick_reads_its_meshs_runtime_rows_once_per_tenure_as_its_mesh_primary_and_never_otherwise() {
+        let capture = crate::span_capture::Capture::new("rdm99-tick-runtime-rows");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let nodes = RuntimeReads::default();
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("tick")).unwrap();
+        for path in ["mesh1.rpc.2", "mesh2.rpc.1"] {
+            let row = crate::storage::RuntimeRow { node_id: NodeId::mint(), name: path.parse().unwrap(), incarnation_id: IncarnationId::mint(), runtime: fact.clone(), data_dir: None };
+            crate::storage::NodesStorage::put_runtime(&nodes, &row).await.unwrap();
+        }
+        let me: PathName = "mesh1.admin.2".parse().unwrap();
+        let mut rows = TenureRows::default();
+        let names = |rows: &[crate::storage::RuntimeRow]| rows.iter().map(|r| r.name.to_string()).collect::<Vec<_>>();
+        for _ in 0..3 {
+            assert!(rows.for_tick(false, &nodes, &me, "mesh1").await.is_empty(), "an admin that is not its mesh's primary watches no birth through runtime rows");
+        }
+        assert_eq!(nodes.reads(), 0, "an admin that is not its mesh's primary reads no runtime row on any tick");
+        for _ in 0..3 {
+            assert_eq!(names(rows.for_tick(true, &nodes, &me, "mesh1").await), vec!["mesh1.rpc.2".to_string()], "its own mesh's rows, and no other mesh's");
+        }
+        assert_eq!(nodes.reads(), 1, "the mesh-primary reads the rows once, as it takes the role, and holds them while it keeps it");
+        assert!(rows.for_tick(false, &nodes, &me, "mesh1").await.is_empty(), "the role lost, no row is held");
+        assert_eq!(names(rows.for_tick(true, &nodes, &me, "mesh1").await), vec!["mesh1.rpc.2".to_string()]);
+        assert_eq!(nodes.reads(), 2, "a later tenure reads the rows again, once");
+        // A read refused as the role is taken holds nothing; the next tick reads again.
+        assert!(rows.for_tick(false, &nodes, &me, "mesh1").await.is_empty());
+        nodes.refusing.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(rows.for_tick(true, &nodes, &me, "mesh1").await.is_empty(), "a refused read holds no row");
+        nodes.refusing.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(names(rows.for_tick(true, &nodes, &me, "mesh1").await), vec!["mesh1.rpc.2".to_string()], "the tick after a refused read reads again");
+        assert_eq!(names(rows.for_tick(true, &nodes, &me, "mesh1").await), vec!["mesh1.rpc.2".to_string()]);
+        assert_eq!(nodes.reads(), 4, "one refused read and one read that holds: {} reads", nodes.reads());
+        assert_eq!(capture.named("rdm.node_admin.node.reject.via-runtime-rows-unreadable").len(), 1, "the refused read is named");
+        let read = capture.named("rdm.node_admin.node.resolve.via-runtime-rows-read");
+        assert_eq!(read.len(), 3, "each read that holds is spanned, once per tenure: {read:?}");
+        assert_eq!((read[0].attributes.get("reader").map(String::as_str), read[0].attributes.get("mesh").map(String::as_str), read[0].attributes.get("rows").map(String::as_str)), (Some("mesh1.admin.2"), Some("mesh1"), Some("1")), "{:?}", read[0].attributes);
+        eprintln!("span rdm.node_admin.node.resolve.via-runtime-rows-read trace_id={} {:?}", read[0].trace_id, read[0].attributes);
     }
 }

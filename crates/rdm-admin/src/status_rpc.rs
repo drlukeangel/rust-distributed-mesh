@@ -3242,6 +3242,48 @@ mod tests {
         assert!(effect.is_none());
     }
 
+    /// CONTRACT (node-status.md "Status report": a node reports to its mesh's primary, which sets its
+    /// status; node-rpc-envelope.md: `ReceiverNotPrimary` when the receiver does not hold the role the
+    /// request needs): an admin that is not its mesh's primary answers every node declaration
+    /// `ReceiverNotPrimary` before it looks for the subject: a birth its view holds, one only a durable
+    /// runtime row names, and one it holds nothing of alike. Its truthful answer is that it is not the
+    /// primary, never a fact about the subject. Must NOT happen: `SubjectUnknown` from an admin that is
+    /// no primary (which runs the refused-caller decision there), or the answer turning on whether that
+    /// admin watches births through durable rows (rust-distributed-mesh#99: only the mesh-primary does).
+    // @feature: node-lifecycle
+    #[test]
+    fn an_admin_that_is_not_its_meshs_primary_answers_every_node_declaration_receiver_not_primary() {
+        let mut m2p = node("mesh2.admin.1");
+        m2p.kind = NodeKind::NodeAdmin;
+        m2p.mesh = "mesh2".into();
+        m2p.status = crate::model::NodeStatus::ReadyForTraffic;
+        m2p.is_primary = true;
+        let mut m2a = node("mesh2.admin.2");
+        m2a.kind = NodeKind::NodeAdmin;
+        m2a.mesh = "mesh2".into();
+        m2a.status = crate::model::NodeStatus::ReadyForTraffic;
+        let mut viewed = node("mesh2.rpc.1");
+        viewed.kind = NodeKind::RpcNode;
+        viewed.mesh = "mesh2".into();
+        let mut row_only = node("mesh2.rpc.2");
+        row_only.kind = NodeKind::RpcNode;
+        row_only.mesh = "mesh2".into();
+        let stranger = node("mesh2.rpc.9");
+        let view = Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![m2p.clone(), m2a.clone(), viewed.clone()],
+        };
+        let auth = mesh_primary_of(&m2a, view.clone());
+        auth.durable.lock().unwrap().push(row_only.clone());
+        let declare = |n: &crate::model::Node| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
+        for (subject, what) in [(&viewed, "a birth its view holds"), (&row_only, "a birth only a durable row names"), (&stranger, "a birth it holds nothing of")] {
+            let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare(subject));
+            assert_eq!(reply, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } }, "{what}: the admin that is no primary says so");
+            assert!(effect.is_none(), "{what}: nothing applied");
+        }
+    }
+
     #[test]
     fn a_node_admins_declaration_is_applied_by_its_own_mesh_primary_never_the_fabric_primary() {
         let admin = |name: &str, mesh: &str, primary: bool, fabric_primary: bool| {

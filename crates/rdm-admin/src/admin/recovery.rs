@@ -96,19 +96,6 @@ impl RecoverySubmitter {
         crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.digest_view, Some(&*self.nodes_storage), node).await
     }
 
-    /// The durable runtime rows the tick watches births from, read once per tick. A refused read
-    /// leaves the tick watching the view's births only.
-    pub(crate) async fn durable_rows(&self) -> Vec<crate::storage::RuntimeRow> {
-        match self.nodes_storage.runtimes().await {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::info_span!("rdm.node_admin.node.reject.via-runtime-rows-unreadable", reader = %self.held_name(), store = "nodes.storage", error = %e)
-                    .in_scope(|| tracing::info!("the durable runtime rows could not be read: this tick watches the view's births only"));
-                Vec::new()
-            }
-        }
-    }
-
     /// One TRUE OFFLINE birth on the mesh primary's tick (node-recovery.md step 3, sequence step 1):
     /// its ladder ended unreached, so the provider's inspection is the investigation's last step, and
     /// its verdict, whatever it is, opens the recovery at once (Q110, Q111): nothing holds, nothing is
@@ -528,6 +515,35 @@ pub(crate) fn submit_span(me: &PathName, node: &Node, incarnation: &IncarnationI
 
 /// The silence-status memo of the mesh primary's tick: what it last put per node.
 pub(crate) type WrittenSilence = HashMap<NodeId, (Option<IncarnationId>, Option<NodeStatus>)>;
+
+/// The durable runtime rows the offline tick watches births from ([`durable_births`]).
+#[derive(Debug, Default)]
+pub(crate) struct TenureRows {
+    rows: Option<Vec<crate::storage::RuntimeRow>>,
+}
+
+impl TenureRows {
+    /// The rows for one tick of the admin `reader` of `mesh`, `primary` when its view names it its
+    /// mesh's primary, read from `nodes`.
+    pub(crate) async fn for_tick(&mut self, primary: bool, nodes: &dyn crate::storage::NodesStorage, reader: &PathName, mesh: &str) -> &[crate::storage::RuntimeRow] {
+        let _ = (primary, mesh);
+        self.rows = read_runtime_rows(nodes, reader).await;
+        self.rows.as_deref().unwrap_or_default()
+    }
+}
+
+/// Every durable runtime row `nodes` holds, read for `reader`; `None` when the read is refused, named
+/// on its own span.
+async fn read_runtime_rows(nodes: &dyn crate::storage::NodesStorage, reader: &PathName) -> Option<Vec<crate::storage::RuntimeRow>> {
+    match nodes.runtimes().await {
+        Ok(rows) => Some(rows),
+        Err(e) => {
+            tracing::info_span!("rdm.node_admin.node.reject.via-runtime-rows-unreadable", reader = %reader, store = "nodes.storage", error = %e)
+                .in_scope(|| tracing::info!("the durable runtime rows could not be read: this tick watches the view's births only"));
+            None
+        }
+    }
+}
 
 /// The births the durable runtime rows name at a path `view` holds nothing at: a birth this admin
 /// never heard and never launched, at a path the accepted Build names (`planned`), whose departure
