@@ -715,57 +715,142 @@ impl RecoverySubmitter {
     /// The caller birth `(node_id, incarnation)` at `path` Q207's decision deletes, reported to the
     /// fabric-primary, which terminates its runtime under `node.terminate:<path>@<incarnation>`
     /// (node-investigation.md): `build.create { Change(Terminate) }`, opened here when this admin is the
-    /// fabric-primary, through its own Build door; any other admin sends it up through `client`. `Ok`
-    /// once the fabric-primary answered (opened, or already applied).
-    pub(crate) async fn report_terminate(&self, client: Option<&Arc<rdm_transport::NodeRpcClient>>, path: PathName, node_id: NodeId, incarnation: IncarnationId) -> Result<(), String> {
+    /// fabric-primary, through its own Build door; any other admin sends it up through `client` and reads
+    /// the fabric-primary's answer, its stream's first frame. `Ok` once the fabric-primary answered
+    /// (opened, or already applied).
+    ///
+    /// The report is owed until then (node-rpc.md §43; node-recovery.md "Failure and receipts": the
+    /// submitter submits again after its backoff; rdm#179): a `BuildInProgress` answer (an attempt
+    /// still holds the birth's mesh, as the recovery that re-created it does) is sent again on the resend
+    /// schedule; a view naming no fabric-primary, a `NotFabricPrimary` answer, or a call that ends
+    /// without one, is sent again to the fabric-primary the view names next, when `views` (the tick of
+    /// this admin's installed view) moves or after the schedule's next delay. Any other refusal ends
+    /// the report by name.
+    pub(crate) async fn report_terminate(&self, client: Option<&Arc<rdm_transport::NodeRpcClient>>, mut views: Option<tokio::sync::watch::Receiver<u64>>, path: PathName, node_id: NodeId, incarnation: IncarnationId) -> Result<(), String> {
         let me = self.held_name();
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-returned-reported", node = %me, returned = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), outcome = tracing::field::Empty);
-        let fabric_primary = self.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
-        let Some((fp_name, fp_id)) = fabric_primary else {
-            span.record("outcome", "no-fabric-primary");
-            return Err(format!("{me}: no fabric-primary in this view to report {path} ({node_id}) to"));
-        };
-        let r = if fp_name == me {
-            let door = self.door.get().cloned().ok_or_else(|| format!("{me}: its Build door is not built yet"))?;
-            let opened = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "returned-birth", node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str());
-            match door
-                .control
-                .open_terminate(
-                    opened,
-                    "returned-birth",
-                    path.clone(),
-                    node_id.clone(),
-                    incarnation.clone(),
-                )
-                .await
-            {
-                Ok(
-                    crate::control_plane::Recovery::Opened(o)
-                    | crate::control_plane::Recovery::Reported { opened: o, .. },
-                ) => {
-                    door.drives.ensure(&door.env, &o.build_id, o.attempt);
-                    Ok("opened")
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.update.via-returned-reported",
+            node = %me, returned = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(),
+            outcome = tracing::field::Empty, sends = tracing::field::Empty, fabric_primary = tracing::field::Empty,
+            build_id = tracing::field::Empty, attempt = tracing::field::Empty, detail = tracing::field::Empty,
+        );
+        // A clone remembers the version its source last saw: only a view installed from now on wakes a resend.
+        if let Some(rx) = views.as_mut() {
+            rx.borrow_and_update();
+        }
+        let pacing = client.map(|c| c.delivery().pacing()).unwrap_or_else(rdm_transport::Pacing::from_cadences);
+        let mut sends: u32 = 0;
+        let mut waits: u32 = 0;
+        let r = loop {
+            let turn = tracing::Instrument::instrument(self.terminate_once(client, &me, &path, &node_id, &incarnation, &mut sends), span.clone()).await;
+            let (why, wake) = match turn {
+                TerminateTurn::Answered(outcome, opened) => {
+                    if let Some((build_id, attempt)) = opened {
+                        span.record("build_id", build_id.as_str()).record("attempt", attempt);
+                    }
+                    break Ok(outcome);
                 }
-                Ok(crate::control_plane::Recovery::AlreadyApplied(_)) => Ok("already-applied"),
-                Err(r) => Err(format!("{me}: the termination of {path} ({node_id}) was refused: {:?}", crate::build_op::refusal_reply(r))),
-            }
-        } else {
-            use rdm_core::build::{Build, BuildChange, BuildRequest, BuildSubmit};
-            let Some(client) = client else {
-                span.record("outcome", "no-client");
-                return Err(format!("{me}: no node-RPC client to report {path} ({node_id}) to {fp_name}"));
+                TerminateTurn::Refused(e) => break Err(e),
+                TerminateTurn::Owed(why, wake) => (why, wake),
             };
-            let req = BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Terminate { node: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }) };
-            let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Stream { send: std::time::Duration::from_secs(10) }, ..rdm_transport::CallOptions::default() };
-            match client.call_stream::<Build>(&rdm_transport::NodeTarget::ExactNode(fp_id), &req, &opts).await {
-                Ok(_) => Ok("sent"),
-                Err((outcome, _)) => Err(format!("{me}: the report of {path} ({node_id}) to {fp_name} ended {}", outcome.name())),
+            waits += 1;
+            let delay = pacing.after(waits);
+            span.record("sends", sends).record("detail", why.as_str());
+            span.in_scope(|| tracing::info!(detail = %why, wait_ms = delay.as_millis() as u64, "the termination of a deleted birth stays owed: sent again to the fabric-primary the view names"));
+            match (wake, views.as_mut()) {
+                (OwedWake::View, Some(rx)) => {
+                    if let Ok(Err(_)) = tokio::time::timeout(delay, rx.changed()).await {
+                        // The view's sender is gone: the resend schedule alone wakes the report.
+                        views = None;
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+                _ => tokio::time::sleep(delay).await,
             }
         };
-        span.record("outcome", r.as_ref().map(|o| *o).unwrap_or("failed"));
+        span.record("sends", sends);
+        match &r {
+            Ok(outcome) => span.record("outcome", *outcome),
+            Err(e) => span.record("outcome", "failed").record("detail", e.as_str()),
+        };
         span.in_scope(|| tracing::info!("a deleted birth heard again, reported to the fabric-primary"));
         r.map(|_| ())
     }
+
+    /// One send of [`Self::report_terminate`] to the fabric-primary the view names now.
+    async fn terminate_once(&self, client: Option<&Arc<rdm_transport::NodeRpcClient>>, me: &PathName, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId, sends: &mut u32) -> TerminateTurn {
+        use rdm_core::build::{Build, BuildChange, BuildReply, BuildRequest, BuildSubmit, Disposition};
+        use rdm_transport::stream::StreamItem;
+        let fabric_primary = self.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
+        let Some((fp_name, fp_id)) = fabric_primary else {
+            return TerminateTurn::Owed(format!("{me}: no fabric-primary in this view to report {path} ({node_id}) to"), OwedWake::View);
+        };
+        tracing::Span::current().record("fabric_primary", fp_name.to_string().as_str());
+        // The fabric-primary's answer that is not an open: an attempt holding the mesh, or another
+        // fabric-primary, keeps the report owed; any other refusal ends it by name.
+        let answered = |reply: BuildReply| match reply {
+            BuildReply::BuildInProgress { .. } => TerminateTurn::Owed(format!("{fp_name} answered build-in-progress: {reply:?}"), OwedWake::Schedule),
+            BuildReply::NotFabricPrimary { .. } => TerminateTurn::Owed(format!("{fp_name} answered not-fabric-primary: {reply:?}"), OwedWake::View),
+            other => TerminateTurn::Refused(format!("{me}: the termination of {path} ({node_id}) was refused: {other:?}")),
+        };
+        if fp_name == *me {
+            let Some(door) = self.door.get().cloned() else {
+                return TerminateTurn::Refused(format!("{me}: its Build door is not built yet"));
+            };
+            *sends += 1;
+            let opened = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "returned-birth", node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str());
+            return match door.control.open_terminate(opened, "returned-birth", path.clone(), node_id.clone(), incarnation.clone()).await {
+                Ok(crate::control_plane::Recovery::Opened(o) | crate::control_plane::Recovery::Reported { opened: o, .. }) => {
+                    door.drives.ensure(&door.env, &o.build_id, o.attempt);
+                    TerminateTurn::Answered("opened", Some((o.build_id.to_string(), o.attempt)))
+                }
+                Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => TerminateTurn::Answered("already-applied", Some((o.build_id.to_string(), o.attempt))),
+                Err(r) => answered(crate::build_op::refusal_reply(r)),
+            };
+        }
+        let Some(client) = client else {
+            return TerminateTurn::Refused(format!("{me}: no node-RPC client to report {path} ({node_id}) to {fp_name}"));
+        };
+        let req = BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Terminate { node: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }) };
+        let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Stream { send: std::time::Duration::from_secs(10) }, ..rdm_transport::CallOptions::default() };
+        *sends += 1;
+        match client.call_stream::<Build>(&rdm_transport::NodeTarget::ExactNode(fp_id), &req, &opts).await {
+            Ok((stream, _)) => {
+                // The fabric-primary's answer is the stream's first frame; the termination it opens runs
+                // on its own drive, whoever reads the stream.
+                let mut stream = stream.read_only();
+                match stream.next().await {
+                    Some(StreamItem::Frame(_, BuildReply::Started { build_id, attempt, disposition })) => {
+                        TerminateTurn::Answered(if disposition == Disposition::AlreadyApplied { "already-applied" } else { "opened" }, Some((build_id, attempt)))
+                    }
+                    Some(StreamItem::Frame(_, other)) => answered(other),
+                    Some(StreamItem::Failed(f)) => TerminateTurn::Owed(format!("the report to {fp_name} broke before its answer: {f:?}"), OwedWake::View),
+                    None => TerminateTurn::Owed(format!("the report to {fp_name} ended without its answer"), OwedWake::View),
+                }
+            }
+            Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => answered(r.into_value()),
+            Err((other, _)) => TerminateTurn::Owed(format!("the report to {fp_name} ended {} with no answer", other.name()), OwedWake::View),
+        }
+    }
+}
+
+/// One send of a deleted birth's termination report ([`RecoverySubmitter::report_terminate`]).
+enum TerminateTurn {
+    /// The fabric-primary opened the termination, or had applied it: the outcome, with its Build and attempt.
+    Answered(&'static str, Option<(String, u32)>),
+    /// Still owed: why, and what wakes the next send.
+    Owed(String, OwedWake),
+    /// Refused by name: the report ends.
+    Refused(String),
+}
+
+/// What wakes an owed termination report's next send.
+#[derive(Clone, Copy)]
+enum OwedWake {
+    /// A view installed, or the resend schedule's next delay: the fabric-primary is to be found again.
+    View,
+    /// The resend schedule's next delay: the attempt holding the birth's mesh ends on its own.
+    Schedule,
 }
 
 impl RecoverySubmitter {
