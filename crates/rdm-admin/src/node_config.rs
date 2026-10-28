@@ -412,6 +412,58 @@ impl NodeConfigs {
     }
 }
 
+/// The route of a call to `primary`, a primary of `mesh` in `view`: direct first; once an attempt sends
+/// nothing, through each other live node-admin of `mesh` in turn (Forward `0x1A`), never `me_id`.
+fn primary_route(view: &Topology, mesh: &str, primary: &rdm_core::NodeId, me_id: &rdm_core::NodeId) -> rdm_transport::RoutePolicy {
+    let carriers: Vec<(rdm_core::NodeId, crate::model::PathName)> = view.births().filter(|n| n.mesh == mesh && n.kind == rdm_core::NodeKind::NodeAdmin && n.node_id != *primary && n.node_id != *me_id && n.status.is_live()).map(|n| (n.node_id.clone(), n.name.clone())).collect();
+    rdm_transport::RoutePolicy(Arc::new(move |attempt: u32| match carriers.get(attempt.saturating_sub(1) as usize % carriers.len().max(1)) {
+        Some((carrier, path)) if attempt > 0 => rdm_transport::route::RouteChoice::ViaPeer { carrier: carrier.clone(), path: path.clone() },
+        _ => rdm_transport::route::RouteChoice::Direct,
+    }))
+}
+
+impl NodeConfigs {
+    /// A read `req` (query.md §1; Q224) this admin, a mesh-primary that is not the fabric-primary, does not
+    /// answer from its atlas (a read of another mesh, a read naming no mesh, `fabrics.get`), carried up to
+    /// the fabric-primary `view` names, whose atlas holds every mesh: its answer, handed back as it is.
+    /// One call with the caller's default budget, never owed (node-rpc.md, Owed: "A command with an
+    /// owner's bound keeps a finite budget"; the read's owner is the caller's call): direct first, then
+    /// through each other live node-admin of the fabric-primary's mesh on Forward `0x1A`. A view naming no
+    /// fabric-primary, or a call that ends with no reply, is `NotReady` naming it. One span,
+    /// `rdm.node_admin.<entity>.serve.via-forward`, names the read, its pairs, the fabric-primary and the
+    /// answer.
+    pub async fn carry_read_up(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, read: &rdm_core::status::Read, req: &StatusRequest) -> StatusReply {
+        use rdm_core::filter::Entity;
+        let op = read.entity.read();
+        let pairs = crate::views::pairs(&read.filter);
+        let empty = tracing::field::Empty;
+        let span = match read.entity {
+            Entity::Nodes => tracing::info_span!("rdm.node_admin.node.serve.via-forward", node = %me, read = op, pairs = %pairs, fabric_primary = empty, route = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+            Entity::Meshes => tracing::info_span!("rdm.node_admin.mesh.serve.via-forward", node = %me, read = op, pairs = %pairs, fabric_primary = empty, route = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+            _ => tracing::info_span!("rdm.node_admin.fabric.serve.via-forward", node = %me, read = op, pairs = %pairs, fabric_primary = empty, route = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+        };
+        let carried = async {
+            let Some(fp) = view.fabric_primary() else {
+                return rdm_core::reply::status::not_ready(format!("{me} answers {op} of its own mesh only, and its view names no fabric-primary to carry this one up to"));
+            };
+            span.record("fabric_primary", fp.name.to_string().as_str());
+            let opts = CallOptions { route: Some(primary_route(view, &fp.mesh, &fp.node_id, me_id)), ..CallOptions::default() };
+            let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(fp.node_id.clone()), req, &opts).await;
+            match out {
+                rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
+                other => rdm_core::reply::status::not_ready(format!("{me} carried {op} up to the fabric-primary {}: the call ended {} with no reply", fp.name, other.name())),
+            }
+        };
+        let reply = tracing::Instrument::instrument(carried, span.clone()).await;
+        span.record("outcome", reply.name());
+        if let StatusReply::NotReady { reason } = &reply {
+            span.record("detail", reason.as_str());
+        }
+        span.in_scope(|| tracing::info!("a read this mesh-primary's atlas does not hold, carried up to the fabric-primary"));
+        reply
+    }
+}
+
 /// [`NodeConfigs::owed`] over `client`, woken by `views`, the tick of the admin's installed view.
 #[allow(clippy::too_many_arguments)]
 async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::watch::Receiver<u64>>, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, req: &StatusRequest, hop: Hop<'_>) -> Owed {
@@ -459,13 +511,7 @@ async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::watch::Rece
                 Err(none) => none,
                 Ok((name, primary, mesh)) => {
                     tracing::Span::current().record(field, name.to_string().as_str());
-                    // Direct first; once an attempt sends nothing, through each other live node-admin of the primary's mesh in turn (Forward `0x1A`).
-                    let carriers: Vec<(rdm_core::NodeId, crate::model::PathName)> = view.births().filter(|n| n.mesh == mesh && n.kind == rdm_core::NodeKind::NodeAdmin && n.node_id != primary && n.node_id != *me_id && n.status.is_live()).map(|n| (n.node_id.clone(), n.name.clone())).collect();
-                    let policy = rdm_transport::RoutePolicy(Arc::new(move |attempt: u32| match carriers.get(attempt.saturating_sub(1) as usize % carriers.len().max(1)) {
-                        Some((carrier, path)) if attempt > 0 => rdm_transport::route::RouteChoice::ViaPeer { carrier: carrier.clone(), path: path.clone() },
-                        _ => rdm_transport::route::RouteChoice::Direct,
-                    }));
-                    let opts = CallOptions { budget: rdm_transport::Budget::Owed, route: Some(policy), ..CallOptions::default() };
+                    let opts = CallOptions { budget: rdm_transport::Budget::Owed, route: Some(primary_route(&view, &mesh, &primary, me_id)), ..CallOptions::default() };
                     sends += 1;
                     let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(primary.clone()), req, &opts).await;
                     let outcome = match &out {

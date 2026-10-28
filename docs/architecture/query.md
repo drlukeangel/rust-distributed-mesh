@@ -3,7 +3,7 @@
 [Lifecycle index](fabric-mesh-node-lifecycles.md) · [Node properties](node-rpc-envelope.md#node-properties) · [Gossip](gossip.md)
 
 This page owns how anything reads the fabric: the filter, its matching rules, and the two places a
-query is answered (Q167, Q232). A query is answered from the fabric-primary's Atlas, or by the node
+query is answered (Q167, Q232). A query is answered from a primary's Atlas, or by the node
 itself from the topology it holds. Both take the same filter and match it with the same rules.
 
 ## 1. External: a query to the fabric-primary
@@ -11,7 +11,10 @@ itself from the topology it holds. Both take the same filter and match it with t
 A caller outside the node sends `fabrics.get`, `meshes.get` and `nodes.get` to the fabric-primary,
 which answers from its atlas: every
 mesh's node records, held in memory, filled from the node records once at its start or hand-over and
-written by each op after that (Q203, Q204, Q224). A read makes no store read: the filter is matched
+written by each op after that (Q203, Q204, Q224). Only a primary keeps an atlas (Q224): a mesh-primary's
+holds its own mesh and nothing else, the fabric-primary's holds every mesh, and a node-admin that is
+not a primary keeps none. A mesh-primary answers a read of its own mesh from its atlas and carries any
+other read up to the fabric-primary. A read makes no store read: the filter is matched
 against the atlas, and a nodes store that fails every read leaves the answer unchanged.
 
 A node reads another node's row from the nodes storage itself (Q237, Luke): a point read by `id` or
