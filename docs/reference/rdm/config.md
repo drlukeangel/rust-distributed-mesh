@@ -31,8 +31,8 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_BIN_DIR` | `crates/rdm-test/src/estate.rs` | 1058 | fn `Estate::admin_launch` | in `vec!` |
 | `RDM_BIN_DIR` | `crates/rdm-test/src/estate.rs` | 1067 | fn `Estate::admin_launch` | argument to `.retain` |
 | `RDM_BIN_DIR` | `tools/test-runner/src/lib.rs` | 55 | const `SCRUBBED` | literal |
-| `RDM_CA_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 414 | const `ENV_CA_CERT_TTL_SECS` | literal |
-| `RDM_CA_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 466 | fn `CertPolicy::from_env` | `ENV_CA_CERT_TTL_SECS`, argument to `secs` |
+| `RDM_CA_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 422 | const `ENV_CA_CERT_TTL_SECS` | literal |
+| `RDM_CA_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 474 | fn `CertPolicy::from_env` | `ENV_CA_CERT_TTL_SECS`, argument to `secs` |
 | `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 34 | const `ENV_CA_SECRET` | `ENV_CA_SECRET` |
 | `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 82 | fn `CertChoice::from_material` | `ENV_CA_SECRET`, argument to `get` |
 | `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 83 | fn `CertChoice::from_material` | `ENV_CA_SECRET`, argument to `present` |
@@ -45,8 +45,8 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_CA_SECRET` | `crates/rdm-test/src/estate.rs` | 708 | fn `Estate::born` | in `vec!` |
 | `RDM_CA_SECRET` | `crates/rdm-test/src/estate.rs` | 1062 | fn `Estate::admin_launch` | in `vec!` |
 | `RDM_CA_SECRET` | `crates/rdm-test/src/test_certs.rs` | 48 | fn `custody_of` | in `vec!` |
-| `RDM_CERT_RENEW_AT` | `crates/rdm-core/src/certs.rs` | 416 | const `ENV_CERT_RENEW_AT` | literal |
-| `RDM_CERT_RENEW_AT` | `crates/rdm-core/src/certs.rs` | 456 | fn `CertPolicy::from_env` | `ENV_CERT_RENEW_AT`, argument to `present` |
+| `RDM_CERT_RENEW_AT` | `crates/rdm-core/src/certs.rs` | 424 | const `ENV_CERT_RENEW_AT` | literal |
+| `RDM_CERT_RENEW_AT` | `crates/rdm-core/src/certs.rs` | 464 | fn `CertPolicy::from_env` | `ENV_CERT_RENEW_AT`, argument to `present` |
 | `RDM_CONNECTIONS_DELETE_DEADLINE_MS` | `crates/rdm-admin/src/admin/records.rs` | 179 | fn `AdminConfig::from_env` | `ENV_CONNECTIONS_DELETE_DEADLINE`, argument to `get` |
 | `RDM_CONNECTIONS_DELETE_DEADLINE_MS` | `crates/rdm-core/src/launch.rs` | 91 | const `ENV_CONNECTIONS_DELETE_DEADLINE` | literal |
 | `RDM_CONNECTIONS_DELETE_DEADLINE_MS` | `crates/rdm-core/src/launch.rs` | 420 | fn `Launch::to_env` | `ENV_CONNECTIONS_DELETE_DEADLINE`, argument to `.insert` |
@@ -146,8 +146,8 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_ISSUING_CERT` | `crates/rdm-core/src/launch.rs` | 410 | fn `Launch::to_env` | `ENV_ISSUING_CERT`, argument to `.insert` |
 | `RDM_ISSUING_CERT` | `crates/rdm-core/src/launch.rs` | 443 | fn `Launch::from_env` | `ENV_ISSUING_CERT`, argument to `get` |
 | `RDM_ISSUING_CERT` | `crates/rdm-test/src/test_certs.rs` | 48 | fn `custody_of` | in `vec!` |
-| `RDM_ISSUING_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 412 | const `ENV_ISSUING_CERT_TTL_SECS` | literal |
-| `RDM_ISSUING_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 465 | fn `CertPolicy::from_env` | `ENV_ISSUING_CERT_TTL_SECS`, argument to `secs` |
+| `RDM_ISSUING_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 420 | const `ENV_ISSUING_CERT_TTL_SECS` | literal |
+| `RDM_ISSUING_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 473 | fn `CertPolicy::from_env` | `ENV_ISSUING_CERT_TTL_SECS`, argument to `secs` |
 | `RDM_ISSUING_KEY` | `crates/rdm-admin/src/certs.rs` | 82 | fn `CertChoice::from_material` | `ENV_ISSUING_KEY`, argument to `get` |
 | `RDM_ISSUING_KEY` | `crates/rdm-admin/src/deployment/pipeline.rs` | 901 | fn `LaunchTemplate::scrub` | `ENV_ISSUING_KEY`, argument to `.extend` |
 | `RDM_ISSUING_KEY` | `crates/rdm-core/src/launch.rs` | 54 | const `ENV_ISSUING_KEY` | literal |
@@ -163,8 +163,8 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_LISTENERS` | `crates/rdm-core/src/launch.rs` | 28 | const `ENV_LISTENERS` | literal |
 | `RDM_LISTENERS` | `crates/rdm-core/src/launch.rs` | 400 | fn `Launch::to_env` | `ENV_LISTENERS`, argument to `.insert` |
 | `RDM_LISTENERS` | `crates/rdm-core/src/launch.rs` | 436 | fn `Launch::from_env` | `ENV_LISTENERS`, argument to `get` |
-| `RDM_MEMBER_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 410 | const `ENV_MEMBER_CERT_TTL_SECS` | literal |
-| `RDM_MEMBER_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 464 | fn `CertPolicy::from_env` | `ENV_MEMBER_CERT_TTL_SECS`, argument to `secs` |
+| `RDM_MEMBER_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 418 | const `ENV_MEMBER_CERT_TTL_SECS` | literal |
+| `RDM_MEMBER_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 472 | fn `CertPolicy::from_env` | `ENV_MEMBER_CERT_TTL_SECS`, argument to `secs` |
 | `RDM_MESH` | `crates/rdm-admin/src/admin/records.rs` | 131 | fn `AdminConfig::from_env` | argument to `get` |
 | `RDM_MESH` | `crates/rdm-admin/src/admin/records.rs` | 247 | fn `adoption_from_env` | argument to `given` |
 | `RDM_MESH` | `crates/rdm-test/src/estate.rs` | 701 | fn `Estate::born` | in `vec!` |
