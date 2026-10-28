@@ -538,8 +538,8 @@ impl BuildExecutor {
                 }
             }
             // A run of member creates this admin executes runs concurrently (Q245): the nodes of a
-            // mesh are born together, never one after another. A mesh's node-admin is created on its
-            // own: the first one is the birth the view hands the mesh's members to. A create that ends
+            // mesh are born together, never one after another, a further node-admin with them. A mesh's
+            // first node-admin is created on its own: it is the birth the view hands the mesh's members to. A create that ends
             // short of complete stops none of the others; the attempt ends once every one has ended.
             let group = self.create_group(&operations[i..], lane).await;
             if group > 1 {
@@ -594,12 +594,13 @@ impl BuildExecutor {
     }
 
     /// How many of `ops`, from the first, are member creates this admin executes in its view now
-    /// (Q245): node creates of any kind but node-admin, each of whose executor is this admin.
+    /// (Q245): node creates, each of whose executor is this admin, but a mesh's first node-admin, the
+    /// birth the view hands the mesh's members to.
     async fn create_group(&self, ops: &[BuildOperation], lane: Option<&str>) -> usize {
         let now = self.held_name().await;
         let t = self.topology.read().await;
         ops.iter()
-            .take_while(|op| matches!(op, BuildOperation::CreateNode { node, .. } if node.kind != NodeKind::NodeAdmin) && (lane.is_some() || executor_for(op, &t).is_none_or(|to| to.to_string() == now)))
+            .take_while(|op| matches!(op, BuildOperation::CreateNode { node, .. } if !t.first_admin_of(node)) && (lane.is_some() || executor_for(op, &t).is_none_or(|to| to.to_string() == now)))
             .count()
     }
 

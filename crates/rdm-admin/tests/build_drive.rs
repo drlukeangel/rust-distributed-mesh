@@ -3023,7 +3023,12 @@ impl OperationRunner for AtOnce {
 }
 
 async fn at_once(fails: Option<&'static str>) -> (Rig, Arc<AtOnce>) {
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 5)]) };
+    at_once_to(fails, 2, 5).await
+}
+
+/// [`at_once`], mesh1 grown to `admins` node-admins and `rpcs` rpc nodes.
+async fn at_once_to(fails: Option<&'static str>, admins: u32, rpcs: u32) -> (Rig, Arc<AtOnce>) {
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, admins), (rdm_core::NodeKind::RpcNode, rpcs)]) };
     let runner: Arc<Mutex<Option<Arc<AtOnce>>>> = Arc::default();
     let held = runner.clone();
     let r = rig_for(view(), change, move |ran, _| -> Arc<dyn OperationRunner> {
@@ -3060,4 +3065,18 @@ async fn a_failed_member_create_stops_none_of_the_others() {
     ran.sort();
     assert_eq!(ran, ["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].map(String::from).to_vec(), "every create ran to its end");
     assert_eq!(at.most.load(Ordering::SeqCst), 4);
+}
+
+/// CONTRACT (Q245): a mesh that already has its node-admins grows by a further node-admin and three rpc
+/// nodes: the further node-admin is born with them, the four creates at once. Only a mesh's first
+/// node-admin is created on its own.
+#[tokio::test]
+async fn a_further_node_admin_is_created_with_its_meshs_other_nodes() {
+    let (r, at) = at_once_to(None, 3, 4).await;
+    let drive = Drive::detached(r.build.clone());
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    let mut ran = r.ran.0.lock().unwrap().clone();
+    ran.sort();
+    assert_eq!(ran, ["node.create:mesh1.admin.3", "node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4"].map(String::from).to_vec());
+    assert_eq!(at.most.load(Ordering::SeqCst), 4, "the further node-admin's create ran with the rpc nodes'");
 }
