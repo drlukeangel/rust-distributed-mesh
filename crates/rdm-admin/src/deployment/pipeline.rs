@@ -1534,7 +1534,8 @@ impl DeploymentPipeline<'_> {
     async fn claimed_allocation(&self, run: &Run<'_>, req: &CreateRequest, rows: &crate::node_rows::NodeRows) -> Result<Option<Identity>, PipelineError> {
         use tracing::Instrument;
         let step = CreateStep::AllocateIdentity.name();
-        let Some((node_id, a)) = rows.allocation_at(&req.node, &req.build_id, &run.operation).await.map_err(|reason| PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })? else { return Ok(None) };
+        let (claimed, read) = rows.allocation_at(&req.node, &req.build_id, &run.operation).await.map_err(|reason| PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
+        let Some((node_id, a)) = claimed else { return Ok(None) };
         let identity = Identity { node_id, incarnation: a.incarnation, supersedes: None, deployment_id: a.deployment_id };
         let data_dir = req.data_dir.clone().unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", req.node, identity.node_id)));
         // `find` reads the launch's name, data dir and deployment; the birth's address is bound only once
@@ -1550,9 +1551,15 @@ impl DeploymentPipeline<'_> {
             incarnation_id = %identity.incarnation.as_str(),
             deployment_id = %identity.deployment_id,
             executor = %self.template.executor(),
+            read_status = tracing::field::Empty,
+            read_revision = tracing::field::Empty,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
         );
+        // What the claim's read returned at the name: the row's status and revision.
+        if let Some(r) = &read {
+            span.record("read_status", format!("{:?}", r.status).as_str()).record("read_revision", r.revision);
+        }
         match self.provider.find(&spec).instrument(span.clone()).await {
             Ok(Found::Exited(_)) => {
                 span.record("outcome", "launched-exited");

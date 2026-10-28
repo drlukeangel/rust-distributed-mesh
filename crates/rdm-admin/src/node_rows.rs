@@ -589,9 +589,11 @@ impl NodeRows {
     /// `path.name` key. `Some` only when the row there holds the name (it is not `Deleted`) and its
     /// claim was made by that same operation of that same Build; any other row, or none, answers
     /// `None`. Nothing is written. A read that fails is named.
-    pub async fn allocation_at(&self, name: &PathName, build_id: &crate::build::BuildId, operation: &str) -> Result<Option<(NodeId, Allocation)>, String> {
+    /// Beside the answer, the row the read returned (`None`: none stands at `name`), whatever it holds.
+    pub async fn allocation_at(&self, name: &PathName, build_id: &crate::build::BuildId, operation: &str) -> Result<(Option<(NodeId, Allocation)>, Option<NodeRow>), String> {
         let row = record_at(&*self.storage, name).await.map_err(|e| format!("{}: the record at {name} could not be read for the allocation of {operation} (Build {build_id}): {e}", self.held_name_now()))?;
-        Ok(row.filter(|r| r.status != NodeStatus::Deleted).and_then(|r| r.allocated.filter(|a| &a.build_id == build_id && a.operation == operation).map(|a| (r.node_id, a))))
+        let claimed = row.clone().filter(|r| r.status != NodeStatus::Deleted).and_then(|r| r.allocated.filter(|a| &a.build_id == build_id && a.operation == operation).map(|a| (r.node_id, a)));
+        Ok((claimed, row))
     }
 
     /// A create that claimed `name` for `node_id` and did not complete lets go of its claim, so the
@@ -719,6 +721,7 @@ impl NodeRows {
             keys = tracing::field::Empty,
             config_from = tracing::field::Empty,
             tags = tracing::field::Empty,
+            revision = tracing::field::Empty,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
@@ -754,7 +757,7 @@ impl NodeRows {
         )
         .await;
         match &r {
-            Ok(()) => span.record("outcome", "row-deleted"),
+            Ok(()) => span.record("outcome", "row-deleted").record("revision", self.written.row_of(node_id).map_or(0, |w| w.revision)),
             Err(e) => span.record("outcome", e.outcome()).record("detail", e.to_string().as_str()),
         };
         span.in_scope(|| tracing::info!("node.delete: the Deleted row decided; the record, its config and its tags stay, its labels leave the tags index"));
