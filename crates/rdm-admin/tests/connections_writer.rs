@@ -678,96 +678,68 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
 /// the route back to Direct, and spends the pending item.
 #[test]
 fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts() {
-    use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rdm_transport::span_capture("connections-writer", exporter.clone());
     let open_dials = OpenDials::default();
-    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer).with(open_dials.clone()));
-    let d = dispatch.clone();
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().unwrap();
-    let _g = tracing::dispatcher::set_default(&dispatch);
-    let trace_id = rt.block_on(async {
-        let root = tracing::info_span!("rdm.test.connections_writer", cell = "due_time_reconnect");
-        let tp = rdm_transport::traceparent_of(&root).expect("root traceparent");
-        let trace_id = tp.split('-').nth(1).unwrap().to_string();
-        tracing::Instrument::instrument(
-            async {
-                let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-                let jitter1 = rdm_core::reconnect::deterministic_jitter(&me.name, &dest.name, 1);
-                let failed_at = now_ms() - rdm_core::reconnect::reconnect_backoff(1) - jitter1 + 250;
-                let dir = data_dir("due-time-reconnect");
-                let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
-                let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
-                let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
-                let mut failed1 = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
-                failed1.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
-                writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, failed_at)).await.unwrap();
-                writer.record(failed1.clone()).await.unwrap();
-                writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), failed_at + 1)).await.unwrap();
-                let due1 = rdm_core::reconnect::next_due(&failed1).unwrap();
+    let spans = spans_of("a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts", Some(open_dials.clone()), || async {
+        let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
+        let jitter1 = rdm_core::reconnect::deterministic_jitter(&me.name, &dest.name, 1);
+        let failed_at = now_ms() - rdm_core::reconnect::reconnect_backoff(1) - jitter1 + 250;
+        let dir = data_dir("due-time-reconnect");
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+        let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
+        let mut failed1 = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
+        failed1.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
+        writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, failed_at)).await.unwrap();
+        writer.record(failed1.clone()).await.unwrap();
+        writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), failed_at + 1)).await.unwrap();
+        let due1 = rdm_core::reconnect::next_due(&failed1).unwrap();
 
-                // 1. Armed by the Direct Failed row alone, with no inbound accept trigger.
-                let pending = writer.recovery_pending();
-                assert_eq!(pending.len(), 1, "the Direct Failed row armed one pending attempt with no accept: {pending:?}");
-                assert_eq!((pending[0].destination.clone(), pending[0].due_ms), (dest.clone(), due1));
+        // 1. Armed by the Direct Failed row alone, with no inbound accept trigger.
+        let pending = writer.recovery_pending();
+        assert_eq!(pending.len(), 1, "the Direct Failed row armed one pending attempt with no accept: {pending:?}");
+        assert_eq!((pending[0].destination.clone(), pending[0].due_ms), (dest.clone(), due1));
 
-                let dial = CellDial::new(&writer, resolved(&dest), vec![Err("due-time attempt 1 refused".to_string()), Ok(())]);
-                let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(25), Some(dial.dial()));
-                assert!(dial.calls().is_empty(), "no dial before due1");
+        let dial = CellDial::new(&writer, resolved(&dest), vec![Err("due-time attempt 1 refused".to_string()), Ok(())]);
+        let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(25), Some(dial.dial()));
+        assert!(dial.calls().is_empty(), "no dial before due1");
 
-                // 2. When due1 arrives, the reconciler dials attempt 1 without any accept.
-                until("the due-time reconciler dials attempt 1", || dial.calls().len() == 1).await;
-                let (dial1_dest, dial1_at) = dial.calls()[0].clone();
-                assert_eq!(dial1_dest, dest, "attempt 1 dials the exact destination birth");
-                assert!(dial1_at >= due1, "attempt 1 waited for due1: dialled at {dial1_at} ms, due at {due1} ms");
-                dial.go.add_permits(1);
+        // 2. When due1 arrives, the reconciler dials attempt 1 without any accept.
+        until("the due-time reconciler dials attempt 1", || dial.calls().len() == 1).await;
+        let (dial1_dest, dial1_at) = dial.calls()[0].clone();
+        assert_eq!(dial1_dest, dest, "attempt 1 dials the exact destination birth");
+        assert!(dial1_at >= due1, "attempt 1 waited for due1: dialled at {dial1_at} ms, due at {due1} ms");
+        dial.go.add_permits(1);
 
-                // 3. Attempt 1 fails -> writes Direct Failed (E1, 2) and reschedules from that durable row.
-                until("attempt 1's Direct Failed (E1, 2) row is held", || held.lock().unwrap().own_latest_directs().iter().any(|d| d.recovery.map(|r| r.attempt_ordinal) == Some(2))).await;
-                let failed2 = storage.history().await.unwrap().into_iter().last().unwrap();
-                assert_eq!((failed2.kind, failed2.state, failed2.recovery.map(|r| (r.recovery_round, r.attempt_ordinal))), (ConnectionKind::Direct, ConnectionState::Failed, Some((1, 2))));
-                let due2 = rdm_core::reconnect::next_due(&failed2).unwrap();
-                assert!(due2 > due1, "rescheduled from the new Failed row: due2={due2} > due1={due1}");
-                assert_eq!(writer.recovery_pending(), vec![rdm_admin::connections_writer::RecoveryAttempt { destination: dest.clone(), due_ms: due2 }]);
+        // 3. Attempt 1 fails -> writes Direct Failed (E1, 2) and reschedules from that durable row.
+        until("attempt 1's Direct Failed (E1, 2) row is held", || held.lock().unwrap().own_latest_directs().iter().any(|d| d.recovery.map(|r| r.attempt_ordinal) == Some(2))).await;
+        let failed2 = storage.history().await.unwrap().into_iter().last().unwrap();
+        assert_eq!((failed2.kind, failed2.state, failed2.recovery.map(|r| (r.recovery_round, r.attempt_ordinal))), (ConnectionKind::Direct, ConnectionState::Failed, Some((1, 2))));
+        let due2 = rdm_core::reconnect::next_due(&failed2).unwrap();
+        assert!(due2 > due1, "rescheduled from the new Failed row: due2={due2} > due1={due1}");
+        assert_eq!(writer.recovery_pending(), vec![rdm_admin::connections_writer::RecoveryAttempt { destination: dest.clone(), due_ms: due2 }]);
 
-                // 4. An inbound accept arriving while the due-time item is pending coalesces into it and never skips due2.
-                writer.accepted(&resolved(&dest));
-                assert_eq!(writer.recovery_pending(), vec![rdm_admin::connections_writer::RecoveryAttempt { destination: dest.clone(), due_ms: due2 }], "the accept coalesced into the single pending attempt without changing due2");
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                assert_eq!(dial.calls().len(), 1, "the accept did not skip the backoff the durable rows set");
+        // 4. An inbound accept arriving while the due-time item is pending coalesces into it and never skips due2.
+        writer.accepted(&resolved(&dest));
+        assert_eq!(writer.recovery_pending(), vec![rdm_admin::connections_writer::RecoveryAttempt { destination: dest.clone(), due_ms: due2 }], "the accept coalesced into the single pending attempt without changing due2");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert_eq!(dial.calls().len(), 1, "the accept did not skip the backoff the durable rows set");
 
-                // 5. When due2 arrives, the reconciler dials attempt 2, which connects, retires the Proxy, and spends the item.
-                until("the reconciler dials attempt 2 at due2", || dial.calls().len() == 2).await;
-                let (dial2_dest, dial2_at) = dial.calls()[1].clone();
-                assert_eq!(dial2_dest, dest);
-                assert!(dial2_at >= due2, "attempt 2 waited for due2: dialled at {dial2_at} ms, due at {due2} ms");
-                dial.go.add_permits(1);
-                until("the route cuts back to Direct after Proxy retirement", || matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true })).await;
-                until("the pending item is spent once Direct is Connected", || writer.recovery_pending().is_empty()).await;
-                // The dial decides from its own result and never waits for its row (Q169): its span,
-                // the parent of the row's, ends once that row has landed.
-                writer.observations_landed().await;
-                assert_eq!(open_dials.open.load(std::sync::atomic::Ordering::SeqCst), 0, "every recovery-dial span ended once its fact landed");
-                let _ = std::fs::remove_dir_all(&dir);
-            },
-            root,
-        )
-        .await;
-        trace_id
+        // 5. When due2 arrives, the reconciler dials attempt 2, which connects, retires the Proxy, and spends the item.
+        until("the reconciler dials attempt 2 at due2", || dial.calls().len() == 2).await;
+        let (dial2_dest, dial2_at) = dial.calls()[1].clone();
+        assert_eq!(dial2_dest, dest);
+        assert!(dial2_at >= due2, "attempt 2 waited for due2: dialled at {dial2_at} ms, due at {due2} ms");
+        dial.go.add_permits(1);
+        until("the route cuts back to Direct after Proxy retirement", || matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true })).await;
+        until("the pending item is spent once Direct is Connected", || writer.recovery_pending().is_empty()).await;
+        // The dial decides from its own result and never waits for its row (Q169): its span,
+        // the parent of the row's, ends once that row has landed.
+        writer.observations_landed().await;
+        let open = open_dials.open.load(std::sync::atomic::Ordering::SeqCst);
+        tracing::info_span!("rdm.test.connections_writer.open-dials", open).in_scope(|| tracing::info!("the recovery-dial spans open once every owed write has landed"));
+        assert_eq!(open, 0, "every recovery-dial span ended once its fact landed");
+        let _ = std::fs::remove_dir_all(&dir);
     });
-    capture.flush(std::time::Duration::from_secs(10)).unwrap();
-    let spans: Vec<serde_json::Value> = exporter
-        .get_finished_spans()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| {
-            let attrs: serde_json::Map<String, serde_json::Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), serde_json::Value::String(kv.value.to_string()))).collect();
-            serde_json::json!({"name": s.name, "trace_id": s.span_context.trace_id().to_string(), "span_id": s.span_context.span_id().to_string(), "parent_span_id": s.parent_span_id.to_string(), "attributes": attrs})
-        })
-        .collect();
-    let out_dir = std::env::temp_dir().join("i143-testkit/connections_writer");
-    let _ = std::fs::create_dir_all(&out_dir).and_then(|_| std::fs::write(out_dir.join(format!("due_time_reconnect.{}.spans.json", std::process::id())), serde_json::to_vec_pretty(&spans).unwrap()));
-    crate::assert_own_story(spans.iter().filter_map(|s| s["name"].as_str()));
     let named = |n: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == n).collect() };
     let dials = named("rdm.node_admin.connection.create.via-recovery-dial");
     assert_eq!(dials.len(), 2, "two recovery dials in the flame (failed attempt 1, connected attempt 2): {dials:?}");
@@ -782,31 +754,53 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
     let spent = named("rdm.node_admin.connection.remove.via-recovery-attempt");
     assert_eq!(spent.len(), 1);
     assert_eq!(spent[0]["attributes"]["reason"], "direct-connected");
-    println!("cell=due_time_reconnect trace_id={trace_id}");
 }
 
-/// Run `body` on a two-worker runtime whose every thread exports its spans to an in-memory
-/// exporter, as the due-time cell does; every finished span, as JSON (name and attributes as text).
-fn spans_of<F: std::future::Future<Output = ()>>(cell: &str, body: impl FnOnce() -> F) -> Vec<serde_json::Value> {
+/// Run `body` on a two-worker runtime whose every thread exports its spans, under the cell's root
+/// span, to the cell's own JSONL artifact, `$TMPDIR/i143-testkit/<cell>/` (`cell` is the test
+/// function's name: the directory the gate keeps for a red cell, scripts/keep-gate-evidence.py),
+/// each span written as it ends; `extra` (when given) sees every span too. A panic in `body` ends
+/// the runtime and flushes the capture before it leaves the cell, so a red's spans are kept and
+/// readable. Every finished span, in the order it ended, as written (name, ids, start and end,
+/// attributes as text).
+fn spans_of<F: std::future::Future<Output = ()>>(cell: &str, extra: Option<OpenDials>, body: impl FnOnce() -> F) -> Vec<serde_json::Value> {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rdm_transport::span_capture("connections-writer", exporter.clone());
-    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+    let dir = std::env::temp_dir().join("i143-testkit").join(cell);
+    let exporter = rdm_transport::jsonl_span_exporter(&dir, "connections-writer").unwrap_or_else(|e| panic!("the span artifact dir {} is unusable: {e}", dir.display()));
+    let (capture, layer) = rdm_transport::span_capture("connections-writer", exporter);
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer).with(extra));
     let d = dispatch.clone();
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().unwrap();
     let _g = tracing::dispatcher::set_default(&dispatch);
-    rt.block_on(tracing::Instrument::instrument(body(), tracing::info_span!("rdm.test.connections_writer", cell = %cell)));
-    capture.flush(std::time::Duration::from_secs(10)).unwrap();
-    let spans: Vec<serde_json::Value> = exporter
-        .get_finished_spans()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| {
-            let attrs: serde_json::Map<String, serde_json::Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), serde_json::Value::String(kv.value.to_string()))).collect();
-            serde_json::json!({"name": s.name, "trace_id": s.span_context.trace_id().to_string(), "attributes": attrs})
+    let root = tracing::info_span!("rdm.test.connections_writer", cell = %cell);
+    let trace_id = rdm_transport::traceparent_of(&root).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).unwrap_or_default();
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(tracing::Instrument::instrument(body(), root))));
+    // The runtime ends first: every task it held lets its spans go, and they end into the capture.
+    drop(rt);
+    let flushed = capture.flush(std::time::Duration::from_secs(10));
+    eprintln!("spans of this cell: {} trace_id={trace_id}", dir.display());
+    let prefix = format!("connections-writer.{}-", std::process::id());
+    let spans: Vec<serde_json::Value> = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".spans.jsonl")))
+                .flat_map(|p| std::fs::read_to_string(p).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).collect::<Vec<_>>())
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
+    if let Err(panic) = ran {
+        // The red's spans in its own output too (a run that removes its temp dir keeps them here):
+        // one line each, in the order they ended.
+        for s in &spans {
+            eprintln!("span {} id={} parent={} start={} end={} {}", s["name"].as_str().unwrap_or_default(), s["span_id"].as_str().unwrap_or_default(), s["parent_span_id"].as_str().unwrap_or_default(), s["start_unix_nano"], s["end_unix_nano"], s["attributes"]);
+        }
+        std::panic::resume_unwind(panic);
+    }
+    flushed.unwrap_or_else(|e| panic!("the cell's spans did not all reach its artifact: {e}"));
+    assert!(!spans.is_empty(), "the cell's artifact {} holds its spans", dir.display());
     crate::assert_own_story(spans.iter().filter_map(|s| s["name"].as_str()));
+    println!("cell={cell} trace_id={trace_id}");
     spans
 }
 
@@ -832,7 +826,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
     let (me, carrier, dest, other) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"), end("mesh1.rpc.4"));
     let names = (me.name.to_string(), carrier.name.to_string(), dest.name.to_string(), other.name.to_string());
     let dir = data_dir("transition-spans");
-    let spans = spans_of("transition_spans", || async {
+    let spans = spans_of("every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_carrier_and_series_position", None, || async {
         let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
@@ -901,7 +895,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
 fn a_pending_reconnect_attempt_never_dialled_ends_on_a_span_naming_its_superseded_birth_or_the_direct_connected_that_satisfied_it() {
     let dirs = std::cell::RefCell::new(Vec::new());
     let dests = std::cell::RefCell::new(Vec::new());
-    let spans = spans_of("pending_attempt_ends", || async {
+    let spans = spans_of("a_pending_reconnect_attempt_never_dialled_ends_on_a_span_naming_its_superseded_birth_or_the_direct_connected_that_satisfied_it", None, || async {
         // The superseded birth.
         let (dir, _me, dest, _storage, held, writer, _) = proxied("pending-superseded", now_ms()).await;
         let topology_view = Arc::new(rdm_core::connections::StaticIncarnations::default());
