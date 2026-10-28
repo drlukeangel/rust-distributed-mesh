@@ -452,7 +452,7 @@ impl NodeConfigs {
                 ReadTo::MeshPrimary => view.own(me_id).and_then(|own| view.node_type_primary(&own.mesh, rdm_core::NodeKind::NodeAdmin)),
             };
             let Some(primary) = primary else {
-                return rdm_core::reply::status::not_ready(format!("{me} answers no {op} from an atlas, and its view names no {whom} to send this one on to"));
+                return rdm_core::reply::status::not_ready(format!("{me} answers no {op} from an atlas, and its view names none to send this one on to ({whom})"));
             };
             span.record(to.field(), primary.name.to_string().as_str());
             let opts = CallOptions { route: Some(primary_route(view, &primary.mesh, &primary.node_id, me_id)), ..CallOptions::default() };

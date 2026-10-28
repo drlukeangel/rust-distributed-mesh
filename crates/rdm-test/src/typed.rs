@@ -147,8 +147,8 @@ impl Estate {
         fabric_view_of(self.peers().await.as_ref(), admin, &self.fabric_id).await
     }
 
-    /// `nodes.get` of every node of every mesh, sent to the fabric-primary `fabrics.get` at `admin` names
-    /// ([`views_of`]; query.md §1), `None` when `admin` or the fabric-primary does not answer for this
+    /// `nodes.get` of every node of every mesh, at `admin` when it is a primary, else at the fabric-primary
+    /// its `fabrics.get` names ([`views_of`]; query.md §1), `None` when a read does not answer for this
     /// Fabric within 2 s. What one particular node holds is [`Self::held_topology_at`].
     pub async fn node_views_at(&self, admin: &PathName) -> Option<Vec<NodeView>> {
         self.views_at(admin).await.ok()
@@ -962,9 +962,9 @@ impl std::fmt::Display for ViewsEnd {
 }
 
 /// [`node_views_of`], naming the read that ended: `fabrics.get` at `admin` first, then `nodes.get [mesh: m]`
-/// of each mesh the fabric names, sent to the fabric-primary that answer names, as a caller outside the
-/// node sends it (query.md §1), never to a node-admin that is not a primary, which forwards it to its own
-/// mesh-primary (Q243); each bounded at 2 s. A fabric-primary whose node the caller holds no address
+/// of each mesh the fabric names, at `admin` when that answer names it a primary (its atlas answers, query.md
+/// §1), else sent to the fabric-primary the answer names, as a caller outside the node sends it, never to a
+/// node-admin that is not a primary, which forwards it to its own mesh-primary (Q243); each bounded at 2 s. A fabric-primary whose node the caller holds no address
 /// for (none at its name, or another node id than the answer's) is reached as
 /// [`Peers::carrier_following`] reaches one, from `admin`'s node list.
 pub async fn views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Result<Vec<NodeView>, ViewsEnd> {
@@ -979,8 +979,12 @@ pub async fn views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Resul
     // The fabric-primary's node id, from its control API base (`rdm://<node id>`): a birth the caller
     // holds at its name under another id is a node that left the path.
     let fp_id = f.admin_api_base.as_deref().and_then(|b| b.strip_prefix("rdm://")).map(str::to_string);
+    // A primary answers from its own atlas: the fabric-primary every mesh, a mesh-primary its own mesh,
+    // carrying any other read up (query.md §1).
+    let primary = f.fabric_primary.as_ref() == Some(admin) || f.meshes.iter().any(|m| m.primary_admin.as_ref() == Some(admin));
     let (at, carrier) = match f.fabric_primary.clone() {
-        Some(fp) if fp != *admin && peers.node_at(&fp).map(|id| id.to_string()) != fp_id => match tokio::time::timeout(std::time::Duration::from_secs(2), peers.carrier_following(admin, &fp)).await {
+        _ if primary => (admin.clone(), peers.carrier_at(admin.clone())),
+        Some(fp) if peers.node_at(&fp).map(|id| id.to_string()) != fp_id => match tokio::time::timeout(std::time::Duration::from_secs(2), peers.carrier_following(admin, &fp)).await {
             Err(_) => return Err(ViewsEnd::Ended(format!("the birth of {fp}, the fabric-primary, read at {admin} did not answer within 2 s"))),
             Ok(Err(e)) => return Err(ended(format!("the birth of {fp}, the fabric-primary,"), e)),
             Ok(Ok(carrier)) => (fp, carrier),

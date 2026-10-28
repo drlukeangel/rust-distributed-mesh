@@ -29,7 +29,6 @@
 //! the other, so every run covers both placements.
 
 use crate::build_log;
-use rdm_client::{Fabrics, ScopeStatus};
 use rdm_test::estate::{descends_from, named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha};
 use serde_json::{json, Value};
@@ -179,16 +178,22 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     estate.enter(&fabric_primary_path).await;
 
     // Peers hold the deleted mesh with its last admin while it lives (R-NS1 item 1, R-MD1 item 3):
-    // an admin of each surviving mesh, read on its own fabric view, holds mesh1 deleted with that one
-    // node. The admin lives on here until its node.delete, so this interval is held, not raced.
+    // an admin of each surviving mesh, in what it holds itself (query.md §2), holds mesh1 deleted with
+    // that one node: the mesh status it took from the gossiped MeshStatus, and the mesh1 births its
+    // topology holds (`node.topology.get`). fabrics.get at it answers a primary's atlas, never its own
+    // view (query.md §1; Q243). The admin lives on here until its node.delete, so this interval is held,
+    // not raced.
     let survivors = ["mesh2", "mesh3"];
     for m in survivors {
         for admin in after_b.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin") {
             let who = s(&admin["name"]);
-            Fabrics::new(estate.carrier_at(&Estate::path(&who)).await)
-                .fact(&format!("{who} holds mesh1 dead with {final_name} its only node"), Duration::from_secs(30), |f| f.meshes.iter().any(|m| m.name == "mesh1" && m.status == ScopeStatus::Dead && m.nodes.iter().map(|n| n.to_string()).collect::<Vec<_>>() == [final_name.clone()]))
-                .await
-                .unwrap_or_else(|end| panic!("{end}"));
+            wait_for(&format!("{who} holds mesh1 dead with {final_name} its only node"), Duration::from_secs(30), || async {
+                let dead = named(&estate.spans(), "rdm.mesh.topology.update.via-mesh-status").into_iter().any(|sp| s(&sp["attributes"]["node"]) == who && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "dead" && s(&sp["attributes"]["taken"]) == "true");
+                let held = estate.held_topology_at(&Estate::path(&who)).await?;
+                let mesh1: Vec<String> = held.members.iter().filter(|d| d.node.name.mesh == "mesh1").map(|d| d.node.name.to_string()).collect();
+                (dead && mesh1 == [final_name.clone()]).then_some(())
+            })
+            .await;
         }
     }
     assert!(alive(final_pid), "mesh1's final primary {final_name} still runs while every peer holds it");

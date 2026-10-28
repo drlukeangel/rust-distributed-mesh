@@ -67,8 +67,9 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     let held_at = now_ns();
     signal(pid, "-STOP");
     // Past the mark: nobody holds either role, in every sampled view, until a node at mesh1.admin.1 with a
-    // new node id is Ready and holds both.
-    let mut sampled_vacant = false;
+    // new node id is Ready and holds both. The standby keeps no atlas: it forwards each read to the
+    // mesh-primary its view names (query.md §1; Q243), so the views answered are a primary's, and the
+    // standby's own view holding no primary is its refusal naming none (read from its spans below).
     let restored = estate
         .until_view("the node re-created at mesh1.admin.1 is Ready, mesh-primary and fabric-primary", floor * 12 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
@@ -76,19 +77,23 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
             let mesh1_primary: Vec<String> = ns.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true && s(&n["name"]).starts_with("mesh1.")).map(|n| s(&n["name"])).collect();
             assert!(holders.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {holders:?}");
             assert!(mesh1_primary.iter().all(|h| h == fp), "only the node at {fp} is ever mesh1's primary: {mesh1_primary:?}");
-            if holders.is_empty() && mesh1_primary.is_empty() {
-                sampled_vacant = true;
-            }
             ns.iter()
                 .find(|n| n["name"] == fp && s(&n["node_id"]) != before.node_id.to_string() && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true)
                 .cloned()
         })
         .await;
-    assert!(sampled_vacant, "a view was sampled with neither role held while fabric recovery ran");
     // The held birth is the test's to end; nothing in the workflow terminates an os-stopped runtime.
     signal(pid, "-KILL");
     estate.stop().await;
     let spans = estate.spans();
+    // The standby's own view, sampled by every read sent to it, held no primary of mesh1 while fabric
+    // recovery ran: a read refused naming none to send it on to.
+    let restored_at = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == fp && at(sp) >= held_at).map(at).min().unwrap_or(u64::MAX);
+    let sampled_vacant = spans.iter().any(|sp| {
+        let name = sp["name"].as_str().unwrap_or_default();
+        name.starts_with("rdm.node_admin.") && name.ends_with(".serve.via-forward") && s(&sp["attributes"]["node"]) == standby && s(&sp["attributes"]["outcome"]) == "not-ready" && s(&sp["attributes"]["mesh_primary"]).is_empty() && s(&sp["attributes"]["fabric_primary"]).is_empty() && at(sp) >= held_at && at(sp) < restored_at
+    });
+    assert!(sampled_vacant, "a view was sampled with neither role held while fabric recovery ran");
     let ran: Vec<Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at(sp) >= held_at).cloned().collect();
     assert!(ran.iter().any(|sp| s(&sp["attributes"]["node"]) == standby && s(&sp["attributes"]["arm"]) == "own-mesh" && s(&sp["attributes"]["outcome"]).starts_with("restored")), "{standby} ran fabric recovery in its own mesh and restored the node at {fp}: {ran:#?}");
     assert!(ran.iter().all(|sp| s(&sp["attributes"]["node"]) == standby), "nobody else ran it: {ran:#?}");
