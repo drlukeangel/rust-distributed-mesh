@@ -184,4 +184,16 @@ for path in git("diff", "--name-only", f"{base}..{head}", "--", "*.rs").splitlin
         elif not line.startswith('-'): n += 1
     for n, code in runtime_auth_codes(text):
         if n in added_lines: hits.append(f"{path}:{n}: runtime construction of Code::{code}")
+# Whole-tree mode: a word that reached zero in the tree stays at zero. Each entry is a case-insensitive
+# extended regex over the whole tree at <head> (this script and its test name the words, so they are exempt).
+TREE_BANNED = [
+    # Q176 (Luke 2026-10-28): "there is no ready-for-traffic, there is ready", no alias, no decode, no mention.
+    ("ready-for-traffic", r"ready-for-traffic|ReadyForTraffic|ready_for_traffic|ready for traffic"),
+]
+for label, pattern in TREE_BANNED:
+    out = subprocess.run(["git", "grep", "-n", "-I", "-i", "-E", pattern, head, "--", ".",
+                          ":!scripts/name-check.py", ":!scripts/test_name_check.py"],
+                         capture_output=True, text=True).stdout
+    for l in out.splitlines():
+        hits.append(f"tree {label}: {l.split(':', 1)[1][:160]}")
 print("\n".join(hits))

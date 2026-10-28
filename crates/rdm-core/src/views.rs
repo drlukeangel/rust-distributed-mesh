@@ -15,7 +15,6 @@ pub enum NodeStatus {
     /// Born and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    #[serde(alias = "ready-for-traffic")]
     Ready,
     /// Connections-deleting: it takes no new work while it finishes what it holds.
     #[serde(rename = "connections-deleting")]
@@ -57,7 +56,6 @@ pub enum ScopeStatus {
     /// Created and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    #[serde(alias = "ready-for-traffic")]
     Ready,
     /// Leaving: a mesh whose shutdown was accepted; it is not selected for new work.
     Leaving,

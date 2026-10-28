@@ -109,9 +109,8 @@ pub struct FabricRecord {
     pub fabric_id: FabricId,
     /// The fabric's name, claimed above the per-fabric roots.
     pub name: String,
-    /// The fabric events applied, each once. A record written before Q176 named the ready
-    /// event `ready-for-traffic` (Q176); it reads back as `ready`.
-    #[serde(default, deserialize_with = "events_of")]
+    /// The fabric events applied, each once.
+    #[serde(default)]
     pub events: Vec<String>,
     /// The deployment provider that runs the fabric's nodes: fabric policy, fixed by Day 0's
     /// `MESH_SPAWN_TYPE` and written by the bootstrap admin with the record. An adoption launch takes
@@ -130,13 +129,6 @@ pub struct FabricRecord {
     /// deleted by RDM.
     #[serde(default)]
     pub previous_topology_storage_providers: Vec<String>,
-}
-
-/// The fabric events a record holds, the ready event written before Q176 (`ready-for-traffic`) read as
-/// `ready`, the name it has since.
-fn events_of<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    let events: Vec<String> = Deserialize::deserialize(d)?;
-    Ok(events.into_iter().map(|e| if e == "ready-for-traffic" { "ready".into() } else { e }).collect())
 }
 
 /// The `topology_storage_provider` of a record written before the field: RDM's file backend.

@@ -47,7 +47,6 @@ pub enum LifecycleState {
     /// Created and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    #[serde(alias = "ready-for-traffic")]
     Ready,
     /// Leaving: it has announced its departure.
     Leaving,

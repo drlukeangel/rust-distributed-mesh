@@ -33,7 +33,6 @@ pub enum MemberStatus {
     /// The node has not yet declared itself ready.
     Pending,
     /// The node takes traffic.
-    #[serde(alias = "ready-for-traffic")]
     Ready,
     /// The node takes no new work: its connections are being deleted.
     #[serde(rename = "connections-deleting")]

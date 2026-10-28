@@ -493,7 +493,7 @@ mod tests {
         refused(Entity::Nodes, Filter::new().eq("mesh", Vec::<String>::new()), "the pair (mesh, []) names no value");
         refused(Entity::Meshes, Filter::new().eq("config.zone", ["eu-1"]), "the pair (config.zone, [eu-1]) names no property of a mesh row");
         refused(Entity::Connections, Filter::new().eq("logged_at_ms", ["12a"]), "a number is decimal digits");
-        refused(Entity::Fabrics, Filter::new().eq("status", ["ready-for-traffic"]), "the pair (status, [ready-for-traffic])"); // Q176: the old name is no status
+        refused(Entity::Fabrics, Filter::new().eq("status", ["bogus"]), "the pair (status, [bogus])");
         assert_eq!(Filter::new().eq("config.anything.at.all", ["x"]).refusal(Entity::Nodes), None);
         assert_eq!(Filter::new().eq("status", ["ready"]).eq("name", ["mesh1"]).refusal(Entity::Meshes), None);
         assert_eq!(Filter::new().eq("state", ["connected"]).eq("kind", ["direct", "proxy"]).refusal(Entity::Connections), None);

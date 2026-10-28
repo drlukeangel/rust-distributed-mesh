@@ -47,7 +47,6 @@ pub enum NodeState {
     /// Born and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    #[serde(alias = "ReadyForTraffic")]
     Ready,
     /// Connections-deleting: it takes no new work.
     ConnectionsDeleting,
@@ -63,7 +62,6 @@ pub enum MeshState {
     /// Created and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    #[serde(alias = "ReadyForTraffic")]
     Ready,
     /// Leaving: it is closing.
     Leaving,
@@ -75,7 +73,6 @@ pub enum MeshState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FabricEvent {
     /// The fabric is ready.
-    #[serde(alias = "ReadyForTraffic")]
     Ready,
     /// A fabric shutdown was initiated by the named admin.
     ShutdownInitiated {
