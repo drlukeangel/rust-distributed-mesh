@@ -11,7 +11,7 @@
 //! 3. The own-mesh sweep: ONE bounded core Ping to every node of the own mesh, once, on entry.
 //!    A reply proves a live exact birth. No reply is "not yet reached", never death: the node
 //!    stays in the map as unheard and goes to node recovery (mesh-recovery.md step 6): the new
-//!    mesh-primary's tickle, then the provider's exact exit proof, then recovery only on proof.
+//!    mesh-primary's tickle, then the provider's exact exited verdict, then recovery only on proof.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use crate::storage::NodeRow;

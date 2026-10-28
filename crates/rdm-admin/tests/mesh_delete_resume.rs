@@ -411,7 +411,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     let _ = std::fs::remove_dir_all(&data_root);
 
     // Attempt 1: the ordinary tier is incomplete by name, and the node-admin tier never started.
-    let err = first.expect_err("the ordinary tier holds an unproven exit");
+    let err = first.expect_err("the ordinary tier holds an unproven exited verdict");
     assert!(err.contains("tier ordinary-nodes is incomplete") && err.contains(FAILING), "{err}");
     let calls = calls.into_inner().unwrap();
     let ran = |attempt: u32| calls.iter().filter(|(a, _)| *a == attempt).map(|(_, n)| n.clone()).collect::<BTreeSet<_>>();
@@ -552,7 +552,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
     let _ = std::fs::remove_dir_all(&data_root);
 
-    let err = tier.expect_err("the ordinary tier holds an unproven exit");
+    let err = tier.expect_err("the ordinary tier holds an unproven exited verdict");
     assert!(err.contains("tier ordinary-nodes is incomplete"), "{err}");
     let (missing, without_exit, reason) = match verdict.refusal() {
         Some(StatusReply::RejectedIncompleteManifest { missing, without_exit, reason }) => (missing, without_exit, reason),
@@ -677,7 +677,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
     assert!(matches!(&other, Some(StatusReply::RejectedUnmatchedCompletion { field, .. }) if field == "final_primary"), "a handoff naming another birth is refused by name: {other:?}");
     assert_eq!(completions, 1, "the replay recorded no second completion receipt");
     assert_eq!(indexed, Some((build_id, 1, outer.clone())), "the completion index names the mesh.delete for the final birth");
-    let all = proof.unwrap_or_else(|e| panic!("the final birth's own exit proof completes the set: {e}"));
+    let all = proof.unwrap_or_else(|e| panic!("the final birth's own exited verdict completes the set: {e}"));
     assert_eq!(first_mismatch(&all, &all.roster, &me, true), None, "MeshLeft covers every accepted birth, the final primary included");
     assert_eq!(births(&all.receipts), BTreeSet::from([FAILING.to_string(), EXITING.to_string(), OTHER_ADMIN.to_string(), FINAL.to_string()]));
     assert!(recycled.as_ref().is_err_and(|e| e.starts_with("final_runtime")), "a receipt of another runtime proves nothing: {recycled:?}");
@@ -1273,7 +1273,7 @@ fn an_amended_primary_whose_own_facts_lack_the_lost_primarys_delete_reads_the_ow
 
 /// CONTRACT: as above, when gossip brought the lost primary's node.delete receipts but its exact
 /// Exited (`TerminateRuntime`): its `NodeDeleted` and `Complete` alone do not keep the delete, the
-/// exit proof does (mesh-delete.md step 4: the manifest covers "the lost primary's Exited"), so the
+/// exited verdict does (mesh-delete.md step 4: the manifest covers "the lost primary's Exited"), so the
 /// admission reads the owner. Must NOT happen: mesh_delete_resume with the first fix, the survivor's
 /// admission from its own facts (`via-own-build-facts`) and its second node.delete of the lost primary.
 #[test]
@@ -1829,7 +1829,7 @@ impl LifecycleEvents for Departures {
 /// mesh-primary, the same Build) takes `mesh2.rpc.2` as done and finishes `mesh2.rpc.1`'s delete:
 /// its runtime is not terminated again (TerminateRuntime is reused), NodeDeleted is executed,
 /// receipted and published once, and the delete ends in `Complete`. Every other peer keeps the
-/// stopped birth until mesh-left if NodeDeleted is never published: the exit proof alone is not the
+/// stopped birth until mesh-left if NodeDeleted is never published: the exited verdict alone is not the
 /// departure. Each primary's publications are its own (attempt 1's primary is lost before its
 /// frames land): attempt 2's primary publishes the NodeDeleted of the deletes it ran, and never again
 /// `mesh2.rpc.2`'s, which its own node.delete published once under attempt 1 (node-delete.md step 4:
@@ -1918,12 +1918,12 @@ fn a_delete_cut_after_its_terminate_runtime_receipt_is_finished_by_the_resumed_a
     let ran = |attempt: u32| calls.iter().filter(|(a, _)| *a == attempt).map(|(_, n)| n.clone()).collect::<BTreeSet<_>>();
     assert_eq!(ran(1), BTreeSet::from([FAILING.to_string(), EXITING.to_string()]), "attempt 1 ran the ordinary tier");
     let of = |steps: &[BuildStepReceipt], node: &str, step: &str| steps.iter().filter(|r| r.operation == format!("node.delete:{node}") && r.step == step && r.outcome == rdm_admin::build_state::StepOutcome::Complete).map(|r| r.attempt).collect::<Vec<_>>();
-    // The cut left rpc.1's exit proof and no more; rpc.2's delete ran to its end.
-    assert_eq!((of(&cut_steps, FAILING, "TerminateRuntime"), of(&cut_steps, FAILING, "NodeDeleted"), of(&cut_steps, FAILING, "Complete")), (vec![1], vec![], vec![]), "the cut left {FAILING}'s exit proof and no NodeDeleted: {cut_steps:#?}");
+    // The cut left rpc.1's exited verdict and no more; rpc.2's delete ran to its end.
+    assert_eq!((of(&cut_steps, FAILING, "TerminateRuntime"), of(&cut_steps, FAILING, "NodeDeleted"), of(&cut_steps, FAILING, "Complete")), (vec![1], vec![], vec![]), "the cut left {FAILING}'s exited verdict and no NodeDeleted: {cut_steps:#?}");
     assert_eq!(of(&cut_steps, EXITING, "Complete"), vec![1], "{EXITING}'s delete ran to its end");
 
-    // Attempt 2: the exit proof is not the delete. The delete with no NodeDeleted is run to its end.
-    assert_eq!(ran(2), BTreeSet::from([FAILING.to_string(), OTHER_ADMIN.to_string()]), "attempt 2 finishes {FAILING}'s delete (its exit proof alone is not a finished delete) and runs the node-admin tier, and does not run {EXITING}, whose delete has every step's receipt");
+    // Attempt 2: the exited verdict is not the delete. The delete with no NodeDeleted is run to its end.
+    assert_eq!(ran(2), BTreeSet::from([FAILING.to_string(), OTHER_ADMIN.to_string()]), "attempt 2 finishes {FAILING}'s delete (its exited verdict alone is not a finished delete) and runs the node-admin tier, and does not run {EXITING}, whose delete has every step's receipt");
     let manifest = second.unwrap_or_else(|e| panic!("the resumed attempt completes: {e}"));
     assert_eq!(births(&manifest.receipts), BTreeSet::from([FAILING.to_string(), EXITING.to_string(), OTHER_ADMIN.to_string()]), "the manifest carries every other member's receipt");
     assert_eq!(of(&steps, FAILING, "TerminateRuntime"), vec![1], "{FAILING}'s completed TerminateRuntime is not run again");
@@ -1982,7 +1982,7 @@ fn the_owners_wait_ends_when_the_final_primary_is_lost_never_on_a_timer() {
     let mesh_delete_view = MeshDeleteView::default();
     let (key, handoff, final_primary) = open_leave(&mesh_delete_view, &records);
     let (end, open_after_silence, waited, trace_id) = run_paused(&cap, async {
-        let root = tracing::info_span!("cell.owner-wait-proven-exit", operation = %key.operation);
+        let root = tracing::info_span!("cell.owner-wait-exited-verdict", operation = %key.operation);
         let trace_id = trace_id(&root);
         let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
         let proven: Arc<Mutex<Option<String>>> = Arc::default();
@@ -2006,7 +2006,7 @@ fn the_owners_wait_ends_when_the_final_primary_is_lost_never_on_a_timer() {
         (end, open_after_silence, began.elapsed(), trace_id)
     });
     let spans = cap.spans();
-    let dir = artifact_dir().join("owner-wait-proven-exit");
+    let dir = artifact_dir().join("owner-wait-exited-verdict");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
@@ -2028,7 +2028,7 @@ fn the_owners_wait_ends_when_the_final_primary_is_lost_never_on_a_timer() {
 
 /// CONTRACT: a handoff that arrives ends the owner's wait with its validated manifest, even when the
 /// final primary is proven exited afterwards (it reported mesh.deleted while it lived, then went):
-/// the handoff is read first. Must NOT happen: a proven exit discarding a handoff already held.
+/// the handoff is read first. Must NOT happen: an exited verdict discarding a handoff already held.
 #[test]
 fn a_handoff_held_ends_the_owners_wait_with_its_manifest_even_when_the_final_primary_exits_after() {
     let cap = capture();
@@ -2040,7 +2040,7 @@ fn a_handoff_held_ends_the_owners_wait_with_its_manifest_even_when_the_final_pri
         let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
         assert!(mesh_delete_view.resolve(&key, manifest.clone()), "the first outcome of the leave");
         view_tx.send_modify(|t| *t += 1);
-        await_mesh_deleted(&key, FINAL, handoff, view_rx, || std::future::ready(Some("its exit-proof row is read".to_string())), MESH_DELETED_WAIT).await
+        await_mesh_deleted(&key, FINAL, handoff, view_rx, || std::future::ready(Some("its exited-verdict row is read".to_string())), MESH_DELETED_WAIT).await
     });
     assert_eq!(end.ok(), Some(manifest), "the handoff held ends the wait with its manifest");
 }

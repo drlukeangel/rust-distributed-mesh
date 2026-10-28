@@ -1,7 +1,7 @@
 //! A node.delete of a stopped node (lifecycles/node-delete.md step 1, node-stop.md step 6): the stopped
 //! birth already ran its whole stop (connections delete receipt, connection cut, `stopped`, `NodeStopped`), so
 //! its delete composes nothing of that stop again. It goes from the `NodeDeleting` pre-notice
-//! straight to the provider's exact runtime exit proof, then `NodeDeleted`, and releases no storage
+//! straight to the provider's exact runtime exited verdict, then `NodeDeleted`, and releases no storage
 //! (node-delete.md "Storage": "Retain data dir and endpoint key"). The cell drives the delete
 //! pipeline over a recording provider and a recording observer: nothing here depends on timing.
 
@@ -88,7 +88,7 @@ impl TopologySink for Discard {
 
 /// CONTRACT (lifecycles/node-delete.md 1-2: "For a crashed process those stop steps are already done; do
 /// not fabricate node replies or receipts. Stop and inspect the exact runtime through provider
-/// control"; node-stop.md 6: "Delete proceeds to external exact runtime exit proof instead"): the
+/// control"; node-stop.md 6: "Delete proceeds to external exact runtime exited verdict instead"): the
 /// delete of a stopped birth (Leaving, stopped) records `NodeDeleting`, then `TerminateRuntime` (the
 /// provider's stop and its `Exited` inspection of the exact runtime), then `NodeDeleted`, and
 /// `Complete`. Must NOT happen: a stop sent again to the stopped birth, or any of its receipts
@@ -155,7 +155,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
     assert_eq!(
         order,
         [DeleteStep::NodeDeleting, DeleteStep::TerminateRuntime, DeleteStep::NodeDeleted, DeleteStep::RemoveTopologyMembership, DeleteStep::Complete].map(|s| s.name()),
-        "the pre-notice, the exact runtime's exit proof, the departure, and no storage release: {out:?}"
+        "the pre-notice, the exact runtime's exited verdict, the departure, and no storage release: {out:?}"
     );
     assert!(out.is_ok(), "{out:?}");
     assert_eq!(*provider.terminated.lock().unwrap(), vec![handle.deployment_id.to_string()], "the exact runtime is stopped through provider control, once");

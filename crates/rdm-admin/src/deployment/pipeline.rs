@@ -12,8 +12,8 @@
 //!   -> AwaitNodeLeft (its `Stopped` reply, bounded; a deadline is an arm, never a failure)
 //!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
 //!   -> RemoveTopologyMembership -> Complete
-//! delete of a crashed target: NodeDeleting -> TerminateRuntime (the exact exit proof, nothing sent)
-//!   -> NodeDeleted (from the mesh-primary's recorded exit proof) -> RemoveTopologyMembership -> Complete
+//! delete of a crashed target: NodeDeleting -> TerminateRuntime (the exact exited verdict, nothing sent)
+//!   -> NodeDeleted (from the mesh-primary's recorded exited verdict) -> RemoveTopologyMembership -> Complete
 //! update: UpdateNode (a Build's node.name.update of a name through node.name.update's own core) -> Complete
 //! ```
 //!
@@ -2254,7 +2254,7 @@ impl DeploymentPipeline<'_> {
         } else if node.stopped {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its connections delete
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
-            // fabricated again. The delete proceeds to the exact runtime's exit proof
+            // fabricated again. The delete proceeds to the exact runtime's exited verdict
             // (lifecycles/node-delete.md 1-2, node-stop.md 6).
             self.terminate_step(&mut run, &node, handle).await?
         } else if self.stop_skipped_os_stopped(&run, &node, handle).await {
@@ -2928,7 +2928,7 @@ mod tests {
 
     /// CONTRACT (deployment-provider.md §2.5: "An explicit `node.delete` of an OS-stopped birth stays
     /// available: it skips the Node RPC stop by name (a suspended process answers no call), runs
-    /// `TerminateRuntime` on the exact handle, takes the exit proof and continues"; node-delete.md
+    /// `TerminateRuntime` on the exact handle, takes the exited verdict and continues"; node-delete.md
     /// "OS-suspended target"): the delete of a live (not stopped) birth whose provider reads its exact
     /// runtime `OsStopped` at the delete's instant sends it no command; the inspection is spanned
     /// (`caller = delete`, `os-stopped`), the skip is named (`rdm.node_admin.node.delete.via-os-stopped`),
@@ -3025,7 +3025,7 @@ mod tests {
     }
 
     /// CONTRACT (node-runtime-inspect.md Observability contract: the inspect span carries "node,
-    /// node_id, incarnation_id, inspector, handle, verdict, exit_code, exit_proof, reason"; Target:
+    /// node_id, incarnation_id, inspector, handle, verdict, exit_code, exited_verdict, reason"; Target:
     /// "The exact runtime handle recorded at launch"): the inspection's span names the exact handle
     /// the provider was asked about, the one the caller's launch record holds. Must NOT happen: an
     /// inspection span with no `handle`, so the evidence cannot say which runtime was inspected.

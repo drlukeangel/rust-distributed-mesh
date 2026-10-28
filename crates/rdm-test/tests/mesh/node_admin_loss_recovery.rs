@@ -73,7 +73,7 @@ async fn hand_fabric_primary_over(estate: &mut Estate, former: &str) -> String {
 /// Pending is handed: the mesh is not created again), and sweeps its own mesh once with a Ping: the
 /// two members that live answer, the one that died does not. The unreached member goes to
 /// node recovery (mesh-recovery.md step 6): the new mesh-primary's tickle, then the provider's exact
-/// exit proof, then one recovery under the same Build (node.delete of the exited instance with no
+/// exited verdict, then one recovery under the same Build (node.delete of the exited instance with no
 /// RPC to it, node.create at the same path.name, node.update); a missing Ping reply is the
 /// trigger, never the proof. The second admin is created by the NEW mesh primary. What must NOT
 /// happen: a new MeshId or Build id, a Pending handed to the joining node-admin, a surviving member
@@ -189,7 +189,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         assert!(!silent.contains(m), "{m} answered the sweep: {silent:?}");
     }
     // Not reached goes to node recovery under the new mesh-primary (mesh-recovery.md step 6): its tickle,
-    // the provider's exact exit proof, one recovery of the exited birth under the same Build. No
+    // the provider's exact exited verdict, one recovery of the exited birth under the same Build. No
     // decommission queue exists.
     assert!(named(&spans, "rdm.node_admin.node.update.via-sweep-decommission").is_empty(), "no sweep decommission: the unreached member is node-recovered");
     let recovery: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery")

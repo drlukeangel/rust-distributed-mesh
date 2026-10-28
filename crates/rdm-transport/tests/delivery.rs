@@ -613,7 +613,7 @@ async fn a_named_refusal_ends_the_retry_and_is_delivered_until_acked() {
 }
 
 /// Cell 6. CONTRACT: an owed request to a silent receiver (it takes the request and never acks) keeps
-/// being resent; the receiver's proven exit (the view's removal) ends it, by name.
+/// being resent; the receiver's exited verdict (the view's removal) ends it, by name.
 #[tokio::test]
 async fn the_receivers_removal_from_the_view_ends_the_owed_request_and_silence_does_not() {
     let r = raw().await;
@@ -1166,7 +1166,7 @@ fn every_return_of_a_requests_attempt_task_is_spanned_with_its_path() {
                 let out = call.await.unwrap();
                 assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::Reset(u64::from(failure))), "{out:?}");
 
-                // Receiver gone: a silent receiver, then its proven exit.
+                // Receiver gone: a silent receiver, then its exited verdict.
                 let gone = raw().await;
                 let (client, resolver) = client_of(&[&gone.node]).await;
                 let cd = client.delivery().clone();
@@ -1246,7 +1246,7 @@ async fn an_owed_call_outlives_every_bound_and_is_delivered_when_its_receiver_co
     assert_eq!(get(&s.stats.dispatched), 1, "the handler ran once");
 }
 
-/// Cell 24b (Q10 = a). CONTRACT (node-rpc.md §43: retry stops "on the ack, on the receiver's proven exit
+/// Cell 24b (Q10 = a). CONTRACT (node-rpc.md §43: retry stops "on the ack, on the receiver's exited verdict
 /// or accepted removal, or on explicit cancellation or retargeting by the owning workflow; never on a
 /// timer, never on absence from a view"): an Owed call to a receiver this caller's view does not hold yet
 /// stays owed. It is opened once the receiver resolves (read again at the resend pacing and on every
@@ -1322,7 +1322,7 @@ async fn an_owner_dropping_its_owed_call_ends_the_resend() {
     s.release();
 }
 
-/// Cell 27 (i146 Q44). CONTRACT: an Owed call to a silent receiver ends on the receiver's proven exit
+/// Cell 27 (i146 Q44). CONTRACT: an Owed call to a silent receiver ends on the receiver's exited verdict
 /// (the view's removal), `ReceiverGone`, code `UNAVAILABLE`: the proof ends it, never silence.
 #[tokio::test]
 async fn an_owed_call_ends_on_its_receivers_removal_from_the_view_unavailable() {
@@ -1363,8 +1363,8 @@ async fn an_owed_call_ends_when_its_receivers_exit_is_proven_unavailable() {
 
 /// A dial that completed but has not been pooled makes the supersession race deterministic.
 /// Ending the exact receiving birth ends an Owed call (receiver-gone); a moved endpoint slot of a
-/// living birth is neither the holder's answer nor its proven exit (i146 Q52: "The obligation ends on
-/// the holder's answer or proven exit"), so the attempt sent nothing and is resent to the slot the view
+/// living birth is neither the holder's answer nor its exited verdict (i146 Q52: "The obligation ends on
+/// the holder's answer or exited verdict"), so the attempt sent nothing and is resent to the slot the view
 /// names then. Neither request is dispatched through the superseded slot.
 async fn owed_dial_superseded(ended_birth: bool) {
     let s = served().await;

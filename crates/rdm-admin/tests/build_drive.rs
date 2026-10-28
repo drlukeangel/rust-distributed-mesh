@@ -505,14 +505,14 @@ async fn crashed_rig() -> Rig {
 }
 
 /// CONTRACT (mesh-investigation.md step 5, "Fully crashed": "The fabric-primary acts on the provider's
-/// exact exit proof, never on silence, and creates mesh-x's node-admin in process"; R-D1): mesh2 has
+/// exact exited verdict, never on silence, and creates mesh-x's node-admin in process"; R-D1): mesh2 has
 /// lost every node-admin and the investigation's 60 s decision on it came out `unreachable`, a hold.
-/// The drive reads the provider's exit proof of every node of mesh2 the accepted topology names (its
+/// The drive reads the provider's exited verdict of every node of mesh2 the accepted topology names (its
 /// two node-admins, its lost rpc node and the rpc node the Build grows, not yet born) itself, and on
 /// that proof it runs the create of the mesh's first node-admin, and only it, on the fabric-primary; the mesh's
 /// second admin and its ordinary node still wait for the mesh to be heard. With no decision at all
 /// the target stands for the first admin too. Must NOT happen: the target refusing the one create the
-/// exit proof admits (the mesh waiting for ever), or the hold releasing more than that create.
+/// exited verdict admits (the mesh waiting for ever), or the hold releasing more than that create.
 #[tokio::test]
 async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric_primary_and_nothing_else_of_the_held_mesh_does() {
     let r = crashed_rig().await;
@@ -1420,7 +1420,7 @@ fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unprov
     let (end, attempt, dispatches) = second;
     assert!(matches!(end, DriveEnd::Stalled(_)) && (attempt, dispatches) == (1, 1), "the unproven primary refuses the resume by name and no attempt is claimed: {end:?} attempt {attempt}, {dispatches} dispatches");
     let (end, state) = third;
-    assert_eq!((end, state), (DriveEnd::Terminal, BuildState::Complete), "the proven exit moved an input: attempt 2 runs the shutdown and completes the Build");
+    assert_eq!((end, state), (DriveEnd::Terminal, BuildState::Complete), "the exited verdict moved an input: attempt 2 runs the shutdown and completes the Build");
     let (ran, build) = ran;
     assert_eq!(current, CurrentBuild::Completed(build));
     assert_eq!(ran.iter().filter(|k| k.starts_with("mesh.delete:")).count(), 1, "{ran:?}");
@@ -2011,7 +2011,7 @@ impl Gate for AfterTheProof {
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 failure
 /// contract: "The holder lost after the row, before 'updated': the successor and every reader take the
 /// seat from the row; the next writer to read the row publishes 'updated'"; "A call that reached a
-/// process other than the named birth, a refusal or no answer is never an exit proof"; build.md: the
+/// process other than the named birth, a refusal or no answer is never an exited verdict"; build.md: the
 /// next attempt is claimed "when the executor is lost with the attempt unfinished, after exact
 /// departure proof"): the fabric-primary `mesh1.admin.1` holds both seats and moves them in its own
 /// attempt; it dies after its row, before it says "primary updated". Its successor `mesh1.admin.2`,

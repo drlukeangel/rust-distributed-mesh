@@ -14,7 +14,7 @@
 //! This stem is form (a): a surviving admin of mesh2 the election seats. Form (b), no admin of mesh2
 //! survives and the fabric-primary creates the one node-admin the leaving mesh may gain, is
 //! `mesh_lifecycle__mesh_delete_no_survivor`, over the shared run and assertions here. Form (c) is
-//! form (a) with a member's delete cut right after its exit proof: the primary is killed holding
+//! form (a) with a member's delete cut right after its exited verdict: the primary is killed holding
 //! rpc.1 at its NodeDeleted receipt, so the Build holds rpc.1's exact Exited (TerminateRuntime) and
 //! no NodeDeleted.
 
@@ -59,7 +59,7 @@ pub(crate) enum Rpc1 {
     /// Exited receipt and no NodeStopped published.
     Stopped,
     /// Exited and its exact Exited receipted (TerminateRuntime), the delete cut after NodeDeleted's
-    /// work and before NodeDeleted's receipt is durable: the Build holds the exit proof and no
+    /// work and before NodeDeleted's receipt is durable: the Build holds the exited verdict and no
     /// NodeDeleted, and none is published. The fault door's `Receipt` cut holds BEFORE the named
     /// receipt is durable (`FaultedBuilds::append_step_receipt`), so the cut that leaves
     /// TerminateRuntime durable is the next step's: NodeDeleted.
@@ -127,9 +127,9 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     if rpc1 == Rpc1::Stopped {
         door.arm(stopped, json!({"kind": "receipt", "step": "StopNode", "operation": "node.delete:mesh2.rpc.1"})).await;
     }
-    // rpc.1's whole delete ran to its exit proof: the runtime is terminated, the provider's exact
+    // rpc.1's whole delete ran to its exited verdict: the runtime is terminated, the provider's exact
     // Exited is receipted, and the executor is held in NodeDeleted before its receipt: the Build
-    // holds the exit proof and no NodeDeleted receipt, and `NodeDeleted` is never published.
+    // holds the exited verdict and no NodeDeleted receipt, and `NodeDeleted` is never published.
     let exit_proven = "leave:rpc1-NodeDeleted";
     if rpc1 == Rpc1::ExitProven {
         door.arm(exit_proven, json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete:mesh2.rpc.1"})).await;
@@ -345,11 +345,11 @@ async fn a_leave_whose_primary_is_lost_after_a_members_terminate_runtime_receipt
     let outer = format!("mesh.delete:{}", run.mesh2_id);
     let rpc1 = "mesh2.rpc.1";
     // The survivor's resumed attempt keeps the lost primary's exit as its only finished delete and
-    // runs the two ordinary members: rpc.1 holds an exit proof and is still owed its delete.
+    // runs the two ordinary members: rpc.1 holds an exited verdict and is still owed its delete.
     let resumed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && attr_u(sp, "attempt") >= 2).collect();
     assert!(
         resumed.iter().any(|sp| attr_u(sp, "roster") == 4 && s(&sp["attributes"]["retained_births"]) == run.lost.0 && attr_u(sp, "remaining") == 2 && s(&sp["attributes"]["delete_owed"]) == rpc1),
-        "the resumed attempt names rpc.1 as holding an exit proof and owed the rest of its delete: {resumed:?}"
+        "the resumed attempt names rpc.1 as holding an exited verdict and owed the rest of its delete: {resumed:?}"
     );
     // rpc.1's delete in the resumed attempt: its receipted TerminateRuntime is reused, never run
     // again; its NodeDeleted is executed once.

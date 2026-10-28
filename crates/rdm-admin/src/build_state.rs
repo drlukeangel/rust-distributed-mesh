@@ -1184,7 +1184,7 @@ pub trait BuildStateAdapter: Send + Sync {
     /// The Build, attempt and operation of the mesh.delete whose completion receipt
     /// (`mesh_delete::STEP_MESH_DELETED`) names the exact birth `(node_id, incarnation)` its final
     /// primary: the mesh.delete that ended with that birth alive, whose mesh-left follows that birth's
-    /// exit proof. The first such attempt. A point read by the birth: every adapter answers it from
+    /// exited verdict. The first such attempt. A point read by the birth: every adapter answers it from
     /// its index (or delegates to the adapter it decorates), never by reading the fact log.
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError>;
     /// The exited births of `mesh` whose node workflow in `build_id` stopped at a Failed attempt and

@@ -801,7 +801,7 @@ async fn start_booted(
                             // The owed declarations' one sender (Q210): whatever this birth owes its mesh-primary is
                             // sent in the order it was owed, one Owed call in flight (i146 Q52), the next sent on the
                             // previous one's answer by name, a refusal included (node-rpc.md §43). A call ends on the
-                            // mesh-primary's answer or its proven exit; nothing here sends again on a cadence. A call
+                            // mesh-primary's answer or its exited verdict; nothing here sends again on a cadence. A call
                             // that ended unanswered keeps its declaration first in the queue until the mesh-primary
                             // changes or another declaration is owed. When the mesh-primary changes, the call in flight
                             // is dropped and the queue, in order, is owed to the new one; with nothing queued, the
@@ -1635,7 +1635,7 @@ fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topol
 /// birth's mesh-primary, resolved from the primary record this birth holds, never to an admin it
 /// merely hears. The call goes direct first; once an attempt sends nothing, its resends take the route
 /// [`declaration_route`] answers, a live peer of the mesh on Forward. It ends on the mesh-primary's
-/// answer or on its proven exit, or when the mesh-primary changes ([`declare_until_mesh_primary_moves`]
+/// answer or on its exited verdict, or when the mesh-primary changes ([`declare_until_mesh_primary_moves`]
 /// drops it); no deadline or carrier failure ends it. An answer by name, a refusal included
 /// (`RejectedNotPrimary` too), ends the declaration's debt and the next one is sent; a call that ended
 /// without an answer leaves it owed. With no mesh-primary held nothing is sent.

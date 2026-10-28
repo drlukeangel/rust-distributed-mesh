@@ -1,7 +1,7 @@
 //! A birth known to have exited is dialled nowhere (i143 R-J1 follow-up).
 //!
 //! A restarted node keeps its key and binds a port the operating system assigns; its old port is
-//! free for any other process. Between the old birth's proven exit and the new birth's join the
+//! free for any other process. Between the old birth's exited verdict and the new birth's join the
 //! resolver names no current birth for the node, so the client dials nothing (a dial's
 //! `replace_direct_addrs(peer, [addr])` would re-pin the deleted address for the key).
 

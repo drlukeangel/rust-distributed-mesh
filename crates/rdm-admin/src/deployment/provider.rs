@@ -126,7 +126,7 @@ pub enum Found {
     /// The launch's runtime runs: its exact handle.
     Running(DeploymentHandle),
     /// The launch started a runtime, and that runtime has exited: its exact handle when the launch
-    /// record names one, so a successor's delete inspects that exact runtime for its exit proof.
+    /// record names one, so a successor's delete inspects that exact runtime for its exited verdict.
     Exited(Option<DeploymentHandle>),
     /// No runtime of the launch was ever started in this provider's control domain.
     NeverLaunched,
@@ -356,7 +356,7 @@ pub enum DeploymentStatus {
     Running,
     /// The exact runtime exists and the operating system holds every task of it suspended (a
     /// process in state `T`/`t`; a paused container). Observed suspension: it is not the lifecycle
-    /// status `stopped`, proves no completed `node.stop`, and is never exit proof.
+    /// status `stopped`, proves no completed `node.stop`, and is never exited verdict.
     OsStopped,
     /// The exact runtime exited.
     Exited {
@@ -661,7 +661,7 @@ mod exit_code_tests {
     /// incarnation; no record, another birth's record, or a provider-given code leave it as it was.
     #[tokio::test]
     async fn an_unknown_exit_code_is_proven_only_by_the_births_own_record() {
-        let dir = std::env::temp_dir().join(format!("rafka-exit-proof-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rafka-exited-verdict-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let unknown = || DeploymentStatus::Exited { code: None };
         assert_eq!(with_exit_code(unknown(), &process_fact("dep-a"), Some(&dir), "inc-a").await.unwrap(), unknown(), "no record proves nothing");
@@ -678,7 +678,7 @@ mod exit_code_tests {
     /// CONTRACT: the exit record is read on the blocking pool, never on a runtime worker.
     #[test]
     fn the_exit_record_is_read_on_the_blocking_pool() {
-        let dir = crate::test_support::tempdir("exit-proof-fifo");
+        let dir = crate::test_support::tempdir("exited-verdict-fifo");
         let bytes = serde_json::to_vec(&ExitRecord { deployment_id: "dep-a".into(), incarnation: "inc-a".into(), code: TRANSPORT_STOPPED_EXIT_CODE, reason: "r".into() }).unwrap();
         let fifo = dir.join("exit.json");
         let (heard, proof) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { with_exit_code(DeploymentStatus::Exited { code: None }, &process_fact("dep-a"), Some(&dir), "inc-a").await }));
@@ -690,7 +690,7 @@ mod exit_code_tests {
     /// unknown exit code (which would turn a proven transport stop into a replacement).
     #[tokio::test]
     async fn an_unreadable_exit_record_is_an_error_naming_the_file() {
-        let dir = crate::test_support::tempdir("exit-proof-unreadable");
+        let dir = crate::test_support::tempdir("exited-verdict-unreadable");
         std::fs::create_dir_all(dir.join("exit.json")).unwrap();
         let err = with_exit_code(DeploymentStatus::Exited { code: None }, &process_fact("dep-a"), Some(&dir), "inc-a").await.expect_err("an unreadable record is not an absent one");
         assert!(err.contains("exit.json"), "{err}");

@@ -263,7 +263,7 @@ pub enum IndeterminateReason {
     CorruptReply,
     /// A framing/order violation on the reply direction.
     ProtocolViolation(String),
-    /// The receiving birth's proven exit or accepted removal ended the owed request after its
+    /// The receiving birth's exited verdict or accepted removal ended the owed request after its
     /// commit (node-rpc.md §43): named with what the resolver holds instead.
     ReceiverGone(String),
 }

@@ -3,7 +3,7 @@
 //! A planned replace (Luke R-R1) and node recovery (node-recovery.md, R-RC1). A planned
 //! replacement is the next attempt of the accepted Build with a typed action; no Build is minted.
 //! A member that exits outside any workflow is recovered by its own mesh-primary on the provider's
-//! exact exit proof: node.delete of the exited instance, then node.create at the same path.name
+//! exact exited verdict: node.delete of the exited instance, then node.create at the same path.name
 //! over the inherited data dir (same endpoint key, new node.id). A member that is hung but still
 //! running is never recovered; a repeat submit is answered, never run twice; an exit during a
 //! workflow fails that workflow and the next tick recovers the member.
@@ -371,7 +371,7 @@ async fn fp_recovery_receipts(estate: &Estate, fp: &PathName, build: &str, mesh:
 /// "Execution", Q118). The fabric-primary opens it as the next attempt of the mesh's lane of the
 /// accepted Build (no Build minted), the mesh-primary claims it through BuildClaim, and the
 /// fabric-primary calls `build.attempt.run` naming the mesh; the mesh-primary runs it: node.delete
-/// of the exited instance (node.deleted from the exit proof, once, named by the exact birth), then
+/// of the exited instance (node.deleted from the exited verdict, once, named by the exact birth), then
 /// node.create at the same path.name over the inherited data dir, and nothing after it. The
 /// fabric-primary writes the receipts the run reports up the stream. The path comes back with the SAME transport key and data dir and a NEW node.id and
 /// incarnation. No other node changes, and the fabric-primary's drift check opens nothing for it.
@@ -748,7 +748,7 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
     estate.kill_node(NODE).await;
 
     let submits = |spans: &[Value]| -> Vec<Value> { named(spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect() };
-    let failed = wait_for("the create of the Build for the proven exit fails at PrepareStorage", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("failed")) }).await;
+    let failed = wait_for("the create of the Build for the exited verdict fails at PrepareStorage", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("failed")) }).await;
     let failed_attempt: u64 = s(&failed["attributes"]["attempt"]).parse().expect("the failed submit names its attempt");
     let outcome = s(&failed["attributes"]["outcome"]);
     assert!(outcome.contains(&format!("node.create:{NODE} step PrepareStorage")) && outcome.contains("node-key is missing"), "the create refused the dir with no key by name: {failed}");
@@ -765,7 +765,7 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
     })
     .await;
     // No attempt for the member is in flight in mesh2's lane (one the killed primary was running
-    // when it died is ended by the admin that took the seat, on the killed primary's proven exit, and
+    // when it died is ended by the admin that took the seat, on the killed primary's exited verdict, and
     // fails on the missing key): only a later submit can bring the path back.
     let idle = build_log::build_fact(&estate.carrier().await, &birth_build, &format!("no attempt for {NODE} is in flight in mesh2's lane"), SETTLE, |p| {
         let b = serde_json::to_value(p).expect("a Build view serializes");
@@ -971,7 +971,7 @@ async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
 /// its stop span naming `.old`). The successor is a re-birth at `mesh1.rpc.1`, the name the rename
 /// released (a new node.id, transport key and data dir), its claim a successor's seeded from the
 /// predecessor's row, and its join admitted under `mesh1.rpc.1`: it is never born at any other name.
-/// The predecessor is deleted at `.old` on the provider's exit proof (NodeDeleted once, its Deleted row
+/// The predecessor is deleted at `.old` on the provider's exited verdict (NodeDeleted once, its Deleted row
 /// at `.old`, its data dir kept). RDM moves no data. At the end `mesh1.rpc.1` is the successor, ready,
 /// and nothing is listed at `.old`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1062,7 +1062,7 @@ async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
     let join = of("rdm.node_admin.node.update.via-join", &successor.node_id).into_iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "installed").collect::<Vec<_>>();
     assert!(join.iter().all(|j| s(&j["attributes"]["admitted_as"]) == NODE) && !join.is_empty(), "the successor's join is admitted under {NODE} and no other name: {join:#?}");
     assert!(of("rdm.node_admin.name.update.via-writer", &successor.node_id).is_empty(), "the successor is never renamed");
-    // The predecessor's delete at `.old`: the provider's exit proof, NodeDeleted once, the Deleted row.
+    // The predecessor's delete at `.old`: the provider's exited verdict, NodeDeleted once, the Deleted row.
     let deleted = of("rdm.node_admin.node.delete.via-node-deleted", &before.node_id);
     assert_eq!(deleted.len(), 1, "NodeDeleted once for the predecessor: {deleted:#?}");
     assert_eq!(s(&deleted[0]["attributes"]["operation"]), format!("node.delete:{old}"));
@@ -1204,13 +1204,13 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
 
 /// CONTRACT (lifecycles/node-replace.md "Rollback": "While node[1] is stopped as `<name>.old` and its
 /// data remains available: 1. node[2]: node.connections.delete `{ scope: All }`, node.mesh.leave, then
-/// node[2].delete releases `<name>` after exact runtime exit proof. 2. node[1].start rejoins the same
+/// node[2].delete releases `<name>` after exact runtime exited verdict. 2. node[1].start rejoins the same
 /// stopped process with AfterStop under `<name>.old` ... 3. node[1]: node.connections.delete `{ scope:
 /// All }`, node.mesh.leave, then node.name.update to `<name>` ..., then node[1].stop and node[1].start
 /// under `<name>`. Its ready ends the rollback"): `mesh1.rpc.1` is replaced up to the
 /// successor's create (the predecessor stopped at `.old`), then the rollback runs as one Build of nine
 /// steps, each its own op's operation in order. The successor at `mesh1.rpc.1` has its connections
-/// deleted, leaves its mesh and is deleted on its exit proof; the predecessor starts as
+/// deleted, leaves its mesh and is deleted on its exited verdict; the predecessor starts as
 /// `mesh1.rpc.1.old` (the same process), has its connections deleted, leaves its mesh, takes
 /// `mesh1.rpc.1` live, and is stopped and started under it. At the end `mesh1.rpc.1` is the predecessor,
 /// the same node.id, incarnation and process, ready; nothing is listed at `.old`, and the
@@ -1493,7 +1493,7 @@ async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, stopped: 
     assert_eq!(deleted.len(), 1, "NodeDeleted once for the stopped birth: {deleted:?}");
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact birth");
     assert_eq!(s(&deleted[0]["attributes"]["operation"]), format!("node.delete:{old_name}"));
-    assert!(end(terminate) <= start(deleted[0]), "NodeDeleted follows the exit proof: {terminate} vs {}", deleted[0]);
+    assert!(end(terminate) <= start(deleted[0]), "NodeDeleted follows the exited verdict: {terminate} vs {}", deleted[0]);
     // The Deleted row at `<path>.old`, written by the mesh's primary that executes the delete (R13).
     let dispatched = dispatch(&spans, birth_build, &attempt).unwrap();
     let executor = s(&dispatched["attributes"]["executor"]);

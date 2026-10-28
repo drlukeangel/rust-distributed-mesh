@@ -1657,7 +1657,7 @@ impl Channel {
                 let held = targets();
                 // A birth under an open removal: this channel keeps no address for
                 // its key and never hands it out again. The birth's iroh paths stay open: its
-                // typed connections delete is in flight over them, and they are deleted at the proven exit.
+                // typed connections delete is in flight over them, and they are deleted at the exited verdict.
                 for key in &held.deleted {
                     if deleted.insert(*key) {
                         me.location_view.forget(*key);

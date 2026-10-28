@@ -200,6 +200,9 @@ TREE_BANNED = [
     ("departed", r"departed", ["crates", "docs/architecture", "docs/reference"]),
     # rdm#88: target, never fence (CLAUDE.md). tools/ is not scanned (docgen's summary.rs toggles a markdown code fence); docs/architecture waits on the page edits.
     ("fence", r"fenc", ["crates", "docs/reference"]),
+    # rdm#88: the investigation's exited verdict (CLAUDE.md: exit proof / proven exit). gossip.md still says "runtime-exit
+    # proof", a page edit that waits on the lead, so docs/architecture is not scanned for it yet.
+    ("exit proof", r"exit[ _-]?proof|proven[ _-]exit\b", ["crates", "docs/reference"]),
 ]
 for label, pattern, scope in TREE_BANNED:
     out = subprocess.run(["git", "grep", "-n", "-I", "-i", "-P", pattern, head, "--", *scope,

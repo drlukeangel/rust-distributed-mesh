@@ -1,6 +1,6 @@
 //! Node delete workflow (`docs/architecture/lifecycles/node-delete.md`).
 //!
-//! Composes `node.stop`, verifies exact provider runtime exit proof, releases node ID and
+//! Composes `node.stop`, verifies exact provider runtime exited verdict, releases node ID and
 //! name claims, and retains storage.
 
 pub use crate::deployment::pipeline::{DeleteStep, StorageDisposition};

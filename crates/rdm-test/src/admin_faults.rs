@@ -119,7 +119,7 @@ pub enum CutSpec {
         #[serde(default)] state: Option<String>,
     },
     /// The deployment provider's inspection of the runtimes at `pids` answers `Unknown` while the cut is
-    /// armed: no exit proof of them can be read, while every other runtime, a launch of this admin's
+    /// armed: no exited verdict of them can be read, while every other runtime, a launch of this admin's
     /// included, is inspected as ever. It models a lost mesh whose runtimes no surviving admin can
     /// inspect (elections §5, i144 Q51), and nothing holds.
     ProviderUnproven {

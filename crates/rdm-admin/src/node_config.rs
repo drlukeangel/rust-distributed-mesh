@@ -715,7 +715,7 @@ impl NodeConfigs {
     /// admin `me` is `mesh`'s primary (node-config-update.md, a node's own update, step 3; Q235 P3): keyed
     /// by the node and its revision, a newer revision replacing an older one's send; one
     /// `NodeConfigUpdated` owed until the fabric-primary answers by name ([`Self::owed`]: resent to the
-    /// fabric-primary the view names next on `ReceiverNotPrimary` or a proven exit, with backoff), and
+    /// fabric-primary the view names next on `ReceiverNotPrimary` or an exited verdict, with backoff), and
     /// withdrawn once this admin is not `mesh`'s primary: the next one owes it again from the row
     /// ([`Self::owe_pushes`]). Once this admin holds the fabric-primary, its own atlas takes it. One span,
     /// `rdm.node_admin.node.update.via-config-push`.

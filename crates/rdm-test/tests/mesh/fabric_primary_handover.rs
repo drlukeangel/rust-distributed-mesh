@@ -3,7 +3,7 @@
 //! its primary does. mesh.delete ends at mesh.deleted with the mesh-primary alive; its end is a
 //! separate node.delete, with the fabric-primary as executor.
 //!
-//! mesh-delete.md, steps 5-7: "`mesh.deleted`: when every member has its exact exit proof, the
+//! mesh-delete.md, steps 5-7: "`mesh.deleted`: when every member has its exact exited verdict, the
 //! mesh-primary, still alive, writes the mesh row deleted and reports mesh.deleted to the
 //! fabric-primary ... After mesh.deleted the mesh-primary keeps publishing its mesh topology, itself the
 //! only member and the mesh deleted ... A separate node.delete deletes the mesh-primary. The
@@ -11,7 +11,7 @@
 //! primary, writes its row deleted; from that admin's stop on it publishes the deleted mesh's
 //! mesh topology." R-MD1 items 2-3: mesh-left requires complete exact-birth terminal coverage, and
 //! "Peers retain the Dead mesh and its final birth while that birth lives": the fabric-primary
-//! publishes MeshLeft only once the final birth's node.delete has its exact exit proof. R-RX4 (a
+//! publishes MeshLeft only once the final birth's node.delete has its exact exited verdict. R-RX4 (a
 //! live mesh with no primary goes unheard) does not cover a deleted mesh.
 //!
 //! desired {mesh1, mesh2, mesh3} -> {mesh2, mesh3} through one Build, mesh1 holding the fabric seat.
@@ -79,10 +79,10 @@ fn alive(pid: u64) -> bool {
 /// validates the handoff and records its completion receipt, and stops nothing of mesh1's final
 /// primary, which stays alive, publishing mesh1's topology with itself the only member and
 /// MeshStatus Dead, while every peer holds mesh1 with that one member. Its end is a separate
-/// node.delete the fabric-primary executes: node.stop, exact exit proof, its row Deleted,
+/// node.delete the fabric-primary executes: node.stop, exact exited verdict, its row Deleted,
 /// NodeDeleted in `deleted`, then the fabric-primary's own mesh topology for mesh1; only then, with
 /// every birth proven exited, mesh-left. No MeshLeft is published between the handoff and the final
-/// birth's exit proof.
+/// birth's exited verdict.
 ///
 /// Adversarial (R-NS2: "Final mesh topologies and leadership announcements are best-effort dissemination.
 /// A stop does not wait for their delivery. Committed lifecycle facts remain recoverable after the
@@ -134,7 +134,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let b = estate.reconcile_shape("fabric1", &[("mesh2", 2, 2), ("mesh3", 2, 2)]).await.build_id.to_string();
     let survivors_named = names(&["mesh2", "mesh3"]);
     // Every member of mesh1 but its final primary is deleted by mesh1's primary (mesh-delete.md step
-    // 3, the whole node.delete: NodeDeleted from its exact exit proof), so the view settles on mesh2,
+    // 3, the whole node.delete: NodeDeleted from its exact exited verdict), so the view settles on mesh2,
     // mesh3 and at most mesh1's final primary.
     let settle_by = std::time::Instant::now() + Duration::from_secs(60);
     let after_b = loop {
@@ -305,7 +305,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         let order = order_in(name, false);
         let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
         let want: &[&str] = &["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"];
-        assert_eq!(got, want, "{name}: the ordinary node.delete under {b}, node.stop first, then the exit proof and NodeDeleted");
+        assert_eq!(got, want, "{name}: the ordinary node.delete under {b}, node.stop first, then the exited verdict and NodeDeleted");
     }
     // Each member's NodeDeleted is mesh1's primary's, before mesh.deleted; the deleted mesh's last
     // admin then holds no exited member to recover (node-recovery.md: recovery is for a member that
@@ -395,7 +395,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
 
     // 2. The final primary's node.delete under C, executed by the fabric-primary: its whole node.stop
     // (the delete of a mesh's only node skips node.primary.update, R-MT1: "delete is skipped if it's
-    // the only node on the mesh"; its seat stays with it), the provider's exact exit proof, its row
+    // the only node on the mesh"; its seat stays with it), the provider's exact exited verdict, its row
     // Deleted, NodeDeleted, its removal.
     let order = order_in(&final_name, true);
     let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
@@ -405,18 +405,18 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         .filter(|sp| (s(&sp["attributes"]["primary"]) == final_name || s(&sp["attributes"]["node"]) == final_name) && s(&sp["attributes"]["build_id"]) == c && attr_u(sp, "attempt") == c_attempt)
         .collect();
     assert!(moved.is_empty(), "{final_name} is its mesh's only node: its delete runs no node.primary.update: {moved:#?}");
-    assert_eq!(got, ["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name}: the ordinary node.delete, node.stop first, then the exit proof");
+    assert_eq!(got, ["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name}: the ordinary node.delete, node.stop first, then the exited verdict");
     let c_steps: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == final_name.as_str() && node_delete_run(sp)).collect();
     assert!(c_steps.iter().all(|sp| sp["attributes"]["outcome"] == "complete"), "{final_name}: every step of its node.delete completed: {c_steps:?}");
     let row_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| s(&sp["attributes"]["subject"]) == final_name && s(&sp["attributes"]["node"]) == fabric_primary).collect();
-    assert!(row_deleted.iter().any(|sp| sp["attributes"]["outcome"] == "row-deleted" && start_ns(sp) >= final_exit), "the fabric-primary {fabric_primary} wrote {final_name}'s row Deleted after its exit proof: {row_deleted:?}");
+    assert!(row_deleted.iter().any(|sp| sp["attributes"]["outcome"] == "row-deleted" && start_ns(sp) >= final_exit), "the fabric-primary {fabric_primary} wrote {final_name}'s row Deleted after its exited verdict: {row_deleted:?}");
     let node_deleted = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["build_id"]) == c).cloned().unwrap_or_else(|| panic!("NodeDeleted was published for {final_name} under {c}"));
-    assert!(start_ns(&node_deleted) >= final_exit, "NodeDeleted follows the exit proof: {node_deleted}");
+    assert!(start_ns(&node_deleted) >= final_exit, "NodeDeleted follows the exited verdict: {node_deleted}");
 
     // mesh-left once every birth is proven exited: the receipt over all four births at the
-    // fabric-primary, after the final birth's exit proof.
+    // fabric-primary, after the final birth's exited verdict.
     let left_recorded: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left-receipt").into_iter().filter(|sp| attr_u(sp, "receipts") == 4 && attr_u(sp, "roster") == 4).collect();
-    assert!(left_recorded.iter().any(|sp| start_ns(sp) >= final_exit), "the fabric-primary recorded MeshLeft over all four births after the final birth's exit proof: {left_recorded:?}");
+    assert!(left_recorded.iter().any(|sp| start_ns(sp) >= final_exit), "the fabric-primary recorded MeshLeft over all four births after the final birth's exited verdict: {left_recorded:?}");
     // mesh-left takes the addresses of the births its proof set names off their records, the final primary included.
     let dropped = named(&spans, "rdm.node_admin.node.remove.via-mesh-left-contact")
         .into_iter()

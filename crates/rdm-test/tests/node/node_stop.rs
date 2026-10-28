@@ -726,7 +726,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
 /// `RDM_STOPPED_NODE_TTL` is 3 s, `mesh1.rpc.1` is stopped and left alone. The fabric-primary's sweep
 /// ages it from its stop receipt and submits one ordinary node.delete Build
 /// (`rdm.node_admin.node.delete.via-stopped-ttl` with the node, the receipt's time, the ttl and the
-/// Build); the delete runs as a delete does: the provider's exit proof of the stopped process
+/// Build); the delete runs as a delete does: the provider's exited verdict of the stopped process
 /// (TerminateRuntime complete), NodeDeleted, and `node.get` lists no `mesh1.rpc.1`. The other stopped
 /// period never started: nothing else is deleted. Must NOT happen: a delete before one ttl, a second
 /// delete Build, a collection the sweep made itself without a Build, or a seat transfer, connections delete or stop
@@ -748,7 +748,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let stopped_at = std::time::Instant::now();
-    // The sweep collects it: the delete's exit proof ends the stopped process and node.get lists it no more.
+    // The sweep collects it: the delete's exited verdict ends the stopped process and node.get lists it no more.
     estate.until_node(NODE, "the stopped node is deleted and its process exited", Duration::from_secs(60), |n| (n.is_none() && !alive(pid)).then_some(())).await;
     assert!(stopped_at.elapsed() >= Duration::from_secs(3), "collected after one ttl, never before: {:?}", stopped_at.elapsed());
 
@@ -1247,7 +1247,7 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
 /// once; the old holder decides nothing of it (its cut holds the one call it took). The create's
 /// failure leaves the node surplus to the accepted topology, so the fabric-primary's drift pass is held
 /// at its drift seam until the declaration is delivered; released, drift's attempt deletes the surplus
-/// node as a removal does: the provider's exit proof, then NodeDeleted. Must NOT happen: the
+/// node as a removal does: the provider's exited verdict, then NodeDeleted. Must NOT happen: the
 /// node.started applied twice, applied by the old holder, or addressed to an admin that does not hold
 /// the seat; a second declaration call to the old holder (a declaration loop of the node's own, which
 /// Q52 deleted); a drift attempt before the release, or a second one.
@@ -1322,7 +1322,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| attr(sp, "node") == node_s).collect();
     assert_eq!(deleted.len(), 1, "NodeDeleted once for the surplus node: {deleted:#?}");
     assert_eq!((bare(attr(deleted[0], "build_id")), attr(deleted[0], "attempt")), (build.clone(), attempt.clone()), "NodeDeleted names drift's attempt: {:#?}", deleted[0]);
-    assert!(end_ns(exit) <= start_ns(deleted[0]), "NodeDeleted follows the exit proof: {exit:#?} vs {:#?}", deleted[0]);
+    assert!(end_ns(exit) <= start_ns(deleted[0]), "NodeDeleted follows the exited verdict: {exit:#?} vs {:#?}", deleted[0]);
     let ready: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
         // A first start names no operation; its measured Ready remains owed without an open command stream.

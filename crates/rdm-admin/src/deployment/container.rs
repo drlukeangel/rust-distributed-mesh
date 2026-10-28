@@ -790,7 +790,7 @@ mod tests {
     /// CONTRACT (deployment-provider.md §2.7): the daemon's states map conservatively onto the four
     /// provider states: `running`, `restarting` and `created` are `Running` (nonterminal, not
     /// suspended, nothing more claimed); `paused` is `OsStopped`, never `Running`; `exited` and `dead`
-    /// carry Docker's code; an unreadable answer is `Unknown`, never exit proof.
+    /// carry Docker's code; an unreadable answer is `Unknown`, never exited verdict.
     #[test]
     fn the_daemons_states_map_to_the_four_provider_states_and_paused_is_os_stopped() {
         for state in ["running 0", "restarting 0", "created 0"] {

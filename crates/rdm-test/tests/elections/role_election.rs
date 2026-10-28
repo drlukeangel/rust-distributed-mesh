@@ -64,7 +64,7 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap();
     estate.kill_node(&killed).await;
-    // The seat vacates only on the provider's exit proof, which node recovery takes at the killed
+    // The seat vacates only on the provider's exited verdict, which node recovery takes at the killed
     // birth's TRUE OFFLINE mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
     // winner it elected and the birth it replaced: the election's span is the only place that fact lives,
     // so the span is awaited.

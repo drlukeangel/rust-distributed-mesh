@@ -126,7 +126,7 @@ async fn attempt_of(estate: &Estate, id: &str) -> u64 {
 /// view stops calling it ready, calls to it never complete, and no replacement, re-attempt or new
 /// birth follows; the thaw returns the SAME birth, which serves the value stored before the hold
 /// (the semantic wedge detector judges it). A killed rpc node is recovered by its mesh-primary
-/// (node-recovery.md): on the provider's exact exit proof it submits one recovery as the next
+/// (node-recovery.md): on the provider's exact exited verdict it submits one recovery as the next
 /// attempt of the SAME Build (reason recovery, operations `node.delete:<path>` then `node.create:<path>`,
 /// no Build minted); the exited instance is deleted before the new join, and a new
 /// NodeId/incarnation is created at the same path.name over the inherited data dir (same endpoint

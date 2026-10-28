@@ -8,7 +8,7 @@
 //! manifest against the roster it captured at admission and records mesh.deleted's completion
 //! (`MeshDeleted`): the mesh.delete ends there, its primary alive. The primary's end is a separate
 //! node.delete with the fabric-primary as executor; once that node.delete holds the final birth's
-//! exact exit proof, every birth of the mesh is proven exited and the fabric-primary records
+//! exact exited verdict, every birth of the mesh is proven exited and the fabric-primary records
 //! `MeshLeft` and publishes mesh-left (R-MD1 items 2-3).
 //!
 //! Each manifest is one immutable step receipt of the accepted Build under the outer operation
@@ -35,7 +35,7 @@ pub const STEP_OTHER_MEMBERS_EXITED: &str = "OtherMembersExited";
 pub const STEP_MESH_DELETED: &str = "MeshDeleted";
 /// The step at the fabric-primary that records the complete departure: every birth of the mesh, the
 /// final primary included, proven exited (R-MD1 item 2), once the final primary's own node.delete
-/// holds its exact exit proof.
+/// holds its exact exited verdict.
 pub const STEP_MESH_LEFT: &str = "MeshLeft";
 /// The step at the fabric-primary that records the accepted roster it captured at admission
 /// (mesh-delete.md step 1).
@@ -224,7 +224,7 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], _operation: &str, roster: &[Ros
 /// (this Build's own facts, folded with the owner's read at admission): a `NodeDeleted` receipt under
 /// `node.delete:<path>` naming the exact birth, and the `Complete` receipt of that operation in the
 /// same Build and lane at that attempt or later (an attempt number names one attempt per lane). `None`
-/// for a delete cut anywhere after its exit proof (before `NodeDeleted`'s receipt, before its
+/// for a delete cut anywhere after its exited verdict (before `NodeDeleted`'s receipt, before its
 /// publication, before `Complete`): the delete is owed its remaining steps.
 pub(crate) fn finished_delete(steps: &[BuildStepReceipt], executor: &str, b: &RosterBirth) -> Result<Option<LifecycleOp>, String> {
     let named = format!("{} {}", b.node, b.incarnation_id);
@@ -251,7 +251,7 @@ pub enum OwnerResume {
     Left,
     /// mesh.deleted's completion receipt is recorded (`MeshDeleted`, its validated manifest): the
     /// mesh.delete ended, its final primary alive. Nothing is called: its end is a separate
-    /// node.delete, and mesh-left follows that node.delete's exit proof.
+    /// node.delete, and mesh-left follows that node.delete's exited verdict.
     Deleted(ExitManifest),
     /// Nothing recorded settles the mesh.delete: the owner leads it (admission, `DeleteMesh`, the
     /// handoff, the completion).
@@ -782,7 +782,7 @@ where
     let mut owed: Vec<&RosterBirth> = Vec::new();
     for b in roster.iter().filter(|b| *b != me) {
         match proofs.get(&(b.node_id.clone(), b.incarnation_id.clone())) {
-            // The exit proof is a step of the delete, not the delete: a birth is done once its delete
+            // The exited verdict is a step of the delete, not the delete: a birth is done once its delete
             // has every step's receipt. One that holds the proof alone is run on (its receipted steps
             // are reused, the rest executed in order, NodeDeleted included).
             Some(t) => match finished_delete(&steps, executor, b)? {
@@ -799,7 +799,7 @@ where
         }
     }
     tracing::info_span!("rdm.node_admin.mesh.resolve.via-retained-receipts", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, roster = roster.len(), retained = receipts.len(), remaining = remaining.len(), retained_births = %receipts.iter().map(|t| t.node.as_str()).collect::<Vec<_>>().join(","), delete_owed = %owed.iter().map(|b| b.node.as_str()).collect::<Vec<_>>().join(","))
-        .in_scope(|| tracing::info!("members whose delete has every step's receipt keep it; the rest run, a delete that holds only its exit proof from the step it has no receipt for"));
+        .in_scope(|| tracing::info!("members whose delete has every step's receipt keep it; the rest run, a delete that holds only its exited verdict from the step it has no receipt for"));
     let is_admin = |b: &RosterBirth| b.node.parse::<crate::model::PathName>().is_ok_and(|p| p.kind == NodeKind::NodeAdmin);
     for (tier, admins) in [("ordinary-nodes", false), ("node-admins", true)] {
         let mut failed = Vec::new();
@@ -1589,7 +1589,7 @@ pub trait MeshDeleter: Send + Sync {
     /// `MeshDeleted` from `sender`: validate the handoff.
     async fn mesh_deleted(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
     /// This admin, as an executor, published `op`'s birth deleted (NodeDeleted, from the provider's
-    /// exact exit proof).
+    /// exact exited verdict).
     async fn birth_deleted(&self, _op: &rdm_core::LifecycleOp) {}
 }
 

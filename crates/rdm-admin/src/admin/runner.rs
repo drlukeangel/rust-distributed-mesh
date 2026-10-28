@@ -107,7 +107,7 @@ pub struct GossipLifecycle {
     /// This admin's own path: the publisher of the mesh frames it authors.
     pub me: PathName,
     /// This admin's mesh.delete door, once its runner exists: every birth this executor publishes
-    /// deleted is handed to it (mesh-left follows the final primary's exit proof, R-MD1 item 2).
+    /// deleted is handed to it (mesh-left follows the final primary's exited verdict, R-MD1 item 2).
     pub mesh_deleter: crate::mesh_delete::MeshDeleterSlot,
     /// This admin's view projected and installed at once ([`view_projector`]): a stop this executor
     /// applied to its own digest view is in its view before the next step decides from it, as a moved row is.
@@ -460,7 +460,7 @@ impl AdminRunner {
                 return match self.claimed_launch(node, &incarnation).await {
                     Ok(Some((crate::deployment::provider::Found::Running(handle), record))) => Ok((record, handle)),
                     // An exited launch with its exact handle: the delete inspects that runtime and its
-                    // Exited is the exit proof (node-delete.md "Crashed target", "Terminal event").
+                    // Exited is the exited verdict (node-delete.md "Crashed target", "Terminal event").
                     Ok(Some((crate::deployment::provider::Found::Exited(Some(handle)), record))) => Ok((record, handle)),
                     Ok(Some((found, _))) => Err(format!("{e}; the launch its create's claim records is {}, so no runtime of it runs", found.name())),
                     Ok(None) => Err(e),
@@ -954,12 +954,12 @@ impl AdminRunner {
         }
         if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
             ep.replace_direct_addrs(key, []).await;
-            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-removed", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "recovery", reason = "proven-exit")
+            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-removed", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "recovery", reason = "exited-verdict")
                 .in_scope(|| tracing::info!("the exited birth's direct paths are deleted before the new birth with its key is launched"));
         }
     }
 
-    /// What follows a birth's proven exit: the resolver names
+    /// What follows a birth's exited verdict: the resolver names
     /// no current birth for it, and its direct paths are deleted. A later birth that keeps the key
     /// binds a port the operating system assigns, so this endpoint holds no path to the key until
     /// that birth reports one (R-I1's replacement, with no address left).
@@ -977,7 +977,7 @@ impl AdminRunner {
             // delete does not wait for a dead peer's actor (the same call the topology view spawns).
             let ep = ep.clone();
             tokio::spawn(async move { ep.replace_direct_addrs(key, []).await });
-            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-removed", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "removal", reason = "proven-exit")
+            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-removed", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "removal", reason = "exited-verdict")
                 .in_scope(|| tracing::info!("the exited birth's direct paths are deleted: nothing aims at its old socket"));
         }
     }
@@ -1014,7 +1014,7 @@ impl AdminRunner {
     /// node.delete of a stopped birth (`node.delete:<path>`, node-delete.md): the stopped birth `pin`
     /// at `node`, verified against this admin's view before any effect (build.md §4.4), ended with the
     /// provider's exact Exited proof and deleted (`DeploymentPipeline::delete_stopped`); what follows
-    /// its proven exit follows. Its runtime is the one this admin launched, or the one its topology view
+    /// its exited verdict follows. Its runtime is the one this admin launched, or the one its topology view
     /// holds a digest of; a birth absent from the view (an executor that never heard it, such as a
     /// mesh-primary born after its stop) is rebuilt from the Build action and the data-root runtime
     /// record ([`Self::rebuild_absent_birth`]; node-admin-lifecycle.md §6.1). A birth found or rebuilt
@@ -1212,7 +1212,7 @@ impl AdminRunner {
         };
         // The record handed back with the runtime is the one this admin deployed; whether the birth
         // is stopped is the view's, as `stopped_birth` takes it: a stopped birth's delete
-        // goes straight to its exact runtime's exit proof.
+        // goes straight to its exact runtime's exited verdict.
         let record = match &seen {
             Some(n) => Node { stopped: n.stopped, ..record },
             None => record,
@@ -1292,7 +1292,7 @@ impl AdminRunner {
 
     /// node.delete of the live or stopped exact birth `record` (node-delete.md): the ordinary
     /// workflow (`DeploymentPipeline::delete`: node.stop for a live process, the provider's exact
-    /// exit proof, its row Deleted, NodeDeleted) over its exact runtime `handle`; then its paths are
+    /// exited verdict, its row Deleted, NodeDeleted) over its exact runtime `handle`; then its paths are
     /// deleted and this admin's handle of it dropped. The one composition a removal, a mesh
     /// delete's member and a deleted mesh's last admin all call. Answers the terminal receipt.
     pub(crate) async fn delete_birth(&self, build_id: &crate::build::BuildId, attempt: u32, record: Node, handle: DeploymentHandle) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
@@ -1836,7 +1836,7 @@ async fn hashed_binding(kind: NodeKind, executable: &std::path::Path, provider: 
 }
 
 /// The exact birth `from` at `node` whose node.delete in `build_id` already holds its `TerminateRuntime`
-/// receipt naming that birth (the provider's exit proof, recorded by an earlier attempt's executor), when
+/// receipt naming that birth (the provider's exited verdict, recorded by an earlier attempt's executor), when
 /// this admin cannot resolve its runtime: its record, and a handle of the receipted runtime that locates
 /// nothing. The delete resumes from its receipts (mesh-delete.md "Resume after the primary's loss" step 3:
 /// "Completed member receipts stand"; `DeploymentPipeline::begin` reuses every step an earlier attempt

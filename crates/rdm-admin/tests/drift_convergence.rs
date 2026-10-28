@@ -298,7 +298,7 @@ impl OperationRunner for Runner {
         };
         match op {
             // node.delete of the exited instance (node-delete.md "Crashed target"): no RPC, no stop
-            // frames, no probe; the provider's exit proof is the target. A runtime that still runs is
+            // frames, no probe; the provider's exited verdict is the target. A runtime that still runs is
             // no proof: refused by name, as the admin's crashed-target delete inspects before it deletes.
             BuildOperation::DeleteLiveNode { node: path, exited: Some(from), .. } => {
                 self.recovering.lock().unwrap().push(op.key());
@@ -633,7 +633,7 @@ async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_el
     e.recovered_by("mesh1.rpc.2", &mp).await;
     assert_eq!(e.runner.recovering.lock().unwrap().clone(), ["node.delete:mesh1.rpc.2", "node.create:mesh1.rpc.2"].map(String::from).to_vec(), "node.delete, then node.create, once each, and nothing after");
     assert_eq!(e.born(), vec!["mesh1.rpc.2".to_string()], "exactly the lost path is recovered");
-    assert_eq!(e.investigations_of("mesh1.rpc.2"), vec![], "the exit proof targets the old birth: no probe");
+    assert_eq!(e.investigations_of("mesh1.rpc.2"), vec![], "the exited verdict targets the old birth: no probe");
     assert_ne!(e.node_id("mesh1.rpc.2").await, old, "a new node, not the old one");
     e.holds_the_shape().await;
     let after = e.builds.current().await.unwrap().unwrap();
@@ -869,7 +869,7 @@ async fn a_transport_stopped_exit_is_recovered_as_a_new_node_never_restarted() {
 
 /// CONTRACT (mesh-recovery.md:8-9 "A lost member of a mesh with a live mesh-primary is node
 /// recovery, driven by that mesh-primary"; node-start.md: a start rejoins a stopped live process, so a
-/// proven exit is never started again): a secondary node-admin of a peer mesh (its mesh-primary live and
+/// exited verdict is never started again): a secondary node-admin of a peer mesh (its mesh-primary live and
 /// not the fabric-primary) that exits, with the TRANSPORT_STOPPED code (4) and with another code
 /// (137), is recovered by its mesh-primary: the fabric-primary's drift opens nothing, the recovery
 /// is attempt 1 of the mesh's lane of the same Build keyed on the exact exited birth, run by that
@@ -1502,7 +1502,7 @@ async fn a_durable_runtime_row_of_a_deleted_birth_opens_no_attempt() {
 /// mesh-investigation.md step 5, "Fully crashed" (R-ML3): every node of a peer mesh, its node-admins
 /// included, has crashed while the fabric is alive. No member answers, so the ladder's 60 s decision
 /// comes out `unreachable` and the mesh is held as ever; the fabric-primary then reads the provider's
-/// exact exit proof of every node-admin of the mesh and, only if every one is proven exited, opens
+/// exact exited verdict of every node-admin of the mesh and, only if every one is proven exited, opens
 /// node.create of the mesh's first node-admin as the single step on the same accepted Build.
 mod fully_crashed_mesh {
     use super::unheard_mesh_hold::{meshes, pass, pass_with, Held};
@@ -1745,7 +1745,7 @@ mod decided_mesh {
     /// the mesh again before its ladder steps the decision off: the mesh's second node-admin, proven
     /// exited, is its new primary's to recover, and the fabric-primary's drift pass opens nothing for
     /// it, with the decision still held or once it is gone. Must NOT happen: the decision still held
-    /// letting the drift pass repair the second node-admin from its exit proof (a second recoverer of
+    /// letting the drift pass repair the second node-admin from its exited verdict (a second recoverer of
     /// the same member beside its mesh-primary).
     #[tokio::test]
     async fn the_rest_of_a_decided_mesh_is_its_new_primarys_to_recover_while_the_decision_is_still_held() {
@@ -1964,7 +1964,7 @@ async fn a_birth_whose_delete_the_build_receipted_is_not_surplus() {
     }
 }
 
-/// The records a drift pass puts its exit proofs through: a status store held in memory.
+/// The records a drift pass puts its exited verdicts through: a status store held in memory.
 /// The node the attempt's action creates when it is the single step `node.create` of one node
 /// (mesh-investigation.md step 6: the node-admin joins the live mesh on the same accepted Build); `None`
 /// for any other action.

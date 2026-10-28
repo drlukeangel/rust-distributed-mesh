@@ -100,7 +100,7 @@ async fn an_owed_call_whose_carrier_cannot_reach_the_receiver_is_not_ended_by_th
     assert_eq!(r.handled.load(Ordering::SeqCst), 1, "the receiver's handler ran once");
 }
 
-/// CONTRACT (i146 Q52: "The obligation ends on the holder's answer or proven exit"): one Owed call
+/// CONTRACT (i146 Q52: "The obligation ends on the holder's answer or exited verdict"): one Owed call
 /// carried through a carrier that cannot reach its receiver ends with the receiver gone once the
 /// receiver is removed from the origin's view, nothing delivered. Must NOT happen: the call outliving
 /// its receiver's removal.

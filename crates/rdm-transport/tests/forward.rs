@@ -71,7 +71,7 @@ async fn a_carrier_whose_exit_is_proven_after_the_inner_call_applied_leaves_the_
         r.origin_view.remove_gone(&r.carrier.resolved.node_id);
     };
     let ((out, _), ()) = tokio::join!(call, kill);
-    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReceiverGone(_))), "the carrier's proven exit ends the Forward: {out:?}");
+    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReceiverGone(_))), "the carrier's exited verdict ends the Forward: {out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 1);
 }
 
@@ -105,7 +105,7 @@ async fn a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carri
     let ((out, _), ()) = tokio::join!(call, kill);
     assert!(
         matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReceiverGone(_))),
-        "the carrier learned the target's proven exit and carried it: {out:?}"
+        "the carrier learned the target's exited verdict and carried it: {out:?}"
     );
     assert_eq!(r.handled.load(Ordering::SeqCst), 1);
     let code = match &out { RpcOutcome::Indeterminate(i) => i.code(), other => panic!("expected indeterminate: {other:?}") };

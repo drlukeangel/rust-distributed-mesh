@@ -573,7 +573,7 @@ impl NodeRpcClient {
                 };
                 // The pool also invalidates a dial when its receiving birth ends. For an Owed
                 // call that proof ends the obligation as receiver-gone; a moved slot of a living
-                // birth is neither the holder's answer nor its proven exit (i146 Q52), so the
+                // birth is neither the holder's answer nor its exited verdict (i146 Q52), so the
                 // attempt sent nothing and the next one dials the slot the view names then.
                 if matches!(opts.budget, Budget::Owed) {
                     if let Some(why) = node.observed.as_ref().and_then(|n| self.receiver_gone(target, &n.incarnation)) {

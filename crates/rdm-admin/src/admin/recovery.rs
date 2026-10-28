@@ -87,7 +87,7 @@ impl RecoverySubmitter {
         None
     }
 
-    /// The provider's exact-exit proof of `node`'s birth: node.runtime.inspect over the one runtime
+    /// The provider's exact-exited verdict of `node`'s birth: node.runtime.inspect over the one runtime
     /// resolution (`node_investigation::birth_runtime`: the view's digest of that exact birth, heard,
     /// projected by its mesh-primary or stopped, else the birth's own durable runtime row). Beside it,
     /// the exact runtime handle the provider was asked about (node-runtime-inspect.md Target), for the

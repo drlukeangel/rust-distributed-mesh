@@ -136,9 +136,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_recovery_that_ends_failed_is_recorded_as_its_failed_step_never_as_submitted() {
-        let failed = RecoveryEnd::Failed { attempt: 3, operation: "node.delete:mesh2.rpc.1".into(), step: "NodeDeleted".into(), reason: "the exit-proof row is missing".into() };
+        let failed = RecoveryEnd::Failed { attempt: 3, operation: "node.delete:mesh2.rpc.1".into(), step: "NodeDeleted".into(), reason: "the exited-verdict row is missing".into() };
         let (outcome, r) = settle(Ok(failed));
-        assert_eq!(outcome, "failed: attempt 3 node.delete:mesh2.rpc.1 step NodeDeleted: the exit-proof row is missing");
+        assert_eq!(outcome, "failed: attempt 3 node.delete:mesh2.rpc.1 step NodeDeleted: the exited-verdict row is missing");
         assert_eq!(r, Err(outcome.clone()), "a failed recovery is not a submitted one: the next tick submits again");
         let (outcome, r) = settle(Ok(RecoveryEnd::Complete { attempt: 3 }));
         assert_eq!((outcome.as_str(), r), ("complete: attempt 3", Ok(())));
@@ -1560,7 +1560,7 @@ mod tests {
         };
         let executor_name: PathName = "mesh2.admin.1".parse().unwrap();
         let birth = (executor.node.node_id.to_string(), executor.node.incarnation.to_string());
-        let capture = crate::span_capture::Capture::new("i143-3051-executor-exit-proof-point-read");
+        let capture = crate::span_capture::Capture::new("i143-3051-executor-exited-verdict-point-read");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
 
         let held = Arc::new(CountsRuntimeLists::default());
@@ -2783,7 +2783,7 @@ mod tests {
     /// CONTRACT (mesh-delete.md, "Resume after the primary's loss", steps 1-2: the lost final
     /// primary's exact Exited is proven and recorded first, then the fabric-primary creates the one
     /// node-admin of a mesh with no live admin; R11: record predecessor Exited first): the proven
-    /// exit, recorded as its exit-proof row and read by the install `admin_for_deleting_mesh` runs
+    /// exit, recorded as its exited-verdict row and read by the install `admin_for_deleting_mesh` runs
     /// before the create, vacates the lost holder's seat, so the fabric-primary is the writer of the mesh's
     /// rows and its claim of the created admin's name is written. Must NOT happen: the refusal of
     /// mesh_lifecycle::mesh_delete_no_survivor on 8803f84e ("AllocateIdentity failed: the name claim

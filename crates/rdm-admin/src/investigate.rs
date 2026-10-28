@@ -168,7 +168,7 @@ pub struct PeerMesh {
     pub recovery_decided: bool,
     /// The ladder's 60 s decision found the latest probe `unreachable`: no member answered and no
     /// carrier reported its edge to a node-admin lost. The mesh is held; its node-admin is created
-    /// only on the provider's exact exit proof of every node of the mesh
+    /// only on the provider's exact exited verdict of every node of the mesh
     /// (mesh-investigation.md step 5, "Fully crashed"), which the fabric-primary reads, never the ladder.
     pub unreachable_decided: bool,
 }
@@ -1291,7 +1291,7 @@ mod tests {
 
     /// CONTRACT (mesh-investigation.md step 5): the 60 s decision on `unreachable` evidence is a hold the
     /// ladder exposes as its own fact, `unreachable_decided`, beside `recovery_decided` and never
-    /// with it: the fabric-primary reads the provider's exit proof of the mesh's node-admins only for
+    /// with it: the fabric-primary reads the provider's exited verdict of the mesh's node-admins only for
     /// a mesh whose decision opened this way. A carrier-edge-lost decision is the recovery, not the hold.
     /// A mesh heard again is decided neither way. Must NOT happen: the hold read as a recovery, or the
     /// fact surviving the silence.

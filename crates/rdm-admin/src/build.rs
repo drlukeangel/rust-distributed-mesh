@@ -167,7 +167,7 @@ pub enum BuildOperation {
         /// The node to delete.
         node: PathName,
         /// A crashed target (node-delete.md "Crashed target"; node-recovery.md sequence step 3): the
-        /// exact exited birth, deleted on its mesh-primary's recorded exit proof. Its stop steps are
+        /// exact exited birth, deleted on its mesh-primary's recorded exited verdict. Its stop steps are
         /// already done, and nothing is sent to it. `None`: the live or stopped `birth`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exited: Option<ExitedBirth>,

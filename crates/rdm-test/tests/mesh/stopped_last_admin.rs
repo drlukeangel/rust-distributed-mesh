@@ -135,7 +135,7 @@ async fn delete_mesh1(test: &str) -> Deleted {
 /// CONTRACT: R-ON1 (Luke 2026-10-10): "a stopping node gossips nothing; node.left is a reply frame
 /// on the stop call's stream; the mesh primary publishes NodeStopped in its in-flight overlay";
 /// node-stop.md step 4: "Emit node.stopped on that same reply stream. The node gossips nothing for
-/// this step." A stopped birth's departure is the executor's: the provider's exact exit proof
+/// this step." A stopped birth's departure is the executor's: the provider's exact exited verdict
 /// (TerminateRuntime), then NodeDeleted, from which every peer holds the birth Gone (node-delete.md
 /// steps 2-5). Must NOT happen: a stopped node announcing its own Leaving after its cut, or a peer
 /// that learns the departure from anything but the executor's NodeDeleted.
@@ -147,7 +147,7 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     let Deleted { last, builds, resolution, spans, pids } = delete_mesh1(cell).await;
     let of_builds = |sp: &Value| builds.iter().any(|x| sp["attributes"]["build_id"] == x.as_str());
 
-    // The executor's exit proof: the TerminateRuntime of the last admin's node.delete, complete inside
+    // The executor's exited verdict: the TerminateRuntime of the last admin's node.delete, complete inside
     // the unchanged bound, a child of the pipeline run for this node and Build in the same trace.
     let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && of_builds(sp) && sp["attributes"]["node"] == last.as_str()).collect();
     let obs = *observe.iter().max_by_key(|sp| start(sp)).unwrap_or_else(|| panic!("the node.delete proved {last}'s exit under {builds:?}"));
@@ -175,11 +175,11 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     assert_eq!(shutdown.len(), 1, "one transport shutdown by {last}: {shutdown:?}");
     assert!(start(shutdown[0]) > cut_at, "{last}'s transport shut down after its stop's cut");
 
-    // The departure is the executor's: NodeDeleted for the exact birth after the exit proof, and a
+    // The departure is the executor's: NodeDeleted for the exact birth after the exited verdict, and a
     // peer's resolver holds it Gone.
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == last.as_str() && of_builds(sp)).collect();
     assert_eq!(deleted.len(), 1, "NodeDeleted published once for {last}: {deleted:?}");
-    assert!(start(deleted[0]) >= end(obs), "NodeDeleted follows the exit proof: {}", deleted[0]);
+    assert!(start(deleted[0]) >= end(obs), "NodeDeleted follows the exited verdict: {}", deleted[0]);
     assert_eq!(resolution["reply"]["resolution"], "gone", "a peer holds {last} Gone: {resolution}");
     // Every member's end is node.delete's (mesh-delete.md step 3): its NodeDeleted published once by
     // its executor.

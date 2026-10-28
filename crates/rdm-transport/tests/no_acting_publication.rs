@@ -121,7 +121,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
 
         // mesh2's primary is gone. The fabric-primary, as executor, stops mesh2.rpc.1 and deletes mesh2.admin.1.
         let (publisher, stamped) = fp_bb.publish_status_event(StatusEvent::Stopped, &op("stop-node", &rpc)).await;
-        assert!(fp_m.digest_view.depart(op("delete-node", &admin2)), "the exit proof's departure is taken");
+        assert!(fp_m.digest_view.depart(op("delete-node", &admin2)), "the exited verdict's departure is taken");
         let woke_after = publication.await.unwrap();
 
         fp_bb.set_fabric_primary(false);

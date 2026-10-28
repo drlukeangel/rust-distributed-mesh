@@ -56,7 +56,7 @@ async fn until_host(hand: &dyn Hand, want: &[&str], what: &str) {
 
 /// CONTRACT (deployment-provider.md §2.5, §2.6, §2.7): a runtime that exists and is not suspended
 /// reads `Running` while nothing in it executes (a sleeping task, a runtime still idle); held by the
-/// operating system it reads `OsStopped`, never `Running` and never exit proof; continued, it reads
+/// operating system it reads `OsStopped`, never `Running` and never exited verdict; continued, it reads
 /// `Running` again.
 async fn a_suspended_runtime_reads_os_stopped_and_running_again_when_continued(hand: &dyn Hand) {
     until_host(hand, &["idle", "running"], "the runtime alive").await;
@@ -70,7 +70,7 @@ async fn a_suspended_runtime_reads_os_stopped_and_running_again_when_continued(h
 }
 
 /// CONTRACT (deployment-provider.md §2.5, §2.8): a suspended runtime that the host then kills reads
-/// `Exited` with the code the host gives it: `OsStopped` is never in the way of exit proof, and the
+/// `Exited` with the code the host gives it: `OsStopped` is never in the way of exited verdict, and the
 /// provider sent nothing to continue it.
 async fn a_stopped_runtime_that_then_exits_reads_exited_with_its_code(hand: &dyn Hand) {
     hand.suspend().await;
@@ -91,10 +91,10 @@ async fn a_stopped_runtime_that_then_exits_reads_exited_with_its_code(hand: &dyn
 }
 
 /// CONTRACT (deployment-provider.md §2.5: an explicit `node.delete` of an OS-stopped birth "runs
-/// `TerminateRuntime` on the exact handle, takes the exit proof and continues"; §3: "skips the stop by
+/// `TerminateRuntime` on the exact handle, takes the exited verdict and continues"; §3: "skips the stop by
 /// name and begins at `TerminateRuntime`"): a runtime the operating system holds suspended is ended by
 /// the provider's own terminate of its exact handle, and then reads `Exited`: the suspension is never
-/// in the way of the exit proof. Must NOT happen: a terminate that returns while the runtime still
+/// in the way of the exited verdict. Must NOT happen: a terminate that returns while the runtime still
 /// exists, or an `OsStopped` or `Running` read after it.
 async fn a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited(hand: &dyn Hand) {
     hand.suspend().await;
@@ -107,7 +107,7 @@ async fn a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited(hand: &d
 }
 
 /// CONTRACT (i144 R23, Luke Q4 B: an explicit delete of an os-stopped runtime calls
-/// `terminate(Immediate)`, then requires exit proof; no application progress after the suspension,
+/// `terminate(Immediate)`, then requires exited verdict; no application progress after the suspension,
 /// observed from the child's own heartbeat): a runtime that writes its own heartbeat is suspended by
 /// the operating system; its heartbeat stops. `terminate(Immediate)` ends it well under the 8 s stop
 /// grace, it reads `Exited`, and its heartbeat never grows again: no application progress is

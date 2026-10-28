@@ -327,7 +327,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         .await;
     }
     let deleted_pid = pids[&victim_name];
-    assert!(!alive(deleted_pid), "the deleted runtime {deleted_pid} has exited: the node.delete's stream completed on the provider's exit proof");
+    assert!(!alive(deleted_pid), "the deleted runtime {deleted_pid} has exited: the node.delete's stream completed on the provider's exited verdict");
     let spans = estate.spans();
     let delete_marks: Vec<String> = lifecycle_marks(&spans, delete_at, now_ns());
     assert!(delete_marks.iter().any(|n| n.contains("node.delete")), "the deletion is the run's one lifecycle effect, and it fired: {delete_marks:?}");
@@ -379,7 +379,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         })
         .await;
     }
-    assert!(!alive(av_pid), "the deleted admin's runtime {av_pid} has exited: the node.delete's stream completed on the provider's exit proof");
+    assert!(!alive(av_pid), "the deleted admin's runtime {av_pid} has exited: the node.delete's stream completed on the provider's exited verdict");
     let delete2_marks = lifecycle_marks(&estate.spans(), delete2_at, now_ns());
     assert!(delete2_marks.iter().any(|n| n.contains("node.delete")), "the admin's deletion fired: {delete2_marks:?}");
     let nodes4 = estate.node_values().await;

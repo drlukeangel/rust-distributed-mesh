@@ -153,7 +153,7 @@ fn deadlines_keep_the_commit_cut_and_receiver_gone_is_unavailable() {
     assert_eq!(before.code(), Code::DeadlineExceeded);
     assert!(before.proves_not_dispatched());
     let committed = || PreCommit::begin(1).commit(RequestFinished::after_complete_write(1, 1).unwrap());
-    for (reason, code) in [(IndeterminateReason::ReplyDeadline, Code::DeadlineExceeded), (IndeterminateReason::ReplyLost("lost".into()), Code::Unknown), (IndeterminateReason::ReceiverGone("proven exit".into()), Code::Unavailable)] {
+    for (reason, code) in [(IndeterminateReason::ReplyDeadline, Code::DeadlineExceeded), (IndeterminateReason::ReplyLost("lost".into()), Code::Unknown), (IndeterminateReason::ReceiverGone("exited verdict".into()), Code::Unavailable)] {
         let out: RpcOutcome<()> = committed().indeterminate(reason);
         assert_eq!(out.code(), code);
         assert!(!out.proves_not_dispatched());

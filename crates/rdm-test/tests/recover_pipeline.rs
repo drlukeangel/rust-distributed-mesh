@@ -1,6 +1,6 @@
 //! i143.e12.s57 functional: node recovery is two workflows, never a sequence of its own
 //! (node-recovery.md "Steps"; rdm-code-conformance.md §0.1, §2 item 4): the node.delete workflow on a
-//! crashed target (no RPC, no stop frames, node.deleted from the mesh-primary's exit proof), then the
+//! crashed target (no RPC, no stop frames, node.deleted from the mesh-primary's exited verdict), then the
 //! node.create workflow at the same path.name over the inherited data dir (the same endpoint key, a new
 //! node.id, incarnation and port). Nothing follows the create (proposal node-properties-own-commands.md
 //! §5 item 8).

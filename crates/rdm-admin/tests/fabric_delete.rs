@@ -475,7 +475,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let handles: BTreeMap<String, DeploymentHandle> = [(&m2_a1, 52_001u32), (&m2_r1, 52_002u32)].into_iter().map(|(n, pid)| (n.name.to_string(), handle(&n.name.to_string(), pid))).collect();
         let fleet = Fleet {
             pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(),
-            // Initially mesh2.admin.1's runtime is still running (unproven exit).
+            // Initially mesh2.admin.1's runtime is still running (unproven exited verdict).
             running_pids: Mutex::new(BTreeSet::from([52_001u32])),
             ..Default::default()
         };
@@ -508,7 +508,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let key_m2 = MeshDeleteKey { mesh_id: id2.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m2.clone() };
         let held_paths: Vec<PathName> = view.read().await.nodes.iter().map(|n| n.name.clone()).collect();
         // Each exited birth's node.delete as a crashed target, the fabric-primary its executor: the
-        // ordinary workflow on the exit-proof row, its NodeDeleted writing the row through rows_fp.
+        // ordinary workflow on the exited-verdict row, its NodeDeleted writing the row through rows_fp.
         let joins = Joins::default();
         let sink = View::default();
         sink.writes_through(rows_fp.clone());

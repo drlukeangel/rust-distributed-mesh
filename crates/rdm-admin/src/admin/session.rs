@@ -819,7 +819,7 @@ pub(crate) fn spawn_entry_sweep(
             records.publish(n.as_node(NodeStatus::PendingReconnect, provider_kind));
         }
         // A node not reached is unheard, so the mesh-primary's tick watches it: its tickle, then
-        // the provider's exact exit proof, then node recovery only on proof (mesh-recovery.md step 6).
+        // the provider's exact exited verdict, then node recovery only on proof (mesh-recovery.md step 6).
         let _ = slot.set(report);
     })
 }

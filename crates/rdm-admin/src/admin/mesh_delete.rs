@@ -7,7 +7,7 @@
 //! publishes `mesh-leaving`, sends `DeleteMesh`, waits for the validated `MeshDeleted` handoff
 //! (mesh.deleted) and records its completion receipt: the mesh.delete ends there, the final primary
 //! alive (steps 5-6). The final primary's end is a separate node.delete with the fabric-primary as
-//! executor (step 7); once this admin publishes that birth deleted from its exact exit proof
+//! executor (step 7); once this admin publishes that birth deleted from its exact exited verdict
 //! ([`AdminRunner::mesh_left_after_delete`]) every birth is proven exited and it records `MeshLeft`
 //! and publishes mesh-left (R-MD1 items 2-3).
 //! The deleting mesh's primary's side ([`AdminRunner::admit_delete_mesh`]) admits `DeleteMesh`, runs the
@@ -198,9 +198,9 @@ impl AdminRunner {
     /// it (mesh-delete.md "Resume after the primary's loss" step 2, Q160): its roster is the AcceptedRoster
     /// receipt, captured once, from the mesh's node rows on the store, by the first executor that runs it
     /// and read by every later one; every birth without a terminal receipt is deleted, a live member by its
-    /// ordinary node.delete (node.stop, the exact exit proof), this admin its executor, every other birth as
+    /// ordinary node.delete (node.stop, the exact exited verdict), this admin its executor, every other birth as
     /// an unreached birth (its runtime read from its durable row, `TerminateRuntime` first when it runs), and
-    /// a delete holding its exit proof runs on from its receipts. A runtime this admin cannot inspect or
+    /// a delete holding its exited verdict runs on from its receipts. A runtime this admin cannot inspect or
     /// terminate ends the step by name, no receipt manufactured. Then mesh.deleted's and mesh-left's receipts
     /// are recorded and the mesh leaves this view. A live node-admin of the mesh not yet its primary is no
     /// loss: the attempt ends and the next one hands that admin the workflow.
@@ -244,7 +244,7 @@ impl AdminRunner {
             }
         }
         // Each birth by its tier (ordinary nodes, then node-admins), running only the deletes without a
-        // terminal receipt: a delete with every step's receipt stands; one that holds its exit proof and not
+        // terminal receipt: a delete with every step's receipt stands; one that holds its exited verdict and not
         // every later step runs on from its receipts; a live member by its ordinary node.delete; every other
         // birth as an unreached birth.
         let is_admin = |b: &RosterBirth| b.node.parse::<PathName>().is_ok_and(|p| p.kind == NodeKind::NodeAdmin);
@@ -326,7 +326,7 @@ impl AdminRunner {
     }
 
     /// The live member `n` of a mesh deleted in process: its ordinary node.delete (node.stop, the exact
-    /// exit proof, its row Deleted), this admin its executor. Answers its terminal receipt.
+    /// exited verdict, its row Deleted), this admin its executor. Answers its terminal receipt.
     async fn delete_member_in_process(&self, build_id: &crate::build::BuildId, attempt: u32, n: &Node) -> Result<TerminalReceipt, RunEnd> {
         let (record, handle) = self.handle_for(n).await.map_err(|e| format!("node.delete:{}: no exact runtime of the live member to delete in process: {e}", n.name))?;
         self.delete_birth(build_id, attempt, record, handle).await
@@ -628,7 +628,7 @@ impl AdminRunner {
     }
 
     /// mesh-left (R-MD1 items 2-3): this admin published `op`'s birth deleted from the provider's
-    /// exact exit proof. When that birth is the final primary a mesh.delete's completion receipt names
+    /// exact exited verdict. When that birth is the final primary a mesh.delete's completion receipt names
     /// (a point read of the Build facts, [`crate::build_state::BuildStateAdapter::mesh_deleted_of`]),
     /// every birth of the mesh is now proven exited: the final birth's exact Exited receipt is read
     /// from the node.delete's own `TerminateRuntime` step receipt, the complete proof set is checked
@@ -674,7 +674,7 @@ impl AdminRunner {
             .builds
             .read_build(&deleted_in)
             .await
-            .map_err(|e| format!("{}: the Build {deleted_in} of the node.delete could not be read for its exit proof: {e}", op.operation))?
+            .map_err(|e| format!("{}: the Build {deleted_in} of the node.delete could not be read for its exited verdict: {e}", op.operation))?
             .steps
             .into_iter()
             .filter(|r| r.operation == op.operation && r.step == terminate && r.outcome == StepOutcome::Complete)
@@ -895,7 +895,7 @@ impl AdminRunner {
         let result = async {
             // A member whose delete already holds its TerminateRuntime receipt runs on from its receipts
             // when its runtime is no longer resolved here (no digest, no runtime row), as an unreached
-            // birth's delete does (`delete_unreached_as`): the exit proof is a step already taken.
+            // birth's delete does (`delete_unreached_as`): the exited verdict is a step already taken.
             let (record, handle) = match self.handle_for(n).await {
                 Ok(resolved) => resolved,
                 Err(e) => {
@@ -907,7 +907,7 @@ impl AdminRunner {
                 }
             };
             // Whether the birth is stopped is the record's the leave works from (a stopped member's
-            // delete goes straight to its exit proof), as `delete` takes it from the view.
+            // delete goes straight to its exited verdict), as `delete` takes it from the view.
             let record = Node { stopped: n.stopped, ..record };
             self.delete_birth(&key.build_id.clone(), key.attempt, record, handle).await.map_err(|e| format!("{}'s node.delete: {e}", n.name))
         }
@@ -929,7 +929,7 @@ impl AdminRunner {
             return;
         }
         // mesh.deleted (ops-naming mesh.delete: "reported by the mesh-primary, still alive, from its
-        // members' exit proofs; mesh is dead, id kept deleted"): every other member's exit is proven,
+        // members' exited verdicts; mesh is dead, id kept deleted"): every other member's exit is proven,
         // so this primary commits its mesh row Dead (states.md: "one commit stores the row, applies
         // it, gossips it and answers"); its view then states the mesh Dead and its status workflow
         // publishes MeshStatus Dead, five sends, while it lives (R-NS1 item 1). A refused put
@@ -946,7 +946,7 @@ impl AdminRunner {
             Ok(row) => span.record("mesh_row", *row),
             Err(e) => span.record("mesh_row", "not-written").record("error", e.as_str()),
         };
-        span.in_scope(|| tracing::info!("mesh.deleted at the mesh's primary: its own mesh row Dead is stored and applied from its members' exit proofs, and its name released"));
+        span.in_scope(|| tracing::info!("mesh.deleted at the mesh's primary: its own mesh row Dead is stored and applied from its members' exited verdicts, and its name released"));
         if let Err(e) = mesh_row {
             tracing::info!(operation = %key.operation, error = %e, "the mesh row Dead was not committed: the handoff waits for a repeated delete-mesh");
             return;

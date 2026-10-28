@@ -379,7 +379,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     let while_unheard: Vec<&&Value> = drifts.iter().filter(|sp| at_ns(sp) >= at_ns(verdict) && at_ns(sp) < heard_again).collect();
     assert_eq!(while_unheard.len(), 1, "one attempt while {} is held unheard, for its first recovering node-admin: {while_unheard:#?}", f.lost);
     assert!(attr(while_unheard[0], "node") == format!("{}.admin.1", f.lost) && attr(while_unheard[0], "action") == "steps" && attr(while_unheard[0], "reason") == "steps", "the verdict runs node.create of the first node-admin in path order, a single step of the same Build: {:#?}", while_unheard[0]);
-    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().all(|sp| !attr(sp, "scope").starts_with(&format!("{}.", f.lost))), "the verdict is no proven drift: nothing of {} is repaired from an exit proof", f.lost);
+    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().all(|sp| !attr(sp, "scope").starts_with(&format!("{}.", f.lost))), "the verdict is no proven drift: nothing of {} is repaired from an exited verdict", f.lost);
 
     // FabricStatus: never degraded before the verdict; degraded from it; ready again after.
     let degraded_at = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or_else(|| panic!("the fabric primary showed degraded: {statuses:?}"));

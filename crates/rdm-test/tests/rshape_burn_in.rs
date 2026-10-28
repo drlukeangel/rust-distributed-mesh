@@ -4222,7 +4222,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     assert!(!recreate.is_empty(), "no reconcile of {drift_build} after the kill executed {op2}");
     let drift_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id2.as_str()).collect();
     let drift_chain = json!({
-        "node_recovery_spans": drift_spans.iter().map(|sp| json!({"span": sp["span_id"], "attempt": sp["attributes"]["attempt"], "submitter": sp["attributes"]["submitter"], "exit_proof": sp["attributes"]["exit_proof"], "outcome": sp["attributes"]["outcome"]})).collect::<Vec<_>>(),
+        "node_recovery_spans": drift_spans.iter().map(|sp| json!({"span": sp["span_id"], "attempt": sp["attributes"]["attempt"], "submitter": sp["attributes"]["submitter"], "exited_verdict": sp["attributes"]["exited_verdict"], "outcome": sp["attributes"]["outcome"]})).collect::<Vec<_>>(),
         "recreate_reconciles": recreate.iter().map(|sp| json!({"span": sp["span_id"], "attempt": attempt_of(sp), "executor": sp["attributes"]["executor"], "operations": sp["attributes"]["operations"], "reason": sp["attributes"]["reason"], "action": sp["attributes"]["action"]})).collect::<Vec<_>>(),
         "node_deleted_for_the_dead_identity": drift_deleted.iter().map(|sp| json!({"span": sp["span_id"], "incarnation_id": sp["attributes"]["incarnation_id"]})).collect::<Vec<_>>(),
     });

@@ -127,7 +127,7 @@ enum Group {
     OsStopped,
     /// No task is live (each a zombie or dead), or `/proc/<pid>` is gone.
     Gone,
-    /// The task files are present and cannot be read whole: never exit proof. `path` is the file or
+    /// The task files are present and cannot be read whole: never exited verdict. `path` is the file or
     /// directory whose read failed and `cause` the error or the line that names no state.
     Unreadable { path: String, cause: String },
 }
@@ -589,7 +589,7 @@ impl DeploymentProvider for ProcessDeploymentProvider {
                 Group::OsStopped => DeploymentStatus::OsStopped,
                 Group::Unreadable { path, cause } => {
                     tracing::info_span!("rdm.node_admin.deployment.returns-unknown.via-proc-unreadable", deployment_id = %handle.deployment_id, pid, path = %path, cause = %cause)
-                        .in_scope(|| tracing::info!("the runtime's thread group cannot be read whole: its state is unknown, never exit proof"));
+                        .in_scope(|| tracing::info!("the runtime's thread group cannot be read whole: its state is unknown, never exited verdict"));
                     DeploymentStatus::Unknown
                 }
                 // No live task, or a recycled pid that runs another process: this birth has exited.
@@ -698,7 +698,7 @@ mod tests {
     /// CONTRACT (deployment-provider.md §2.6): a task whose `stat` read fails because the task has
     /// exited, gone before the open (`NotFound`) or released between the open and the read (`ESRCH`),
     /// is left out of its group's fold; a read denied any other way (`EACCES`) is `Unreadable`,
-    /// never exit proof.
+    /// never exited verdict.
     #[test]
     fn a_task_released_before_or_during_its_stat_read_has_exited_and_a_denied_read_has_not() {
         assert!(task_exited(&std::io::Error::from(std::io::ErrorKind::NotFound)), "gone before the open");
@@ -726,7 +726,7 @@ mod tests {
     /// CONTRACT (deployment-provider.md §2.6, PRD i144 R3): read over a process filesystem, a pid
     /// whose `/proc/<pid>` is gone, or whose start token names another process, is `Gone` (the exact
     /// runtime exited); task files present but unreadable or partial are `Unreadable`, naming the file
-    /// and the error or the line, which inspect answers `Unknown`, never exit proof, even beside a
+    /// and the error or the line, which inspect answers `Unknown`, never exited verdict, even beside a
     /// zombie task; a pid listed without its task directory cannot be told.
     #[test]
     fn a_partial_or_unreadable_task_read_is_unreadable_and_a_gone_or_recycled_pid_is_gone() {
