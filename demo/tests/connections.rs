@@ -47,7 +47,7 @@ fn config(dir: &Path) -> AdminConfig {
 fn forwardable_gateway(alpn: &'static [u8]) -> Alpn {
     Alpn {
         name: alpn.to_vec(),
-        forwardable: true,
+        proxy: true,
         carriers: vec![NodeKind::Gateway],
     }
 }

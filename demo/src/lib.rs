@@ -15,13 +15,13 @@ use tracing::Instrument;
 
 /// The carrier policy of this shape: an originated call may travel over a Proxy whose carrier is a
 /// gateway (connections.md section 6).
-pub const CARRIER_POLICY: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::Gateway };
+pub const CARRIER_POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::Gateway };
 
 /// The shape's one data-plane protocol (connections.md §5), an `Alpn` value handed to the start seam
-/// (never an ALPN constant of its own): every role registers it, forwardable through a gateway, and
+/// (never an ALPN constant of its own): every role registers it, proxied through a gateway, and
 /// answers each stream with `echo <its path.name>: <the bytes it read>`.
 pub fn data_alpn() -> Alpn {
-    Alpn { name: b"demo/echo".to_vec(), forwardable: true, carriers: vec![NodeKind::Gateway] }
+    Alpn { name: b"demo/echo".to_vec(), proxy: true, carriers: vec![NodeKind::Gateway] }
 }
 
 /// Whether `role` serves the originate door (0x73): the roles work enters through. A compute node
