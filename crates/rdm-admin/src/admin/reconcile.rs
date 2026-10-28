@@ -255,6 +255,39 @@ pub(crate) fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepR
     surplus.iter().map(|item| t.members().find(|n| n.name.to_string() == *item).map(birth).unwrap_or_else(|| item.clone())).collect::<Vec<_>>().join("; ")
 }
 
+/// The durable runtime rows of every mesh the fabric-primary's drift check reads ([`reconcile_drift`]'s
+/// `durable`): the births at a path its view holds nothing at ([`durable_births`]), and the exact runtime
+/// of an unheard birth whose digest its view holds none of. Read once, at the first executor pass that
+/// finds this admin the fabric-primary, and held while it keeps the role. A row written after that read
+/// is written by the launching admin (build.md §5.3): this admin's own join door, which installs the
+/// admitted digest, and with it the birth's runtime, in its view; or a running mesh-primary launching
+/// into its own mesh, whose births that mesh-primary recovers (node-recovery.md: "The mesh-primary is the
+/// reconciler for its own members"), reading its mesh's rows as it takes the role ([`TenureRows`]), and
+/// whose mesh this check holds for the investigation's decision once that mesh-primary is lost; the
+/// fabric recovery executor and an adoption launch write only while no fabric-primary runs, and the next
+/// take reads their rows. An admin that is not the fabric-primary holds none and reads none; the role
+/// lost, the rows go, and a later tenure reads them again. A read that is refused holds none, so the
+/// next pass reads again.
+#[derive(Debug, Default)]
+pub(crate) struct FabricTenureRows {
+    rows: Option<Vec<crate::storage::RuntimeRow>>,
+}
+
+impl FabricTenureRows {
+    /// The rows for one executor pass of the admin `reader`, `fabric_primary` when the view it plans
+    /// from names it the fabric-primary: those this tenure read from `nodes`, read now at its first pass.
+    pub(crate) async fn for_pass(&mut self, fabric_primary: bool, nodes: &dyn crate::storage::NodesStorage, reader: &PathName) -> &[crate::storage::RuntimeRow] {
+        if !fabric_primary {
+            self.rows = None;
+            return &[];
+        }
+        if self.rows.is_none() {
+            self.rows = runtime_rows_read(reader, None, nodes.runtimes().await);
+        }
+        self.rows.as_deref().unwrap_or_default()
+    }
+}
+
 /// The fabric authority's pass over the settled accepted Build (the current Build unchanged: the
 /// topology did not change). When this admin is the fabric primary it opens the next attempt for one
 /// of four things, in this order:

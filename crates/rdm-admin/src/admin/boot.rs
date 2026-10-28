@@ -3216,6 +3216,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         executor = tokio::spawn(async move {
                                             let mut started = HashSet::new();
                                             let mut held = HashSet::new();
+                                            // Every mesh's durable runtime rows, read once as this admin takes the
+                                            // fabric-primary role and held while it keeps it (`FabricTenureRows`).
+                                            let mut fabric_rows = FabricTenureRows::default();
                                             loop {
                                                 // The drift seam's hold, awaited before the pass's turn and outside every lock, inside
                                                 // a span that names what held the pass and lasts as long as the hold.
@@ -3237,8 +3240,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // fabric authority first starts a reconciliation Build for
                                                 // proven drift.
                                                 {
-                                                    let durable_rows = if now.is_fabric_primary(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &digest_view, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh_unheard(mesh, digest_view.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (digest_view.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh)).await;
+                                                    let durable_rows = fabric_rows.for_pass(now.is_fabric_primary(&me_id), &*drift_nodes, &me).await;
+                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &digest_view, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh_unheard(mesh, digest_view.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (digest_view.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh)).await;
                                                     // The attempt is planned from the view as it is now.
                                                     if opened.is_some() {
                                                         records.install_read(&me, &topology, &digest_view, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &digest_view, &records, reads)).await;

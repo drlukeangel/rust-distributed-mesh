@@ -546,19 +546,35 @@ impl TenureRows {
 }
 
 /// The durable runtime rows of `mesh` that `nodes` holds, read for `reader` as it takes its mesh's
-/// primary role: one `rdm.node_admin.node.resolve.via-runtime-rows-read` naming how many; `None` when the
-/// read is refused, named on its own span.
+/// primary role ([`runtime_rows_read`]).
 async fn read_runtime_rows(nodes: &dyn crate::storage::NodesStorage, reader: &PathName, mesh: &str) -> Option<Vec<crate::storage::RuntimeRow>> {
-    match nodes.runtimes().await {
+    runtime_rows_read(reader, Some(mesh), nodes.runtimes().await)
+}
+
+/// What a primary's one read of the durable runtime rows (`read`) holds for its tenure: `mesh`'s rows
+/// for a mesh-primary (`Some`, [`TenureRows`]), every mesh's for the fabric-primary (`None`,
+/// `FabricTenureRows`), named on one `rdm.node_admin.node.resolve.via-runtime-rows-read` with how many;
+/// `None` when the read was refused, named on its own span, so the next tick or pass reads again.
+pub(crate) fn runtime_rows_read(reader: &PathName, mesh: Option<&str>, read: Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError>) -> Option<Vec<crate::storage::RuntimeRow>> {
+    let role = if mesh.is_some() { "mesh-primary" } else { "fabric-primary" };
+    match read {
         Ok(rows) => {
-            let rows: Vec<crate::storage::RuntimeRow> = rows.into_iter().filter(|r| r.name.mesh == mesh).collect();
-            tracing::info_span!("rdm.node_admin.node.resolve.via-runtime-rows-read", reader = %reader, mesh, store = "nodes.storage", rows = rows.len() as u64)
-                .in_scope(|| tracing::info!("this admin took its mesh's primary role: its mesh's durable runtime rows are read once and held while it keeps the role"));
+            let rows: Vec<crate::storage::RuntimeRow> = rows.into_iter().filter(|r| mesh.is_none_or(|m| r.name.mesh == m)).collect();
+            let span = tracing::info_span!("rdm.node_admin.node.resolve.via-runtime-rows-read", reader = %reader, role, mesh = tracing::field::Empty, store = "nodes.storage", rows = rows.len() as u64);
+            match mesh {
+                Some(mesh) => {
+                    span.record("mesh", mesh);
+                    span.in_scope(|| tracing::info!("this admin took its mesh's primary role: its mesh's durable runtime rows are read once and held while it keeps the role"));
+                }
+                None => span.in_scope(|| tracing::info!("this admin took the fabric-primary role: every mesh's durable runtime rows are read once and held while it keeps the role")),
+            }
             Some(rows)
         }
         Err(e) => {
-            tracing::info_span!("rdm.node_admin.node.reject.via-runtime-rows-unreadable", reader = %reader, store = "nodes.storage", error = %e)
-                .in_scope(|| tracing::info!("the durable runtime rows could not be read: this tick watches the view's births only, and the next tick reads them again"));
+            tracing::info_span!("rdm.node_admin.node.reject.via-runtime-rows-unreadable", reader = %reader, role, store = "nodes.storage", error = %e).in_scope(|| match mesh {
+                Some(_) => tracing::info!("the durable runtime rows could not be read: this tick watches the view's births only, and the next tick reads them again"),
+                None => tracing::info!("the durable runtime rows could not be read: this pass's drift check reads the view's births only, and the next pass reads them again"),
+            });
             None
         }
     }
