@@ -3331,3 +3331,7 @@ install (`Records::view_tick`), a Build submitted or attempt opened, a fabric st
 boot.rs:3289 goes; rdm#164 in lane 7 (seat i143-164), RED cells on the loop's wait, then the fast gate and one exported
 R-shape flame counting passes per admin. The other timers (boot.rs:2288; the gossip cadences; investigate.rs's interval) are
 each their own question, the gossip ones with a flame first.
+rdm#164 landed c1ca20870 (Q253 amended, Q254 A): the reconcile loop runs a pass on an event only; six sources, every pass spanned
+via-reconcile-woken; five causes the tick hid fixed at their roots (a submit lost during a pass, a peer-mesh decision, a drive's end,
+a drift attempt's row release, an event during a running drive). Owed: the container provider's exit source; the view rebuild's
+200 ms VIEW_POLL (projection.rs:637); a mesh-primary's own recovery's row release. rdm#169: demo/admin-ui red against main's rdm-client.
