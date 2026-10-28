@@ -239,3 +239,75 @@ impl NodeStorageBackend for MemoryNodeBackend {
         Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), node_rows: Arc::new(NoNodeRows), writes_to: "memory".into() })
     }
 }
+
+#[cfg(all(test, feature = "file-backend"))]
+mod tests {
+    use super::*;
+    use rdm_core::launch as env;
+
+    /// Run `op` on a single-thread runtime whose one blocking thread is held while `op` first runs, and
+    /// answer whether `root` already stood while `op` was waiting (made on the thread polling `op`, not
+    /// on the blocking pool), and `op`'s answer once the thread is let go.
+    fn root_made_while_waiting<T: Send + 'static>(root: std::path::PathBuf, op: std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>) -> (bool, T) {
+        let rt = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().unwrap();
+        rt.block_on(async move {
+            let (held_tx, held_rx) = tokio::sync::oneshot::channel::<()>();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let holder = tokio::task::spawn_blocking(move || {
+                let _ = held_tx.send(());
+                let _ = release_rx.recv();
+            });
+            held_rx.await.unwrap();
+            let task = tokio::spawn(op);
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert!(!task.is_finished(), "the open waits on the held blocking pool");
+            let made = root.exists();
+            release_tx.send(()).unwrap();
+            holder.await.unwrap();
+            (made, task.await.unwrap())
+        })
+    }
+
+    /// CONTRACT (rdm-node/src/blocking.rs: a disk call "runs on tokio's blocking pool. No worker thread
+    /// waits on the disk"): a launched node's file storage makes the fabric's store root on the
+    /// blocking pool. Must NOT happen: the root's directory and marker made, and fsynced, on the
+    /// thread polling the open (rdm#117).
+    #[test]
+    fn a_launched_nodes_file_storage_makes_the_store_root_on_the_blocking_pool() {
+        let (store, data) = (crate::record_store::tempdir("node-open-store"), crate::record_store::tempdir("node-open-data"));
+        let fabric_id = crate::model::FabricId::mint();
+        let vars = std::collections::BTreeMap::from([
+            (env::ENV_FABRIC, "fabric1".to_string()),
+            (env::ENV_FABRIC_ID, fabric_id.to_string()),
+            (env::ENV_NODE_NAME, "mesh1.rpc.1".to_string()),
+            (env::ENV_NODE_ID, crate::model::NodeId::mint().to_string()),
+            (env::ENV_INCARNATION, crate::model::IncarnationId::mint().to_string()),
+            (env::ENV_TRANSPORT_ADDR, "127.0.0.1:0".to_string()),
+            (env::ENV_DATA_DIR, data.display().to_string()),
+            (env::ENV_STORE_DIR, store.display().to_string()),
+        ]);
+        let launch = Launch::from_env(|k| vars.get(k).cloned()).expect("the launch reads");
+        let root = store.join(fabric_id.to_string());
+        let (made, opened) = root_made_while_waiting(root.clone(), Box::pin(async move { FileNodeBackend::default().open(&launch).await.map(|_| ()) }));
+        assert!(!made, "the store root {} was made on the thread polling the open, not on the blocking pool", root.display());
+        opened.unwrap_or_else(|e| panic!("the open completes once the pool's thread is let go: {e}"));
+        assert!(root.is_dir(), "the store root stands once the open completes");
+    }
+
+    /// CONTRACT (as above, storage.md §2 Copy's provider lines): the file provider's lines open makes
+    /// the fabric's store root on the blocking pool. Must NOT happen: the root made on the thread
+    /// polling the open.
+    #[test]
+    fn the_file_providers_lines_make_the_store_root_on_the_blocking_pool() {
+        let store = crate::record_store::tempdir("lines-open-store");
+        let fabric_id = crate::model::FabricId::mint();
+        let root = store.join(fabric_id.to_string());
+        let at = store.clone();
+        let (made, opened) = root_made_while_waiting(root.clone(), Box::pin(async move { crate::storage_copy::FileProviderLines::open("file", &at, &fabric_id).await.map(|_| ()) }));
+        assert!(!made, "the store root {} was made on the thread polling the open, not on the blocking pool", root.display());
+        opened.unwrap_or_else(|e| panic!("the open completes once the pool's thread is let go: {e}"));
+        assert!(root.is_dir(), "the store root stands once the open completes");
+    }
+}
