@@ -588,10 +588,15 @@ async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_i
 /// receipt and frame it makes for the superseded attempt lands nowhere: its run reports them up a
 /// stream no fabric-primary reads, the Build's journal holds no `StartNode` receipt and no verdict of
 /// the superseded attempt, and the next attempt's verdict is the Build's. The re-created birth at its
-/// path.name holds. (Its row writes in the window are not asserted here: build.md:424's refusal of
-/// them is the follow-up unit's.)
-/// Must NOT happen: a record of the superseded attempt in the journal, the Build decided by it, or the
-/// re-created birth displaced.
+/// path.name holds. Its own record, which the resumed birth writes whole from its copy older than the
+/// recovery's `Deleted` write, is ignored on read (build.md: "a deleted birth whose writes every
+/// reader refuses"; Q109: "a row that does not follow the fold is ignored by every reader, refused by
+/// no storage"): the record carries its writer's birth, the recovery's claim reads the `Deleted`
+/// record its writer holds as the previous record at the name, so the re-created birth names the
+/// resumed one its predecessor, and every reader of the mesh's records ignores the version the
+/// resumed birth wrote, naming it on `rdm.node_admin.node.reject.via-deleted-birth`.
+/// Must NOT happen: a record of the superseded attempt in the journal, the Build decided by it, the
+/// re-created birth displaced, or the resumed birth's own write read as its record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_receipt_of_its_attempt() {
     let test = "an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_receipt_of_its_attempt";
@@ -664,6 +669,33 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
         }
     }
     println!("the resumed birth's spans after its resume ({} in all): {seen:#?}", after.len());
+    // The mesh's records as a reader reads them from the store, and every version the store holds of
+    // the resumed birth's own record, with the birth that wrote it.
+    let records = {
+        let root = rdm_node::store_root::StoreRoot::open(&estate.store_dir(), &rdm_core::FabricId::parse(&estate.fabric_id).unwrap()).expect("the fabric's store root opens");
+        let writer = rdm_node::store_log::LogWriter::mint();
+        let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &writer).await.expect("the mesh storage opens");
+        let rows = rdm_admin::storage::FileNodesStorage::open(&estate.store_dir(), &root, "mesh2", &writer).await.expect("the nodes storage opens");
+        rdm_admin::storage::records(&meshes, &rows, "mesh2").await.expect("the mesh's records read")
+    };
+    let versions: Vec<rdm_admin::storage::NodeRow> = rdm_node::store_log::read_file(&estate.store_dir().join(&estate.fabric_id).join(rdm_node::store_root::NODES_FILE))
+        .expect("the fabric's nodes file reads")
+        .into_iter()
+        .filter(|l| l.kind() == "node-record" && l.key == node_id)
+        .map(|l| serde_json::from_value(l.record).expect("a node record"))
+        .collect();
+    let born = versions.iter().find_map(|r| r.newest_birth().map(|b| b.incarnation_id.clone())).expect("the resumed birth's record keeps its birth");
+    let own_writes: Vec<&rdm_admin::storage::NodeRow> = versions.iter().filter(|r| r.writer.as_ref().is_some_and(|w| w.node_id.as_str() == node_id)).collect();
+    for r in &versions {
+        println!("version of {} ({node_id}): {:?} revision {} written by {:?}", r.name, r.status, r.revision, r.writer.as_ref().map(|w| format!("{}@{}", w.node_id, w.incarnation_id.as_str())));
+    }
+    let successor = records.iter().find(|r| r.node_id.as_str() == s(&recovered["node_id"])).cloned().expect("the re-created birth's record reads");
+    // A read of mesh2's records that met a version the resumed birth wrote after its delete (its own,
+    // or another node's over a record the reader held) names it ignored.
+    let ignored: Vec<Value> = spans_named(&spans, "rdm.node_admin.node.reject.via-deleted-birth").into_iter().filter(|sp| attr(sp, "writer").starts_with(&format!("{node_id}@"))).cloned().collect();
+    for sp in &ignored {
+        println!("a version the resumed birth wrote ignored on read ({}): {} ({}) {} revision {}, held {}: trace http://192.168.68.99:16687/trace/{}", attr(sp, "read"), attr(sp, "subject"), attr(sp, "node_id"), attr(sp, "status"), attr(sp, "revision"), attr(sp, "held"), s(&sp["trace_id"]));
+    }
     let refusals: Vec<Value> = spans.iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= resumed_at && (attr(sp, "build_id") == build || attr(sp, "node_id") == node_id) && s(&sp["name"]).contains(".reject.")).cloned().collect();
     for sp in &refusals {
         println!("refusal after the resume: {} {} at {} attempt {} subject {} trace http://192.168.68.99:16687/trace/{}", s(&sp["name"]), attr(sp, "outcome"), attr(sp, "node"), attr(sp, "attempt"), attr(sp, "subject"), s(&sp["trace_id"]));
@@ -671,8 +703,12 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
     assert!(landed.is_empty(), "nothing of the superseded attempt {superseded} lands in the Build's journal: {landed:#?}");
     let next: u32 = attr(&claim, "attempt").parse().unwrap();
     assert!(reported.contains(&next) && !reported.contains(&superseded), "the next attempt {next}'s verdict is the Build's, and the superseded attempt {superseded} has none: {reported:?}");
+    assert!(own_writes.iter().all(|r| r.writer.as_ref().is_some_and(|w| w.incarnation_id == born)) && !own_writes.is_empty(), "every version of its own record the birth wrote names it, its node and incarnation, as its writer (Q109): {versions:#?}");
+    assert_eq!(successor.predecessor.as_ref().map(|p| (p.node_id.as_str().to_string(), p.incarnation_id.clone())), Some((node_id.clone(), born.clone())), "the re-created birth names the resumed birth its predecessor: the recovery's claim read the Deleted record, never the resumed birth's version: {successor:?}");
+    let held: Vec<&rdm_admin::storage::NodeRow> = records.iter().filter(|r| r.node_id.as_str() == node_id).collect();
+    assert!(held.iter().all(|r| r.status == rdm_core::model::NodeStatus::Deleted), "a reader of mesh2's records never holds the resumed birth live: its own version is ignored on read: {held:#?}");
     println!("next attempt claimed: http://192.168.68.99:16687/trace/{}", s(&claim["trace_id"]));
-    estate.record_trace_url(&s(&claim["trace_id"]));
+    estate.record_trace_url(&s(&ignored.first().unwrap_or(&claim)["trace_id"]));
 }
 
 /// CONTRACT (acceptance 2): the fabric-primary dies after claiming an attempt and before dispatching

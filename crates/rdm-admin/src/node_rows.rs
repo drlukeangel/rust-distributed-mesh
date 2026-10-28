@@ -100,6 +100,9 @@ pub struct WrittenRows {
     /// ([`Self::fill`]): each is read once when its writing is taken, never again before it is given up
     /// ([`Self::release`]).
     filled: Mutex<std::collections::BTreeSet<String>>,
+    /// The birth this admin writes as (Q109: the record names its writer's birth), set once at its boot
+    /// ([`Self::writes_as`]): every record it puts carries it as `writer`.
+    birth: std::sync::OnceLock<crate::storage::BirthRef>,
 }
 
 impl WrittenRows {
@@ -116,6 +119,37 @@ impl WrittenRows {
     /// move a storage change makes.
     pub fn writes_to(&self, provider: &str) {
         *self.topology_storage_provider.write().unwrap_or_else(|e| e.into_inner()) = Some(provider.to_string());
+    }
+
+    /// Write every record as `birth`, this admin's own (node id and incarnation), from now on: each put
+    /// carries it as the record's `writer`. The first call stands.
+    pub fn writes_as(&self, birth: crate::storage::BirthRef) {
+        let _ = self.birth.set(birth);
+    }
+
+    /// The birth this admin writes as, once its boot set it.
+    pub fn writer(&self) -> Option<&crate::storage::BirthRef> {
+        self.birth.get()
+    }
+
+    /// `read`, a version of a node's record a read of storage answered, as this writer folds it
+    /// (build.md: "a deleted birth whose writes every reader refuses"; Q109: "a row that does not follow
+    /// the fold is ignored by every reader"): a version written by a birth this writer holds deleted
+    /// (its copy of that birth's node record is `Deleted` or `Withdrawn` and keeps the birth) is ignored
+    /// where this writer holds its own copy of the record, and the copy is answered; one
+    /// `rdm.node_admin.node.reject.via-deleted-birth` span names it. Every other version is answered as
+    /// read: with no copy of the record held there is nothing to answer instead.
+    pub fn fold_read(&self, me: &PathName, read: Option<NodeRow>) -> Option<NodeRow> {
+        let r = read?;
+        let Some(w) = r.writer.clone() else { return Some(r) };
+        let deleted = self.row_of(&w.node_id).is_some_and(|d| matches!(d.status, NodeStatus::Deleted | NodeStatus::Withdrawn) && d.birth(&w.incarnation_id).is_some());
+        match self.row_of(&r.node_id).filter(|_| deleted) {
+            Some(held) => {
+                ignored_span(&me.to_string(), "writer-record", &r, &w, &format!("{} {:?} at revision {}", held.node_id, held.status, held.revision));
+                Some(held)
+            }
+            None => Some(r),
+        }
     }
 
     /// The `topology_storage_provider` this admin writes, once its boot set it.
@@ -176,12 +210,21 @@ impl WrittenRows {
     /// writing of `mesh` (its mesh's seat; the fabric-primary for a mesh left with none): the records
     /// as they stand then, never a copy held from before. Each is replaced under its node's lock.
     pub async fn fill(&self, storage: &dyn NodesStorage, mesh: &str) -> Result<usize, crate::storage_error::StorageError> {
-        let listed = storage.nodes(mesh).await?;
+        let all = storage.nodes(mesh).await?;
+        let gone = re_created(&all);
+        let listed = fold_records("writer-fill", all);
         for r in &listed {
             // Read again under the node's lock: a write that landed after the listing is in storage and
             // in the copy, and the listing's older record never replaces it.
             let _one = self.lock(&r.node_id).await;
+            // A version written after the listing by a birth the listing holds re-created is its own
+            // write as a deleted birth: the listed record is held, as the fold read it.
             match storage.node(&r.node_id).await? {
+                Some(now) if now.writer.as_ref().is_some_and(|w| w.node_id == now.node_id && gone.contains_key(w)) => {
+                    let w = now.writer.clone().expect("checked");
+                    ignored_span("", "writer-fill", &now, &w, &format!("{} re-created it at {}", gone[&w], now.name));
+                    self.hold(r)
+                }
                 Some(now) => self.hold(&now),
                 None => self.forget(&r.node_id),
             }
@@ -240,6 +283,7 @@ impl WrittenRows {
         let previous = self.row_of(&row.node_id);
         let mut row = row.clone();
         row.revision = previous.as_ref().map_or(0, |p| p.revision).max(row.revision) + 1;
+        row.writer = self.birth.get().cloned();
         let row = &row;
         storage.put_node(row).await?;
         self.hold(row);
@@ -975,6 +1019,71 @@ fn push_awaited(awaited: &mut String, step: &str) {
     awaited.push_str(step);
 }
 
+/// The births `records` hold deleted: each birth a record names its predecessor, re-created at its
+/// path.name under another node id (node-recovery.md: "A birth that comes back after it was re-created
+/// is a deleted birth"), with the node id of the record that names it.
+fn re_created(records: &[NodeRow]) -> HashMap<crate::storage::BirthRef, NodeId> {
+    records.iter().filter_map(|r| r.predecessor.clone().map(|p| (p, r.node_id.clone()))).collect()
+}
+
+/// The records a reader of a mesh's node records folds from `records`, the versions a read of storage
+/// answered (Q109: "every reader folds the stored rows the same way, and a row that does not follow the
+/// fold is ignored by every reader, refused by no storage"; build.md: an os-stopped executor that
+/// resumes after the next attempt is claimed "is a deleted birth whose writes every reader refuses"):
+/// a node's record whose version was written by its own birth after another record named that birth
+/// its predecessor (the birth re-created at its path.name) is ignored, one
+/// `rdm.node_admin.node.reject.via-deleted-birth` span naming it. The record of a re-created birth
+/// stands `Deleted`, written by its mesh-primary before the re-creation's claim, so no version its own
+/// birth writes follows it. A version of another node's record that birth wrote is not judged by it:
+/// a whole record keeps no earlier version, and that birth's writes from before it was deleted are the
+/// record's as much as any (storage-whole-records.md). `read` names the read on the span.
+pub fn fold_records(read: &str, records: Vec<NodeRow>) -> Vec<NodeRow> {
+    let deleted = re_created(&records);
+    if deleted.is_empty() {
+        return records;
+    }
+    records
+        .into_iter()
+        .filter(|r| {
+            let Some(w) = r.writer.as_ref().filter(|w| w.node_id == r.node_id) else { return true };
+            match deleted.get(w) {
+                Some(by) => {
+                    ignored_span("", read, r, w, &format!("{by} re-created it at {}", r.name));
+                    false
+                }
+                None => true,
+            }
+        })
+        .collect()
+}
+
+/// [`ignored_span`] for a reader outside this module: `read` names the read.
+pub(crate) fn ignored_version(read: &str, row: &NodeRow, writer: &crate::storage::BirthRef, held: &str) {
+    ignored_span("", read, row, writer, held);
+}
+
+/// The span of a version of `row`'s record a reader ignored: written by `writer`, a birth the reader's
+/// fold holds deleted (`held`, what holds it so).
+fn ignored_span(me: &str, read: &str, row: &NodeRow, writer: &crate::storage::BirthRef, held: &str) {
+    let span = tracing::info_span!(
+        "rdm.node_admin.node.reject.via-deleted-birth",
+        node = tracing::field::Empty,
+        read,
+        subject = %row.name,
+        node_id = %row.node_id,
+        status = ?row.status,
+        revision = row.revision,
+        writer = %format!("{}@{}", writer.node_id, writer.incarnation_id.as_str()),
+        held,
+        outcome = "ignored",
+        "otel.kind" = "internal",
+    );
+    if !me.is_empty() {
+        span.record("node", me);
+    }
+    span.in_scope(|| tracing::info!("a version of the record written by a deleted birth is ignored on read; storage keeps it as written"));
+}
+
 /// The record at `name`: the one the `path.name` index names there while that record is still at
 /// `name` (a record a rename moved off it is at its new name, not here); `None` otherwise.
 pub async fn record_at(storage: &dyn NodesStorage, name: &PathName) -> Result<Option<NodeRow>, crate::storage_error::StorageError> {
@@ -1140,7 +1249,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
     let _one = written.lock(node_id).await;
     let mut awaited = prefix.to_string();
     span.record("awaiting", "read-previous-row");
-    let previous = record_at(storage, name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous record at {name} could not be read for {node_id}: {e}")))?;
+    let previous = written.fold_read(me, record_at(storage, name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous record at {name} could not be read for {node_id}: {e}")))?);
     push_awaited(&mut awaited, "read-previous-row");
     span.record("awaited", awaited.as_str());
     if let Some(p) = previous.as_ref().filter(|p| p.node_id == *node_id) {

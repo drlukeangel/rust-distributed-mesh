@@ -483,7 +483,7 @@ impl Atlas {
         let written = self.held.lock().unwrap().written.clone();
         let mut read = Vec::new();
         for mesh in meshes.into_iter().filter(|m| !written.contains(m)) {
-            let listed = rows.nodes(&mesh).await.map_err(|e| format!("nodes.storage: the node records of {mesh} could not be read: {e}"))?;
+            let listed = crate::node_rows::fold_records("atlas-fill", rows.nodes(&mesh).await.map_err(|e| format!("nodes.storage: the node records of {mesh} could not be read: {e}"))?);
             read.push((mesh, listed));
         }
         let mut held = self.held.lock().unwrap();
@@ -491,6 +491,18 @@ impl Atlas {
             let before: BTreeMap<NodeId, NodeRow> = held.records.iter().filter(|(_, r)| r.name.mesh == mesh).map(|(k, r)| (k.clone(), r.clone())).collect();
             held.records.retain(|_, r| r.name.mesh != mesh);
             for mut r in listed {
+                // A version written by a birth this atlas holds deleted (its record deleted with that
+                // birth, or a node.delete of it completed) is ignored where the atlas held the record
+                // (build.md: "a deleted birth whose writes every reader refuses"): the held one stays.
+                if let (Some(w), Some(kept)) = (r.writer.clone(), before.get(&r.node_id)) {
+                    let deleted = before.get(&w.node_id).or(held.records.get(&w.node_id)).is_some_and(|d| matches!(d.status, NodeStatus::Deleted | NodeStatus::Withdrawn) && d.birth(&w.incarnation_id).is_some())
+                        || held.effects.get(w.incarnation_id.as_str()).is_some_and(|e| e.lifecycle == Lifecycle::Deleted);
+                    if deleted && kept.writer != r.writer {
+                        crate::node_rows::ignored_version("atlas-fill", &r, &w, &format!("{} {:?} at revision {}", kept.node_id, kept.status, kept.revision));
+                        held.records.insert(r.node_id.clone(), kept.clone());
+                        continue;
+                    }
+                }
                 let births: Vec<(NodeId, String)> = r.births.iter().map(|b| (r.node_id.clone(), b.incarnation_id.as_str().to_string())).collect();
                 held.births_read.extend(births);
                 keep_newer_config(before.get(&r.node_id), &mut r);

@@ -338,7 +338,7 @@ impl Prepared {
             // them: the name is held by this node.id.
             let mut birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.name.clone());
             (birth.endpoint_id, birth.transport_addr) = (Some(own.endpoint_id.clone()), Some(own.transport_addr));
-            let row = rdm_admin::storage::NodeRow { topology_storage_provider: None,
+            let row = rdm_admin::storage::NodeRow { topology_storage_provider: None, writer: None,
                 name: own.name.clone(),
                 node_id: node_id.clone(),
                 status: rdm_admin::model::NodeStatus::Ready,
@@ -360,7 +360,7 @@ impl Prepared {
                 let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
                 let mut birth = rdm_admin::storage::BirthFacts::new(incarnation, name.parse().unwrap());
                 (birth.endpoint_id, birth.transport_addr) = (Some(EndpointId(iroh::SecretKey::generate().public().to_string())), Some(unanswered_addr()));
-                let row = rdm_admin::storage::NodeRow { topology_storage_provider: None,
+                let row = rdm_admin::storage::NodeRow { topology_storage_provider: None, writer: None,
                     name: name.parse().unwrap(),
                     node_id: node_id.clone(),
                     status: rdm_admin::model::NodeStatus::Ready,

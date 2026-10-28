@@ -154,7 +154,7 @@ fn live_roster(records: &[Node]) -> Result<Vec<RosterBirth>, String> {
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
         // The record a create wrote: the node's row and its birth.
-        let mut row = NodeRow { topology_storage_provider: None,
+        let mut row = NodeRow { topology_storage_provider: None, writer: None,
                 name: n.name.clone(),
                 node_id: n.node_id.clone(),
                 status: NodeStatus::Ready,

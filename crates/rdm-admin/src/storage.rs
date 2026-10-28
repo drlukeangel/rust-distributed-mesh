@@ -504,13 +504,15 @@ pub async fn live_records(meshes: &dyn MeshStorage, nodes: &dyn NodesStorage, ow
 /// The records of every mesh: the records of each mesh `meshes` holds a record of, and of `own_mesh`
 /// (whose record a Day-0 admin's claim precedes), each mesh read once, a `Deleted` record included: a
 /// deleted birth's recorded primary stays an election input until a newer revision supersedes it
-/// (fabric-node-lifecycle-elections.md §3), as a lost primary's does through fabric recovery.
+/// (fabric-node-lifecycle-elections.md §3), as a lost primary's does through fabric recovery. Each
+/// mesh's records as the reader's fold reads them: a version a deleted birth wrote is ignored
+/// ([`crate::node_rows::fold_records`]).
 pub async fn records(meshes: &dyn MeshStorage, nodes: &dyn NodesStorage, own_mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
     let mut names: BTreeSet<String> = meshes.meshes().await?.into_iter().map(|m| m.name).collect();
     names.insert(own_mesh.to_string());
     let mut out = Vec::new();
     for mesh in names {
-        out.extend(nodes.nodes(&mesh).await?);
+        out.extend(crate::node_rows::fold_records("mesh-records", nodes.nodes(&mesh).await?));
     }
     Ok(out)
 }

@@ -504,6 +504,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let caches = crate::record_cache::Caches::default();
     // A name claim this admin writes records the provider it writes on the claimed row (storage.md §2).
     caches.nodes.writes_to(&cfg.topology_storage_provider);
+    // Every record this admin writes names its birth as its writer (Q109).
+    caches.nodes.writes_as(crate::storage::BirthRef { node_id: minted_node_id.clone(), incarnation_id: incarnation.clone() });
     {
         // A storage change moving this admin: the rows it writes record the provider it writes then.
         let rows = caches.nodes.clone();

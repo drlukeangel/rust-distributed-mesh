@@ -285,6 +285,13 @@ pub struct NodeRow {
     /// an older revision. A row written before the field reads 0.
     #[serde(default)]
     pub revision: u64,
+    /// The birth that wrote this version of the record (Q109: "the row's key names its writer's
+    /// birth"), stamped by its writer on every write (`rdm_admin::node_rows::WrittenRows::put`): a reader
+    /// ignores a version written by a birth its fold holds deleted (build.md: "a deleted birth whose
+    /// writes every reader refuses"; `rdm_admin::node_rows::fold_records`). A row written before the
+    /// field carries none, and no reader ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer: Option<BirthRef>,
 }
 
 /// The application's declaration held beside its node row.
@@ -316,7 +323,7 @@ pub struct Allocation {
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
     pub fn new(name: PathName, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None, revision: 0 }
+        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None, revision: 0, writer: None }
     }
 
     /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets
