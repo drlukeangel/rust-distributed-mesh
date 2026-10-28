@@ -3028,7 +3028,8 @@ impl OperationRunner for AtOnce {
         self.running.fetch_sub(1, Ordering::SeqCst);
         if self.fails.is_some_and(|f| op.key() == format!("node.create:{f}")) && self.failing.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
             self.ran.0.lock().unwrap().push(op.key());
-            return Err(rdm_admin::executor::RunEnd::failed(format!("{}: the launch was refused", op.key())));
+            let node = op.key().trim_start_matches("node.create:").to_string();
+            return Err(rdm_admin::executor::RunEnd::failed(format!("WaitForBind failed: {node} did not report where it bound (JoinNode) within 300ms")));
         }
         self.ran.run(build, lane, attempt, op).await
     }
@@ -3054,10 +3055,9 @@ async fn at_once_failing(fails: Option<&'static str>, times: usize, admins: u32,
         at
     })
     .await;
-    // mesh1's primary `mesh1.admin.2` executes the creates on its own log, as the product's door does
-    // (`FramedBuilds`): its receipts and its Blocked notes reach the fabric-primary as frames of the
-    // call's stream.
-    r.dispatch.own_log("mesh1.admin.2");
+    // mesh1's primary `mesh1.admin.2` executes the creates as an admin on another host does (Q118): its
+    // run reports every receipt up the stream, a failed step's among them, and the fabric-primary writes it.
+    r.dispatch.reports("mesh1.admin.2");
     let at = runner.lock().unwrap().clone().unwrap();
     (r, at)
 }
@@ -3075,20 +3075,17 @@ async fn a_meshs_member_creates_run_at_once() {
     assert_eq!(at.most.load(Ordering::SeqCst), 4, "the four creates ran at once");
 }
 
-/// CONTRACT (Q245, Q250): a member create that fails stops none of the others: each of the four runs to
-/// its own end, and the attempt ends once every one has. Failing every time, it is planned again by the
-/// next attempt, and failing the same way twice running the drive stalls naming it, the others done.
+/// CONTRACT (Q245, Q252): a member create that fails stops none of the others: each of the four runs to
+/// its own end, and the attempt ends once every one has. Failing every time, the next attempt creates it
+/// again, and its second failure ends the Build, the others done.
 #[tokio::test]
 async fn a_failed_member_create_stops_none_of_the_others() {
     let (r, at) = at_once(Some("mesh1.rpc.3")).await;
     let drive = Drive::detached(r.build.clone());
-    match tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s") {
-        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh1.rpc.3"), "the stall names the create: {why}"),
-        other => panic!("the same create failure twice running stalls the drive: {other:?}"),
-    }
+    assert_eq!(tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s"), DriveEnd::Terminal);
     let mut ran = r.ran.0.lock().unwrap().clone();
     ran.sort();
-    assert_eq!(ran, ["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].map(String::from).to_vec(), "every create ran to its end, the failed one once more");
+    assert_eq!(ran, ["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].map(String::from).to_vec(), "every create ran to its end, the failed one on the next attempt too");
     assert_eq!(at.most.load(Ordering::SeqCst), 4);
 }
 
@@ -3144,21 +3141,38 @@ async fn each_meshs_section_is_sent_to_its_mesh_primary_at_once() {
     assert_eq!(at.most.load(Ordering::SeqCst), 4, "the two sections' creates ran together");
 }
 
-/// CONTRACT (Q250, Q245): mesh3's section fails at mesh3.rpc.2's create every time. mesh2's section completes
-/// all the same: a failed section stops none of the others. mesh3's operations are planned again and its
-/// section sent again on the next pass, a new attempt of its lane; failing the same way twice running, the
-/// drive stalls naming it rather than sending it again and again. Must NOT happen: mesh2's creates held by
-/// mesh3's failure, or mesh3's section sent without end.
+/// CONTRACT (Q250, Q245, Q252): mesh3's section fails at mesh3.rpc.2's create every time. mesh2's section
+/// completes all the same: a failed section stops none of the others. mesh3's operations are planned again
+/// and its section sent again on the next pass, a new attempt of its lane; the same operation failing there
+/// too ends the Build `Failed` with the step and reason of the second failure (node-rpc-envelope.md: "Only a
+/// fabric-primary change or a failed step ends an attempt"). Must NOT happen: mesh2's creates held by
+/// mesh3's failure, mesh3's section sent without end, a stall, or a Blocked frame before the terminal.
 #[tokio::test]
-async fn a_section_that_fails_stops_no_other_and_the_same_failure_twice_stalls_the_drive() {
+async fn a_section_that_fails_stops_no_other_and_the_same_operation_failing_twice_ends_the_build_failed() {
+    use rdm_admin::build_state::BuildState;
     let fabric = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1)]), MeshDesired::of("mesh2", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 3)]), MeshDesired::of("mesh3", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 3)])] };
     let r = rig_for(three_meshes(), TopologyChange::ReconcileFabric { desired: fabric }, move |ran, _| -> Arc<dyn OperationRunner> { Arc::new(AtOnce::new(ran, Some("mesh3.rpc.2"))) }).await;
+    // Each mesh-primary serves its section as an admin on another host does: its failed step's receipt
+    // goes up the stream, and its Failed terminal names the step.
+    r.dispatch.reports("mesh2.admin.1");
+    r.dispatch.reports("mesh3.admin.1");
     let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
     let ended = tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s");
-    match ended {
-        DriveEnd::Stalled(why) => assert!(why.contains("mesh mesh3's section failed the same way twice running") && why.contains("node.create:mesh3.rpc.2"), "{why}"),
-        other => panic!("the same section failure twice running stalls the drive naming it: {other:?}"),
+    assert_eq!(ended, DriveEnd::Terminal, "the same operation failing twice running ends the Build");
+    let mut frames = Vec::new();
+    while let Some(read) = next_within(&mut reader).await {
+        frames.push(read);
     }
+    match frames.last() {
+        Some(Read::Terminal(BuildReply::Failed { operation, step, reason, .. })) => {
+            assert_eq!((operation.as_str(), step.as_str()), ("node.create:mesh3.rpc.2", "WaitForBind"), "the terminal names the second failure's operation and step");
+            assert!(reason.contains("mesh3.rpc.2 did not report where it bound"), "the step's own reason: {reason}");
+        }
+        other => panic!("the stream ends Failed {{ step, reason }}: {other:?}; frames {frames:?}"),
+    }
+    assert!(!frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { .. }))), "no Blocked frame reaches the caller: {frames:?}");
+    assert_eq!(r.builds.read_build(&r.build).await.unwrap().state, BuildState::Failed, "the Build record is Failed");
     let ran = r.ran.0.lock().unwrap().clone();
     assert!(["node.create:mesh2.rpc.2", "node.create:mesh2.rpc.3"].iter().all(|k| ran.iter().any(|r| r == k)), "mesh2's section completed: {ran:?}");
     let sent: Vec<(String, u32)> = r.dispatch.sections.lock().unwrap().iter().map(|(_, l, a)| (l.clone(), *a)).collect();
@@ -3187,16 +3201,24 @@ fn dispatches(spans: &[serde_json::Value]) -> Vec<(String, String, String, Strin
 fn a_member_create_that_fails_once_is_created_by_the_next_attempt_and_the_build_completes() {
     use rdm_admin::build_state::BuildState;
     let cap = crate::mesh_delete_resume::capture();
-    let (end, p, ran, trace_id) = cap.run(async {
+    let (end, p, ran, frames, trace_id) = cap.run(async {
         let root = tracing::info_span!("cell.member-create-fails-once");
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let _in_root = root.enter();
         let (r, _at) = at_once_failing(Some("mesh1.rpc.3"), 1, 2, 5).await;
-        let end = tokio::time::timeout(Duration::from_secs(20), r.env.run(&Drive::detached(r.build.clone()))).await.expect("the drive ends within 20 s");
+        let drive = Drive::detached(r.build.clone());
+        let mut reader = drive.reader(1);
+        let end = tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s");
+        let mut frames = Vec::new();
+        while let Some(read) = next_within(&mut reader).await {
+            frames.push(read);
+        }
         let ran = r.ran.0.lock().unwrap().clone();
-        (end, r.builds.read_build(&r.build).await.unwrap(), ran, trace_id)
+        (end, r.builds.read_build(&r.build).await.unwrap(), ran, frames, trace_id)
     });
     assert_eq!(end, DriveEnd::Terminal, "the Build completes");
+    assert!(matches!(frames.last(), Some(Read::Terminal(BuildReply::Complete { .. }))), "the stream ends Complete: {frames:?}");
+    assert!(!frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { .. } | BuildReply::Failed { .. }))), "the heal frames nothing to the caller: {frames:?}");
     assert_eq!(p.state, BuildState::Complete, "one failed create does not fail the Build");
     let mut ran = ran;
     ran.sort();
@@ -3204,20 +3226,22 @@ fn a_member_create_that_fails_once_is_created_by_the_next_attempt_and_the_build_
     let spans = cap.spans();
     let runs = reconciles(&spans);
     eprintln!("cell trace_id={trace_id} reconcile spans {runs:?}");
-    assert!(runs.iter().any(|(a, o, _, inc)| a == "1" && o == "handed-off" && inc.contains("node.create:mesh1.rpc.3")), "attempt 1 is handed back naming the failed create: {runs:?}");
+    assert!(runs.iter().any(|(a, o, _, inc)| a == "1" && o == "handed-off" && inc.contains("WaitForBind failed: mesh1.rpc.3")), "attempt 1 is handed back with the failed create's reason: {runs:?}");
     assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "converged" && ops == "node.create:mesh1.rpc.3"), "attempt 2 runs the failed create alone and converges: {runs:?}");
 }
 
-/// CONTRACT (Q245): in the fabric lane a member create that fails every time is planned again by the
-/// next attempt, which moves nothing: the drive stalls Blocked `incomplete` naming the create, and the
-/// Build stays in progress, never failed. Must NOT happen: the Build failed, the completed creates run
-/// again, or the create sent again without end.
+/// CONTRACT (Q245, Q252; node-rpc-envelope.md: "A failure is `Failed { step, reason }`", "Only a
+/// fabric-primary change or a failed step ends an attempt"): in the fabric lane a member create that fails
+/// is created again by the next attempt, once; failing there too, that attempt ends `Failed` with the
+/// failed step and its own reason, and the Build is failed. Nothing else reaches the caller: no Blocked
+/// frame (its only source is the subject's Status `Blocked`). Must NOT happen: a third attempt, a
+/// stall, the completed creates run again, or a Blocked frame before the terminal.
 #[test]
-fn a_member_create_that_fails_every_time_stalls_the_drive_blocked_naming_it() {
-    use rdm_admin::build_state::{BuildState, CurrentBuild};
+fn a_member_create_that_fails_on_the_next_attempt_too_ends_the_build_failed_naming_its_step() {
+    use rdm_admin::build_state::BuildState;
     let cap = crate::mesh_delete_resume::capture();
-    let (end, p, current, ran, frames, trace_id) = cap.run(async {
-        let root = tracing::info_span!("cell.member-create-fails-every-time");
+    let (end, p, ran, frames, dispatched, trace_id) = cap.run(async {
+        let root = tracing::info_span!("cell.member-create-fails-twice");
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let _in_root = root.enter();
         let (r, _at) = at_once(Some("mesh1.rpc.3")).await;
@@ -3229,27 +3253,29 @@ fn a_member_create_that_fails_every_time_stalls_the_drive_blocked_naming_it() {
             frames.push(read);
         }
         let ran = r.ran.0.lock().unwrap().clone();
-        (end, r.builds.read_build(&r.build).await.unwrap(), r.builds.current_build().await.unwrap(), ran, frames, trace_id)
+        let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
+        (end, r.builds.read_build(&r.build).await.unwrap(), ran, frames, dispatched, trace_id)
     });
     let spans = cap.spans();
-    match &end {
-        Some(DriveEnd::Stalled(why)) => assert!(why.contains("ended incomplete") && why.contains("node.create:mesh1.rpc.3"), "the stall names the create: {why}"),
-        other => {
-            let d = dispatches(&spans);
-            panic!("a create that fails every time stalls the drive: {other:?} (None: no end within 20 s); {} dispatches, the first 4 {:?}, reconciles {:?}", d.len(), &d[..d.len().min(4)], &reconciles(&spans)[..reconciles(&spans).len().min(4)])
+    let d = dispatches(&spans);
+    assert_eq!(end, Some(DriveEnd::Terminal), "the second failure ends the Build within 20 s; {} dispatches, the first 4 {:?}, reconciles {:?}", d.len(), &d[..d.len().min(4)], reconciles(&spans));
+    assert_eq!(p.state, BuildState::Failed, "the Build record is Failed");
+    assert_eq!(dispatched, vec![("mesh1.admin.2".to_string(), 1), ("mesh1.admin.2".to_string(), 2)], "no third attempt is claimed");
+    match frames.last() {
+        Some(Read::Terminal(BuildReply::Failed { attempt, operation, step, reason, .. })) => {
+            assert_eq!((*attempt, operation.as_str(), step.as_str()), (2, "node.create:mesh1.rpc.3", "WaitForBind"), "the terminal names the failed operation and step");
+            assert!(reason.contains("mesh1.rpc.3 did not report where it bound"), "the step's own reason: {reason}");
         }
+        other => panic!("the stream ends Failed {{ step, reason }}: {other:?}; frames {frames:?}"),
     }
-    assert_ne!(p.state, BuildState::Failed, "the Build is not failed");
-    assert!(matches!(current, CurrentBuild::InProgress(_)), "the Build stays in progress: {current:?}");
-    assert!(frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, reason, .. }) if step == "incomplete" && reason.contains("node.create:mesh1.rpc.3"))), "the Build reports Blocked incomplete naming the create: {frames:?}");
-    assert!(!frames.iter().any(|f| matches!(f, Read::Terminal(_) | Read::Frame(BuildReply::Failed { .. }))), "no terminal: {frames:?}");
+    assert!(!frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { .. }))), "no Blocked frame reaches the caller: {frames:?}");
     let count = |k: &str| ran.iter().filter(|r| *r == k).count();
     assert_eq!(count("node.create:mesh1.rpc.3"), 2, "the failed create is run by attempt 1 and once more by attempt 2: {ran:?}");
     assert!(["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].iter().all(|k| count(k) == 1), "the completed creates ran once: {ran:?}");
-    eprintln!("cell trace_id={trace_id} reconcile spans {:?}", reconciles(&spans));
-    let mut failed: Vec<String> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-create-failed" && s["attributes"]["operation"] == "node.create:mesh1.rpc.3").map(|s| s["attributes"]["attempt"].as_str().unwrap_or("").to_string()).collect();
-    failed.sort();
-    assert_eq!(failed, ["1", "2"], "each attempt's failed create is named on the executor's span");
-    let stalls: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-stalled" && s["trace_id"] == trace_id.as_str()).collect();
-    assert_eq!(stalls.len(), 1, "the stall is named once: {stalls:?}");
+    let runs = reconciles(&spans);
+    eprintln!("cell trace_id={trace_id} reconcile spans {runs:?}");
+    assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "failed" && ops == "node.create:mesh1.rpc.3"), "attempt 2 runs the create alone and fails: {runs:?}");
+    let healed: Vec<String> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-create-failed" && s["attributes"]["operation"] == "node.create:mesh1.rpc.3").map(|s| s["attributes"]["attempt"].as_str().unwrap_or("").to_string()).collect();
+    assert_eq!(healed, ["1"], "one heal attempt: only attempt 1's failure hands back");
+    assert!(spans.iter().all(|s| s["name"] != "rdm.node_admin.build.update.via-stalled"), "nothing stalls");
 }

@@ -28,6 +28,9 @@ pub struct Loopback {
     /// The executors that keep their own Build log, as an admin on another host does: the fabric-primary's
     /// log holds what they write only once the Build topic carries it.
     own: Mutex<BTreeMap<String, Arc<MemoryBuildStateAdapter>>>,
+    /// The executors that serve the fabric-primary's dispatch as an admin on another host does (Q118):
+    /// their runs report every receipt up the stream and the fabric-primary writes it.
+    reporting: Mutex<BTreeSet<String>>,
     /// Every executor a dispatch reached, in order: `(executor, attempt)`.
     pub dispatched: Mutex<Vec<(String, u32)>>,
     /// Every section a dispatch reached (Q250), in order: `(executor, lane, attempt)`.
@@ -45,7 +48,17 @@ struct OwnReceipts {
 #[async_trait::async_trait]
 impl OperationRunner for OwnReceipts {
     async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &rdm_admin::build::BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
-        self.inner.run(build, lane, attempt, op).await?;
+        if let Err(end) = self.inner.run(build, lane, attempt, op).await {
+            // The pipeline's failed step writes its receipt as its own log's append (a `PipelineError`
+            // reads `<step> failed: <reason>`), and the run fails as it does.
+            if let rdm_admin::executor::RunEnd::Failed { reason, code } = &end {
+                if let Some((step, why)) = reason.split_once(" failed: ") {
+                    let failed = BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build.clone(), attempt, operation: op.key(), step: step.into(), outcome: StepOutcome::Failed { reason: why.into(), code: *code }, output: None, executor: None };
+                    self.builds.append_step_receipt(&failed).await.map_err(|e| rdm_admin::executor::RunEnd::from(e.to_string()))?;
+                }
+            }
+            return Err(end);
+        }
         let receipt = BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
         self.builds.append_step_receipt(&receipt).await.map_err(|e| e.to_string().into())
     }
@@ -53,7 +66,7 @@ impl OperationRunner for OwnReceipts {
 
 impl Loopback {
     pub fn new(builds: Arc<dyn BuildStateAdapter>, local: Arc<dyn LocalBuildLog>, topology: Arc<RwLock<Topology>>, runner: Arc<dyn OperationRunner>) -> Arc<Self> {
-        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(BTreeMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), own: Mutex::new(BTreeMap::new()), dispatched: Mutex::new(Vec::new()), sections: Mutex::new(Vec::new()) })
+        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(BTreeMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), own: Mutex::new(BTreeMap::new()), reporting: Mutex::new(BTreeSet::new()), dispatched: Mutex::new(Vec::new()), sections: Mutex::new(Vec::new()) })
     }
 
     /// `executor` keeps its own Build log (returned): the intent a call carries is absorbed there, its
@@ -61,6 +74,14 @@ impl Loopback {
     /// the fixture's log but the frames and the terminal.
     pub fn own_log(&self, executor: &str) -> Arc<MemoryBuildStateAdapter> {
         self.own.lock().unwrap().entry(executor.to_string()).or_insert_with(|| Arc::new(MemoryBuildStateAdapter::new())).clone()
+    }
+
+    /// `executor` keeps its own Build log ([`Self::own_log`]) and serves the fabric-primary's dispatch
+    /// reporting (`RunDoor::attempt_run_reporting`), as a remote admin does: its receipts, a failed step's
+    /// among them, go up the stream and the fabric-primary writes them.
+    pub fn reports(&self, executor: &str) {
+        self.own_log(executor);
+        self.reporting.lock().unwrap().insert(executor.to_string());
     }
 
     /// `executor` plans and hands off from `view`, which may disagree with the fabric-primary's.
@@ -105,6 +126,9 @@ impl Dispatcher for Loopback {
             return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
         }
         self.dispatched.lock().unwrap().push((executor.to_string(), attempt));
+        if self.reporting.lock().unwrap().contains(&executor.to_string()) {
+            return local_dispatched(self.door(executor).attempt_run_reporting(None, build_id, attempt, &executor.to_string(), &context, &intent, &plan, Arc::new(|| true)).await);
+        }
         local_dispatched(self.door(executor).attempt_run(build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
     }
     async fn dispatch_in(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, lane: &str, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rdm_admin::executor::RunPlan) -> Dispatched {
@@ -112,6 +136,9 @@ impl Dispatcher for Loopback {
             return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
         }
         self.sections.lock().unwrap().push((executor.to_string(), lane.to_string(), attempt));
+        if self.reporting.lock().unwrap().contains(&executor.to_string()) {
+            return local_dispatched(self.door(executor).attempt_run_reporting(Some(lane), build_id, attempt, &executor.to_string(), &context, &intent, &plan, Arc::new(|| true)).await);
+        }
         local_dispatched(self.door(executor).attempt_run_in(Some(lane), build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
     }
 }
