@@ -1,6 +1,6 @@
 //! The testkit's application: it takes the fabric's notices the way an embedding does.
 //!
-//! `on_mesh_ready` and `on_fabric_ready` (Q175) each only record a span. A scenario that holds a fabric
+//! `on_mesh_ready` and `on_fabric_ready` (Q175), `on_build_started` and `on_build_ended` (Q256) each only record a span. A scenario that holds a fabric
 //! short of ready holds a node's `pre_node_ready` (`crate::write_pre_node_ready_knob`), as an
 //! application holds its own node.
 //!
@@ -18,7 +18,7 @@
 //! application's backend that answers its list with a named error), its claims answered; and a fourth,
 //! [`TOPOLOGY_STORAGE_MEMORY`], RDM's memory backend, whose boundaries open and whose lines do not.
 
-use rdm_admin::wiring::{FabricHooks, FabricReadyCtx, MeshReadyCtx};
+use rdm_admin::wiring::{BuildEndedCtx, BuildStartedCtx, FabricHooks, FabricReadyCtx, MeshReadyCtx};
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -169,5 +169,13 @@ pub fn hooks() -> FabricHooks {
         let span = tracing::info_span!("rdm.testkit.app.update.via-on-fabric-ready", fabric_id = %ready.fabric_id, build_id = %ready.build_id, attempt = ready.attempt, "otel.kind" = "internal");
         Box::pin(async move { tracing::info!("the application opens client traffic") }.instrument(span))
     });
-    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready) }
+    let on_build_started: rdm_admin::wiring::BuildStartedNotice = Arc::new(|started: BuildStartedCtx| {
+        let span = tracing::info_span!("rdm.testkit.app.update.via-on-build-started", fabric_id = %started.fabric_id, build_id = %started.build_id, attempt = started.attempt, reason = started.reason.as_str(), "otel.kind" = "internal");
+        Box::pin(async move { tracing::info!("the application was told the Build started") }.instrument(span))
+    });
+    let on_build_ended: rdm_admin::wiring::BuildEndedNotice = Arc::new(|ended: BuildEndedCtx| {
+        let span = tracing::info_span!("rdm.testkit.app.update.via-on-build-ended", fabric_id = %ended.fabric_id, build_id = %ended.build_id, attempt = ended.attempt, reason = ended.reason.as_str(), state = ended.state.as_str(), "otel.kind" = "internal");
+        Box::pin(async move { tracing::info!("the application was told the Build ended") }.instrument(span))
+    });
+    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready), on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended) }
 }

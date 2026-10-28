@@ -297,6 +297,7 @@ async fn row(variant: Variant, timing: Timing) -> Row {
         gate: fabric.clone(),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
+        notices: Default::default(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
     Row { builds, env, fabric, runs, build: opened.build_id }

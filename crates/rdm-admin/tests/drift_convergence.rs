@@ -180,6 +180,8 @@ struct Estate {
     /// Each mesh's in-flight row (R-BI7 caveat 3), one set of rows for every admin of the estate, as
     /// the fabric's shared store root holds them.
     claims: Arc<dyn rdm_admin::storage::MeshStorage>,
+    /// The application the fabric-primary's drive sends its Build notices to (Q256).
+    told: crate::Told,
 }
 
 const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 3), ("mesh2", 2, 3)];
@@ -213,7 +215,7 @@ async fn estate() -> Estate {
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), topology, &fp).await.unwrap();
     let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), digest_view: digest_view.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), builds: builds.clone(), hear_after_birth: std::sync::atomic::AtomicBool::new(false), recovering: Mutex::new(Vec::new()), fail_recovery_create: std::sync::atomic::AtomicBool::new(false) });
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), view.clone(), runner.clone());
-    Estate { provider: Provider(world.clone()), world, builds, accepted, view, digest_view, runner, dispatch, records: Arc::new(exit_records()), claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()) }
+    Estate { provider: Provider(world.clone()), world, builds, accepted, view, digest_view, runner, dispatch, records: Arc::new(exit_records()), claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), told: crate::Told::default() }
 }
 
 /// A new birth at `path`: a runtime in the world, a digest in the topology view, a live node.
@@ -457,6 +459,7 @@ impl Estate {
             gate,
             departure: Arc::new(WorldProofs { view: self.view.clone(), records: self.records.clone(), me: primary.clone() }),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
+            notices: self.told.notices(),
             turns: rdm_admin::stop_gate::StopGate::new(),
         })
     }
@@ -614,6 +617,8 @@ impl Estate {
 /// dispatches nothing and the fabric lane is untouched.
 /// Exactly the lost path has a new node (new node.id), `seat_revision::target` probes nothing and nothing else is
 /// created.
+/// An rpc node's recovery by its mesh-primary reopens nothing: the Build stays Complete and the application is sent no Build
+/// notice (fabric-node-hooks.md `on_build_started`, `on_build_ended`; Q256, Q258).
 #[tokio::test]
 async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_else_is_created() {
     let e = estate().await;
@@ -640,6 +645,12 @@ async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_el
     assert_eq!((after.build_id, after.attempt, after.state), (before.build_id, before.attempt, BuildState::Complete), "the fabric lane is untouched");
     let lane = e.lane("mesh1").await;
     assert_eq!((lane.attempt, lane.state), (1, BuildState::Complete), "mesh1's lane: {lane:?}");
+    // An rpc node's recovery by its mesh-primary reopens nothing (Q256, Q258): the fabric-primary's pass finds no Build in
+    // progress, the Build stays Complete, and the application is sent no Build notice.
+    e.converge().await;
+    assert_eq!(e.builds.current().await.unwrap().unwrap().state, BuildState::Complete, "the Build stays completed");
+    let told = e.told.settled(0).await;
+    assert!(told.is_empty(), "an rpc node's recovery by its mesh-primary sends no on_build_started or on_build_ended: {told:?}");
 }
 
 /// CONTRACT (node-recovery.md "Steps", "Failure and receipts"; rdm-code-conformance.md §2 item 4): a
@@ -797,6 +808,52 @@ async fn members_unheard_through_a_lost_forwarder_are_held_never_duplicated() {
     }
     // Heard again through the recovered forwarder: the topology holds.
     e.holds_the_shape().await;
+}
+
+/// CONTRACT (fabric-node-hooks.md `on_build_started`, `on_build_ended`, Q256: "Each time ... an attempt
+/// that reopens a Build that has ended is claimed, the fabric-primary sends the application one
+/// `on_build_started` notice"; "its reason (... the reopening attempt's: a drift repair ...)"; "Each
+/// `on_build_started` is followed by one `on_build_ended` for the same opening"; Q258: the case is the
+/// fabric-primary's own reopening, never a node's recovery by its mesh-primary). The case: an unheard mesh-primary's
+/// recovery the fabric-primary opens itself (R-D1). The accepted Build is complete when a peer mesh's
+/// primary admin exits with every node of its mesh unheard; the fabric-primary's drift opens the next
+/// attempt of the same Build, carrying the Create of the lost admin; once the mesh seats its surviving
+/// admin, the attempt is claimed and the repair converges. The application is told `on_build_started`
+/// once, at the reopening attempt's claim, then `on_build_ended` `Complete` once, both naming the
+/// reopening attempt's reason as opened. Must NOT happen: the repair's opening or ending untold, an
+/// ending before its opening, or a second `on_build_started` for an attempt that continues the repair.
+#[tokio::test]
+async fn a_fabric_primarys_drift_repair_of_a_completed_build_sends_one_started_then_one_ended_with_its_reopening_reason() {
+    let e = estate().await;
+    let fp = e.fabric_primary().await;
+    let fp_mesh = fp.split('.').next().unwrap().to_string();
+    let lost = if fp_mesh == "mesh1" { "mesh2" } else { "mesh1" };
+    let primary = e.view.read().await.node_type_primary(lost, NodeKind::NodeAdmin).unwrap().name.to_string();
+    e.world.kill(&e.node_id(&primary).await);
+    let members: Vec<String> = e.view.read().await.nodes.iter().filter(|n| n.mesh == lost).map(|n| n.name.to_string()).collect();
+    let refs: Vec<&str> = members.iter().map(String::as_str).collect();
+    e.unheard(&refs).await;
+    let (build, opened) = e.drift().await.expect("the one proven loss opens the next attempt");
+    // The fabric-primary's drift opens an attempt carrying an action with reason `steps`, and one
+    // carrying none (a surplus birth) with `proven-drift` (admin::reconcile_drift).
+    let reopened = e.builds.read_build(&build).await.unwrap();
+    assert_eq!((reopened.opened, reopened.reason), (opened, rdm_admin::build_state::AttemptReason::Steps), "the drift repair reopens the completed Build at attempt {opened}, carrying the lost admin's Create");
+    e.stalls_until_elected(lost, &primary).await;
+    e.converge().await;
+    let done = e.builds.read_build(&build).await.unwrap();
+    assert_eq!(done.state, BuildState::Complete, "the repair converged: {:?}", (done.state, done.attempt));
+    let told = e.told.settled(2).await;
+    let id = build.to_string();
+    let keys: Vec<(String, u32, &str)> = told.iter().map(crate::Notice::key).collect();
+    assert_eq!(keys, vec![(id.clone(), opened, "started"), (id.clone(), done.attempt, "complete")], "one opening at the reopening attempt's claim, then one ending: {told:?}");
+    for n in &told {
+        let reason = match n {
+            crate::Notice::Started(c) => c.reason,
+            crate::Notice::Ended(c) => c.reason,
+        };
+        assert_eq!(reason, reopened.reason, "each notice names the reopening attempt's reason: {n:?}");
+    }
+    eprintln!("told: {keys:?}");
 }
 
 #[tokio::test]

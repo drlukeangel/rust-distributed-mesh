@@ -142,7 +142,7 @@ impl rdm_admin::build_drive::Gate for RowsGate {
 
 /// A fabric-primary's drive of the Build over `builds`: its claim door is its own log, and
 /// `dispatch` reaches the executors that are still alive.
-fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Arc<crate::loopback::Loopback>, proofs: Arc<crate::loopback::Proofs>) -> Arc<DriveEnv> {
+fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Arc<crate::loopback::Loopback>, proofs: Arc<crate::loopback::Proofs>, told: &crate::Told) -> Arc<DriveEnv> {
     Arc::new(DriveEnv {
         me: me.parse().unwrap(),
         topology: topology.clone(),
@@ -166,6 +166,7 @@ fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Ar
         gate: Arc::new(RowsGate { view: topology.clone() }),
         departure: proofs,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
+        notices: told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     })
 }
@@ -257,7 +258,8 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let died = Arc::new(Notify::new());
     let a_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: Some("mesh1.rpc.3".parse().unwrap()), died: died.clone() });
     let a_dispatch = crate::loopback::Loopback::new(a.builds.clone(), a.local.clone(), topology.clone(), a_runner.clone());
-    let a_env = drive_env("mesh1.admin.1", &a, &topology, a_dispatch.clone(), Arc::default());
+    let a_told = crate::Told::default();
+    let a_env = drive_env("mesh1.admin.1", &a, &topology, a_dispatch.clone(), Arc::default(), &a_told);
     let a_drive = Drive::detached(build_id.clone());
     let mut a_driving = Box::pin({
         let (env, drive) = (a_env.clone(), a_drive.clone());
@@ -296,7 +298,8 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // A is gone: nothing answers at its address.
     b_dispatch.lose("mesh1.admin.1");
     let proofs = Arc::new(crate::loopback::Proofs::default());
-    let b_env = drive_env("mesh1.admin.2", &b, &topology, b_dispatch.clone(), proofs.clone());
+    let b_told = crate::Told::default();
+    let b_env = drive_env("mesh1.admin.2", &b, &topology, b_dispatch.clone(), proofs.clone(), &b_told);
     let b_drive = Drive::detached(build_id.clone());
     // Silence is not proof: A is unreachable, its departure is not proven, and the attempt it holds
     // is not claimed for another admin.
@@ -355,6 +358,14 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         .collect::<Vec<_>>();
     assert_eq!(proven.len(), 1, "the departure was proven once: {proven:?}");
     assert_eq!(proven[0].get("executor").map(String::as_str), Some("mesh1.admin.1"));
+    // The application's Build notices (fabric-node-hooks.md, Q256): A told it the Build started at the
+    // claim of attempt 1; B's takeover (attempt 2) continues the Build in progress and sends no
+    // on_build_started, and B, which recorded its Complete, sends the one on_build_ended.
+    let id = build_id.to_string();
+    let a_keys: Vec<(String, u32, &str)> = a_told.settled(1).await.iter().map(crate::Notice::key).collect();
+    assert_eq!(a_keys, vec![(id.clone(), 1, "started")], "A told the opening at attempt 1's claim and no ending");
+    let b_keys: Vec<(String, u32, &str)> = b_told.settled(1).await.iter().map(crate::Notice::key).collect();
+    assert_eq!(b_keys, vec![(id.clone(), 2, "complete")], "the takeover sends no on_build_started; B sends the ending");
     b.endpoint.close().await;
     let _ = std::fs::remove_dir_all(&root);
 }

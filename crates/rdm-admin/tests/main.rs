@@ -33,6 +33,63 @@ pub fn adopted_time() -> rdm_transport::clock::RafkaTime {
     t
 }
 
+/// One application notice of a Build's opening or ending, as a cell's application recorded it.
+#[derive(Debug, Clone)]
+pub enum Notice {
+    /// `on_build_started`.
+    Started(rdm_admin::wiring::BuildStartedCtx),
+    /// `on_build_ended`.
+    Ended(rdm_admin::wiring::BuildEndedCtx),
+}
+
+impl Notice {
+    /// The Build and attempt the notice names, and `started` or the ended state's name.
+    pub fn key(&self) -> (String, u32, &'static str) {
+        match self {
+            Notice::Started(c) => (c.build_id.clone(), c.attempt, "started"),
+            Notice::Ended(c) => (c.build_id.clone(), c.attempt, c.state.as_str()),
+        }
+    }
+}
+
+/// The application of a cell: it records every Build notice the fabric-primary sends it, in the order
+/// it was told (fabric-node-hooks.md `on_build_started`, `on_build_ended`; Q256).
+#[derive(Clone, Default)]
+pub struct Told(std::sync::Arc<std::sync::Mutex<Vec<Notice>>>);
+
+impl Told {
+    /// The notices a drive sends this application.
+    pub fn notices(&self) -> rdm_admin::build_drive::BuildNotices {
+        let (started, ended) = (self.0.clone(), self.0.clone());
+        let on_build_started: rdm_admin::wiring::BuildStartedNotice = std::sync::Arc::new(move |c| {
+            started.lock().unwrap().push(Notice::Started(c));
+            Box::pin(async {})
+        });
+        let on_build_ended: rdm_admin::wiring::BuildEndedNotice = std::sync::Arc::new(move |c| {
+            ended.lock().unwrap().push(Notice::Ended(c));
+            Box::pin(async {})
+        });
+        let hooks = rdm_admin::wiring::FabricHooks { on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended), ..rdm_admin::wiring::FabricHooks::no_app_work() };
+        rdm_admin::build_drive::BuildNotices::of(rdm_core::FabricId::mint(), &hooks)
+    }
+
+    /// Every notice told so far.
+    pub fn all(&self) -> Vec<Notice> {
+        self.0.lock().unwrap().clone()
+    }
+
+    /// The notices told once `want` of them are in (bounded at 10 s: a missing notice is named by the
+    /// cell's assert), then after a further 500 ms in which no other may arrive.
+    pub async fn settled(&self, want: usize) -> Vec<Notice> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while self.0.lock().unwrap().len() < want && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        self.all()
+    }
+}
+
 /// The executable a test request names for a path of `kind`: a file of its own per kind, hashed once,
 /// so the door's acceptance (it hashes every executable a request creates a node on) passes.
 pub fn test_executable(kind: rdm_core::NodeKind) -> rdm_core::binding::Binding {

@@ -249,6 +249,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         gate: Arc::new(OpenGate),
         departure,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
+        notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
@@ -285,6 +286,7 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
+        notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
@@ -327,6 +329,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(rdm_admin::build_op::LocalVerdicts { local: fp }),
+        notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
@@ -406,6 +409,8 @@ struct Rig {
     sink: Arc<Published>,
     template: LaunchTemplate,
     data_root: std::path::PathBuf,
+    /// The application the fabric-primary's drive sends its Build notices to.
+    told: crate::Told,
 }
 
 impl Rig {
@@ -427,7 +432,7 @@ impl Rig {
         };
         let runs = Arc::new(AttemptRuns::default());
         let local = Arc::new(MemoryBuildStateAdapter::new());
-        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), topology_view: Arc::new(TopologyView { not_ready: Mutex::new(None), pending: Mutex::new(None) }), sink: Arc::default(), template, data_root }
+        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), topology_view: Arc::new(TopologyView { not_ready: Mutex::new(None), pending: Mutex::new(None) }), sink: Arc::default(), template, data_root, told: crate::Told::default() }
     }
 
     /// Run the create pipeline for `name` in `attempt` of `build`, as the executing admin does once
@@ -922,7 +927,7 @@ fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothi
             .unwrap();
         let read = rig.builds.read_build(&b0).await.unwrap();
         let e = &door.env;
-        let env = Arc::new(DriveEnv { me: e.me.clone(), topology: e.topology.clone(), builds: Arc::new(ReadBeforeTheVerdict { inner: rig.builds.clone(), current: before }), door: e.door.clone(), dispatcher: e.dispatcher.clone(), gate: e.gate.clone(), departure: e.departure.clone(), verdicts: e.verdicts.clone(), turns: e.turns.clone() });
+        let env = Arc::new(DriveEnv { me: e.me.clone(), topology: e.topology.clone(), builds: Arc::new(ReadBeforeTheVerdict { inner: rig.builds.clone(), current: before }), door: e.door.clone(), dispatcher: e.dispatcher.clone(), gate: e.gate.clone(), departure: e.departure.clone(), verdicts: e.verdicts.clone(), notices: e.notices.clone(), turns: e.turns.clone() });
         let drives = Arc::new(Drives::default());
         let ensured = rdm_admin::build_op::ensure_active(&drives, &env).await.len();
         let held = drives.get(&b0).is_some();
@@ -1040,6 +1045,121 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
     });
     assert_eq!(disposition, rdm_core::build::Disposition::AlreadyApplied);
     assert_eq!(again[1..], first[1..], "every event again, replayed by the executor of the last attempt: {again:?}");
+}
+
+/// CONTRACT (fabric-node-hooks.md `on_build_started`, `on_build_ended`, Q256: "Each time a Build's first
+/// attempt is claimed ... the fabric-primary sends the application one `on_build_started` notice";
+/// "Each `on_build_started` is followed by one `on_build_ended` for the same opening"; "a successor that
+/// adopts the state calls nothing"; "a fabric-primary lost before it sends it leaves none, and `build.get`
+/// is the durable read"): a create Build sends the application `on_build_started` at the claim of its
+/// first attempt (reason `requested`), then one `on_build_ended` once its `Complete` is recorded, naming
+/// the attempt that completed it, each under its own span (outcome `sent`). An admin that became
+/// fabric-primary after the Build ended adopts it `Complete`, sends nothing, and the Build reads `Complete`; a
+/// re-submit that replays the ended Build, or a reconcile tick that asks for its drive again, sends no
+/// second notice. Must NOT happen: an ending the application is never told of, an ending told before its
+/// opening, or a notice for a replayed or re-read terminal, or from the fabric-primary that adopted it.
+#[test]
+fn a_build_sends_started_at_its_first_claim_then_ended_and_a_successor_that_adopts_it_sends_none() {
+    let cap = capture();
+    let (build, attempt, after_complete, after_adoption, disposition, state) = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let fp = Arc::new(MemoryBuildStateAdapter::new());
+        let before = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
+        let served = serve(before.clone()).await;
+        let mut stream = create_rpc(&nodes_over(&served.carrier), &served).await.unwrap();
+        let build = stream.accepted().build_id.clone();
+        let accepted = stream.accepted().clone();
+        tokio::spawn({
+            let (rig, build) = (rig.clone(), build.clone());
+            async move { rig.report_bind(&build, "mesh1.rpc.3").await }
+        });
+        let (frames, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "{end:?}");
+        assert_eq!(frames.last(), Some(&Frame::Complete), "the create's Build completed: {frames:?}");
+        let attempt = fp.read_build(&build).await.unwrap().attempt;
+        let after_complete = rig.told.settled(2).await;
+        // A re-submit after the end replays the drive's own record, and the reconcile loop's tick asks
+        // for the drive again: neither is a second transition.
+        let mut replayed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
+        let (_, end) = collect_frames(&mut replayed, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "{end:?}");
+        let _ = before.drives.ensure(&before.env, &build, accepted.attempt);
+        let after_replay = rig.told.settled(2).await;
+        assert_eq!(after_replay.len(), 2, "a replayed or re-read terminal sends no second notice: {after_replay:?}");
+        // The same Build log under a fabric-primary that never drove this Build: it adopts it Complete.
+        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), seats: before.seats.clone(), incarnation: before.incarnation.clone() });
+        let successor = serve(after).await;
+        let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
+        let disposition = resumed.disposition();
+        let (_, end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "{end:?}");
+        let after_adoption = rig.told.settled(2).await;
+        let state = fp.read_build(&build).await.unwrap().state;
+        (build, attempt, after_complete, after_adoption, disposition, state)
+    });
+    let id = build.to_string();
+    let keys: Vec<(String, u32, &str)> = after_complete.iter().map(crate::Notice::key).collect();
+    assert_eq!(keys, vec![(id.clone(), 1, "started"), (id.clone(), attempt, "complete")], "started at the first claim, then ended Complete: {after_complete:?}");
+    let crate::Notice::Started(started) = &after_complete[0] else { unreachable!() };
+    assert_eq!(started.reason, rdm_admin::build_state::AttemptReason::Requested, "the first attempt's reason: {started:?}");
+    let crate::Notice::Ended(ended) = &after_complete[1] else { unreachable!() };
+    assert_eq!((ended.reason, &ended.state), (rdm_admin::build_state::AttemptReason::Requested, &rdm_admin::wiring::BuildEndedState::Complete), "{ended:?}");
+    assert_eq!(disposition, rdm_core::build::Disposition::AlreadyApplied, "the successor adopted the ended Build");
+    assert_eq!(after_adoption.len(), 2, "the successor that adopted the ended Build sends nothing: {after_adoption:?}");
+    assert_eq!(state, rdm_admin::build_state::BuildState::Complete, "build.get reads the terminal");
+    let spans = cap.spans();
+    let logged = build.log().to_string();
+    for (name, want) in [("rdm.node_admin.build.update.via-on-build-started", ("1", "requested", None)), ("rdm.node_admin.build.update.via-on-build-ended", (&*attempt.to_string(), "requested", Some("complete")))] {
+        let sent: Vec<&Value> = spans_named(&spans, name).into_iter().filter(|s| s["attributes"]["build_id"] == logged.as_str()).collect();
+        assert_eq!(sent.len(), 1, "one {name} span for the Build: {sent:?}");
+        let a = &sent[0]["attributes"];
+        assert_eq!((a["outcome"].as_str(), a["attempt"].as_str(), a["reason"].as_str()), (Some("sent"), Some(want.0), Some(want.1)), "{}", sent[0]);
+        if let Some(state) = want.2 {
+            assert_eq!(a["state"].as_str(), Some(state), "{}", sent[0]);
+        }
+        eprintln!("span {name} {}", sent[0]);
+    }
+}
+
+/// CONTRACT (fabric-node-hooks.md `on_build_started`, `on_build_ended`, Q256: "An attempt that continues a
+/// Build in progress (a takeover, or the next attempt after a hand-back) sends none"; "A Build that ends
+/// `Failed` ... `Failed { step, reason, code }` as its caller reads it on the Build stream"): a create
+/// whose birth never reports where it bound hands its first attempt back and its next attempt fails the
+/// Build. The application is told `on_build_started` once, at attempt 1, and one `on_build_ended`
+/// `Failed` at attempt 2, naming the step and the reason the stream ends with. Must NOT happen: a second
+/// `on_build_started` for the attempt after the hand-back, or a Failed ending the application is not told of.
+#[test]
+fn a_build_that_hands_back_and_fails_sends_one_started_and_one_failed_ended_naming_the_step() {
+    let cap = capture();
+    let (frames, told) = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let served = serve(door(&rig, Duration::from_millis(300)).await).await;
+        let mut stream = create_rpc(&nodes_over(&served.carrier), &served).await.unwrap();
+        let (frames, end) = tokio::time::timeout(Duration::from_secs(20), collect_frames(&mut stream, Duration::from_secs(15))).await.expect("the stream ends within 20 s");
+        assert!(end.is_none(), "{end:?}");
+        (frames, rig.told.settled(2).await)
+    });
+    let Some(Frame::Failed { reason, .. }) = frames.last() else { panic!("the create's Build ended Failed: {frames:?}") };
+    let id = match &frames[0] {
+        Frame::Started { build_id, .. } => build_id.to_string(),
+        f => panic!("{f:?}"),
+    };
+    let keys: Vec<(String, u32, &str)> = told.iter().map(crate::Notice::key).collect();
+    assert_eq!(keys, vec![(id.clone(), 1, "started"), (id.clone(), 2, "failed")], "one started at attempt 1, none at the attempt after the hand-back, one Failed ending: {told:?}");
+    let crate::Notice::Ended(ended) = &told[1] else { unreachable!() };
+    match &ended.state {
+        rdm_admin::wiring::BuildEndedState::Failed { step, reason: why, .. } => {
+            assert!(!step.is_empty(), "the Failed ending names its step: {ended:?}");
+            assert_eq!(why, reason, "the Failed ending's reason is the one the stream ends with: {ended:?}");
+        }
+        other => panic!("the ending is Failed: {other:?}"),
+    }
+    let spans = cap.spans();
+    let ended_spans = spans_named(&spans, "rdm.node_admin.build.update.via-on-build-ended");
+    assert_eq!(ended_spans.len(), 1, "{ended_spans:?}");
+    assert_eq!((ended_spans[0]["attributes"]["state"].as_str(), ended_spans[0]["attributes"]["attempt"].as_str()), (Some("failed"), Some("2")), "{}", ended_spans[0]);
+    assert_eq!(spans_named(&spans, "rdm.node_admin.build.update.via-on-build-started").len(), 1, "one started span");
+    eprintln!("span rdm.node_admin.build.update.via-on-build-ended {}", ended_spans[0]);
 }
 
 /// CONTRACT: a `node.name.update` whose name is outside the name grammar (proposal

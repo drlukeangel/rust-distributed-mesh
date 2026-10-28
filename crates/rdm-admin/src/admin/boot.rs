@@ -426,6 +426,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // here, by name, before anything is bootstrapped.
     let listener_names = crate::deployment::endpoint::ListenerNames::read(&wiring.listeners)?;
     let fabric_hooks = wiring.fabric_hooks.clone();
+    let build_notices = crate::build_drive::BuildNotices::of(cfg.fabric_id.clone(), &fabric_hooks);
     // The Rafka-time this process composes: held by no one until the join (or the Day-0 root's
     // boot) adopts it. Every gossip stamp, lifecycle event and fleet judgement this admin makes
     // reads this one reader.
@@ -1753,6 +1754,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         refresh: refresh_view,
                                         digest_view: digest_view.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
                                     verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
+                                    notices: build_notices.clone(),
                                     turns: stop_gate.clone(),
                                 });
                                 let _ = control.departure.set(env.departure.clone());

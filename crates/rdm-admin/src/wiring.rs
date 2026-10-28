@@ -6,7 +6,7 @@
 //! a node-admin (a consumer's own, or a testkit's) wrap each of them once before the admin runs. The
 //! product passes [`Wiring::default`]: nothing is wrapped. Application work enters a lifecycle only
 //! through the [Fabric and node hooks](../../../docs/architecture/fabric-node-hooks.md)
-//! (`pre_node_ready`, `on_node_ready`, `on_mesh_ready`, `on_fabric_ready`; build.md §9): the
+//! (`pre_node_ready`, `on_node_ready`, `on_mesh_ready`, `on_fabric_ready`, `on_build_started`, `on_build_ended`; build.md §9): the
 //! admin's transition pipeline registers no application hook. The core carries no fault code; a
 //! decorator that delays, refuses or records lives in the executable that passes it.
 
@@ -99,6 +99,67 @@ pub struct FabricReadyCtx {
     pub context: CallContext,
 }
 
+/// What `on_build_started` is told: the fabric, the Build, the attempt whose claim opened it (its first,
+/// or the attempt that reopens it after it ended), that attempt's reason and its observability context
+/// (fabric-node-hooks.md, Q256).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildStartedCtx {
+    /// The fabric.
+    pub fabric_id: rdm_core::FabricId,
+    /// The Build.
+    pub build_id: String,
+    /// The attempt whose claim opened it.
+    pub attempt: u32,
+    /// Why that attempt exists: `requested` at acceptance, or the reopening attempt's.
+    pub reason: crate::build_state::AttemptReason,
+    /// The attempt's observability context.
+    pub context: CallContext,
+}
+
+/// The terminal state a Build's ending recorded, as its caller reads it on the Build stream (R-BI4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildEndedState {
+    /// The Build is `Complete`.
+    Complete,
+    /// The Build is `Failed`, naming the step that failed, its reason and its code.
+    Failed {
+        /// The step that failed.
+        step: String,
+        /// Why it failed.
+        reason: String,
+        /// The standard code captured where it failed.
+        code: rdm_core::outcome::Code,
+    },
+}
+
+impl BuildEndedState {
+    /// The state's name, as the notice's span carries it.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Failed { .. } => "failed",
+        }
+    }
+}
+
+/// What `on_build_ended` is told: the fabric, the Build, the attempt that ended it, that attempt's
+/// reason, the terminal state and that attempt's observability context (fabric-node-hooks.md, Q256).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildEndedCtx {
+    /// The fabric.
+    pub fabric_id: rdm_core::FabricId,
+    /// The Build.
+    pub build_id: String,
+    /// The attempt that ended it.
+    pub attempt: u32,
+    /// Why that attempt exists: `requested`, or a later attempt's (a drift repair, a stop, a takeover).
+    pub reason: crate::build_state::AttemptReason,
+    /// `Complete`, or `Failed { step, reason, code }`.
+    pub state: BuildEndedState,
+    /// The attempt's observability context.
+    pub context: CallContext,
+}
+
 /// What `on_mesh_ready` is told: the fabric and the mesh that is ready (fabric-node-hooks.md,
 /// Q175).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +195,14 @@ pub type FabricReadyNotice = Arc<dyn Fn(FabricReadyCtx) -> Pin<Box<dyn Future<Ou
 /// record. Fire and forget: it gates nothing.
 pub type MeshReadyNotice = Arc<dyn Fn(MeshReadyCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+/// `on_build_started`: the notice the fabric-primary calls once the claim of a Build's first attempt,
+/// or of the attempt that reopens an ended Build, is recorded. Fire and forget: it gates nothing.
+pub type BuildStartedNotice = Arc<dyn Fn(BuildStartedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// `on_build_ended`: the notice the fabric-primary calls once a Build's `Complete` or `Failed` is
+/// recorded. Fire and forget: it gates nothing.
+pub type BuildEndedNotice = Arc<dyn Fn(BuildEndedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
 /// The application's notices a node-admin calls ([fabric and node hooks](../../../docs/architecture/fabric-node-hooks.md)).
 #[derive(Default, Clone)]
 pub struct FabricHooks {
@@ -141,12 +210,16 @@ pub struct FabricHooks {
     pub on_mesh_ready: Option<MeshReadyNotice>,
     /// `on_fabric_ready`: optional, because it gates nothing.
     pub on_fabric_ready: Option<FabricReadyNotice>,
+    /// `on_build_started`: optional, because it gates nothing.
+    pub on_build_started: Option<BuildStartedNotice>,
+    /// `on_build_ended`: optional, because it gates nothing.
+    pub on_build_ended: Option<BuildEndedNotice>,
 }
 
 impl FabricHooks {
     /// The hooks of an embedding with no application work: no notice.
     pub fn no_app_work() -> Self {
-        Self { on_mesh_ready: None, on_fabric_ready: None }
+        Self { on_mesh_ready: None, on_fabric_ready: None, on_build_started: None, on_build_ended: None }
     }
 }
 

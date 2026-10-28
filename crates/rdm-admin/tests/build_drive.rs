@@ -127,6 +127,8 @@ struct Rig {
     proofs: Arc<crate::loopback::Proofs>,
     ran: Arc<Creates>,
     build: BuildId,
+    /// The application the drive sends its Build notices to (Q256).
+    told: crate::Told,
 }
 
 async fn rig() -> Rig {
@@ -149,6 +151,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let proofs = Arc::new(crate::loopback::Proofs::default());
     let switch = Arc::new(Switch { targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: Some(topology.clone()) });
     let me: PathName = "mesh1.admin.1".parse().unwrap();
+    let told = crate::Told::default();
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: topology.clone(),
@@ -166,9 +169,10 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
         gate: switch.clone(),
         departure: proofs.clone(),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
+        notices: told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Rig { builds, env, switch, dispatch, proofs, ran, build: opened.build_id }
+    Rig { builds, env, switch, dispatch, proofs, ran, build: opened.build_id, told }
 }
 
 async fn next_within(reader: &mut rdm_admin::build_drive::DriveReader) -> Option<Read> {
@@ -797,6 +801,7 @@ async fn a_remote_executors_completed_operation_is_never_dispatched_again_before
         gate: e.gate.clone(),
         departure: e.departure.clone(),
         verdicts: Arc::new(rdm_admin::build_op::LocalVerdicts { local: r.builds.clone() }),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-remote-receipt");
@@ -978,6 +983,7 @@ async fn a_mesh_delete_whose_fabric_primary_sits_inside_moves_the_fabric_primary
         gate: gate.clone(),
         departure: r.env.departure.clone(),
         verdicts: r.env.verdicts.clone(),
+        notices: r.env.notices.clone(),
         turns: r.env.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
@@ -1146,6 +1152,7 @@ async fn a_fabric_primary_record_naming_the_executor_ends_the_drive_on_its_fabri
         gate: e.gate.clone(),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
@@ -1781,6 +1788,7 @@ async fn after_the_row(refusal: Option<&str>) -> (Rig, Arc<DriveEnv>, Arc<Acknow
         gate: gate.clone(),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     (r, env, gate, row)
@@ -1897,6 +1905,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has
         gate: holder_gate,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     // The successor: its own door, gate and stop gate over the fixture's one Build log, view and store
@@ -1921,6 +1930,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has
         gate: n_switch,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: Default::default(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
     let (p_drive, n_drive) = (Drive::detached(r.build.clone()), Drive::detached(r.build.clone()));
@@ -2035,6 +2045,7 @@ async fn a_primarys_own_update_refused_before_the_row_fails_its_attempt_by_name_
         gate: gate.clone(),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
@@ -2083,6 +2094,7 @@ async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attem
         gate: holder_gate,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let p_drive = Drive::detached(r.build.clone());
@@ -2115,6 +2127,7 @@ async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attem
         gate: n_switch,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: Default::default(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
     let n_drive = Drive::detached(r.build.clone());
@@ -2186,6 +2199,7 @@ async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_ack
         gate: holder_gate,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let p_drive = Drive::detached(r.build.clone());
@@ -2223,6 +2237,7 @@ async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_ack
         gate: n_gate.clone(),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: Default::default(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
     let n_drive = Drive::detached(r.build.clone());
@@ -2282,6 +2297,7 @@ async fn a_primarys_own_update_whose_successors_process_is_gone_after_the_row_fa
         gate,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
@@ -2343,6 +2359,7 @@ async fn a_commanded_update_claims_the_attempt_first_and_when_it_ends_failed_fai
         gate,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
@@ -2470,6 +2487,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             gate: switch,
             departure: Arc::new(crate::loopback::Proofs::default()),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
+            notices: Default::default(),
             turns: rdm_admin::stop_gate::StopGate::new(),
         });
 
@@ -2630,6 +2648,7 @@ async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_na
         gate: gate.clone(),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
@@ -2683,6 +2702,7 @@ async fn a_stop_attempt_of_a_build_that_completed_ends_at_its_stop_while_the_fab
         gate: gate.clone(),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     // The Build's topology change ran and the fabric held ready from it: Complete.
@@ -2752,6 +2772,7 @@ async fn a_fabric_ready_while_the_held_run_is_in_flight_completes_the_build() {
         gate: gate.clone(),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
@@ -2899,6 +2920,7 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready() {
         gate: gate.clone(),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
+        notices: Default::default(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
     let drive = Drive::detached(day0.clone());
@@ -2982,6 +3004,42 @@ async fn a_fabric_delete_ends_an_attempt_this_fabric_primary_holds_without_waiti
     }
     assert!(frames.iter().any(|f| matches!(f, Read::Terminal(BuildReply::Failed { step, .. }) if step == "fabric.delete")), "the stream ends Failed naming the delete: {frames:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing of the interrupted Build ran: {:?}", r.ran.0.lock().unwrap());
+}
+
+/// CONTRACT (fabric-node-hooks.md `on_build_ended`, Q256: "Each time a Build's terminal state is
+/// recorded, the fabric-primary sends the application one `on_build_ended` notice"; `on_build_started`:
+/// "Each time a Build's first attempt is claimed"; build.md §1: a Build a fabric.delete interrupts with no
+/// attempt running is ended by the fabric-primary, which "claims the next attempt for itself and ends it
+/// `Failed` naming the delete, running nothing"): a Build a fabric.delete interrupts before its first
+/// attempt is claimed sends one `on_build_ended` `Failed` naming the step `fabric.delete` and the
+/// delete, and no `on_build_started`: the attempt claimed only to end it opened nothing.
+/// Must NOT happen: the interrupted Build's ending untold, or an opening told for the attempt that only
+/// ended it.
+#[tokio::test]
+async fn a_build_a_fabric_delete_interrupts_before_its_first_claim_sends_one_failed_ended_and_no_started() {
+    let r = rig().await;
+    let me: PathName = "mesh1.admin.1".parse().unwrap();
+    let grow = r.builds.read_build(&r.build).await.unwrap();
+    let at = r.builds.newest_accepted_at_ms().await.unwrap().unwrap_or(0) + 1;
+    let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), submitted_change: Some(TopologyChange::DeleteFabric), submitted_at_ms: at };
+    rdm_admin::build_state::accept(&*r.builds, &delete, Some(&r.build), &me.to_string(), "accepted").await.unwrap();
+    let drive = Drive::detached(r.build.clone());
+    let end = tokio::time::timeout(Duration::from_secs(10), r.env.run(&drive)).await;
+    assert_eq!(end.ok(), Some(DriveEnd::Terminal), "the interrupted Build ends");
+    let ended = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((ended.state, ended.failed_at), (rdm_admin::build_state::BuildState::Failed, Some(1)), "attempt 1, claimed only to end it, ended Failed: {ended:?}");
+    let told = r.told.settled(1).await;
+    let keys: Vec<(String, u32, &str)> = told.iter().map(crate::Notice::key).collect();
+    assert_eq!(keys, vec![(r.build.to_string(), 1, "failed")], "one Failed ending and no opening: {told:?}");
+    let crate::Notice::Ended(c) = &told[0] else { unreachable!() };
+    match &c.state {
+        rdm_admin::wiring::BuildEndedState::Failed { step, reason, code } => {
+            assert_eq!((step.as_str(), *code), ("fabric.delete", rdm_core::outcome::Code::Aborted), "{c:?}");
+            assert!(reason.contains(delete.build_id.as_str()), "the ending names the delete: {c:?}");
+        }
+        other => panic!("the ending is Failed: {other:?}"),
+    }
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing of the interrupted Build ran");
 }
 
 /// While attempt 1 runs, another admin's claim of attempt 2 lands on the Build log (fabric-recovery.md
@@ -3135,6 +3193,7 @@ async fn a_remote_executors_reported_receipts_are_written_by_the_claim_record_an
         gate: e.gate.clone(),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
@@ -3502,6 +3561,7 @@ async fn an_executor_that_refuses_the_dispatch_stalls_the_drive_and_frames_nothi
         gate: e.gate.clone(),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
@@ -3653,6 +3713,7 @@ async fn a_primary_update_that_moved_the_primaries_without_its_answer_frames_not
         gate: Arc::new(MovedUnanswered { inner: r.switch.clone(), topology: e.topology.clone() }),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
+        notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());

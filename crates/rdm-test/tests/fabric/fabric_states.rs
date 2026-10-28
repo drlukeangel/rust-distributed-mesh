@@ -312,6 +312,76 @@ async fn a_resize_is_complete_only_after_its_own_ready_state_is_set() {
     estate.record_trace_url(&s(&ready["trace_id"]));
 }
 
+/// CONTRACT (fabric-node-hooks.md `on_build_started`, `on_build_ended`, Q256: "Each time a Build's first
+/// attempt is claimed ... the fabric-primary sends the application one `on_build_started` notice"; "Each
+/// time a Build's terminal state is recorded, the fabric-primary sends the application one
+/// `on_build_ended` notice"; "A Build that put the fabric back to pending completes when its ready state is
+/// set, so its `Complete` notice follows its `on_fabric_ready`"; "Each `on_build_started` is followed by
+/// one `on_build_ended` for the same opening"): a resize (mesh1.rpc.1 added, the fabric back to pending)
+/// and a config-only Reconcile (mesh1.rpc.1's config alone, the fabric left ready) each send one
+/// `on_build_started` (attempt 1, reason `requested`) and after it one `on_build_ended` `Complete`
+/// naming the attempt that completed it, and the testkit application is told each once; the resize's
+/// ending follows its `on_fabric_ready`. Must NOT happen: an opening or ending the application is never
+/// told of or told twice, or an ending before its opening.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follows_its_on_fabric_ready() {
+    let test = "every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follows_its_on_fabric_ready";
+    let mut estate = estate_with(test).await;
+    let resize = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])] }).await;
+    let resize_id = resize.build_id.to_string();
+    ready_under(&estate, &resize_id).await;
+    let node: rdm_client::PathName = "mesh1.rpc.1".parse().unwrap();
+    let zone: std::collections::BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
+    let stream = estate
+        .submit_named("the config-only Reconcile of mesh1.rpc.1", |current, executables| {
+            let held = current.held(executables).unwrap_or_else(|e| panic!("{e}"));
+            held.into_values()
+                .flat_map(|m| m.into_values())
+                .map(|mut spec| {
+                    if spec.path == node {
+                        spec.config = zone.clone();
+                    }
+                    spec
+                })
+                .collect()
+        })
+        .await;
+    let config = estate.follow(stream).await;
+    let config_id = config.build_id.to_string();
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let completed_at = |r: &rdm_test::typed::Reconciled| match r.frames.last() {
+        Some(BuildFrame::Complete { attempt }) => u64::from(*attempt),
+        other => panic!("Build {} ended {other:?}", r.build_id),
+    };
+    let of = |name: &str, build: &str| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["build_id"] == build).cloned().collect() };
+    for (what, build, done) in [("the resize", &resize_id, &resize), ("the config-only Reconcile", &config_id, &config)] {
+        let started = of("rdm.node_admin.build.update.via-on-build-started", build);
+        let ended = of("rdm.node_admin.build.update.via-on-build-ended", build);
+        assert_eq!((started.len(), ended.len()), (1, 1), "{what} {build} sends one on_build_started and one on_build_ended: {started:?} {ended:?}");
+        let (st, en) = (&started[0], &ended[0]);
+        assert_eq!((s(&st["attributes"]["outcome"]), num(&st["attributes"]["attempt"]), s(&st["attributes"]["reason"])), ("sent".to_string(), Some(1), "requested".to_string()), "{what}'s opening is its first attempt's claim: {st}");
+        assert_eq!((s(&en["attributes"]["outcome"]), num(&en["attributes"]["attempt"]), s(&en["attributes"]["state"])), ("sent".to_string(), Some(completed_at(done)), "complete".to_string()), "{what}'s ending names the attempt that completed it: {en}");
+        assert!(start(st) <= start(en), "{what}'s opening ({}) comes before its ending ({})", start(st), start(en));
+        for app in ["rdm.testkit.app.update.via-on-build-started", "rdm.testkit.app.update.via-on-build-ended"] {
+            assert_eq!(of(app, build).len(), 1, "the application is told {app} once for {what} {build}");
+        }
+        eprintln!("span rdm.node_admin.build.update.via-on-build-started {what} trace_id={} attributes={}", s(&st["trace_id"]), st["attributes"]);
+        eprintln!("span rdm.node_admin.build.update.via-on-build-ended {what} trace_id={} attributes={}", s(&en["trace_id"]), en["attributes"]);
+    }
+    // The resize put the fabric back to pending; the config-only Reconcile left it ready.
+    let resets = named(&spans, "rdm.node_admin.fabric.update.via-state-reset");
+    assert!(resets.iter().any(|sp| sp["attributes"]["build_id"] == resize_id.as_str()), "the resize {resize_id} put the fabric back to pending");
+    assert!(!resets.iter().any(|sp| sp["attributes"]["build_id"] == config_id.as_str()), "the config-only Reconcile {config_id} left the fabric ready");
+    // The resize's ending follows its on_fabric_ready.
+    let (_, change) = change_of(&spans, &resize_id);
+    let ready_notice = change.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-on-fabric-ready").unwrap_or_else(|| panic!("the change of {resize_id} sent on_fabric_ready"));
+    let resize_ended = &of("rdm.node_admin.build.update.via-on-build-ended", &resize_id)[0];
+    assert!(start(ready_notice) <= start(resize_ended), "the resize's on_build_ended ({}) follows its on_fabric_ready ({})", start(resize_ended), start(ready_notice));
+    estate.record_trace_url(&s(&resize_ended["trace_id"]));
+}
+
 /// CONTRACT (fabric-create.md, Entry: "Day 0 is the first node-admin and its own mesh, nothing else. Every
 /// further mesh, and every other node, is created by a Build accepted after the fabric's first
 /// ready (Q170)"; Q171: every writer writes its rows to the store root from Day 0;

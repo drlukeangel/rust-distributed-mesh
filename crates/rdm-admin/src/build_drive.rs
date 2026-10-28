@@ -713,6 +713,75 @@ pub enum DriveEnd {
     SeatLost(String),
 }
 
+/// The application's notices of a Build's openings and endings (fabric-node-hooks.md
+/// `on_build_started`, `on_build_ended`; build.md §4.1, Q256), as the fabric-primary sends them: each
+/// fire and forget, after the claim or the terminal it follows is recorded, gating nothing and writing
+/// no receipt. [`Default`]: the application registered none.
+#[derive(Clone, Default)]
+pub struct BuildNotices {
+    fabric_id: Option<rdm_core::FabricId>,
+    on_build_started: Option<crate::wiring::BuildStartedNotice>,
+    on_build_ended: Option<crate::wiring::BuildEndedNotice>,
+}
+
+impl BuildNotices {
+    /// The notices of fabric `fabric_id` the application registered in `hooks`.
+    pub fn of(fabric_id: rdm_core::FabricId, hooks: &crate::wiring::FabricHooks) -> Self {
+        Self { fabric_id: Some(fabric_id), on_build_started: hooks.on_build_started.clone(), on_build_ended: hooks.on_build_ended.clone() }
+    }
+
+    /// `on_build_started` of attempt `attempt` of `build_id`, whose claim opened the Build, under its
+    /// own span (`rdm.node_admin.build.update.via-on-build-started`) parented to the attempt's context.
+    fn started(&self, me: &PathName, contexts: &Arc<crate::build_claim::AttemptContexts>, build_id: &BuildId, attempt: u32, reason: crate::build_state::AttemptReason, context: &CallContext) {
+        let hook = self.fabric_id.clone().zip(self.on_build_started.clone());
+        let span = tracing::info_span!(parent: None, "rdm.node_admin.build.update.via-on-build-started", node = %me, build_id = %build_id.log(), attempt, reason = reason.as_str(), outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
+        if let Some(tp) = &context.traceparent {
+            rdm_transport::set_remote_parent(&span, tp, context.tracestate.as_deref());
+        }
+        let (contexts, build_id) = (contexts.clone(), build_id.clone());
+        tokio::spawn(
+            async move {
+                let Some((fabric_id, hook)) = hook else {
+                    tracing::info!("no on_build_started hook is registered");
+                    return;
+                };
+                let context = contexts.get(&build_id, attempt).await.ok().flatten().unwrap_or_default();
+                hook(crate::wiring::BuildStartedCtx { fabric_id, build_id: build_id.to_string(), attempt, reason, context }).await;
+                tracing::info!("the application was told the Build started");
+            }
+            .instrument(span),
+        );
+    }
+
+    /// `on_build_ended` of attempt `attempt` of `build_id`, whose terminal `state` is recorded, under its
+    /// own span (`rdm.node_admin.build.update.via-on-build-ended`), a child of `parent`.
+    fn ended(&self, me: &PathName, contexts: &Arc<crate::build_claim::AttemptContexts>, build_id: &BuildId, attempt: u32, reason: crate::build_state::AttemptReason, state: crate::wiring::BuildEndedState, parent: &tracing::Span) {
+        let hook = self.fabric_id.clone().zip(self.on_build_ended.clone());
+        let span = tracing::info_span!(parent: parent, "rdm.node_admin.build.update.via-on-build-ended", node = %me, build_id = %build_id.log(), attempt, reason = reason.as_str(), state = state.as_str(), outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
+        let (contexts, build_id) = (contexts.clone(), build_id.clone());
+        tokio::spawn(
+            async move {
+                let Some((fabric_id, hook)) = hook else {
+                    tracing::info!("no on_build_ended hook is registered");
+                    return;
+                };
+                let context = contexts.get(&build_id, attempt).await.ok().flatten().unwrap_or_default();
+                hook(crate::wiring::BuildEndedCtx { fabric_id, build_id: build_id.to_string(), attempt, reason, state, context }).await;
+                tracing::info!("the application was told the Build ended");
+            }
+            .instrument(span),
+        );
+    }
+}
+
+/// The ended state of the terminal `t`: `Failed` naming its step, reason and code; `Complete` otherwise.
+fn ended_state(t: &BuildReply) -> crate::wiring::BuildEndedState {
+    match t {
+        BuildReply::Failed { step, reason, code, .. } => crate::wiring::BuildEndedState::Failed { step: step.clone(), reason: reason.clone(), code: *code },
+        _ => crate::wiring::BuildEndedState::Complete,
+    }
+}
+
 /// What the fabric-primary drives a Build with.
 pub struct DriveEnv {
     /// This admin's `path.name`.
@@ -731,6 +800,8 @@ pub struct DriveEnv {
     pub departure: Arc<dyn DepartureProof>,
     /// Records an executor's verdict on this admin's log.
     pub verdicts: Arc<dyn VerdictSink>,
+    /// The application's Build notices this fabric-primary sends (fabric-node-hooks.md, Q256).
+    pub notices: BuildNotices,
     /// The admin's stop gate (`crate::stop_gate`): a drive takes the view lock and calls executors,
     /// so each of its passes is a turn begun at the gate's wait point, and a stop's quiesce waits for
     /// the pass in progress.
@@ -1494,6 +1565,7 @@ impl DriveEnv {
                     self.verdict(&me, &executor, BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }, None).await;
                     self.release_mesh(&id, attempt, &executor).await;
                     self.gate.attempt_completed(&id, attempt).await;
+                    // The Build's Complete is recorded: the ending's last step (Q256).
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }
@@ -1509,6 +1581,7 @@ impl DriveEnv {
                     }
                     self.release_mesh(&id, attempt, &executor).await;
                     self.gate.attempt_failed(&id, attempt).await;
+                    // The Build's Failed is recorded: the ending's last step (Q256).
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }
@@ -1665,10 +1738,12 @@ impl DriveEnv {
                 span.record("attempt", p.attempt);
                 let reason = crate::build_state::interrupted_reason(id, &delete.build_id);
                 let terminal = rdm_core::reply::build::failed(id.to_string(), p.attempt, String::new(), "fabric.delete".into(), crate::build_run::bounded_reason(reason.clone()), rdm_core::outcome::Code::Aborted);
+                let state = ended_state(&terminal);
                 held.finish(terminal, self.release_mesh(id, p.attempt, &executor)).instrument(span.clone()).await;
                 return match self.builds.read_build(id).await {
                     Ok(ended) if ended.state == BuildState::Failed && ended.failed_at == Some(p.attempt) => {
                         span.in_scope(|| tracing::info!(%reason, "the interrupted Build's attempt ran at this fabric-primary with no run live here: it ends Failed naming the fabric.delete"));
+                        // The Build's Failed is recorded: the ending's last step (Q256).
                         Interrupted::Ended { attempt: p.attempt, reason }
                     }
                     Ok(other) => Interrupted::Open(format!("{me}: the terminal of attempt {} of Build {id}, which fabric.delete {} interrupts, was not recorded: the Build reads {:?} at attempt {}", p.attempt, delete.build_id, other.state, other.attempt)),
@@ -1705,6 +1780,9 @@ impl DriveEnv {
             }
         }
         span.in_scope(|| tracing::info!(%reason, "the interrupted Build's attempts ended: its run ends Failed naming the fabric.delete"));
+        // The Build's Failed is recorded: the ending's last step (Q256). An attempt claimed here only to
+        // end it opened nothing, and sends no on_build_started.
+        let state = crate::wiring::BuildEndedState::Failed { step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted };
         Interrupted::Ended { attempt, reason }
     }
 
@@ -1745,7 +1823,9 @@ impl DriveEnv {
         let run = p.run_of(attempt);
         let id = &drive.build_id;
         let context = match self.door.claim(&me.to_string(), id, attempt).await {
-            BuildClaimReply::Won { context } => context,
+            BuildClaimReply::Won { context } => {
+                context
+            }
             other => {
                 let why = format!("{me}: the seats of {} move before {} as a step of attempt {attempt} of Build {id}, and that attempt was not claimed for {me}: {}", m.holder.name, op.key(), claim_refusal(&other));
                 return Err(self.stalled(me, drive, why));
@@ -1779,17 +1859,27 @@ impl DriveEnv {
             BuildReply::Failed { reason, code, .. } => AttemptOutcome::Failed { reason: reason.clone(), code: *code },
             _ => AttemptOutcome::HandedOff { to: to.to_string() },
         };
-        match held {
-            Some(held) => held.finish(terminal.clone(), self.release_mesh(id, attempt, me)).await,
+        let recorded = match held {
+            Some(held) => {
+                held.finish(terminal.clone(), self.release_mesh(id, attempt, me)).await;
+                true
+            }
             None => match self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome, mesh: None }).await {
-                Ok(()) => self.release_mesh(id, attempt, me).await,
+                Ok(()) => {
+                    self.release_mesh(id, attempt, me).await;
+                    true
+                }
                 Err(e) => {
                     dspan.record("reason", format!("the verdict of attempt {attempt} could not be recorded: {e}").as_str());
+                    false
                 }
             },
-        }
+        };
         if let Some((_, why, _)) = failed {
             dspan.record("outcome", "failed").record("reason", why.as_str());
+            // The Build's Failed is recorded: the ending's last step (Q256).
+            if recorded {
+            }
             drive.finish(terminal);
             return Err(DriveEnd::Terminal);
         }
@@ -1831,6 +1921,27 @@ impl DriveEnv {
         }
         drive.set_idle(None);
         None
+    }
+
+    /// `on_build_started` of `attempt` of `p`, just claimed here, when that claim opened the Build
+    /// (fabric-node-hooks.md `on_build_started`, Q256): its first attempt, or an attempt after one that
+    /// ended the Build (`Complete` or `Failed`: a drift repair, a stop, a start, a caller's resubmit). An
+    /// attempt that continues a Build in progress (a takeover, the next attempt after a hand-back) sends none.
+    async fn started_if_opening(&self, me: &PathName, p: &BuildProjection, attempt: u32, context: &CallContext) {
+        let opening = attempt == 1
+            || matches!(p.state, BuildState::Failed)
+            || (p.opened == attempt && self.builds.facts().await.is_ok_and(|facts| {
+                facts
+                    .iter()
+                    .find_map(|f| match f {
+                        crate::build_state::BuildFact::Attempt(a) if a.build_id == p.build_id && a.mesh.is_none() && a.attempt == p.attempt => Some(matches!(a.outcome, AttemptOutcome::Converged | AttemptOutcome::Failed { .. })),
+                        _ => None,
+                    })
+                    .unwrap_or(false)
+            }));
+        if opening {
+            self.notices.started(me, &self.door.contexts, &p.build_id, attempt, p.reason, context);
+        }
     }
 
     /// Claim the next attempt of `p` for the admin that runs what is left (or `forced`, the admin a
