@@ -336,8 +336,8 @@ records the role and does not grant it.
   ([node.primary.update](lifecycles/node-primary-update.md)) or, unheard past the staleness floor, by
   election; either way the successor is the mesh's writer from the moment it is mesh-primary and records
   its own row. Every row of the mesh, the predecessor's included, is the successor's to write from then and
-  nothing is rewritten; the successor rebuilds from its mesh's rows in the fabric's store before it
-  writes. A node-admin that is not the mesh-primary writes no row.
+  nothing is rewritten; the successor writes from the rows its caches hold, hydrated at its create, start
+  and join, and reads no storage (Q227). A node-admin that is not the mesh-primary writes no row.
 - **The write.** The mesh-primary writes the `Mesh` row and every member's `Node` row through the
   mesh rows writer, and every node writes its connections rows, each create and update at once,
   from Day 0 (Q171; [States](lifecycles/states.md#states)). A write the

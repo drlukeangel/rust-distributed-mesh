@@ -1,6 +1,7 @@
-//! The status rows of a mesh live on the fabric's store root, written by the mesh's seat holder,
-//! and are folded into what an admin applied when it takes the mesh's seat, never at boot by an
-//! admin that does not hold it (R14 :8 and :34, R14 item 7, node-identity-and-state.md §4.3).
+//! The status rows of a mesh live on the fabric's store root, written by the mesh's seat holder.
+//! An admin holds them in its caches, hydrated at its create, start and join, and folds what its
+//! caches hold into what it applied when it takes the mesh's seat, reading no storage (Q227, Q260,
+//! node-identity-and-state.md §4.3); never at boot by an admin that does not hold the seat.
 
 use rdm_admin::admin::Records;
 use rdm_admin::model::*;
@@ -28,6 +29,21 @@ use rdm_core::status::{MeshState, NodeState};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+/// What an admin's create, start and join hydrate into its caches: its mesh's node rows, the Mesh
+/// records and the Fabric record, as the cell's store holds them now (Q227: the seat taker reads no
+/// storage; what it folds is what its caches hold).
+async fn hydrate(records: &Records, nodes: &dyn rdm_admin::storage::NodesStorage, meshes: &dyn rdm_admin::storage::MeshStorage, fabric: &dyn rdm_admin::fabric_storage::FabricStorage) {
+    for r in nodes.nodes("mesh1").await.unwrap() {
+        records.caches.nodes.hold(&r);
+    }
+    for m in meshes.meshes().await.unwrap() {
+        records.caches.meshes.hold(m.mesh_id.clone(), m);
+    }
+    if let Some(f) = fabric.fabric().await.unwrap() {
+        records.caches.fabric.hold(f.fabric_id.clone(), f);
+    }
+}
 
 fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
@@ -82,6 +98,7 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
     let b_id = before_view.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").unwrap().node_id.clone();
     let records = Records::default();
     let b_stores = stores(&root, &IncarnationId::mint()).await;
+    hydrate(&records, &*b_stores.nodes, &*b_stores.meshes, &*b_stores.fabric).await;
     records.set_status(b_stores.nodes, b_stores.meshes, b_stores.fabric, "mesh1".into(), "mesh1.admin.2".parse().unwrap(), b_id.clone());
     let topology = RwLock::new(Topology { nodes: Vec::new(), ..before_view.clone() });
     // B installs views naming A the primary: it holds no seat and folds none of A's rows.
@@ -109,7 +126,7 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
 }
 
 /// CONTRACT (R14 :8 status is one of the interfaces "every writer and reader sees the same rows",
-/// :34 layout of the shared root, item 7: the rebuild on a seat change reads the shared root;
+/// :34 layout of the shared root; Q227, Q260: the seat taker folds what its caches hold, reading no storage;
 /// node-identity-and-state.md §4.3: the mesh-primary writes every status of its mesh): A, mesh1's
 /// primary, applied a Mesh status, a Fabric event and two node declared states, each a row on the
 /// fabric's store root. B, the other admin of mesh1 with its own store instance over that root,
@@ -218,6 +235,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 let records = Records::default();
                 records.set_digest_view(topology_view.digest_view.clone());
                 let b_stores = stores(&root, &IncarnationId::mint()).await;
+                hydrate(&records, &*b_stores.nodes, &*b_stores.meshes, &*b_stores.fabric).await;
                 records.set_status(b_stores.nodes, b_stores.meshes, b_stores.fabric, "mesh1".into(), b.name.clone(), b.node_id.clone());
                 assert!(topology_view.digest_view.record(heartbeat(&fabric_id, &rpc1)), "rpc.1's heartbeat is held");
                 let status = |n: &Node| topology_view.digest_view.get(n.node_id.as_str()).map(|(d, _)| d.status);
@@ -404,6 +422,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
                 let records = Records::default();
                 records.set_digest_view(topology_view.digest_view.clone());
+                hydrate(&records, &*successor.nodes, &*successor.meshes, &*successor.fabric).await;
                 records.set_status(successor.nodes, successor.meshes, successor.fabric, "mesh1".into(), b.name.clone(), b.node_id.clone());
                 assert!(topology_view.digest_view.record(heartbeat(&fabric_id, &rpc)));
                 before.nodes.retain(|n| n.node_id != a.node_id);
@@ -456,6 +475,7 @@ fn a_successor_ignores_declared_rows_for_births_it_does_not_hold() {
         stranger.birth_mut(&absent.1, &rpc.name).declared.insert(NodeState::Ready);
         storage.nodes.put_node(&stranger).await.unwrap();
         let records = Records::default();
+        hydrate(&records, &*storage.nodes, &*storage.meshes, &*storage.fabric).await;
         records.set_status(storage.nodes, storage.meshes, storage.fabric, "mesh1".into(), b.name.clone(), b.node_id.clone());
         let topology = RwLock::new(Topology { nodes: Vec::new(), ..now.clone() });
         records.install_projected(&topology, || now.clone()).await;
