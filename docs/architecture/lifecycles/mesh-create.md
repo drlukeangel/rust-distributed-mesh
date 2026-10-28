@@ -54,7 +54,8 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    writes the mesh row and records `is_primary` on its own row, which its `Digest` carries, publishes its mesh's status
    `pending` as `MeshStatus`, and becomes the writer of `mesh2`'s rows. `node.created` ends the
    step.
-8. The mesh-primary creates `mesh2`'s other nodes as attempts of the same Build. When every
+8. The mesh-primary creates `mesh2`'s other nodes as attempts of the same Build, at once: a
+   create that fails stops none of the others (Q245). When every
    planned birth is ready it reports to the fabric-primary, which applies
    `ApplyMeshState(Ready)`; the mesh-primary records it on the mesh's record, publishes
    `MeshStatus` ready, and the mesh is in traffic. Once that state is newly on the mesh's
