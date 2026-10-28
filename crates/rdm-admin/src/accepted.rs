@@ -1379,13 +1379,15 @@ fn plan_with(
             ops.push(BuildOperation::CreateMesh { mesh: name.clone(), mesh_id: m.mesh_id.clone() });
         }
         for p in &m.nodes {
-            // A path whose birth the view holds live is satisfied; any other path is planned and the
-            // create pipeline's fence decides against the world (a running runtime at the path is
-            // held, never replaced: `AdminRunner::revise_predecessor`).
+            // A path whose birth the view holds live or stopped is satisfied (states.md "Stopped
+            // nodes": stopped is not live and is still present; it leaves the stopped status only
+            // through node.start or node.delete, node-stop.md step 6); any other path is planned and
+            // the create pipeline's target decides against the world (a running runtime at the path
+            // is held, never replaced: `AdminRunner::revise_predecessor`).
             if creates_owed.contains_key(p) {
                 continue;
             }
-            if !observed.node(p).is_some_and(|n| n.status.is_live()) {
+            if !observed.node(p).is_some_and(|n| n.status.is_live() || n.stopped) {
                 // The executable the path's entry names (a request named it).
                 ops.push(BuildOperation::CreateNode { node: p.clone(), over: None, executable: target_executable(topology, p).cloned() });
             }
