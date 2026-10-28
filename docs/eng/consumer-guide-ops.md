@@ -10,9 +10,9 @@ Rafka has no op of its own on Node RPC yet: Node RPC was built so it can, and it
 ledger (`0x10`, `0x12`–`0x19`, `0x24`–`0x30`) reserve its codes. The worked examples that exist are
 the testkit's: `rdm-test/src/families.rs` (`BrokerData`, a unary op) and
 `rdm-test/src/originate.rs` (`Originate`), and Rafka's one serve today, `Ping`, in
-`rafka-node-base/src/node_rpc.rs`. The code below is compiled, whole, in
-[the consumer example](../../demo/src/consumer_example.rs): a product copies it and changes its
-protocols (the enums and the constants beside them).
+`rafka-node-base/src/node_rpc.rs`. The code below is sketched; its compiled form, with protocols of
+its own, is [the consumer example](../../demo/src/consumer_example.rs), which a product copies,
+changing its protocols (the enums and the constants beside them).
 
 ## Before writing an op: choose its completion contract
 

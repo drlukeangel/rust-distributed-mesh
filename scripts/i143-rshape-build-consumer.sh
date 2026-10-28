@@ -137,6 +137,9 @@ done
 # The demo's admin UI binary rides beside the node binaries (not part of the hashed set).
 [ -x "$TARGET/debug/rafka-admin-ui" ] || refuse "binary rafka-admin-ui was not built at $TARGET/debug/rafka-admin-ui"
 cp "$TARGET/debug/rafka-admin-ui" "$BIN_DIR/rafka-admin-ui"
+# So does the consumer guide's compiled example (demo-estate.sh example; not part of the hashed set).
+[ -x "$TARGET/debug/rshape-example" ] || refuse "binary rshape-example was not built at $TARGET/debug/rshape-example"
+cp "$TARGET/debug/rshape-example" "$BIN_DIR/rshape-example"
 hashes=$(for b in $BINS; do printf '%s\t%s\n' "$b" "$(sha256sum "$BIN_DIR/$b" | cut -d' ' -f1)"; done | jq -R -s 'split("\n")[:-1] | map(split("\t") | {(.[0]): .[1]}) | add')
 src_hash=$(cd "$WORKSPACE" && find src admin-ui/src -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
 jq -n --arg cand "$CANDIDATE" --arg url "$RDM_URL" --arg fixture_rev "$FIXTURE_REV" --argjson bins "$hashes" \

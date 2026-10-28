@@ -36,7 +36,7 @@
 //!
 //! On the demo estate (`scripts/demo-estate.sh example`) the `rshape-example` executable runs this
 //! as one compute and one broker; the other nodes run the R-shape roles, which do not serve these
-//! ops and answer them `Unserved`.
+//! ops: a `Submit` to one ends `Unserved`, and the caller passes that node over.
 
 use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
 use rdm_core::filter::Filter;

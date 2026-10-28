@@ -26,8 +26,9 @@
 #                                                role process still running is named and stopped
 #
 # Inputs: RDM_DEMO_BIN (the directory holding rshape-node-admin, rshape-gateway, rshape-compute,
-# rshape-broker and rafka-admin-ui, built from demo/ against this tree: `cargo build --bins` in the
-# consumer workspace and `cargo build --bin rafka-admin-ui` in demo/admin-ui), RDM_DEMO_PROBE (the
+# rshape-broker, rafka-admin-ui and, for `example`, rshape-example, built from demo/ against this
+# tree: `cargo build --bins` in the consumer workspace and `cargo build --bin rafka-admin-ui` in
+# demo/admin-ui; scripts/i143-rshape-build-consumer.sh's --bin-dir holds them all), RDM_DEMO_PROBE (the
 # rdm-rpc-probe of this tree's build, default target/debug/rdm-rpc-probe), RDM_DEMO_WEB (the built web
 # bundle, default demo/admin-ui/web/dist), RDM_DEMO_UI_BIND (default 127.0.0.1:0: the operating system picks
 # the UI's port, and the UI puts it on the Day-0 admin's row config as admin_ui_port, where `up` reads it).
