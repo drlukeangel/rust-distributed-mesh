@@ -172,6 +172,9 @@ mod tests {
         }));
         held_rx.recv().unwrap();
 
+        // The cancellation's callsite takes its interest from the recorder too, never only from the
+        // thread that hit it first (`rdm_transport::enable_callsites`).
+        rdm_transport::enable_callsites();
         let opened = Arc::new(Opened::default());
         let waker = Arc::new(Noop).into();
         let mut cx = Context::from_waker(&waker);

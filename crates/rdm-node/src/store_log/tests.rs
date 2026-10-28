@@ -193,7 +193,7 @@ async fn a_tail_read_leaves_a_line_still_being_written_unconsumed_and_folds_it_o
     let (log, line, at) = two_lines_then_a_line_still_being_written(&path).await;
     let mut latest = Vec::new();
     let spans = capture_spans(|| async { latest = log.latest_of("rec").await.unwrap_or_else(|e| panic!("a line another writer is still writing is never refused: {e}")) }).await;
-    let unended = spans.iter().find(|s| s.0 == UNENDED_SPAN).unwrap_or_else(|| panic!("the read names the line it left unconsumed: {spans:?}"));
+    let unended = spans.named(UNENDED_SPAN);
     assert_eq!((unended.1.get("offset"), unended.1.get("held")), (Some(&at.to_string()), Some(&(line.len() / 2 - 1).to_string())), "{unended:?}");
     assert_eq!(latest.iter().map(|l| l.decode::<Rec>(&path).unwrap()).collect::<Vec<_>>(), vec![rec("a", 2), rec("a", 1)], "the lines before it are current");
     assert_eq!(log.consumed(), at, "the unended object stays unconsumed: the offset stands at its start");
@@ -521,7 +521,7 @@ async fn the_open_span_carries_the_files_bytes_lines_and_duration() {
     log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
     log.append(&writer("b"), "rec/1", "j", &rec("b", 2)).await.unwrap();
     let spans = capture_spans(|| async { reopen(&path).await.unwrap() }).await;
-    let open = spans.iter().find(|s| s.0 == OPEN_SPAN).expect("an open span");
+    let open = spans.named(OPEN_SPAN);
     let len = std::fs::metadata(&path).unwrap().len().to_string();
     assert_eq!(open.1.get("bytes"), Some(&len), "{open:?}");
     assert_eq!(open.1.get("lines").map(String::as_str), Some("2"), "{open:?}");
@@ -532,7 +532,7 @@ async fn the_open_span_carries_the_files_bytes_lines_and_duration() {
     let at = std::fs::metadata(&path).unwrap().len() + 1;
     append_raw(&path, b"\n{\"len\":5}\n");
     let spans = capture_spans(|| async { assert!(reopen(&path).await.is_err()) }).await;
-    let open = spans.iter().find(|s| s.0 == OPEN_SPAN).expect("an open span");
+    let open = spans.named(OPEN_SPAN);
     assert_eq!((open.1.get("outcome").map(String::as_str), open.1.get("invalid_offset")), (Some("refused"), Some(&at.to_string())), "{open:?}");
     assert!(open.1.get("cause").is_some_and(|c| c.contains("len")), "{open:?}");
 }
@@ -596,9 +596,28 @@ async fn the_first_read_of_a_store_opened_on_its_first_read_leaves_a_line_still_
 
 type Spans = Vec<(String, BTreeMap<String, String>)>;
 
-/// The spans `f` records, each with its fields as recorded.
-async fn capture_spans<F: std::future::Future<Output = T>, T>(f: impl FnOnce() -> F) -> Spans {
-    struct Sub(Arc<Mutex<Vec<(String, BTreeMap<String, String>)>>>);
+/// What a capture saw: the spans it recorded, each with its fields as recorded, the callsites tracing
+/// asked its subscriber about, and the process's max level when it ended.
+struct Captured {
+    spans: Spans,
+    offered: Vec<&'static str>,
+    max_level: tracing::level_filters::LevelFilter,
+}
+
+impl Captured {
+    /// The first span named `name`; a capture without one is refused naming every span it recorded,
+    /// whether tracing ever asked its subscriber about a callsite of that name, and the max level.
+    fn named(&self, name: &str) -> &(String, BTreeMap<String, String>) {
+        self.spans.iter().find(|s| s.0 == name).unwrap_or_else(|| {
+            let recorded: Vec<&str> = self.spans.iter().map(|s| s.0.as_str()).collect();
+            panic!("no {name} span: the capture recorded {recorded:?}; tracing asked its subscriber about a {name} callsite: {}; max level {}", self.offered.contains(&name), self.max_level)
+        })
+    }
+}
+
+/// What `f` records while a capture is its thread's default ([`Captured`]).
+async fn capture_spans<F: std::future::Future<Output = T>, T>(f: impl FnOnce() -> F) -> Captured {
+    struct Sub(Arc<Mutex<Vec<(String, BTreeMap<String, String>)>>>, Arc<Mutex<Vec<&'static str>>>);
     struct Fields<'a>(&'a mut BTreeMap<String, String>);
     impl tracing::field::Visit for Fields<'_> {
         fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -609,6 +628,10 @@ async fn capture_spans<F: std::future::Future<Output = T>, T>(f: impl FnOnce() -
         }
     }
     impl tracing::Subscriber for Sub {
+        fn register_callsite(&self, meta: &'static tracing::Metadata<'static>) -> tracing::subscriber::Interest {
+            self.1.lock().unwrap().push(meta.name());
+            tracing::subscriber::Interest::always()
+        }
         fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
             true
         }
@@ -630,14 +653,18 @@ async fn capture_spans<F: std::future::Future<Output = T>, T>(f: impl FnOnce() -
         fn enter(&self, _: &tracing::span::Id) {}
         fn exit(&self, _: &tracing::span::Id) {}
     }
-    let spans = Arc::new(Mutex::new(Vec::new()));
-    let dispatch = tracing::Dispatch::new(Sub(spans.clone()));
-    {
+    // Every callsite's interest from every registered dispatcher, this one included, never only from
+    // the thread that hit the callsite first: another test's thread, with no dispatcher, answers never.
+    rdm_transport::enable_callsites();
+    let (spans, offered) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+    let dispatch = tracing::Dispatch::new(Sub(spans.clone(), offered.clone()));
+    let max_level = {
         let _g = tracing::dispatcher::set_default(&dispatch);
         f().await;
-    }
-    let out = spans.lock().unwrap().clone();
-    out
+        tracing::level_filters::LevelFilter::current()
+    };
+    let (spans, offered) = (spans.lock().unwrap().clone(), offered.lock().unwrap().clone());
+    Captured { spans, offered, max_level }
 }
 
 // ---------------------------------------------------------------- the locks (R-SR5)
