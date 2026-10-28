@@ -1124,3 +1124,142 @@ async fn a_recovery_opened_by_a_deleted_birth_is_refused_by_name_and_writes_noth
         eprintln!("span rdm.node_admin.build.reject.via-deleted-birth trace_id={trace_id} {attrs:?}");
     }
 }
+
+/// The fabric-primary's view of a fabric of two meshes whose mesh2 holds two node-admins (or one,
+/// `second_admin` false), mesh2's primary `mesh2.admin.1` unheard (`PendingReconnect`, the view still
+/// naming it primary) and every other node of mesh2 unheard with it: the view the fabric-primary holds
+/// of a mesh it hears only through that mesh's primary. Returns (that view, the accepted view: every
+/// node ready for traffic, as it was when accepted).
+fn unheard_mesh2_primary(second_admin: bool) -> (Topology, Topology) {
+    let mut t = two_meshes();
+    if second_admin {
+        t.nodes.push(node("mesh2.admin.2", false));
+    }
+    let accepted = t.clone();
+    t.nodes.iter_mut().filter(|n| n.mesh == "mesh2").for_each(|n| n.status = NodeStatus::PendingReconnect);
+    (t, accepted)
+}
+
+/// The fabric-primary's primaries as they stand once mesh2's election replaced `unheard` with `named`:
+/// the record naming the unheard birth, then the one naming its successor at the next revision.
+fn election_replaced(fp: &ControlPlane, t: &Topology, unheard: &str, named: &str) {
+    let seats = rdm_transport::topology::PrimaryView::default();
+    for (revision, name) in [(1, unheard), (2, named)] {
+        let n = t.node(&name.parse().unwrap()).unwrap();
+        seats.take(rdm_core::Seat::MeshPrimary, &rdm_core::Primary { mesh: "mesh2".into(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), revision });
+    }
+    assert!(seats.replaced(rdm_core::Seat::MeshPrimary, "mesh2", t.node(&unheard.parse().unwrap()).unwrap().incarnation_id.as_ref().unwrap()), "the record naming {named} replaced {unheard}'s");
+    let _ = fp.seats.set(seats);
+}
+
+/// CONTRACT (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs it, without
+/// the half-floor wait, after the election has named the new mesh-primary"; "Execution": "the
+/// fabric-primary opens the attempt ...; the mesh-primary claims it through BuildClaim ...; the
+/// mesh-primary runs it"; node-identity-and-state.md: "The fabric-primary writes a row only as acting
+/// primary of a mesh with no primary. No other process writes a `Node` row"): the claim of an unheard
+/// mesh-primary's recovery decides the attempt's executor, the writer of its rows, once, and follows
+/// the election's result as the view names it, the view the rows are written against. While the
+/// fabric-primary's view still names the unheard `mesh2.admin.1` mesh2's primary (its primaries already
+/// hold the election's record naming `mesh2.admin.2`, which the view has not taken yet) and mesh2 holds
+/// another node-admin (`mesh2.admin.2`, unheard in that view as all of mesh2 is), the view names no new
+/// mesh-primary: the open is refused by name, naming the mesh and the admin it waits for, and nothing is opened or claimed. Must NOT happen: an attempt claimed for the fabric-primary itself while mesh2
+/// holds another node-admin, whose rows mesh2's elected primary then writes (gate 45918ae5e: attempt 4
+/// claimed for mesh1.admin.1 at 977.238, its Deleted row refused `not-mesh-primary` at 977.620).
+#[tokio::test]
+async fn the_fabric_primary_opens_no_recovery_of_an_unheard_mesh_primary_until_the_election_names_its_mesh_primary() {
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rdm_transport::span_capture("rdm110-claim-follows-election", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let (t, accepted_view) = unheard_mesh2_primary(true);
+    let path: PathName = "mesh2.admin.1".parse().unwrap();
+    let unheard = t.node(&path).unwrap().clone();
+    let (node_id, birth) = (unheard.node_id.clone(), unheard.incarnation_id.clone().unwrap());
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
+    let fp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time()));
+    // Its primaries already hold the election's record (the seat watch woke on it), the view not yet.
+    election_replaced(&fp, &t, "mesh2.admin.1", "mesh2.admin.2");
+    let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
+    settle_other(&builds, &b0).await;
+    let before = opened(&builds.facts().await.unwrap());
+
+    // The election has not named mesh2's new primary in this view.
+    let unnamed = fp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
+    let claimed = builds.read_build(&b0).await.unwrap().attempt_executors;
+    assert!(matches!(&unnamed, Err(Refusal::Unavailable(why)) if why.contains("mesh2") && why.contains("mesh2.admin.2")), "refused by name while the election has not named mesh2's primary, naming the admin it waits for: {unnamed:?}; claims: {claimed:?}");
+    assert_eq!(opened(&builds.facts().await.unwrap()), before, "nothing is opened before the election names mesh2's primary");
+    assert!(fp.claims.in_flight("mesh2").await.unwrap().is_none(), "mesh2's in-flight row is not taken");
+    let refusals = capture.spans("rdm.node_admin.build.reject.via-mesh-primary-not-named");
+    assert_eq!(refusals.len(), 1, "the refusal is spanned by name: {refusals:?}");
+    let (_, r) = &refusals[0];
+    assert_eq!((r["node"].as_str(), r["mesh"].as_str(), r["member"].as_str(), r["admins"].as_str()), ("mesh1.admin.1", "mesh2", "mesh2.admin.1", "mesh2.admin.2"), "{r:?}");
+
+    for (trace_id, attrs) in &refusals {
+        eprintln!("span rdm.node_admin.build.reject.via-mesh-primary-not-named trace_id={trace_id} {attrs:?}");
+    }
+}
+
+/// CONTRACT (the same pages): the fabric-primary's view names `mesh2.admin.2` mesh2's primary, the
+/// election's result, while it still holds every node of mesh2 unheard: the unheard `mesh2.admin.1`'s
+/// recovery is opened in the fabric lane and claimed by the fabric-primary for `mesh2.admin.2` (the
+/// election's result, not the view's liveness, names the writer), the claim decided once. Must NOT
+/// happen: the attempt claimed for the fabric-primary because the named mesh-primary is unheard in its
+/// view.
+#[tokio::test]
+async fn the_fabric_primary_claims_an_unheard_mesh_primarys_recovery_for_the_mesh_primary_the_election_named() {
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rdm_transport::span_capture("rdm110-claim-for-the-named-mesh-primary", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let (mut t, accepted_view) = unheard_mesh2_primary(true);
+    t.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin).for_each(|n| n.is_primary = n.name.to_string() == "mesh2.admin.2");
+    let path: PathName = "mesh2.admin.1".parse().unwrap();
+    let unheard = t.node(&path).unwrap().clone();
+    let (node_id, birth) = (unheard.node_id.clone(), unheard.incarnation_id.clone().unwrap());
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
+    let fp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time()));
+    election_replaced(&fp, &t, "mesh2.admin.1", "mesh2.admin.2");
+    let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
+    settle_other(&builds, &b0).await;
+    let named = fp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
+    let o = match named {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("once the election named mesh2's primary the recovery is opened: {other:?}"),
+    };
+    assert_eq!(o.mesh, None, "opened in the fabric lane: {o:?}");
+    let p = builds.read_build(&b0).await.unwrap();
+    assert_eq!(p.attempt_executors.get(&o.attempt).map(String::as_str), Some("mesh2.admin.2"), "claimed for the mesh-primary the election named, the writer of mesh2's rows: {:?}", p.attempt_executors);
+    let decisions = capture.spans("rdm.node_admin.build.update.via-claim-decision");
+    for (trace_id, attrs) in &decisions {
+        eprintln!("span trace_id={trace_id} {attrs:?}");
+    }
+    let won = decisions.iter().find(|(_, a)| a["attempt"] == o.attempt.to_string() && a["outcome"] == "won").unwrap_or_else(|| panic!("the claim is decided once: {decisions:?}"));
+    assert_eq!(won.1["executor"].as_str(), "mesh2.admin.2", "{:?}", won.1);
+}
+
+/// CONTRACT (node-identity-and-state.md: "The fabric-primary writes a row only as acting primary of a
+/// mesh with no primary"): an unheard mesh-primary that is its mesh's only node-admin leaves no admin
+/// for an election to name: the fabric-primary claims its recovery for itself, the acting primary of a
+/// mesh with no primary. Must NOT happen: that recovery refused waiting for an election that has no
+/// node-admin to name.
+#[tokio::test]
+async fn the_fabric_primary_claims_the_recovery_of_a_meshs_only_node_admin_for_itself() {
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let (t, accepted_view) = unheard_mesh2_primary(false);
+    let path: PathName = "mesh2.admin.1".parse().unwrap();
+    let unheard = t.node(&path).unwrap().clone();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
+    let fp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
+    let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
+    settle_other(&builds, &b0).await;
+    let o = match fp.open_recovery("node-recovery", path, unheard.node_id.clone(), unheard.incarnation_id.clone().unwrap()).await {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("the recovery of mesh2's only node-admin is opened: {other:?}"),
+    };
+    let p = builds.read_build(&b0).await.unwrap();
+    assert_eq!((o.mesh.as_deref(), p.attempt_executors.get(&o.attempt).map(String::as_str)), (None, Some("mesh1.admin.1")), "claimed in the fabric lane for the fabric-primary, mesh2's acting primary: {:?}", p.attempt_executors);
+}
