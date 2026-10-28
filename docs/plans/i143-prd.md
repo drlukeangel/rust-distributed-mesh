@@ -3304,3 +3304,6 @@ Q241 (a renewed cert row's issued_at is the cert's own: `NodeCert` and `IssuingC
 writes the cert's dates, never a clock; `durable format moved`) ruled A by Luke (INDEX): admit verifies the signed field and adds no
 clock-based rejection, renew_at derives from the cert's dates and the renewal inputs alone; a code unit owed with its
 RED cells and the marker.
+Q240 (a stopped birth does not hold its mesh below ready-for-traffic nor a checklist) ruled A by the lead with the flame
+(INDEX); states.md:16 landed; `mesh_unready` and the checklist are a code unit owed with its RED cell. Seat check: lane 2
+(rdm#93) finished its gate at 083d88fe5 and is writing its hand-over, waiting on nothing.
