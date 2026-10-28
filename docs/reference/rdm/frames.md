@@ -126,7 +126,7 @@ One process birth of a logical node (`RuntimeIncarnationId`). Equality only: nev
 
 ### `LifecycleOp`
 
-`crates/rdm-core/src/lifecycle.rs` · struct · 7 fields · rdm-core
+`crates/rdm-core/src/lifecycle.rs` · struct · 9 fields · rdm-core
 
 One lifecycle operation on one exact birth, as its events name it.
 
@@ -141,6 +141,8 @@ serde: `deny_unknown_fields`
 | 4 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the birth. |
 | 5 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node's `path.name`. |
 | 6 | `event_at_rafka_ms` | `u64` |  | When the event happened, in Rafka-time; evidence only, never liveness or order. One expiry |
+| 7 | `traceparent` | `Option<String>` | `skip` | The operation's W3C `traceparent`, its caller's context (telemetry.md §3, the deletion |
+| 8 | `tracestate` | `Option<String>` | `skip` | The operation's W3C `tracestate`, beside `Self::traceparent` and as it is. |
 
 <a id="t-rdm_core-ids-NodeId"></a>
 
