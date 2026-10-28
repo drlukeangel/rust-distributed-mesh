@@ -114,6 +114,49 @@ impl StreamingProtocol for Count {
     }
 }
 
+/// CONTRACT: `Count`'s wire is the one its hand-written declaration had: each request and reply
+/// variant encodes to the pinned bytes and decodes back, each reply keeps its name, code and frame
+/// kind, the variant counts are 1 and 9, and the six reserved constructors build their own variants.
+#[test]
+fn count_keeps_every_variant_on_its_pinned_bytes() {
+    use rdm_core::outcome::Code;
+    use rdm_core::protocol::DecodeFailure;
+    let hex = |b: Vec<u8>| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let s = || "r".to_string();
+    let request = CountRequest::Count { n: 3, size: 4, mode: Mode::BadFinal };
+    assert_eq!(hex(Count::encode_request(&request).unwrap()), "00030402", "the request's pinned bytes");
+    assert_eq!(Count::decode_request(&Count::encode_request(&request).unwrap()), Ok(request));
+    let replies = [
+        (CountFrame::Started, "00", "started", Code::Ok, FrameKind::Started),
+        (CountFrame::Item { i: 2, bytes: vec![5] }, "01020105", "item", Code::Ok, FrameKind::Data),
+        (CountFrame::Done { sent: 3, caller_gone: true }, "020301", "done", Code::Ok, FrameKind::Terminal),
+        (CountFrame::PeerUnresolved { reason: s() }, "030172", "peer-unresolved", Code::NotFound, FrameKind::Refusal(ReplyKind::PeerUnresolved)),
+        (CountFrame::NotReady { reason: s() }, "040172", "not-ready", Code::Unavailable, FrameKind::Refusal(ReplyKind::NotReady)),
+        (CountFrame::Busy { reason: s() }, "050172", "busy", Code::Unavailable, FrameKind::Refusal(ReplyKind::Busy)),
+        (CountFrame::ConnectionsDeleting { reason: s() }, "060172", "connections-deleting", Code::Unavailable, FrameKind::Refusal(ReplyKind::ConnectionsDeleting)),
+        (CountFrame::Malformed { kind: MalformedKind::UnknownVariant }, "0701", "malformed", Code::InvalidArgument, FrameKind::Refusal(ReplyKind::Malformed(MalformedKind::UnknownVariant))),
+        (CountFrame::Unauthorized { reason: s() }, "080172", "unauthorized", Code::PermissionDenied, FrameKind::Refusal(ReplyKind::Unauthorized)),
+    ];
+    let mut off = Vec::new();
+    for (i, (r, want, detail, code, kind)) in replies.iter().enumerate() {
+        let got = hex(Count::encode_reply(r).unwrap());
+        if got != *want {
+            off.push(format!("reply {i}: {got} (pinned {want})"));
+        }
+        assert_eq!(Count::decode_reply(&Count::encode_reply(r).unwrap()).as_ref(), Ok(r), "reply {i} decodes to itself");
+        assert_eq!((Count::reply_detail(r), Count::classify_reply(r).code(), Count::frame_kind(r)), (*detail, *code, *kind), "reply {i}: its name, code and frame kind");
+    }
+    assert!(off.is_empty(), "the wire moved:\n{}", off.join("\n"));
+    assert_eq!((Count::REQUEST_VARIANTS, Count::REPLY_VARIANTS), (1, 9), "one count per declared variant");
+    assert_eq!(Count::decode_request(&[1]).err(), Some(DecodeFailure::UnknownVariant), "the request count is the first unknown position");
+    assert_eq!(Count::decode_reply(&[9]).err(), Some(DecodeFailure::UnknownVariant), "the reply count is the first unknown position");
+    assert_eq!(
+        [Count::peer_unresolved(s()), Count::not_ready(s()), Count::busy(s()), Count::connections_deleting(s()), Count::malformed(MalformedKind::UnknownVariant), Count::unauthorized(s())],
+        [replies[3].0.clone(), replies[4].0.clone(), replies[5].0.clone(), replies[6].0.clone(), replies[7].0.clone(), replies[8].0.clone()],
+        "each reserved constructor builds its own variant"
+    );
+}
+
 struct Rig {
     _router: Router,
     server: NodeRpcServer,

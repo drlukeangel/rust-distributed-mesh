@@ -649,6 +649,90 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rdm_core::outcome::Code;
+    use rdm_core::protocol::DecodeFailure;
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// Every variant's postcard bytes, decoded back, and its classification and name, against the
+    /// pins taken from the hand-written declaration: one listing of every mismatch.
+    fn pinned<P: NodeProtocol>(requests: &[(P::Request, &str)], replies: &[(P::Reply, &str, &str, Code)]) -> Vec<String>
+    where
+        P::Request: PartialEq + std::fmt::Debug,
+        P::Reply: PartialEq + std::fmt::Debug,
+    {
+        let mut off = Vec::new();
+        for (i, (r, want)) in requests.iter().enumerate() {
+            let got = hex(&P::encode_request(r).expect("a request encodes"));
+            if got != *want {
+                off.push(format!("request {i}: {got} (pinned {want})"));
+            }
+            assert_eq!(P::decode_request(&P::encode_request(r).unwrap()).as_ref(), Ok(r), "request {i} decodes to itself");
+        }
+        for (i, (r, want, detail, code)) in replies.iter().enumerate() {
+            let got = hex(&P::encode_reply(r).expect("a reply encodes"));
+            if got != *want {
+                off.push(format!("reply {i}: {got} (pinned {want})"));
+            }
+            assert_eq!(P::decode_reply(&P::encode_reply(r).unwrap()).as_ref(), Ok(r), "reply {i} decodes to itself");
+            assert_eq!((P::reply_detail(r), P::classify_reply(r).code()), (*detail, *code), "reply {i}: its name and code");
+        }
+        assert_eq!((P::REQUEST_VARIANTS as usize, P::REPLY_VARIANTS as usize), (requests.len(), replies.len()), "one pin per variant");
+        assert_eq!(P::decode_request(&[P::REQUEST_VARIANTS as u8]).err(), Some(DecodeFailure::UnknownVariant), "the request count is the first unknown position");
+        assert_eq!(P::decode_reply(&[P::REPLY_VARIANTS as u8]).err(), Some(DecodeFailure::UnknownVariant), "the reply count is the first unknown position");
+        off
+    }
+
+    /// CONTRACT: `Originate`'s wire is the one its hand-written declaration had: each request and
+    /// reply variant encodes to the pinned bytes and decodes back, each reply keeps its name and code,
+    /// the variant counts are 10 and 18, and the six reserved constructors build their own variants
+    /// at positions 5 to 10, between the application's variants.
+    #[test]
+    fn originate_keeps_every_variant_on_its_pinned_bytes() {
+        let s = || "r".to_string();
+        let by = || AnsweredBy { node_id: "i".into(), node: "n".into(), incarnation_id: "c".into() };
+        let requests = [
+            (OriginateRequest::Call { destination: "d".into(), op: ProofOp::Put { key: vec![1], value: vec![2] } }, "0001640101010102"),
+            (OriginateRequest::ArmFault { refuse_index: 1, refuse_history: 2, pass_history: 3 }, "01010203"),
+            (OriginateRequest::ReleaseFault, "02"),
+            (OriginateRequest::Snapshot, "03"),
+            (OriginateRequest::RecordProxy { destination: "d".into(), carrier: "c".into(), failed_attempts: 2 }, "040164016302"),
+            (OriginateRequest::Dial { destination: "d".into() }, "050164"),
+            (OriginateRequest::Stream { destination: "d".into(), payload: vec![9] }, "0601640109"),
+            (OriginateRequest::StopTransport { reason: s() }, "070172"),
+            (OriginateRequest::BlockDirect { destination: "d".into(), blocked: true }, "08016401"),
+            (OriginateRequest::UpdateOwnConfig { config: [("a".to_string(), "b".to_string())].into() }, "090101610162"),
+        ];
+        let replies = [
+            (OriginateReply::Called { by: by(), destination_node_id: "d".into(), route: "direct".into(), carrier: None, retired: Some("x".into()), outcome: "reply".into(), reply: None, pooled: vec!["p".into()] }, "000169016e016301640664697265637400010178057265706c7900010170", "called", Code::Ok),
+            (OriginateReply::FaultArmed { by: by(), refuse_index: 1, refuse_history: 2 }, "010169016e01630102", "fault-armed", Code::Ok),
+            (OriginateReply::FaultReleased { by: by(), refused: 4 }, "020169016e016304", "fault-released", Code::Ok),
+            (OriginateReply::Snapshot { by: by(), own_active_proxies: vec![], own_latest_directs: vec![], active_len: 5, active_directs: vec![], owed: vec![], fault_refused: 6 }, "030169016e0163000005000006", "snapshot", Code::Ok),
+            (OriginateReply::BadDestination { by: by(), reason: s() }, "040169016e01630172", "bad-destination", Code::InvalidArgument),
+            (OriginateReply::PeerUnresolved { reason: s() }, "050172", "peer-unresolved", Code::NotFound),
+            (OriginateReply::NotReady { reason: s() }, "060172", "not-ready", Code::Unavailable),
+            (OriginateReply::Busy { reason: s() }, "070172", "busy", Code::Unavailable),
+            (OriginateReply::ConnectionsDeleting { reason: s() }, "080172", "connections-deleting", Code::Unavailable),
+            (OriginateReply::Malformed { kind: MalformedKind::Corrupt }, "0902", "malformed", Code::DataLoss),
+            (OriginateReply::Unauthorized { reason: s() }, "0a0172", "unauthorized", Code::PermissionDenied),
+            (OriginateReply::ProxyRecorded { by: by(), destination_node_id: "d".into(), destination_incarnation: "e".into(), carrier_node_id: "c".into(), carrier_incarnation: "f".into(), failed_attempts: 2 }, "0b0169016e0163016401650163016602", "proxy-recorded", Code::Ok),
+            (OriginateReply::Dialed { by: by(), destination_node_id: "d".into(), outcome: "o".into() }, "0c0169016e01630164016f", "dialed", Code::Ok),
+            (OriginateReply::Streamed { by: by(), peer: by(), kind: "direct".into(), connection_id: "x".into(), answered: vec![8] }, "0d0169016e01630169016e01630664697265637401780108", "streamed", Code::Ok),
+            (OriginateReply::StreamFailed { by: by(), reason: s() }, "0e0169016e01630172", "stream-failed", Code::Ok),
+            (OriginateReply::TransportStopMarked { by: by(), reason: s() }, "0f0169016e01630172", "transport-stop-marked", Code::Ok),
+            (OriginateReply::DirectBlocked { by: by(), destination: "d".into(), blocked: false }, "100169016e0163016400", "direct-blocked", Code::Ok),
+            (OriginateReply::OwnConfigUpdated { by: by(), outcome: "o".into(), config: [("a".to_string(), "b".to_string())].into(), revision: 9 }, "110169016e0163016f010161016209", "own-config-updated", Code::Ok),
+        ];
+        let off = pinned::<Originate>(&requests, &replies);
+        assert!(off.is_empty(), "the wire moved:\n{}", off.join("\n"));
+        assert_eq!(
+            [Originate::peer_unresolved(s()), Originate::not_ready(s()), Originate::busy(s()), Originate::connections_deleting(s()), Originate::malformed(MalformedKind::Corrupt), Originate::unauthorized(s())],
+            [replies[5].0.clone(), replies[6].0.clone(), replies[7].0.clone(), replies[8].0.clone(), replies[9].0.clone(), replies[10].0.clone()],
+            "each reserved constructor builds its own variant"
+        );
+    }
     use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionsHeld, EffectiveRoute};
     use rdm_core::{IncarnationId, NodeId};
 

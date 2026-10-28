@@ -190,3 +190,69 @@ pub(crate) fn for_kind(kind: NodeKind, served_by: &str, b: ServerBuilder, _clien
         _ => b,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdm_core::outcome::Code;
+    use rdm_core::protocol::DecodeFailure;
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// Every variant's postcard bytes, decoded back, and its classification and name, against the
+    /// pins taken from the hand-written declaration: one listing of every mismatch.
+    fn pinned<P: NodeProtocol>(requests: &[(P::Request, &str)], replies: &[(P::Reply, &str, &str, Code)]) -> Vec<String>
+    where
+        P::Request: PartialEq + std::fmt::Debug,
+        P::Reply: PartialEq + std::fmt::Debug,
+    {
+        let mut off = Vec::new();
+        for (i, (r, want)) in requests.iter().enumerate() {
+            let got = hex(&P::encode_request(r).expect("a request encodes"));
+            if got != *want {
+                off.push(format!("request {i}: {got} (pinned {want})"));
+            }
+            assert_eq!(P::decode_request(&P::encode_request(r).unwrap()).as_ref(), Ok(r), "request {i} decodes to itself");
+        }
+        for (i, (r, want, detail, code)) in replies.iter().enumerate() {
+            let got = hex(&P::encode_reply(r).expect("a reply encodes"));
+            if got != *want {
+                off.push(format!("reply {i}: {got} (pinned {want})"));
+            }
+            assert_eq!(P::decode_reply(&P::encode_reply(r).unwrap()).as_ref(), Ok(r), "reply {i} decodes to itself");
+            assert_eq!((P::reply_detail(r), P::classify_reply(r).code()), (*detail, *code), "reply {i}: its name and code");
+        }
+        assert_eq!((P::REQUEST_VARIANTS as usize, P::REPLY_VARIANTS as usize), (requests.len(), replies.len()), "one pin per variant");
+        assert_eq!(P::decode_request(&[P::REQUEST_VARIANTS as u8]).err(), Some(DecodeFailure::UnknownVariant), "the request count is the first unknown position");
+        assert_eq!(P::decode_reply(&[P::REPLY_VARIANTS as u8]).err(), Some(DecodeFailure::UnknownVariant), "the reply count is the first unknown position");
+        off
+    }
+
+    /// CONTRACT: `BrokerData`'s wire is the one its hand-written declaration had: each request and
+    /// reply variant encodes to the pinned bytes and decodes back, each reply keeps its name and code,
+    /// the variant counts are 2 and 8, and the six reserved constructors build their own variants.
+    #[test]
+    fn broker_data_keeps_every_variant_on_its_pinned_bytes() {
+        let s = || "r".to_string();
+        let requests = [(BrokerDataRequest::Append { key: "k".into(), value: vec![7] }, "00016b0107"), (BrokerDataRequest::Read { key: "k".into() }, "01016b")];
+        let replies = [
+            (BrokerDataReply::Appended { key: "k".into(), offset: 3, served_by: "n".into() }, "00016b03016e", "appended", Code::Ok),
+            (BrokerDataReply::Value { key: "k".into(), value: Some(vec![7]), served_by: "n".into() }, "01016b010107016e", "value", Code::Ok),
+            (BrokerDataReply::PeerUnresolved { reason: s() }, "020172", "peer-unresolved", Code::NotFound),
+            (BrokerDataReply::NotReady { reason: s() }, "030172", "not-ready", Code::Unavailable),
+            (BrokerDataReply::Busy { reason: s() }, "040172", "busy", Code::Unavailable),
+            (BrokerDataReply::ConnectionsDeleting { reason: s() }, "050172", "connections-deleting", Code::Unavailable),
+            (BrokerDataReply::Malformed { kind: MalformedKind::TooLarge }, "0600", "malformed", Code::ResourceExhausted),
+            (BrokerDataReply::Unauthorized { reason: s() }, "070172", "unauthorized", Code::PermissionDenied),
+        ];
+        let off = pinned::<BrokerData>(&requests, &replies);
+        assert!(off.is_empty(), "the wire moved:\n{}", off.join("\n"));
+        assert_eq!(
+            [BrokerData::peer_unresolved(s()), BrokerData::not_ready(s()), BrokerData::busy(s()), BrokerData::connections_deleting(s()), BrokerData::malformed(MalformedKind::TooLarge), BrokerData::unauthorized(s())],
+            [replies[2].0.clone(), replies[3].0.clone(), replies[4].0.clone(), replies[5].0.clone(), replies[6].0.clone(), replies[7].0.clone()],
+            "each reserved constructor builds its own variant"
+        );
+    }
+}
