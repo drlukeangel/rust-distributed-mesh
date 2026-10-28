@@ -17,6 +17,9 @@ pkg=${1:?usage: cells.sh <package> [<test target>|lib] [-- args]}; shift
 target=main; if [ $# -gt 0 ] && [ "$1" != "--" ]; then target=$1; shift; fi
 [ "${1:-}" = "--" ] && shift
 lane=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd); cd "$lane"; out=$lane/target/cells; mkdir -p $out
+# This run's own build output: parallel runs in one lane each read the executables their own build
+# named, never a file another run is writing.
+art=$out/artifacts.$$.json; berr=$out/build.$$.err; trap 'rm -f "$art" "$berr"' EXIT
 # Workspace crates compile incrementally through cargo's own setting (build.incremental), the gate's
 # value, never the env var CARGO_INCREMENTAL: sccache refuses every vendor compile when it is set.
 export CARGO_BUILD_INCREMENTAL=true
@@ -25,16 +28,16 @@ MEMBERS=$(cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c '
 case " $MEMBERS " in *" $pkg "*) ;; *) echo "cells: $pkg is not a member of this workspace" >&2; exit 2 ;; esac
 sel=$(for p in $MEMBERS; do printf " -p %s" "$p"; done)
 s=$(date +%s.%N)
-if ! cargo build --message-format=json --tests --bins $sel > $out/artifacts.json 2> $out/build.err; then
+if ! cargo build --message-format=json --tests --bins $sel > $art 2> $berr; then
   python3 -c 'import json,sys
 for l in open(sys.argv[1]):
     try: m=json.loads(l)
     except Exception: continue
-    if m.get("reason")=="compiler-message" and m["message"].get("level")=="error": print(m["message"].get("rendered",""))' $out/artifacts.json | head -80
-  grep -E "^error" $out/build.err | tail -3; echo "cells: build failed (compiler output above; cargo log $out/build.err)" >&2; exit 1
+    if m.get("reason")=="compiler-message" and m["message"].get("level")=="error": print(m["message"].get("rendered",""))' $art | head -80
+  cp $berr $out/build.err; grep -E "^error" $berr | tail -3; echo "cells: build failed (compiler output above; cargo log $out/build.err)" >&2; exit 1
 fi
-printf "cells: build %.1fs, %d crates compiled\n" "$(echo "$(date +%s.%N) - $s" | bc)" "$(grep -c '^ *Compiling' $out/build.err)" >&2
-read -r exe dir < <(python3 - "$out/artifacts.json" "$pkg" "$target" <<'PY'
+printf "cells: build %.1fs, %d crates compiled\n" "$(echo "$(date +%s.%N) - $s" | bc)" "$(grep -c '^ *Compiling' $berr)" >&2
+read -r exe dir < <(python3 - "$art" "$pkg" "$target" <<'PY'
 import json, sys
 path, pkg, want = sys.argv[1:4]
 for l in open(path):
