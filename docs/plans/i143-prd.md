@@ -3335,3 +3335,10 @@ rdm#164 landed c1ca20870 (Q253 amended, Q254 A): the reconcile loop runs a pass 
 via-reconcile-woken; five causes the tick hid fixed at their roots (a submit lost during a pass, a peer-mesh decision, a drive's end,
 a drift attempt's row release, an event during a running drive). Owed: the container provider's exit source; the view rebuild's
 200 ms VIEW_POLL (projection.rs:637); a mesh-primary's own recovery's row release. rdm#169: demo/admin-ui red against main's rdm-client.
+Q255 A (the release suite on main, its reds dispatched): the four red jobs of gates-1-5cdd6d360release landed, each its own root.
+rdm#168 7acc0a04f (consumer connections cells take Q227's page: no active route; a restarted source holds no series); rdm#167
+1fc25e8d0 (three fabric_takeover/proof-store cell premises, read from spans); rdm#166 d1edca7ca (the lost final primary's
+Deleted row is written by its mesh's one writer: the fabric-primary's explicit delete ends at the exact Exited when, at the
+write, it does not write that mesh's rows, and the new mesh-primary runs the delete on in the same attempt; R-OW1, mesh-delete.md
+resume steps 1 and 3; the 20543a306 regression). In flight: rdm#170 (lane 6, a stopped node's connections reconciler ends at the
+stop, states.md "Stopped nodes"); rdm#171 (lane 3, NodeRows::status takes the §4.3 writer check). Then the one-SHA tail.
