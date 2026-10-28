@@ -1003,6 +1003,25 @@ fn held_unheard_by(fp_name: &str, fp_mesh: &str, floor: Duration, now: u64, span
     None
 }
 
+/// What the view says of a silenced birth after its release.
+#[derive(Debug, PartialEq, Eq)]
+enum HeldBirth {
+    /// The same birth reads ready-for-traffic.
+    Ready,
+    /// The same birth is held, off ready-for-traffic: marked unheard or running its start sequence again.
+    Returning,
+    /// No row of that birth: another birth stands at the path, or none.
+    Replaced,
+}
+
+fn judge_held_birth(nodes: &[Value], path: &str, inc: &str) -> HeldBirth {
+    if nodes.iter().any(|n| n["name"] == path && n["incarnation_id"] == inc && n["status"] == "ready-for-traffic") {
+        HeldBirth::Ready
+    } else {
+        HeldBirth::Replaced
+    }
+}
+
 /// A fault or an execution step that broke a rule.
 struct Broken {
     rule: &'static str,
@@ -1568,7 +1587,7 @@ impl Driver {
         // (a verdict other than `reached`, Q110, Q111) was checked replaced with its runtime ended.
         if let Some((path, inc)) = held.as_ref().filter(|_| entry["recreated"] != true) {
             let now_nodes = self.estate.node_values().await;
-            if !now_nodes.iter().any(|n| n["name"] == path.as_str() && n["incarnation_id"] == inc.as_str() && n["status"] == "ready-for-traffic") {
+            if judge_held_birth(&now_nodes, path, inc) == HeldBirth::Replaced {
                 return Err(broken("silence-is-not-death", format!("{path} came back as another birth than {inc}: silence replaced a running runtime")));
             }
         }
@@ -2218,6 +2237,20 @@ pub fn summary(r: &Report) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CONTRACT (node-recovery.md §3: a birth heard again is commanded back through node.mesh.join and
+    /// runs its start sequence before it is ready-for-traffic): right after a wedge's release the same
+    /// birth reads pending-reconnect, and that is the birth returning, never another birth. Must NOT
+    /// happen: the authority soak at 3cf384224, round 18, judging it "silence replaced a running
+    /// runtime" at the release instant while the birth was running, ready 0.3 s later.
+    #[test]
+    fn a_released_birth_marked_pending_reconnect_is_returning_never_replaced() {
+        let row = |inc: &str, status: &str| json!({"name": "mesh2.admin.1", "incarnation_id": inc, "status": status});
+        assert_eq!(judge_held_birth(&[row("qx6", "pending-reconnect")], "mesh2.admin.1", "qx6"), HeldBirth::Returning);
+        assert_eq!(judge_held_birth(&[row("qx6", "ready-for-traffic")], "mesh2.admin.1", "qx6"), HeldBirth::Ready);
+        assert_eq!(judge_held_birth(&[row("zzz", "ready-for-traffic")], "mesh2.admin.1", "qx6"), HeldBirth::Replaced);
+        assert_eq!(judge_held_birth(&[], "mesh2.admin.1", "qx6"), HeldBirth::Replaced);
+    }
 
     /// CONTRACT (build.md §1, one Build at a time; `CallEnd::BuildInProgress`: a caller that must go
     /// after the Build in flight follows it and submits again): a workflow call refused
