@@ -293,7 +293,7 @@ impl AttemptRuns {
 }
 
 /// This admin's Build state, with a frame produced whenever a step's `Complete` receipt has been
-/// appended. Every pipeline writes its receipts through the one `builds` handle, so this is the
+/// appended (and a reporting run's `Failed` one, which it writes nowhere else). Every pipeline writes its receipts through the one `builds` handle, so this is the
 /// single place a step frame is made, and it is made after the append returned: the frame never
 /// precedes the durable receipt on the admin that wrote it.
 pub struct FramedBuilds {
@@ -406,6 +406,13 @@ impl BuildStateAdapter for FramedBuilds {
                     reporting.then(|| serde_json::to_vec(receipt).unwrap_or_default()),
                 ),
                 StepOutcome::Failed { reason, .. } => {
+                    // A reporting run writes no record of its own: its failed step's receipt goes up
+                    // the stream too, the step's result (node-rpc-envelope.md, Step), so the
+                    // fabric-primary's record holds it when the attempt is handed back rather than
+                    // failed (a create's heal, Q245, Q252).
+                    if reporting {
+                        run.step_with(&receipt.operation, &receipt.step, Some(serde_json::to_vec(receipt).unwrap_or_default()));
+                    }
                     run.failed_step(&receipt.operation, &receipt.step, reason)
                 }
             }

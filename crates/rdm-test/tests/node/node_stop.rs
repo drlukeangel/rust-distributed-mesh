@@ -1253,10 +1253,11 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
 /// primary never took, the node live and its declaration owed. Then mesh2's primary is stopped,
 /// which moves mesh2's seat to mesh2's other admin first. The node hears the move: its call to the
 /// old holder is cancelled (`via-primary-changed`) and it declares to the new holder, which applies it
-/// once; the old holder decides nothing of it (its cut holds the one call it took). The create's
-/// failure leaves the node surplus to the accepted topology, so the fabric-primary's drift pass is held
-/// at its drift seam until the declaration is delivered; released, drift's attempt deletes the surplus
-/// node as a removal does: the provider's exited verdict, then NodeDeleted. Must NOT happen: the
+/// once; the old holder decides nothing of it (its cut holds the one call it took). The create's next
+/// attempt deletes the unready birth and creates it again (Q245, Q252), which fails too and ends the
+/// create's Build failed; its birth is surplus to the accepted topology, so the fabric-primary's drift
+/// pass is held at its drift seam until the declaration is delivered; released, drift's attempt deletes
+/// the surplus node as a removal does: the provider's exited verdict, then NodeDeleted, one per birth. Must NOT happen: the
 /// node.started applied twice, applied by the old holder, or addressed to an admin that does not hold
 /// the seat; a second declaration call to the old holder (a declaration loop of the node's own, which
 /// Q52 deleted); a drift attempt before the release, or a second one.
@@ -1328,10 +1329,28 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
         .find(|sp| bare(attr(sp, "build_id")) == build && attr(sp, "attempt") == attempt && attr(sp, "node") == node_s && attr(sp, "step") == "TerminateRuntime")
         .unwrap_or_else(|| panic!("drift's attempt {attempt} of {build} proves {node_s} exited"));
     assert_eq!(attr(exit, "outcome"), "complete", "{exit:#?}");
+    // Every birth at the node's path.name, by its claim: the create's, and its next attempt's (Q245,
+    // Q252: the next attempt deletes the unready birth the failed create left and creates it again).
+    let births: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| attr(sp, "subject") == node_s && attr(sp, "moment") == "claim").map(|sp| attr(sp, "node_id")).collect();
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| attr(sp, "node") == node_s).collect();
-    assert_eq!(deleted.len(), 1, "NodeDeleted once for the surplus node: {deleted:#?}");
-    assert_eq!((bare(attr(deleted[0], "build_id")), attr(deleted[0], "attempt")), (build.clone(), attempt.clone()), "NodeDeleted names drift's attempt: {:#?}", deleted[0]);
-    assert!(end_ns(exit) <= start_ns(deleted[0]), "NodeDeleted follows the exited verdict: {exit:#?} vs {:#?}", deleted[0]);
+    // One NodeDeleted per exact birth (node_id, incarnation), and every birth deleted.
+    let mut per_birth: std::collections::BTreeMap<(String, String), Vec<&Value>> = std::collections::BTreeMap::new();
+    for sp in &deleted {
+        per_birth.entry((attr(sp, "node_id"), attr(sp, "incarnation_id"))).or_default().push(sp);
+    }
+    assert!(per_birth.values().all(|d| d.len() == 1), "NodeDeleted once per birth of {node_s}: {per_birth:#?}");
+    assert_eq!(per_birth.keys().map(|(id, _)| id.clone()).collect::<std::collections::BTreeSet<_>>(), births, "every birth the creates claimed is deleted, and no other: {per_birth:#?}");
+    // Each deletion is explained: drift's attempt deletes the surplus birth; every other one is the
+    // create's next attempt deleting the unready birth its failed first attempt left.
+    let by_drift: Vec<&&Value> = deleted.iter().filter(|sp| (bare(attr(sp, "build_id")), attr(sp, "attempt")) == (build.clone(), attempt.clone())).collect();
+    assert_eq!(by_drift.len(), 1, "drift's attempt deletes one birth, the surplus one: {deleted:#?}");
+    let by_drift = by_drift[0];
+    for sp in deleted.iter().filter(|sp| !std::ptr::eq(**sp, *by_drift)) {
+        assert_eq!(bare(attr(sp, "build_id")), create.to_string(), "a birth drift did not delete is deleted by the create's next attempt: {sp:#?}");
+        assert_eq!(attr(sp, "operation"), format!("node.delete:{node_s}"), "{sp:#?}");
+        assert!(attr(sp, "attempt") != "1", "the create's first attempt deleted nothing: {sp:#?}");
+    }
+    assert!(end_ns(exit) <= start_ns(by_drift), "NodeDeleted follows the exited verdict: {exit:#?} vs {by_drift:#?}");
     let ready: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
         // A first start names no operation; its measured Ready remains owed without an open command stream.

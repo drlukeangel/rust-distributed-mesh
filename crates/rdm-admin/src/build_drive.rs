@@ -298,10 +298,28 @@ enum Sections {
 
 /// How a section ended short of complete.
 enum SectionEnd {
-    /// Its verdict is `Failed`, with why.
-    Failed(String),
+    /// Its verdict is `Failed`.
+    Failed(SectionFailure),
     /// It holds its mesh, or could not be opened, claimed or ended: why.
     Held(String),
+}
+
+/// How a section failed (Q250, Q252): the operation and step its `Failed` terminal named, with the
+/// step's own reason and code; `operation` empty and `step` `section` when it ended without a step
+/// failing (refused, its executor exited).
+struct SectionFailure {
+    operation: String,
+    step: String,
+    reason: String,
+    code: rdm_core::outcome::Code,
+}
+
+impl SectionFailure {
+    /// What the same failure twice running is keyed on: the operation alone, whatever the reason
+    /// (Q252); a section that failed no operation, its reason.
+    fn key(&self) -> String {
+        if self.operation.is_empty() { self.reason.clone() } else { self.operation.clone() }
+    }
 }
 
 /// Why a drive ended without the seat: what the old seat says, and the admin the committed fabric
@@ -362,16 +380,9 @@ pub struct Drive {
     /// this drive's pass last read it ([`Gate::atlas_birth`]); `None` for any other attempt, or a gate
     /// with no atlas.
     atlas: Mutex<Option<crate::accepted::AtlasBirth>>,
-    /// Each mesh's last section failure (Q250), as `operation|reason`: the same failure again stalls
-    /// the drive rather than sending the same section once more.
+    /// Each mesh's last section failure (Q250), keyed on its operation ([`SectionFailure::key`]): the
+    /// same operation failing again ends the Build `Failed` rather than sending the section once more (Q252).
     section_failed: Mutex<HashMap<String, String>>,
-    /// The create of the fabric lane an attempt's stream reported failed (Q245,
-    /// [`crate::executor::CREATE_FAILED`]), as `operation|reason`, with that attempt.
-    create_failing: Mutex<Option<(u32, String)>>,
-    /// The fabric lane's last handed-back attempt's failed create (Q250), as `operation|reason`: the same
-    /// failure on the next attempt stalls the drive, as a section's does; a different failure, or an
-    /// attempt without one, replaces it.
-    create_failed: Mutex<Option<String>>,
     /// The operations a section this drive sent completed, its run reported by its verdict (Q250), with the
     /// fabric run they were sent in (`BuildProjection::opened`): done in that run only, as a reported
     /// fabric-lane run's are ([`left`]); a later run (a recovery of the same Build) plans from the world.
@@ -395,26 +406,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), create_failing: Mutex::new(None), create_failed: Mutex::new(None), section_done: Mutex::new(HashSet::new()) })
-    }
-
-    /// The executor's stream reported that a create of the fabric lane failed in `attempt` (Q245).
-    fn note_create_failed(&self, attempt: u32, operation: &str, reason: &str) {
-        let mut held = self.create_failing.lock().unwrap();
-        let failure = (attempt, format!("{operation}|{reason}"));
-        // The attempt's first failed create is the one the executor handed back with; a repeat frame is the same one.
-        if held.as_ref().is_none_or(|(a, _)| *a != attempt) {
-            *held = Some(failure);
-        }
-    }
-
-    /// Whether `attempt`, handed back, failed a create the same way the attempt before it did (Q250:
-    /// the same failure twice running stalls the drive naming it): `Some(operation|reason)` then.
-    /// An attempt with no failed create, or a different one, clears what was held.
-    fn create_failed_again(&self, attempt: u32) -> Option<String> {
-        let now = self.create_failing.lock().unwrap().as_ref().filter(|(a, _)| *a == attempt).map(|(_, f)| f.clone());
-        let before = std::mem::replace(&mut *self.create_failed.lock().unwrap(), now.clone());
-        now.filter(|n| before.as_deref() == Some(n.as_str()))
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -881,6 +873,11 @@ fn node_of_key(key: &str) -> Option<PathName> {
 /// and the drive attaching to the finished run of it replays the same terminal.
 fn ended_incomplete(me: &PathName, executor: &PathName, to: &PathName, before: &str, after: &str) -> bool {
     executor == me && to == me && before == after
+}
+
+/// Whether a `Step` frame's reported receipt is a failed step's.
+fn failed_receipt(receipt: Option<&[u8]>) -> bool {
+    receipt.and_then(|b| serde_json::from_slice::<crate::build_state::BuildStepReceipt>(b).ok()).is_some_and(|r| matches!(r.outcome, crate::build_state::StepOutcome::Failed { .. }))
 }
 
 /// What the next claim of a Build decides on: the first operation left, the receipts the Build
@@ -1484,14 +1481,6 @@ impl DriveEnv {
                     let Some(next) = parse_path(&to) else {
                         return self.stalled(&me, drive, format!("attempt {attempt} of Build {id} handed off to {to:?}, which is not a path.name"));
                     };
-                    // A create of the fabric lane that failed hands its attempt back (Q245); the same
-                    // failure twice running stalls the drive naming it, as a section's does (Q250).
-                    if let Some(failure) = drive.create_failed_again(attempt) {
-                        let (operation, reason) = failure.split_once('|').unwrap_or((failure.as_str(), ""));
-                        let why = format!("{me}: attempt {attempt} of Build {id} ended incomplete: {operation} failed the same way twice running ({reason}); the Build stays in progress");
-                        self.blocked(drive, attempt, operation, "incomplete", &why);
-                        return self.stalled(&me, drive, why);
-                    }
                     // An attempt handed back to this admin that moved nothing (it ended incomplete: a
                     // participant lost, a proof not in) would be claimed again and end the same way: the
                     // Build stays in progress, and the next attempt waits for what it decides on to move.
@@ -1949,7 +1938,7 @@ impl DriveEnv {
 
     /// Send every section of what is left of `p` to its mesh-primary at once, when two meshes or more
     /// are owed one or a mesh's section failed before, and wait for each to end (Q250). A section that fails stops none of the others; its mesh's operations are planned again
-    /// on the next pass, and the same failure twice running stalls the drive naming it.
+    /// on the next pass, and the same operation failing twice running ends the Build Failed (Q252).
     async fn run_sections(self: &Arc<Self>, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection) -> Sections {
         let sections = {
             let t = self.topology.read().await.clone();
@@ -1967,19 +1956,26 @@ impl DriveEnv {
         }))
         .await;
         let mut held = Vec::new();
+        let mut twice = None;
         for (mesh, end) in ended {
             match end {
                 Ok(()) => {
                     drive.section_failed.lock().unwrap().remove(&mesh);
                 }
                 Err(SectionEnd::Failed(failure)) => {
-                    let again = drive.section_failed.lock().unwrap().insert(mesh.clone(), failure.clone()).as_deref() == Some(failure.as_str());
-                    if again {
-                        held.push(format!("mesh {mesh}'s section failed the same way twice running ({failure})"));
+                    let key = failure.key();
+                    let again = drive.section_failed.lock().unwrap().insert(mesh.clone(), key.clone()).as_deref() == Some(key.as_str());
+                    if again && twice.is_none() {
+                        twice = Some((mesh, failure));
                     }
                 }
                 Err(SectionEnd::Held(why)) => held.push(why),
             }
+        }
+        // The same operation failing twice running ends the Build Failed with the step and reason
+        // of its second failure (Q250, Q252), once no section holds its mesh.
+        if let (true, Some((mesh, failure))) = (held.is_empty(), twice) {
+            return Sections::End(self.section_failed_twice(me, drive, p, &mesh, failure).await);
         }
         if held.is_empty() {
             return Sections::Ran;
@@ -1987,6 +1983,38 @@ impl DriveEnv {
         let why = format!("{me}: Build {}: {}", p.build_id, held.join("; "));
         self.blocked(drive, p.attempt, "", "section", &why);
         Sections::End(self.stalled(me, drive, why))
+    }
+
+    /// Mesh `mesh`'s section failed the same operation twice running (Q250, Q252): the Build ends
+    /// `Failed` with the step and reason of the second failure, never a stall (node-rpc-envelope.md:
+    /// "Only a fabric-primary change or a failed step ends an attempt"). No fabric-lane attempt runs
+    /// while sections are sent: this fabric-primary claims the next one for itself and ends it `Failed`,
+    /// running nothing, the failed step's receipt and the verdict written (as an interrupted Build's
+    /// terminal is, build.md §1).
+    async fn section_failed_twice(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection, mesh: &str, f: SectionFailure) -> DriveEnd {
+        let id = &p.build_id;
+        let attempt = p.attempt + 1;
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-section-failed", build_id = %id.log(), lane = %mesh, attempt, node = %me, operation = %f.operation, step = %f.step, reason = %f.reason);
+        let claim = crate::build_state::BuildAttemptClaim { build_id: id.clone(), attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: None };
+        match self.builds.claim_attempt(&claim).await {
+            Ok(crate::build_state::ClaimOutcome::Won) => {}
+            other => return self.stalled(me, drive, format!("{me}: mesh {mesh}'s section of Build {id} failed {} twice running and attempt {attempt}, which ends the Build Failed, could not be taken: {other:?}", f.key())),
+        }
+        if !f.operation.is_empty() {
+            let receipt = crate::build_state::BuildStepReceipt { build_id: id.clone(), attempt, operation: f.operation.clone(), step: f.step.clone(), outcome: crate::build_state::StepOutcome::Failed { reason: f.reason.clone(), code: f.code }, output: None, executor: Some(me.to_string()), mesh: None };
+            if let Err(e) = self.builds.append_step_receipt(&receipt).await {
+                span.in_scope(|| tracing::info!(error = %e, "the failed step's receipt could not be written"));
+            }
+        }
+        let reason = if f.operation.is_empty() { f.reason.clone() } else { format!("{}: {}", f.operation, f.reason) };
+        let verdict = BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason, code: f.code } };
+        if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
+            return self.stalled(me, drive, format!("{me}: the Failed verdict of attempt {attempt} of Build {id} (mesh {mesh}'s section failed {} twice running) could not be written: {e}", f.key()));
+        }
+        self.gate.attempt_failed(id, attempt).await;
+        span.in_scope(|| tracing::info!("a section failed the same operation twice running: the Build ends Failed with the second failure's step and reason"));
+        drive.finish(rdm_core::reply::build::failed(id.to_string(), attempt, f.operation, f.step, crate::build_run::bounded_reason(f.reason), f.code));
+        DriveEnd::Terminal
     }
 
     /// One section (Q250): its attempt opened in `executor`'s mesh's lane and claimed by this
@@ -2020,6 +2048,7 @@ impl DriveEnv {
             let keys: Vec<String> = operations.iter().map(BuildOperation::key).collect();
             let plan = RunPlan { operations, hand_off_to: None };
             let mut completed: Vec<String> = Vec::new();
+            let mut failed_step: Option<(String, String, String)> = None;
             let outcome = match self.dispatcher.dispatch_in(turn, executor, &mesh, id, attempt, context, intent, plan).await {
                 Dispatched::Refused(r) => AttemptOutcome::Failed { reason: format!("{executor} refused the section: {}", describe(&r)), code: rdm_core::outcome::Code::Unavailable },
                 Dispatched::Unreached(why) => match self.departure.proven(executor).await {
@@ -2029,6 +2058,11 @@ impl DriveEnv {
                 Dispatched::Stream(mut stream) => loop {
                     match stream.next().await {
                         InnerItem::Frame(BuildReply::Step { operation, step, attempt: a, receipt, .. }) => {
+                            // A failed step's receipt is written from the section's Failed terminal.
+                            if failed_receipt(receipt.as_deref()) {
+                                stream.accepted().await;
+                                continue;
+                            }
                             if let Some(r) = receipt.as_deref().and_then(|b| serde_json::from_slice::<BuildStepReceipt>(b).ok()) {
                                 if let Err(e) = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, mesh: Some(mesh.clone()), ..r }).await {
                                     tracing::info!(error = %e, operation = %operation, step = %step, "a reported step receipt could not be written: a later attempt runs the step again");
@@ -2048,7 +2082,8 @@ impl DriveEnv {
                         InnerItem::Frame(BuildReply::Complete { .. }) => break AttemptOutcome::Converged,
                         InnerItem::Frame(BuildReply::HandedOff { to, .. }) => break AttemptOutcome::HandedOff { to },
                         InnerItem::Frame(BuildReply::Failed { operation, step, reason, code, .. }) => {
-                            let _ = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, operation: operation.clone(), step, outcome: StepOutcome::Failed { reason: reason.clone(), code }, output: None, executor: Some(executor.to_string()), mesh: Some(mesh.clone()) }).await;
+                            let _ = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, operation: operation.clone(), step: step.clone(), outcome: StepOutcome::Failed { reason: reason.clone(), code }, output: None, executor: Some(executor.to_string()), mesh: Some(mesh.clone()) }).await;
+                            failed_step = Some((operation.clone(), step, reason.clone()));
                             break AttemptOutcome::Failed { reason: format!("{operation}: {reason}"), code };
                         }
                         InnerItem::Frame(other) => break AttemptOutcome::Failed { reason: format!("{executor}'s section ended {}", other.name()), code: rdm_core::outcome::Code::Unavailable },
@@ -2060,7 +2095,10 @@ impl DriveEnv {
                 },
             };
             let failed = match &outcome {
-                AttemptOutcome::Failed { reason, .. } => Some(reason.clone()),
+                AttemptOutcome::Failed { reason, code } => Some(match failed_step {
+                    Some((operation, step, reason)) => SectionFailure { operation, step, reason, code: *code },
+                    None => SectionFailure { operation: String::new(), step: "section".into(), reason: reason.clone(), code: *code },
+                }),
                 _ => None,
             };
             // A section that converged ran every one of its operations (`Reconciled::Converged`); one that
@@ -2078,15 +2116,21 @@ impl DriveEnv {
                 tracing::info!(error = %e, "the section ended and its mesh's in-flight row could not be released: the mesh stays held by it");
             }
             match failed {
-                Some(reason) => Err(SectionEnd::Failed(reason)),
+                Some(failure) => Err(SectionEnd::Failed(failure)),
                 None => Ok(()),
             }
         }
         .instrument(span.clone())
         .await;
         span.record("outcome", match &ended { Ok(()) => "complete", Err(SectionEnd::Failed(_)) => "failed", Err(SectionEnd::Held(_)) => "held" });
-        if let Err(SectionEnd::Failed(why) | SectionEnd::Held(why)) = &ended {
-            span.record("reason", why.as_str());
+        match &ended {
+            Err(SectionEnd::Failed(f)) => {
+                span.record("reason", format!("{}: {}", f.operation, f.reason).as_str());
+            }
+            Err(SectionEnd::Held(why)) => {
+                span.record("reason", why.as_str());
+            }
+            Ok(()) => {}
         }
         span.in_scope(|| tracing::info!("a section of the Build ran at its mesh's mesh-primary"));
         ended
@@ -2163,6 +2207,14 @@ impl DriveEnv {
             return;
         }
         if let Some((operation, step, reason, code)) = failed.filter(|(operation, ..)| !operation.is_empty()) {
+            // A failed step whose receipt the executor reported up the stream is on the record already.
+            let held = self.builds.read_build(&receipt.build_id).await.is_ok_and(|p| p.steps.iter().any(|s| s.mesh.is_none() && s.attempt == receipt.attempt && s.operation == *operation && s.step == *step && matches!(s.outcome, crate::build_state::StepOutcome::Failed { .. })));
+            if held {
+                if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
+                    tracing::info!(error = %e, attempt = receipt.attempt, "the reported verdict could not be written: the attempt holds no verdict until the next pass decides it");
+                }
+                return;
+            }
             let failed = crate::build_state::BuildStepReceipt { build_id: receipt.build_id.clone(), attempt: receipt.attempt, operation: operation.clone(), step: step.clone(), outcome: crate::build_state::StepOutcome::Failed { reason: reason.clone(), code }, output: None, executor: Some(executor.to_string()), mesh: None };
             if let Err(e) = self.builds.append_step_receipt(&failed).await {
                 tracing::info!(error = %e, operation = %operation, step = %step, "the failed step's reported receipt could not be written");
@@ -2242,16 +2294,18 @@ impl DriveEnv {
                             self.write_reported(id, a, executor, operation, step, bytes).await;
                         }
                         stream.accepted().await;
+                        // A failed step's receipt is the record's, never progress: the attempt's terminal
+                        // names a failure, and a create's heal hands back without one (Q245, Q252).
+                        if failed_receipt(receipt.as_deref()) {
+                            continue;
+                        }
                         if step == "Complete" {
                             self.gate.receipt_streamed(id, a, operation).await;
                         }
                         self.step(drive, BuildReply::Step { build_id: id.to_string(), attempt: a, operation: operation.clone(), step: step.clone(), receipt: None }).await
                     }
-                    BuildReply::Blocked { attempt: a, ref operation, ref step, ref reason, .. } => {
+                    BuildReply::Blocked { .. } => {
                         stream.accepted().await;
-                        if step == crate::executor::CREATE_FAILED {
-                            drive.note_create_failed(a, operation, reason);
-                        }
                         drive.push(f);
                     }
                     // Past the target this admin decides nothing of the attempt: the executor, now the

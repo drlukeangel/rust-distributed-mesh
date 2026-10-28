@@ -14,10 +14,6 @@ use crate::topology::Topology;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// The step a Blocked frame names when a create of the fabric lane ended failed and its attempt is
-/// handed back (Q245): the drive holds it to stall on the same failure twice running (Q250).
-pub const CREATE_FAILED: &str = "create-failed";
-
 /// How a run of one operation ended short of complete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEnd {
@@ -573,7 +569,7 @@ impl BuildExecutor {
             if group > 1 {
                 let ended = self.run_group(&build.build_id, lane, attempt, &operations[i..i + group]).await;
                 let ran: Vec<BuildOperation> = ran(i, &skipped).into_iter().chain(ended.iter().filter(|(_, r)| r.is_ok()).map(|(op, _)| (*op).clone())).collect();
-                let failed = |heals: bool| ended.iter().find_map(|(op, r)| match r { Err(RunEnd::Failed { reason, code }) if heals_when_failed(op, lane, false) == heals => Some((*op, reason.clone(), *code)), _ => None });
+                let failed = |heals: bool| ended.iter().find_map(|(op, r)| match r { Err(RunEnd::Failed { reason, code }) if (heals_when_failed(op, lane, false) && failed_the_run_before(&build, op, attempt).is_none()) == heals => Some((*op, reason.clone(), *code)), _ => None });
                 if let Some((op, reason, _)) = failed(false).or_else(|| failed(true)) {
                     if let Ok(Some(delete)) = crate::build_state::interrupted_by(builds, &build).await {
                         return self.interrupted(builds, &build, attempt, ran, op, Some(&reason), &delete.build_id, span).await;
@@ -602,7 +598,7 @@ impl BuildExecutor {
                     if let Ok(Some(delete)) = crate::build_state::interrupted_by(builds, &build).await {
                         return self.interrupted(builds, &build, attempt, ran(i, &skipped), op, Some(&reason), &delete.build_id, span).await;
                     }
-                    if heals_when_failed(op, lane, first_admin) {
+                    if heals_when_failed(op, lane, first_admin) && failed_the_run_before(&build, op, attempt).is_none() {
                         return self.create_failed(builds, &build, attempt, ran(i, &skipped), op, reason, span).await;
                     }
                     return self.finish(builds, &build, attempt, Err((op.key(), reason, code))).await;
@@ -669,17 +665,21 @@ impl BuildExecutor {
         self.hand_off(builds, build, attempt, ran, to).await
     }
 
-    /// `op`, a plain create of the fabric lane ([`heals_when_failed`]), ended failed (Q245: "a failed
-    /// node does not stop it, it just self-heals"): the attempt is handed back as an incomplete
-    /// operation's is ([`Self::hand_back`]), the receipts of what ran standing and the Build in
-    /// progress, and the next attempt the fabric-primary claims plans the create again. Blocked
-    /// [`CREATE_FAILED`] names it to the drive, which stalls on the same failure twice running (Q250).
+    /// `op`, a plain create of the fabric lane ([`heals_when_failed`]), ended failed, and the attempt
+    /// before that ran it did not fail it (Q245, Q252: one heal attempt). Its failed step's receipt is
+    /// on the record, the receipts of what ran stand, and the attempt is handed to the fabric-primary of
+    /// the view the run ends with, the Build in progress: the next attempt it claims creates it again.
+    /// Nothing is framed to the caller (node-rpc-envelope.md: Blocked's only source is the subject's
+    /// Status `Blocked`). The same create failing on that next attempt ends it `Failed` with its step
+    /// and reason ([`failed_the_run_before`]).
     #[allow(clippy::too_many_arguments)]
     async fn create_failed(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, op: &BuildOperation, reason: String, span: &tracing::Span) -> Reconciled {
-        tracing::info_span!("rdm.node_admin.build.update.via-create-failed", build_id = %build.build_id.log(), attempt, operation = %op.key(), reason = %reason)
+        span.record("incomplete", reason.as_str());
+        let me = self.held_name().await;
+        let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or(me);
+        tracing::info_span!("rdm.node_admin.build.update.via-create-failed", build_id = %build.build_id.log(), attempt, operation = %op.key(), reason = %reason, to = %to)
             .in_scope(|| tracing::info!("a create of the fabric lane ended failed: the attempt is handed back and the next attempt creates it again; the Build stays in progress"));
-        builds.note_blocked(&build.build_id, None, attempt, &op.key(), CREATE_FAILED, &reason).await;
-        self.hand_back(builds, build, attempt, ran, op, reason, span).await
+        self.hand_off(builds, build, attempt, ran, to).await
     }
 
     /// The run stops at `next` because the fabric.delete `delete` interrupts its Build (build.md §1): what
@@ -726,6 +726,16 @@ impl BuildExecutor {
             Err((operation, reason, code)) => Reconciled::Failed { attempt, reason: format!("{operation}: {reason}"), operation, code },
         }
     }
+}
+
+/// The attempt before `attempt` that ran `op` in the fabric lane, when it failed it: the receipts the
+/// record holds of `op` (Q252: the bound is the same operation failing twice running, whatever the
+/// reason). A create that fails again after it ends the attempt `Failed`, never a second heal.
+fn failed_the_run_before(build: &BuildProjection, op: &BuildOperation, attempt: u32) -> Option<u32> {
+    let key = op.key();
+    let ours = || build.steps.iter().filter(|s| s.mesh.is_none() && s.operation == key && s.attempt < attempt);
+    let last = ours().map(|s| s.attempt).max()?;
+    ours().any(|s| s.attempt == last && matches!(s.outcome, crate::build_state::StepOutcome::Failed { .. })).then_some(last)
 }
 
 /// Whether `op`, ended failed, hands its attempt back rather than failing it (Q245): a plain create

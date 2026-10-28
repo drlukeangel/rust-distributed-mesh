@@ -521,9 +521,11 @@ const ATTEMPT_ONE_STEPS: [&str; 7] = [
 ];
 
 /// CONTRACT (ops-naming acceptance 1, "A failure names its step"; node-create.md "Join completion
-/// and failure evidence": only an accepted full report completes the bind/join waits): a create
-/// whose process starts and whose birth never reports where it bound (no `JoinNode` arrives) ends
-/// its stream `Started`, then `Failed { step: node.create, reason }` from `WaitForBind`.
+/// and failure evidence": only an accepted full report completes the bind/join waits; Q245, Q252: a
+/// failed create is created again by the next attempt, once): a create whose process starts and whose
+/// birth never reports where it bound (no `JoinNode` arrives) fails its bind wait, and the next
+/// attempt's create fails it again; the stream ends `Started`, then `Failed { step: node.create,
+/// reason }` from `WaitForBind`, within the deadline and with no Blocked frame before it.
 /// `node.created`, `node.joined` and `node.started` are never emitted, the node never reaches
 /// ready, and the call's span names the failed step.
 #[test]
@@ -534,7 +536,7 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
         let served = serve(door(&rig, Duration::from_millis(300)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
-        let (frames, end) = collect_frames(&mut stream, Duration::from_secs(15)).await;
+        let (frames, end) = tokio::time::timeout(Duration::from_secs(20), collect_frames(&mut stream, Duration::from_secs(15))).await.expect("the stream ends within 20 s");
         let published = rig.sink.0.lock().unwrap().clone();
         (frames, end, published)
     });
@@ -561,23 +563,22 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
         assert!(spans_named(&spans, span).is_empty(), "node.{never} is never emitted");
     }
     let bind_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForBind").collect();
-    assert_eq!(bind_step.len(), 1, "the pipeline ran the bind wait once");
-    assert_eq!(bind_step[0]["attributes"]["outcome"], "failed", "and it failed there");
+    let mut bind_attempts: Vec<&str> = bind_step.iter().map(|s| s["attributes"]["attempt"].as_str().unwrap_or("")).collect();
+    bind_attempts.sort();
+    assert_eq!(bind_attempts, ["1", "2"], "the pipeline ran the bind wait once in the first attempt and once in the next attempt's create");
+    assert!(bind_step.iter().all(|s| s["attributes"]["outcome"] == "failed"), "and it failed there both times: {bind_step:?}");
     assert!(spans_named(&spans, "rdm.node_admin.deployment.update.via-step").iter().all(|s| s["attributes"]["step"] != "WaitForMeshJoin"), "nothing after the bind wait ran: {spans:?}");
-    let prepare: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "PrepareStorage").collect();
-    assert_eq!(prepare.len(), 1, "PrepareStorage ran once: {spans:?}");
+    let prepare: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "PrepareStorage" && s["attributes"]["attempt"] == "1").collect();
+    assert_eq!(prepare.len(), 1, "PrepareStorage ran once in the first attempt: {spans:?}");
     assert_eq!(prepare[0]["attributes"]["awaited"], "entry-spec,claim,transport-key", "PrepareStorage names every await it ran (a plain create reads its create spec first): {}", prepare[0]);
     assert_eq!(prepare[0]["attributes"]["awaiting"], "done", "PrepareStorage completed every await: {}", prepare[0]);
     let claim_row: Vec<&Value> = spans_named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["moment"] == "claim").collect();
-    assert_eq!(claim_row.len(), 1, "PrepareStorage opened the claim via-node-row span: {spans:?}");
-    assert_eq!(claim_row[0]["attributes"]["outcome"], "row-written", "the claim row was written: {}", claim_row[0]);
-    assert_eq!(
-        claim_row[0]["attributes"]["awaited"],
-        "writer-check,read-previous-row,read-old-row,put-node-row",
-        "the claim span names every await of the claim: {}",
-        claim_row[0]
-    );
-    assert_eq!(claim_row[0]["attributes"]["awaiting"], "done", "the claim completed every await: {}", claim_row[0]);
+    assert_eq!(claim_row.len(), 2, "each attempt's PrepareStorage opened the claim via-node-row span: {claim_row:?}");
+    for claim in &claim_row {
+        assert_eq!(claim["attributes"]["outcome"], "row-written", "the claim row was written: {claim}");
+        assert_eq!(claim["attributes"]["awaited"], "writer-check,read-previous-row,read-old-row,put-node-row", "the claim span names every await of the claim: {claim}");
+        assert_eq!(claim["attributes"]["awaiting"], "done", "the claim completed every await: {claim}");
+    }
     // Each step's wall and, for one that ran blocking calls, their wait for a thread and their run.
     let walls: Vec<String> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
