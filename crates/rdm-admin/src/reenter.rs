@@ -1,6 +1,6 @@
 //! A node-admin entering an EXISTING mesh (node-admin-lifecycle.md §4): one code path for a
 //! recovering mesh's first admin (after its maker's JoinNode and topology) and for a fabric
-//! primary reborn into its own mesh (from its durable map, with no maker).
+//! primary re-born into its own mesh (from its durable map, with no maker).
 //!
 //! 1. Read topology: [`get_topology`] is the one place "get the topology from <source>" lives.
 //!    It reads the maker's JoinNode answer, a durable map, or a LOCAL node of the own mesh (a

@@ -5,7 +5,7 @@
 //! `i143-2941`, test the cell's name) at the test cadence (staleness 3 s, gossip 500 ms).
 //!
 //! The estate: one mesh, one node-admin, two rpc nodes. One rpc node is restarted through Build
-//! by the admin that launched it; the reborn birth's own entry pull and its mesh-channel join are
+//! by the admin that launched it; the re-born birth's own entry pull and its mesh-channel join are
 //! read from its spans, against the admin's serve span, by the birth's own records.
 
 use rdm_client::{NodeStatus, NodeView};
@@ -69,7 +69,7 @@ async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>
     (json(&admin), json(&before), json(&after), restart_at, spans)
 }
 
-/// The reborn birth's entry pull is answered within one staleness window by the admin its launch
+/// The re-born birth's entry pull is answered within one staleness window by the admin its launch
 /// names, and the pull that answers is the one that admin logs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restarted_member_pulls_current_admin_within_staleness_window() {
@@ -79,11 +79,11 @@ async fn restarted_member_pulls_current_admin_within_staleness_window() {
     let (admin, before, after, restart_at, spans) = restart_one_member(cell).await;
     let staleness_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
 
-    // The reborn birth's pull attempts, in order: the first is answered, by the launching admin,
+    // The re-born birth's pull attempts, in order: the first is answered, by the launching admin,
     // within the staleness window; nothing failed.
     let mut attempts: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-pull-attempt").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
     attempts.sort_by_key(|sp| at(sp));
-    assert!(!attempts.is_empty(), "the reborn birth pulled its entry");
+    assert!(!attempts.is_empty(), "the re-born birth pulled its entry");
     let first = attempts[0];
     let elapsed: u64 = first["attributes"]["elapsed_ms"].as_str().and_then(|v| v.parse().ok()).unwrap_or(u64::MAX);
     assert_eq!(first["attributes"]["step"], "answered", "the first attempt was answered: {first}");
@@ -91,13 +91,13 @@ async fn restarted_member_pulls_current_admin_within_staleness_window() {
     let admin_endpoint_short: String = s(&admin["endpoint_id"]).chars().take(10).collect();
     assert_eq!(s(&first["attributes"]["anchor"]), admin_endpoint_short, "the pull went to the admin that launched the birth");
     let failed: Vec<&Value> = named(&spans, "rdm.mesh.entry.reject.via-topology-pull-failed").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
-    assert!(failed.is_empty(), "no pull of the reborn birth failed: {failed:?}");
+    assert!(failed.is_empty(), "no pull of the re-born birth failed: {failed:?}");
     let pulled: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-topology-pulled").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
     assert_eq!(pulled.len(), 1, "one completed pull after the restart: {pulled:?}");
     assert_eq!(pulled[0]["attributes"]["served_by"], "mesh1.admin.1");
     // The admin logs the request it answered, after the restart, for this node.
     let served: Vec<&Value> = named(&spans, "rdm.mesh.entry.serve.via-pull").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && sp["attributes"]["served_by"] == "mesh1.admin.1" && at(sp) > restart_at).collect();
-    assert!(!served.is_empty(), "the launching admin served the reborn birth's pull");
+    assert!(!served.is_empty(), "the launching admin served the re-born birth's pull");
 
     let result = json!({
         "cell": cell,
@@ -114,7 +114,7 @@ async fn restarted_member_pulls_current_admin_within_staleness_window() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// The reborn birth resubscribes its mesh channel and its entry pull completes once; no pull of that
+/// The re-born birth resubscribes its mesh channel and its entry pull completes once; no pull of that
 /// birth fails. When gossip brings it a neighbour is gossip's: the cell asserts no time for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_once() {
@@ -136,7 +136,7 @@ async fn restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_
     let pulled: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-topology-pulled").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
     assert_eq!(pulled.len(), 1, "the entry completed once after the restart: {pulled:?}");
     let failed: Vec<&Value> = named(&spans, "rdm.mesh.entry.reject.via-topology-pull-failed").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
-    assert!(failed.is_empty(), "no pull of the reborn birth failed: {failed:?}");
+    assert!(failed.is_empty(), "no pull of the re-born birth failed: {failed:?}");
 
     let result = json!({
         "cell": cell,

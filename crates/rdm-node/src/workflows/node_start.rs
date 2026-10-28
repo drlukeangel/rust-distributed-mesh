@@ -14,7 +14,7 @@
 //!    Pending; the answer's rafka-time is adopted, so the hook runs with current rafka-time and the
 //!    member cert, and the name it hands (its row's) is the step's `installed`: the node holds it
 //!    from the channel step on, and every later step is named by it, so a node renamed while stopped
-//!    is never named by the name it held before its join (R-JN1, R12). A start with no authority (the Day-0 root, a fabric-primary reborn from its durable
+//!    is never named by the name it held before its join (R-JN1, R12). A start with no authority (the Day-0 root, a fabric-primary re-born from its durable
 //!    map, a recovery start) makes no join.
 //! 2. `rdm.mesh.node.update.via-topology-joined` (step 2, node.joined): the node enters its mesh
 //!    channel holding the name the join handed, before it publishes anything (R-JN1), and takes the

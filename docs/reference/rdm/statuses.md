@@ -303,7 +303,7 @@ serde: `rename_all = "kebab-case"`
 | 1 | **`Ready`** | `ready` |  |  | `name() = "ready"` | Ready: it takes traffic. |
 | 2 | **`Leaving`** | `leaving` |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
 | 3 | **`Dead`** | `dead` |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final, its id never reissued. |
-| 4 | **`Degraded`** | `degraded` |  |  | `name() = "degraded"` | The fabric primary has decided a peer mesh is reborn (`investigate`). |
+| 4 | **`Degraded`** | `degraded` |  |  | `name() = "degraded"` | The fabric primary has decided a peer mesh is re-born (`investigate`). |
 
 <a id="t-rdm_core-views-ScopeStatus"></a>
 
@@ -321,7 +321,7 @@ serde: `rename_all = "kebab-case"`
 | 1 | **`Ready`** | `ready` |  |  | `name() = "ready"` | Ready: it takes traffic. |
 | 2 | **`Leaving`** | `leaving` |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
 | 3 | **`Dead`** | `dead` |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
-| 4 | **`Degraded`** | `degraded` |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
+| 4 | **`Degraded`** | `degraded` |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is re-born. |
 
 <a id="t-rdm_node-operation-State"></a>
 

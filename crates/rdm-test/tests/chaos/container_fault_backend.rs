@@ -1010,17 +1010,17 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
         assert!(v["running"] != true, "{n}: the killed container is not running: {v}");
     }
 
-    // RECOVERY through the rectifier: later attempts of the SAME Build, every lost member reborn.
-    let done = wait_for("the accepted Build completes a later attempt and every lost birth is reborn", Duration::from_secs(300), || {
+    // RECOVERY through the rectifier: later attempts of the SAME Build, every lost member re-born.
+    let done = wait_for("the accepted Build completes a later attempt and every lost birth is re-born", Duration::from_secs(300), || {
         let (estate, accepted, lost_births) = (&estate, accepted.clone(), lost_births.clone());
         async move {
             let b = estate.builds_obj().await.get(&rdm_client::BuildId::parse(&accepted).ok()?).await.ok()?;
             let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
-            let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(n).is_some_and(|old| old != i)).count() == lost_births.len();
+            let re_born = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(n).is_some_and(|old| old != i)).count() == lost_births.len();
             // A node recovery runs in its mesh's lane of the Build (R-BI7): none still running.
             let held = crate::build_log::build_value(&estate.carrier().await, &accepted).await;
             let lanes_ended = held["lanes"].as_object().is_none_or(|lanes| lanes.values().all(|l| l["state"] != "running" && l["state"] != "pending"));
-            (later && reborn && lanes_ended).then_some(b)
+            (later && re_born && lanes_ended).then_some(b)
         }
     })
     .await;

@@ -434,8 +434,8 @@ pub fn judge(e: &Evidence) -> Result<Verdict, Refusal> {
             if out.len() == before {
                 proved.push("control");
             }
-            let reborn = c.incarnation[0] != c.incarnation[1] || c.incarnation[1] != c.incarnation[2];
-            if c.exact_runtime_alive && !c.held_past_floor && (c.replaced_during || reborn || c.attempts[0] != c.attempts[1]) {
+            let re_born = c.incarnation[0] != c.incarnation[1] || c.incarnation[1] != c.incarnation[2];
+            if c.exact_runtime_alive && !c.held_past_floor && (c.replaced_during || re_born || c.attempts[0] != c.attempts[1]) {
                 out.push(rej(
                     SILENT_RUNTIME_JUDGED_DEAD,
                     format!(

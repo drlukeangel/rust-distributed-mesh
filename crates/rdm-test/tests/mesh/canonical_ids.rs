@@ -237,12 +237,12 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .collect();
     assert!(dead_after.is_empty(), "MeshStatus Dead for mesh2 was sent after the removed mesh2 left: {dead_after:?}");
 
-    let reborn = named(&spans, "rdm.mesh.node.update.via-ready")
+    let re_born = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
         .find(|sp| sp["attributes"]["incarnation_id"] == after["incarnation_id"])
         .expect("the restarted birth reports ready");
-    assert_eq!(s(&reborn["attributes"]["fabric_id"]), fabric_id, "restart keeps the fabric id");
-    assert_eq!(s(&reborn["attributes"]["node_id"]), s(&before["node_id"]));
+    assert_eq!(s(&re_born["attributes"]["fabric_id"]), fabric_id, "restart keeps the fabric id");
+    assert_eq!(s(&re_born["attributes"]["node_id"]), s(&before["node_id"]));
     // A second restart of the same node ran its own StartNode: none reused.
     let ran = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()

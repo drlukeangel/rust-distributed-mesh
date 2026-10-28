@@ -130,14 +130,14 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     assert_eq!(killed.len(), 3, "the member died in the admin-less window: {killed:?}");
 
     // Recovery through the rectifier: the same Build, later attempts, the cohort and the member back.
-    let done = wait_for("the accepted Build is complete past the fault and the lost births are reborn", Duration::from_secs(240), || {
+    let done = wait_for("the accepted Build is complete past the fault and the lost births are re-born", Duration::from_secs(240), || {
         let estate = &estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births.clone());
         async move {
             let b = estate.builds_obj().await.get(&rdm_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
             let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
-            let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() == lost_births.len();
-            (later && reborn).then_some(b)
+            let re_born = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() == lost_births.len();
+            (later && re_born).then_some(b)
         }
     })
     .await;
@@ -364,16 +364,16 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
         .into_iter()
         .filter(|sp| attr(sp, "node") == holder && at(sp) >= t0)
         .collect();
-    assert_eq!(adopted.len(), 1, "the reborn fabric primary adopted rafka-time once: {adopted:?}");
+    assert_eq!(adopted.len(), 1, "the re-born fabric primary adopted rafka-time once: {adopted:?}");
     assert_eq!(attr(adopted[0], "source"), "pull");
     assert_eq!(attr(adopted[0], "reason"), "recovery-pull");
     let pulls: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-recovery-pull").into_iter().filter(|sp| attr(sp, "node") == holder && at(sp) >= t0).collect();
-    assert_eq!(pulls.len(), 1, "the reborn fabric primary pulled rafka-time from a live node in its durable map: {pulls:?}");
+    assert_eq!(pulls.len(), 1, "the re-born fabric primary pulled rafka-time from a live node in its durable map: {pulls:?}");
     assert_eq!(attr(pulls[0], "outcome"), "adopted");
     // No maker: its topology is its durable map; one sweep of its own mesh, once.
     let sweeps: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-entry-sweep").into_iter().filter(|sp| attr(sp, "node") == holder && at(sp) >= t0).collect();
     assert_eq!(sweeps.len(), 1, "one sweep on entering its mesh: {sweeps:?}");
-    assert_eq!(attr(sweeps[0], "source"), "durable-map", "a reborn fabric primary has no maker");
+    assert_eq!(attr(sweeps[0], "source"), "durable-map", "a re-born fabric primary has no maker");
     let silent: Vec<String> = named(&spans, "rdm.node_admin.node.reject.via-entry-sweep-no-reply").into_iter().filter(|sp| attr(sp, "sweeper") == holder && at(sp) >= t0).map(|sp| attr(sp, "node")).collect();
     let sibling = format!("{holder_mesh}.admin.{}", if holder.ends_with(".1") { 2 } else { 1 });
     for dead in [&window_victim, &sibling] {
@@ -448,7 +448,7 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
         .into_iter()
         .filter(|sp| attr(sp, "node") == holder && at(sp) >= t0 && attr(sp, "source") == "own-clock")
         .collect();
-    assert_eq!(own.len(), 1, "the reborn fabric primary adopted its own clock once: {own:?}");
+    assert_eq!(own.len(), 1, "the re-born fabric primary adopted its own clock once: {own:?}");
     assert_eq!(attr(own[0], "reason"), "nothing-alive");
     let pulls: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-recovery-pull").into_iter().filter(|sp| attr(sp, "node") == holder && at(sp) >= t0).collect();
     assert!(pulls.len() == 1 && attr(pulls[0], "outcome") == "no-live-node", "one read of every node the store names, none answering, before the own clock: {pulls:?}");

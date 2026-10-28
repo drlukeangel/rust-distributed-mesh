@@ -258,14 +258,14 @@ async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_an
 async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
     use rdm_core::build_claim::{BuildClaim, BuildClaimRequest};
     let id = BuildId::mint();
-    let reborn_birth = birth("mesh1.admin.2", false);
-    let (p, p_seat, p_builds) = primary(&id, 1, Arc::new(AttemptContexts::in_memory()), &reborn_birth).await;
+    let re_born_birth = birth("mesh1.admin.2", false);
+    let (p, p_seat, p_builds) = primary(&id, 1, Arc::new(AttemptContexts::in_memory()), &re_born_birth).await;
     open(&p_builds, &id, 2).await;
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(p_seat.resolved.clone());
-    let ep = rdm_transport::endpoint::bind(reborn_birth.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(re_born_birth.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep, resolver);
-    let req = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: reborn_birth.node.node_id.clone(), executor_incarnation: IncarnationId::mint(), mesh: None };
+    let req = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: re_born_birth.node.node_id.clone(), executor_incarnation: IncarnationId::mint(), mesh: None };
     let (out, _) = client.call::<BuildClaim>(&rdm_transport::NodeTarget::ExactNode(p.node.node_id.clone()), &req, &rdm_transport::CallOptions::default()).await;
     match out {
         rdm_core::outcome::RpcOutcome::Reply(reply) => match reply.value() {

@@ -12,7 +12,7 @@
 //!   an event that happened while the attempt ran cannot strand the node. No timer and no sleep.
 //! - `Failed { reason }`: the node ends by name.
 //!
-//! The Day-0 root and a fabric-primary reborn from its durable map have no authority to pull from:
+//! The Day-0 root and a fabric-primary re-born from its durable map have no authority to pull from:
 //! their context says so ([`Authority::None`]) and the hook completes from local state
 //! (`gossip.md` section 9's fenced exception).
 //!

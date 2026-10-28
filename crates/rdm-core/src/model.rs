@@ -81,7 +81,7 @@ pub enum ScopeStatus {
     Leaving,
     /// Dead: a mesh every one of whose births was proven exited; final, its id never reissued.
     Dead,
-    /// The fabric primary has decided a peer mesh is reborn (`investigate`).
+    /// The fabric primary has decided a peer mesh is re-born (`investigate`).
     Degraded,
 }
 

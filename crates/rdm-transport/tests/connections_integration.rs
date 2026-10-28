@@ -151,7 +151,7 @@ async fn a_fact_naming_a_superseded_birth_still_dials_the_current_one() {
     let members = std::sync::Arc::new(rdm_core::connections::StaticIncarnations::default());
     members.set(r.b.resolved.node_id.clone(), r.b.resolved.name.clone(), rdm_core::IncarnationId::mint());
     held.set_topology_view(members);
-    let call = connected(&r, &held, &own, &r.b, b"reborn").await;
+    let call = connected(&r, &held, &own, &r.b, b"re-born").await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });
     assert_eq!(served_by(&call.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", call.outcome);
 }

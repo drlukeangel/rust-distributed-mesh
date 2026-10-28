@@ -501,7 +501,7 @@ async fn converge_connections_after_restart(f: &Formed, inv: &mut Invariants, re
 }
 
 /// [`converge_connections`], optionally tolerating a Connected Direct fact whose destination has
-/// since been reborn (`strict = false`): such a fact is listed under `stale_connected` and never
+/// since been re-born (`strict = false`): such a fact is listed under `stale_connected` and never
 /// counted as missing. The required edge, to the mesh primary's current birth, is always required.
 async fn converge_connections_with(f: &Formed, inv: &mut Invariants, strict: bool) -> Value {
     converge_connections_inner(f, inv, strict, None).await
@@ -553,7 +553,7 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
     } else if strict {
         "every compute and gateway holds no Connected Direct edge to a superseded birth and owes no retirement"
     } else {
-        "every compute and gateway owes no retirement (a Connected fact to a reborn node's superseded birth is listed, not required away)"
+        "every compute and gateway owes no retirement (a Connected fact to a re-born node's superseded birth is listed, not required away)"
     };
     inv.holds(msg, true, json!({"nodes": out.len()}));
     json!(out)
@@ -2162,7 +2162,7 @@ async fn restart_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str,
 }
 
 /// A non-fabric-primary node-admin dies (SIGKILL) and the fabric recovers it: the surviving admin of
-/// its mesh takes the seat, and a reborn admin stands at the same path.name. Returns the kill record,
+/// its mesh takes the seat, and a re-born admin stands at the same path.name. Returns the kill record,
 /// what the survivor saw, and the recovered view.
 async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
     let mesh = node.split('.').next().unwrap().to_string();
@@ -2195,7 +2195,7 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
         } else {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        assert!(started.elapsed() < Duration::from_secs(120), "{node} killed; no reborn admin stood at its path.name within 120 s; the survivor {} held the seat after {seat_ms:?} ms", survivor["name"]);
+        assert!(started.elapsed() < Duration::from_secs(120), "{node} killed; no re-born admin stood at its path.name within 120 s; the survivor {} held the seat after {seat_ms:?} ms", survivor["name"]);
     };
     let ev = json!({
         "event": "admin.kill-and-recover", "scenario": scenario, "node": node, "victim_node_id": victim["node_id"], "victim_incarnation_id": victim["incarnation_id"], "victim_was_primary": victim["is_primary"],

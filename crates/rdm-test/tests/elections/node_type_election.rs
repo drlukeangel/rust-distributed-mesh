@@ -170,7 +170,7 @@ fn primary_updated(spans: &[Value], c: &Cohort, operation_suffix: &str, successo
 /// in `before` (the view just before the kill), announced by the mesh as the winner after
 /// `gone_id`. Decided from the pre-kill view and the announcement span, never from a polled
 /// view: drift recovery rebirths the path within seconds, and a view polled after that already
-/// shows the reborn NodeId (a different birth) in the seat.
+/// shows the re-born NodeId (a different birth) in the seat.
 async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Cohort, gone_id: &str) -> (String, String) {
     let (name, id) = before
         .iter()
@@ -237,7 +237,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     complete(&format!("node.stop of {}", other_rpc[1]), estate.nodes_obj().await.stop(&path(&other_rpc[1])).await).await;
     estate.until_stopped_at_the_fabric_primary(&path(&other_rpc[1])).await;
     complete(&format!("node.start of {}", other_rpc[1]), estate.nodes_obj().await.start(&path(&other_rpc[1])).await).await;
-    // The Build completed on the executor; the asked admin's view holds the reborn node once its
+    // The Build completed on the executor; the asked admin's view holds the re-born node once its
     // Ready has reached it (one gossip interval): wait for the shape, as after the Build above.
     estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     let nodes = settle(&estate, &admin1, "restart non-primary").await;

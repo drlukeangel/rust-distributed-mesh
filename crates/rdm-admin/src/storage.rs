@@ -1592,8 +1592,8 @@ mod tests {
         let destination = end("mesh1.rpc.1");
         let row = |source: &str, destination: &ConnectionEnd| NodeConnection { source: end(source), destination: destination.clone(), ..fact(ConnectionState::Connected) };
         let (a, b) = (row("mesh1.rpc.2", &destination), row("mesh2.rpc.1", &destination));
-        let reborn = ConnectionEnd { node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()), ..destination.clone() };
-        let again = NodeConnection { id: rdm_core::ConnectionId::mint(), destination: reborn.clone(), ..a.clone() };
+        let re_born = ConnectionEnd { node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()), ..destination.clone() };
+        let again = NodeConnection { id: rdm_core::ConnectionId::mint(), destination: re_born.clone(), ..a.clone() };
         let check = async |sa: &dyn ConnectionsStorage, sb: &dyn ConnectionsStorage, reader: &dyn ConnectionsStorage, backend: &str| {
             sa.put_connection(&a).await.unwrap();
             sb.put_connection(&b).await.unwrap();
@@ -1605,7 +1605,7 @@ mod tests {
             assert_eq!(reader.connections_to(&destination.node_id).await.unwrap(), [a.clone()], "{backend}: a removed row leaves the index");
             sa.put_connection(&again).await.unwrap();
             assert!(reader.connections_to(&destination.node_id).await.unwrap().is_empty(), "{backend}: the row now names the birth re-born at the path: the old node's index holds no member of it");
-            assert_eq!(reader.connections_to(&reborn.node_id).await.unwrap(), [again.clone()], "{backend}: the new node's index holds it");
+            assert_eq!(reader.connections_to(&re_born.node_id).await.unwrap(), [again.clone()], "{backend}: the new node's index holds it");
         };
         let mem = MemoryConnectionsStorage::default();
         check(&mem, &mem, &mem, "memory").await;

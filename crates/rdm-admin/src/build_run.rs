@@ -1380,7 +1380,7 @@ mod tests {
     }
 
     /// CONTRACT: a claimed attempt with no run on the admin is started (a fabric-primary that died
-    /// after claiming, or an executor that was reborn); the run ends with its terminal; a call for
+    /// after claiming, or an executor that was re-born); the run ends with its terminal; a call for
     /// the same attempt after its end reads the receipts it holds, replaying a frame per `Complete`
     /// receipt and the terminal, and runs nothing again.
     #[tokio::test]

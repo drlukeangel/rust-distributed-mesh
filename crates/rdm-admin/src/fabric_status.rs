@@ -875,11 +875,11 @@ mod tests {
     #[test]
     fn an_admin_finds_its_own_row_by_node_id_while_its_superseded_birth_is_still_in_the_view() {
         let retired = node("mesh1.admin.1", NodeStatus::ConnectionsDeleting, false);
-        let reborn = node("mesh1.admin.1", NodeStatus::Ready, false);
-        let view = projected(vec![retired.clone(), reborn.clone(), node("mesh1.admin.2", NodeStatus::Ready, true)]);
-        assert_eq!(view.members().filter(|n| n.name == reborn.name).count(), 2, "both births of mesh1.admin.1 are in the view");
-        let me = view.own(&reborn.node_id).expect("this admin is in its view");
-        assert_eq!(me.node_id, reborn.node_id, "the reborn admin's own row, not the retired birth's {}", retired.node_id);
+        let re_born = node("mesh1.admin.1", NodeStatus::Ready, false);
+        let view = projected(vec![retired.clone(), re_born.clone(), node("mesh1.admin.2", NodeStatus::Ready, true)]);
+        assert_eq!(view.members().filter(|n| n.name == re_born.name).count(), 2, "both births of mesh1.admin.1 are in the view");
+        let me = view.own(&re_born.node_id).expect("this admin is in its view");
+        assert_eq!(me.node_id, re_born.node_id, "the re-born admin's own row, not the retired birth's {}", retired.node_id);
     }
 
     /// CONTRACT (R-H1): the fabric is ready only when every mesh is ready, and a

@@ -188,10 +188,16 @@ for path in git("diff", "--name-only", f"{base}..{head}", "--", "*.rs").splitlin
 # extended regex over the whole tree at <head> (this script and its test name the words, so they are exempt).
 TREE_BANNED = [
     # Q176 (Luke 2026-10-28): "there is no ready-for-traffic, there is ready", no alias, no decode, no mention.
-    ("ready-for-traffic", r"ready-for-traffic|ReadyForTraffic|ready_for_traffic|ready for traffic"),
+    ("ready-for-traffic", r"ready-for-traffic|ReadyForTraffic|ready_for_traffic|ready for traffic", ["."]),
+    # rdm#88: the page's word is re-born (same path.name, new node.id); a mesh is never reborn. The plans keep it
+    # in quotations as written, so the check holds the code and the pages.
+    ("reborn", r"reborn", ["crates", "docs/architecture", "docs/reference"]),
+    # rdm#88: the word is revision; the Unix epoch (a time origin) is another sense and stays. docs/architecture
+    # is not scanned: node-rpc.md still names claim_epoch, a page change that waits on Luke.
+    ("epoch", r"(?<!unix[ _])(?<!_unix_)(?<!UNIX_)epoch", ["crates", "docs/reference"]),
 ]
-for label, pattern in TREE_BANNED:
-    out = subprocess.run(["git", "grep", "-n", "-I", "-i", "-E", pattern, head, "--", ".",
+for label, pattern, scope in TREE_BANNED:
+    out = subprocess.run(["git", "grep", "-n", "-I", "-i", "-P", pattern, head, "--", *scope,
                           ":!scripts/name-check.py", ":!scripts/test_name_check.py"],
                          capture_output=True, text=True).stdout
     for l in out.splitlines():

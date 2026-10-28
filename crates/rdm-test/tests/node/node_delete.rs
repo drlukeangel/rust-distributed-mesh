@@ -13,7 +13,7 @@
 //! 2. A node born after the events learns the departure from the retained mesh topology, never
 //!    having heard an event.
 //! 3. The pre-notice is never emitted before the executor's claim, the departure never before
-//!    the terminal proof, and the departure is not drift: nothing is reborn.
+//!    the terminal proof, and the departure is not drift: nothing is re-born.
 //! 4. The delete releases identity, not storage (node-delete.md "Storage": "Retain data dir and
 //!    endpoint key; a later spec can inherit them"): the victim's data dir and its endpoint key
 //!    stay, and no step of the delete releases storage.
@@ -262,7 +262,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
 }
 
 fn unix_nanos() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("after the epoch").as_nanos() as u64
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("after the Unix epoch").as_nanos() as u64
 }
 
 /// CONTRACT (node-delete.md step 4: "The surviving executor emits node.deleted on the caller stream

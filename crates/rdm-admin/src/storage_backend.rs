@@ -1035,7 +1035,7 @@ mod tests {
     /// reads its predecessor's runtime rows and attempt contexts. The attempt contexts are the data
     /// dir's, so an admin over another data dir reads none of them; the runtime rows are the fabric's
     /// lines in its store root's `nodes.jsonl` (R-SR1), so it reads them too.
-    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(backend: &dyn StorageBackend, first: &StorageScope, reborn: &StorageScope, other: &StorageScope) {
+    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(backend: &dyn StorageBackend, first: &StorageScope, re_born: &StorageScope, other: &StorageScope) {
         let runtime = crate::storage::RuntimeRow {
             node_id: NodeId::mint(),
             name: "mesh1.rpc.2".parse().unwrap(),
@@ -1050,7 +1050,7 @@ mod tests {
             b.nodes.put_runtime(&runtime).await.unwrap();
             b.builds.put_attempt_context(&build, Some("mesh1"), 2, &context).await.unwrap();
         }
-        let b = backend.open(reborn).await.unwrap_or_else(|e| panic!("the re-born birth opens over the inherited data dir: {e}"));
+        let b = backend.open(re_born).await.unwrap_or_else(|e| panic!("the re-born birth opens over the inherited data dir: {e}"));
         assert_eq!(b.nodes.runtimes().await.unwrap(), vec![runtime.clone()], "the re-born admin holds its predecessor's runtime rows");
         assert_eq!(b.nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "a point read by the birth finds it");
         assert_eq!(b.builds.attempt_context(&build, Some("mesh1"), 2).await.unwrap(), Some(context.clone()), "and its predecessor's attempt context");
@@ -1105,10 +1105,10 @@ mod tests {
     #[cfg(feature = "file-backend")]
     #[tokio::test]
     async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts_on_the_file_backend() {
-        let store = crate::test_support::tempdir("file-backend-reborn-store");
-        let data_dir = crate::test_support::tempdir("file-backend-reborn-data");
+        let store = crate::test_support::tempdir("file-backend-re-born-store");
+        let data_dir = crate::test_support::tempdir("file-backend-re-born-data");
         let fabric_id = FabricId::mint();
         let at = |data_dir: PathBuf| StorageScope { data_dir, fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() };
-        a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(&FileBackend::at(&store), &at(data_dir.clone()), &at(data_dir), &at(crate::test_support::tempdir("file-backend-reborn-other"))).await;
+        a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(&FileBackend::at(&store), &at(data_dir.clone()), &at(data_dir), &at(crate::test_support::tempdir("file-backend-re-born-other"))).await;
     }
 }

@@ -102,8 +102,8 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     let recovered = wait_for(&format!("{holder} is {away}'s mesh primary again and a new node stands ready at {successor}"), Duration::from_secs(120), || async {
         let nodes = estate.node_values().await;
         let h_ok = nodes.iter().any(|n| s(&n["name"]) == holder && n["is_primary"] == true && n["status"] == "ready");
-        let reborn = nodes.iter().find(|n| s(&n["name"]) == successor && n["status"] == "ready" && s(&n["node_id"]) != successor_birth.0).cloned();
-        if h_ok { reborn } else { None }
+        let re_born = nodes.iter().find(|n| s(&n["name"]) == successor && n["status"] == "ready" && s(&n["node_id"]) != successor_birth.0).cloned();
+        if h_ok { re_born } else { None }
     })
     .await;
     let recovered_ms = killed_at.elapsed().as_millis();
@@ -116,5 +116,5 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     assert!(!election.is_empty(), "{holder} holds itself {away}'s mesh-primary again by the election after its restart's update: {}", serde_json::to_string(&named(&spans, "rdm.mesh.primary.update.via-announcement")).unwrap_or_default());
     let trace_id = s(&election[0]["trace_id"]);
     estate.record_trace_url(&trace_id);
-    eprintln!("SEATED-AGAIN-TRACE {trace_id} holder={holder} successor={successor} reborn={} recovered_ms={recovered_ms}", s(&recovered["node_id"]));
+    eprintln!("SEATED-AGAIN-TRACE {trace_id} holder={holder} successor={successor} re-born={} recovered_ms={recovered_ms}", s(&recovered["node_id"]));
 }

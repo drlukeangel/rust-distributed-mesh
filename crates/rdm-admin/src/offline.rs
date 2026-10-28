@@ -1226,9 +1226,9 @@ pub(crate) mod tests {
 
             let mut t = OfflineTickle::new();
             assert_eq!(tick(&mut t, PROBE_DELAY, vec![marked("b")]).await.tickled, vec!["b".to_string()]);
-            let reborn = SilentNode { incarnation: Some(crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("inc-of-b-again")).unwrap()), ..marked("b") };
+            let re_born = SilentNode { incarnation: Some(crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("inc-of-b-again")).unwrap()), ..marked("b") };
             sleep(INTERVAL).await;
-            assert_eq!(tick(&mut t, PROBE_DELAY + 500, vec![reborn]).await.tickled, vec!["b".to_string()], "another birth at b's node id: its own ladder");
+            assert_eq!(tick(&mut t, PROBE_DELAY + 500, vec![re_born]).await.tickled, vec!["b".to_string()], "another birth at b's node id: its own ladder");
             assert_eq!(t.ladders(), (1, 0), "the old birth's ladder was dropped");
             sleep(DIAL + INTERVAL).await;
             assert_eq!(ended.load(Ordering::SeqCst), 1, "only the new birth's probe ran to its end");
@@ -1645,11 +1645,11 @@ pub(crate) mod tests {
         };
         let digest_view = rdm_transport::topology::DigestView::default();
         let t0 = std::time::Instant::now();
-        let (silent, fresh, reborn, unheld) = (digest("mesh1.rpc.1"), digest("mesh1.rpc.2"), digest("mesh1.rpc.3"), digest("mesh1.rpc.4"));
+        let (silent, fresh, re_born, unheld) = (digest("mesh1.rpc.1"), digest("mesh1.rpc.2"), digest("mesh1.rpc.3"), digest("mesh1.rpc.4"));
         digest_view.record_at(silent.clone(), t0);
         digest_view.record_at(fresh.clone(), t0 + floor);
-        digest_view.record_at(reborn.clone(), t0);
-        let mut other_birth = node_of(&reborn);
+        digest_view.record_at(re_born.clone(), t0);
+        let mut other_birth = node_of(&re_born);
         other_birth.incarnation_id = Some(IncarnationId::mint());
         let watched = [node_of(&silent), node_of(&fresh), other_birth, node_of(&unheld)];
         let now = t0 + floor + std::time::Duration::from_millis(700);

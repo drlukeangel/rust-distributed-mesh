@@ -2960,7 +2960,7 @@ serde: `rename_all = "kebab-case"`
 | 1 | **`Ready`** |  |  | `name() = "ready"` | Ready: it takes traffic. |
 | 2 | **`Leaving`** |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
 | 3 | **`Dead`** |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
-| 4 | **`Degraded`** |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
+| 4 | **`Degraded`** |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is re-born. |
 
 <a id="t-rdm_core-topology-SourceVersion"></a>
 
@@ -2968,11 +2968,11 @@ serde: `rename_all = "kebab-case"`
 
 `crates/rdm-core/src/topology.rs` · struct · 2 fields · rdm-core
 
-The source version a caller already holds for a mesh: the publisher is the epoch, so
+The source version a caller already holds for a mesh: the publisher is the revision, so
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | The source mesh's primary birth that published the version, the epoch of `topology_version`. |
+| 0 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | The source mesh's primary birth that published the version, the revision of `topology_version`. |
 | 1 | `topology_version` | `u64` |  | The version held. |
 
 <a id="t-rdm_core-build-Step"></a>

@@ -61,10 +61,10 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 2. The broker restarts, node.stop then node.start (Q183): the same node, birth and port.
     let (restart, _) = estate.stop_then_start(&"mesh1.broker.1".parse().unwrap()).await;
-    let reborn = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await).into_iter().find(|n| n["name"] == "mesh1.broker.1").unwrap();
-    assert_eq!(s(&reborn["node_id"]), broker_id, "a restart keeps the NodeId: {reborn}");
-    assert_eq!(s(&reborn["incarnation_id"]), old_birth, "a restart keeps the birth: {reborn}");
-    assert_eq!(s(&reborn["transport_addr"]), addr, "a restart keeps the port: {reborn}");
+    let re_born = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await).into_iter().find(|n| n["name"] == "mesh1.broker.1").unwrap();
+    assert_eq!(s(&re_born["node_id"]), broker_id, "a restart keeps the NodeId: {re_born}");
+    assert_eq!(s(&re_born["incarnation_id"]), old_birth, "a restart keeps the birth: {re_born}");
+    assert_eq!(s(&re_born["transport_addr"]), addr, "a restart keeps the port: {re_born}");
 
     estate.witness_holds_birth("mesh1.gateway.1", "mesh1.broker.1").await;
 
@@ -73,7 +73,7 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     assert_eq!((after["outcome"].as_str(), after["route"].as_str()), (Some("Reply"), Some("via-peer")), "{after}");
     assert_eq!(after["reply"]["executing_node"], broker_id, "{after}");
     assert_eq!(after["reply"]["result"], json!({"found": true, "value": "before-restart"}));
-    estate.artifact("calls.json", &json!({"put": put, "by_path": by_path, "restart": {"build_id": restart.build_id.to_string(), "attempt": restart.attempt}, "reborn": reborn, "after": after}));
+    estate.artifact("calls.json", &json!({"put": put, "by_path": by_path, "restart": {"build_id": restart.build_id.to_string(), "attempt": restart.attempt}, "re-born": re_born, "after": after}));
 
     estate.stop().await;
     let spans = estate.spans();

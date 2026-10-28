@@ -206,16 +206,16 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let mut moved = draining.clone();
         moved[2].node.transport_addr = "127.0.0.1:49999".parse().unwrap();
         bumps.push(("an endpoint moved", v.observe(&Full::new(moved.clone(), vec![], vec![]))));
-        let mut reborn = moved.clone();
+        let mut re_born = moved.clone();
         let next_birth = IncarnationId::mint();
-        reborn[0].node.supersedes = Some(reborn[0].node.incarnation.clone());
-        reborn[0].node.incarnation = next_birth;
-        bumps.push(("a birth's incarnation changed", v.observe(&Full::new(reborn.clone(), vec![], vec![]))));
-        let deleting = op(&reborn[1], "node.delete:mesh2.rpc.2");
-        bumps.push(("an in_flight overlay added", v.observe(&Full::new(reborn.clone(), vec![deleting.clone()], vec![]))));
-        bumps.push(("an in_flight overlay cleared with the departure", v.observe(&Full::new(vec![reborn[0].clone(), reborn[2].clone()], vec![], vec![deleting.clone()]))));
-        bumps.push(("a deleted identity expired", v.observe(&Full::new(vec![reborn[0].clone(), reborn[2].clone()], vec![], vec![]))));
-        bumps.push(("a birth added", v.observe(&Full::new(vec![reborn[0].clone(), reborn[2].clone(), member("mesh2", 9, &NodeId::mint(), &IncarnationId::mint(), 1)], vec![], vec![]))));
+        re_born[0].node.supersedes = Some(re_born[0].node.incarnation.clone());
+        re_born[0].node.incarnation = next_birth;
+        bumps.push(("a birth's incarnation changed", v.observe(&Full::new(re_born.clone(), vec![], vec![]))));
+        let deleting = op(&re_born[1], "node.delete:mesh2.rpc.2");
+        bumps.push(("an in_flight overlay added", v.observe(&Full::new(re_born.clone(), vec![deleting.clone()], vec![]))));
+        bumps.push(("an in_flight overlay cleared with the departure", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone()], vec![], vec![deleting.clone()]))));
+        bumps.push(("a deleted identity expired", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone()], vec![], vec![]))));
+        bumps.push(("a birth added", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone(), member("mesh2", 9, &NodeId::mint(), &IncarnationId::mint(), 1)], vec![], vec![]))));
         let versions: Vec<u64> = bumps.iter().map(|(_, n)| *n).collect();
         assert_eq!(versions, vec![1, 1, 1, 1, 2, 3, 4, 5, 6, 7, 8], "only material changes bump: {bumps:?}");
         result.insert("topology_version_by_observation".into(), json!(bumps.iter().map(|(w, n)| json!({ "observation": w, "topology_version": n })).collect::<Vec<_>>()));
@@ -421,10 +421,10 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let Forward::Delta(next) = fwd.source("mesh1.admin.1", "mesh2", &src, 45, &Full::new(d45, vec![], vec![]), 4) else { panic!("a further move is a delta") };
         let (_, _, base, to, _) = delta_of(&next);
         assert_eq!((base, to), (43, 45), "the base stays the last version published into the Mesh");
-        // A seat change publishes a full before any delta; a new source epoch does too.
+        // A seat change publishes a full before any delta; a new source revision does too.
         fwd.reset();
         assert!(matches!(fwd.source("mesh1.admin.2", "mesh2", &src, 45, &f43, 5), Forward::Full(_)), "taking the seat: a full first");
-        assert!(matches!(fwd.source("mesh1.admin.2", "mesh2", &publisher("mesh2.admin.2"), 1, &f41, 6), Forward::Full(_)), "a new source primary is a new epoch: a full first");
+        assert!(matches!(fwd.source("mesh1.admin.2", "mesh2", &publisher("mesh2.admin.2"), 1, &f41, 6), Forward::Full(_)), "a new source primary is a new revision: a full first");
         // A delta too large for one message is the full.
         let huge = Mesh::new("mesh2", 80);
         let Forward::Full(_) = fwd.source("mesh1.admin.2", "mesh2", &src, 46, &Full::new(huge.digests(1), vec![], vec![]), 7) else { panic!("a different publisher: full") };
