@@ -3312,3 +3312,6 @@ Blocked on the fabric's change naming the stopped birth not-ready) and the delet
 (rdm#93) finished its gate at 083d88fe5 and is writing its hand-over, waiting on nothing.
 Q248 (a starting frame after the join's pending moves the row nowhere, the stop's rule on the start's page) ruled A by
 the lead (INDEX); node-start.md landed; the cell accepts the order, in lane 6's unit.
+Q249 (rdm#140: an executor whose replayed start is answered already-applied for a birth its view holds stopped clears
+the stop mark and publishes the clear) ruled A by the lead with the flame (INDEX); node-start.md landed; the code unit
+is the landing blocker, owed first. Lane 5 (rdm#87) rebases onto 9cd422ab2 and gates again; its own red is fixed in 43aafb405.

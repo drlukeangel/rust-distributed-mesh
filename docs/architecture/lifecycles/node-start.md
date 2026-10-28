@@ -26,7 +26,10 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    outbound call; AfterStop rejoins the same `(node.id, incarnation)` over the endpoint and path of
    the call that commanded it, and learns who answered from the answer. Emit
    `NodeJoined` (Data) only after the accepted join and channel join; the mesh-primary records
-   pending from that frame. node.start clears NodeStopped at NodeJoined. No state is written
+   pending from that frame. node.start clears NodeStopped at NodeJoined, or, for an executor whose
+   replayed start of a birth its view holds stopped is answered `AlreadyApplied`, at that answer: the
+   join it did not see; it clears the mark in its overlay and publishes the clear as the mesh's
+   primary (Q249). No state is written
    before `CommandAccepted`; the mesh-primary records starting from that frame, the node's
    acknowledgement (a create's starting from the launch), and a query answers it ([states](states.md)).
    The join and the start stream are two calls with no order between them: a starting frame that
