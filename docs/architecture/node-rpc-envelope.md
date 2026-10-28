@@ -1785,12 +1785,15 @@ pub enum ProofOp {
 
 pub enum OriginateRequest {
     Call { destination: String, op: ProofOp },
-    ArmFault { refuse_index: u32, refuse_history: u32 },
+    ArmFault { refuse_index: u32, refuse_history: u32, pass_history: u32 },
     ReleaseFault,
     Snapshot,
     RecordProxy { destination: String, carrier: String, failed_attempts: u32 },
     Dial { destination: String },
+    Stream { destination: String, payload: Vec<u8> },
     StopTransport { reason: String },
+    BlockDirect { destination: String, blocked: bool },
+    UpdateOwnConfig { config: BTreeMap<String, String> },
 }
 
 pub struct AnsweredBy {
@@ -1812,7 +1815,7 @@ pub enum OriginateReply {
     },
     FaultArmed { by: AnsweredBy, refuse_index: u32, refuse_history: u32 },
     FaultReleased { by: AnsweredBy, refused: u32 },
-    Snapshot { by: AnsweredBy, own_active_proxies: Vec<NodeConnection>, own_latest_directs: Vec<NodeConnection>, active_len: usize, owed: Vec<NodeConnection>, fault_refused: u32 },
+    Snapshot { by: AnsweredBy, own_active_proxies: Vec<NodeConnection>, own_latest_directs: Vec<NodeConnection>, active_len: usize, active_directs: Vec<NodeConnection>, owed: Vec<NodeConnection>, fault_refused: u32 },
     BadDestination { by: AnsweredBy, reason: String },
     PeerUnresolved { reason: String },
     NotReady { reason: String },
@@ -1822,7 +1825,11 @@ pub enum OriginateReply {
     Unauthorized { reason: String },
     ProxyRecorded { by: AnsweredBy, destination_node_id: String, destination_incarnation: String, carrier_node_id: String, carrier_incarnation: String, failed_attempts: u32 },
     Dialed { by: AnsweredBy, destination_node_id: String, outcome: String },
+    Streamed { by: AnsweredBy, peer: AnsweredBy, kind: String, connection_id: String, answered: Vec<u8> },
+    StreamFailed { by: AnsweredBy, reason: String },
     TransportStopMarked { by: AnsweredBy, reason: String },
+    DirectBlocked { by: AnsweredBy, destination: String, blocked: bool },
+    OwnConfigUpdated { by: AnsweredBy, outcome: String, config: BTreeMap<String, String>, revision: u64 },
 }
 ```
 ## The ledger row
