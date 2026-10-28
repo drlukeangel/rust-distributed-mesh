@@ -74,13 +74,15 @@ async fn own_view(r: &Running) -> rdm_core::views::NodeView {
                     },
                 )
                 .await;
-            let StatusReply::Nodes { mut nodes } = answer else {
-                panic!("{answer:?}")
-            };
-            if nodes.len() == 1 {
-                return nodes.remove(0);
+            // Before this admin holds its own primary records it is not a primary: it forwards the read to
+            // the mesh-primary its view names and, naming none yet, refuses it not-ready (query.md §1;
+            // Q243). The read is not answered yet, as an empty list is not.
+            match answer {
+                StatusReply::Nodes { mut nodes } if nodes.len() == 1 => return nodes.remove(0),
+                StatusReply::Nodes { nodes } => assert!(nodes.is_empty()),
+                StatusReply::NotReady { .. } => {}
+                other => panic!("{other:?}"),
             }
-            assert!(nodes.is_empty());
             changes.changed().await.unwrap();
         }
     })
