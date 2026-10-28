@@ -735,6 +735,69 @@ async fn an_observation_after_a_recorded_row_of_its_pair_is_held_as_the_latest_w
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// CONTRACT (connections.md §9.4: one pending item per (destination, destination incarnation,
+/// alpn), and a reconnect on one pair never touches another's; §9.5, Q169: the reconciler decides
+/// from its dial's own result, in memory; §12: each attempt ends on one span): two destinations
+/// due at once, each dialled and each Reply spending its own attempt while both Direct Connected
+/// rows are still owed; the rows then land one after the other. Each attempt ends on exactly one
+/// `via-recovery-attempt` span (`direct-connected`), and each destination is dialled once. What
+/// must NOT happen: the first destination's row landing arming the second destination's attempt
+/// again from its Failed row (its own Connected row not landed yet), so that attempt ends twice
+/// and, due at once, may be dialled again.
+#[test]
+fn an_attempt_its_dials_reply_spent_is_not_armed_again_by_another_destinations_row_landing() {
+    let calls: Arc<Mutex<Vec<String>>> = Arc::default();
+    let dests = std::cell::RefCell::new(Vec::new());
+    let spans = spans_of("an_attempt_its_dials_reply_spent_is_not_armed_again_by_another_destinations_row_landing", None, || async {
+        let dir = data_dir("spent-not-armed-again");
+        let (me, a, b) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"), end("mesh1.rpc.4"));
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
+        // Both series failed a minute ago: both attempts are due at once.
+        for dest in [&a, &b] {
+            let mut failed = row(&me, dest, ConnectionKind::Direct, ConnectionState::Failed, None, now_ms() - 60_000);
+            failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
+            writer.record(failed).await.unwrap();
+        }
+        assert_eq!(writer.recovery_pending().len(), 2, "one attempt per destination");
+        // Every row waits while the dials are made: both Direct Connected rows are owed when both Replies are in.
+        let rows = writer.hold_rows().await;
+        let (w, seen) = (writer.clone(), calls.clone());
+        let ends = [a.clone(), b.clone()];
+        let dial: RecoveryDial = Arc::new(move |destination: ConnectionEnd| {
+            let (w, seen) = (w.clone(), seen.clone());
+            let target = ends.iter().find(|e| **e == destination).map(resolved);
+            Box::pin(async move {
+                seen.lock().unwrap().push(destination.name.to_string());
+                w.direct_connected(&target.expect("a destination the cell seeded"));
+                "Reply".to_string()
+            })
+        });
+        let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(25), Some(dial));
+        until("both destinations are dialled and both attempts spent", || calls.lock().unwrap().len() == 2 && writer.recovery_pending().is_empty()).await;
+        assert_eq!(writer.in_flight(), 2, "both Direct Connected rows are owed");
+        drop(rows);
+        writer.observations_landed().await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(writer.recovery_pending().is_empty(), "no attempt stands once both rows have landed: {:?}", writer.recovery_pending());
+        dests.borrow_mut().extend([a.name.to_string(), b.name.to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+    let mut dialled = calls.lock().unwrap().clone();
+    dialled.sort();
+    let dests = dests.into_inner();
+    assert_eq!(dialled, dests, "each destination dialled once");
+    for dest in &dests {
+        let ended: Vec<Option<String>> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.connection.remove.via-recovery-attempt" && attr(s, "destination").as_deref() == Some(dest.as_str())).map(|s| attr(s, "reason")).collect();
+        let story: Vec<String> = spans
+            .iter()
+            .filter(|s| ["rdm.node_admin.connection.remove.via-recovery-attempt", "rdm.node_admin.connection.update.via-observed", "rdm.node_admin.connection.create.via-recovery-dial"].contains(&s["name"].as_str().unwrap_or_default()))
+            .map(|s| format!("{} start={} end={} destination={:?} reason={:?} state={:?}", s["name"].as_str().unwrap_or_default(), s["start_unix_nano"], s["end_unix_nano"], attr(s, "destination"), attr(s, "reason"), attr(s, "state")))
+            .collect();
+        assert_eq!(ended, vec![Some("direct-connected".to_string())], "the attempt toward {dest} ends on one span:\n{}", story.join("\n"));
+    }
+}
+
 /// CONTRACT (connections.md §9.3, §9.4, §9.5, Q7 ruled Luke 2026-10-13): one reconciler, two
 /// arming paths, one pending item per (destination, destination_incarnation). A latest Direct
 /// Failed row arms the reconciler on its own without any inbound accept trigger. When `due_ms` is
