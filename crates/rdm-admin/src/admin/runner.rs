@@ -21,6 +21,20 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
     }
 }
 
+/// The state the hand-off at `mesh`'s first admin gives ([`AdminRunner::mesh_state_hook`]): the
+/// furthest state this admin holds for the mesh, from the mesh primary's declaration it applied by
+/// the mesh's MeshId (`declared`; the fabric-primary sets a mesh ready on that report, states.md)
+/// and from the MeshStatus its gossip view holds, a state moving only forward. A declaration applied
+/// here is held whether or not the mesh's MeshStatus frame arrived before its node-admin was lost.
+/// `Pending` for a mesh it holds no state for (a new mesh, e4.s11). A held word that is no Mesh
+/// lifecycle state is no state held.
+pub(crate) fn held_mesh_state(digest_view: &DigestView, records: &Records, mesh: &str) -> rdm_core::status::MeshState {
+    let heard = digest_view.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok());
+    let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned();
+    let declared = mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
+    heard.max(declared).unwrap_or(rdm_core::status::MeshState::Pending)
+}
+
 /// Realises Build operations through the deployment and lifecycle pipelines.
 pub struct AdminRunner {
     /// The provider that realises runtimes.
@@ -599,11 +613,10 @@ impl AdminRunner {
     }
 
     /// The state this admin's hand-off gives a mesh's first admin (the hook below): the mesh's current
-    /// held state for an existing mesh, as its MeshStatus is held here, and `Pending` for a mesh it
-    /// holds no state for (a new mesh, e4.s11). A held word that is no Mesh lifecycle state is no
-    /// state held.
+    /// held state for an existing mesh, as this admin holds it, and `Pending` for a mesh it holds no
+    /// state for (a new mesh, e4.s11); [`held_mesh_state`].
     fn held_mesh_state(&self, mesh: &str) -> rdm_core::status::MeshState {
-        self.digest_view.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok()).unwrap_or(rdm_core::status::MeshState::Pending)
+        held_mesh_state(&self.digest_view, &self.records, mesh)
     }
 
     /// The fabric-primary -> mesh state hand-off at a mesh's first admin, as the create pipeline's

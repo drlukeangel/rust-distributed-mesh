@@ -3434,6 +3434,32 @@ mod tests {
         assert_eq!(status("mesh3"), ScopeStatus::Ready, "a mesh whose row holds ready is projected from its members, as before");
     }
 
+    /// CONTRACT (#2805, rdm#175; mesh-investigation.md "A node-admin joins the live mesh"; fabric
+    /// primary §7; states.md: a mesh's state only moves forward): the state the fabric-primary hands a
+    /// mesh's first admin is the state it holds for that mesh, and the mesh primary's declaration this
+    /// admin applied (by the mesh's MeshId) is held, whatever its gossip view has heard yet. Pending
+    /// only for a mesh it holds no state for (a new mesh). Must NOT happen: a mesh whose Ready this
+    /// fabric-primary applied, its node-admin lost before its Ready MeshStatus frame arrived here,
+    /// handed Pending at its recovery (rejected by the recovered birth as a backward move).
+    #[test]
+    fn the_hand_off_gives_the_declared_mesh_state_this_admin_applied_ahead_of_the_gossip_view() {
+        use rdm_core::status::MeshState;
+        use rdm_transport::topology::Frame;
+        let digest_view = DigestView::default();
+        let records = Records::default();
+        assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Pending, "a mesh this admin holds no state for is new: Pending");
+        records.meshes.lock().unwrap().insert("mesh2".into(), mesh_id("mesh2"));
+        let pending = Frame::MeshStatus { mesh: "mesh2".into(), status: "pending".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
+        assert!(digest_view.statuses.take(&pending, &fabric1()));
+        records.declared.lock().unwrap().meshes.insert(mesh_id("mesh2"), MeshState::Ready);
+        assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Ready, "the declaration applied here holds Ready while the gossip view still holds pending");
+        let leaving = Frame::MeshStatus { mesh: "mesh2".into(), status: "leaving".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 20 };
+        assert!(digest_view.statuses.take(&leaving, &fabric1()));
+        assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Leaving, "the furthest state held, from either: a state only moves forward");
+        records.declared.lock().unwrap().meshes.insert(mesh_id("mesh3"), MeshState::Dead);
+        assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh3"), MeshState::Pending, "a declaration is read by this mesh's own MeshId only");
+    }
+
     /// CONTRACT (states.md "Routing": a stop is applied by a peer on receipt of the fact): the view
     /// application routing reads is rebuilt at once when a routing fact is taken, never on the
     /// poll. A mesh status taken makes the rebuild due though the poll is an hour away; so does a
