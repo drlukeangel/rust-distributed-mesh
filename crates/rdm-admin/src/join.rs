@@ -429,6 +429,12 @@ impl JoinDoor {
                         let m = Mismatch { field: "name", deployed: format!("the row at {} holds node {}", row.name, row.node_id), reported: format!("node {} as {}", d.node.node_id, d.node.name) };
                         tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
                             .in_scope(|| tracing::warn!("the row at the admitted name belongs to another node"));
+                        // A caller birth this admin does not hold (Q207; node-investigation.md: "A node
+                        // that comes back after it was re-created is such a caller"): refused by name,
+                        // then decided by its path.name and this admin's atlas, on its own task.
+                        if let Some(atlas) = &self.atlas {
+                            atlas.refused("join", &d.node.node_id, &d.node.incarnation);
+                        }
                         return rdm_core::reply::join::join_mismatch(m.field.into(), m.deployed, m.reported);
                     }
                 };

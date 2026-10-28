@@ -739,6 +739,18 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
         println!("refusal after the resume: {} {} at {} attempt {} subject {} trace http://192.168.68.99:16687/trace/{}", s(&sp["name"]), attr(sp, "outcome"), attr(sp, "node"), attr(sp, "attempt"), attr(sp, "subject"), s(&sp["trace_id"]));
     }
     assert!(landed.is_empty(), "nothing of the superseded attempt {superseded} lands in the Build's journal: {landed:#?}");
+    // The resumed birth is a caller its mesh-primary does not hold (Q207), whichever door it comes back
+    // through: its Digest, refused once a receiver holds it deleted, or its join answering the
+    // mesh-primary's command, refused by name once its path.name holds the re-created birth (rdm#153,
+    // gate gates-6-9af200cc4: resumed before `NodeDeleted`, it joined, was refused, and left its mesh
+    // silent). Either way it is decided deleted and reported, and the fabric-primary opens its
+    // termination.
+    let decided = spans_named(&spans, "rdm.node_admin.node.update.via-refused-caller").into_iter().find(|sp| attr(sp, "node_id") == node_id && attr(sp, "outcome") == "terminate-reported").cloned().unwrap_or_else(|| {
+        panic!("the resumed birth is decided and reported: {:#?} {:#?}", spans_named(&spans, "rdm.node_admin.node.update.via-refused-caller"), spans_named(&spans, "rdm.node_admin.node.reject.via-join-mismatch"))
+    });
+    let terminated = spans_named(&spans, "rdm.node_admin.build.update.via-terminate-returned").into_iter().find(|sp| attr(sp, "node_id") == node_id).cloned().expect("the fabric-primary opens the resumed birth's termination");
+    println!("refused caller decided at its {} door: http://192.168.68.99:16687/trace/{}", attr(&decided, "door"), s(&decided["trace_id"]));
+    println!("termination opened: http://192.168.68.99:16687/trace/{}", s(&terminated["trace_id"]));
     let next: u32 = attr(&claim, "attempt").parse().unwrap();
     assert!(reported.contains(&next) && !reported.contains(&superseded), "the next attempt {next}'s verdict is the Build's, and the superseded attempt {superseded} has none: {reported:?}");
     assert!(own_writes.iter().all(|r| r.writer.as_ref().is_some_and(|w| w.incarnation_id == born)) && !own_writes.is_empty(), "every version of its own record the birth wrote names it, its node and incarnation, as its writer (Q109): {versions:#?}");

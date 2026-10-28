@@ -3,7 +3,8 @@
 //! atlas; if it's needed it should re-admit; if it's not it should delete."
 //!
 //! One decision for every primary and every door a caller birth it does not hold comes through (a
-//! status declaration refused `SubjectUnknown`, a deleted birth's Digest heard again): decided from
+//! status declaration refused `SubjectUnknown`, a deleted birth's Digest heard again, a join report
+//! refused `JoinMismatch` because the row at its path.name holds another node): decided from
 //! this admin's own atlas ([`crate::atlas::Atlas::refused_caller`]), and, at an admin that
 //! is not the fabric-primary, verified at the root through `fabrics.atlas.get` before anything acts (the
 //! root's answer wins: this admin may have missed an op). A caller deleted is reported to the
@@ -43,7 +44,7 @@ impl RefusedCallers {
         Self { node_id, recovery, heard_again, in_flight: Mutex::default() }
     }
 
-    /// Decide the caller birth `(node_id, incarnation)` refused at `door` (`declaration` or `digest`)
+    /// Decide the caller birth `(node_id, incarnation)` refused at `door` (`declaration`, `digest` or `join`)
     /// and act on it, once per birth at a time: one `rdm.node_admin.node.update.via-refused-caller`
     /// span naming the decision, whether the fabric-primary verified it, and what was done. The
     /// decision, or `None` when one for the birth is already in flight.
@@ -322,7 +323,7 @@ mod tests {
     /// answers the command with its join report: the row at its path.name now holds the re-created
     /// birth, so the join is refused `JoinMismatch` by name at once, and the join door decides the
     /// caller by its path.name and the atlas: another birth is at its path.name, so it is deleted
-    /// (`delete-held`, naming that birth), decided at the root itself, and reported for
+    /// (`delete-path-held`), decided at the root itself, and reported for
     /// `node.terminate` (`via-returned-reported` naming the exact birth; the rig builds no Build door,
     /// so the open is refused naming it).
     /// Must NOT happen: the refusal and nothing decided (the red: the deleted birth leaves its mesh,
@@ -419,7 +420,7 @@ mod tests {
         assert_eq!(d["door"], "join", "{d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that joined: {d}");
         assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's path.name: {d}");
-        assert_eq!(d["decision"], "delete-held", "another birth is at the caller's path.name: the caller is deleted (Q207): {d}");
+        assert_eq!(d["decision"], "delete-path-held", "another birth is at the caller's path.name: the caller is deleted (Q207): {d}");
         assert_eq!(d["root"], "self", "the fabric-primary decides from its own atlas: {d}");
         assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some("mesh1.admin.1: its Build door is not built yet")), "{d}");
         let reported = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-returned-reported").map(|s| s["attributes"].clone()).unwrap_or_else(|| panic!("the caller was reported for node.terminate: {spans:?}"));

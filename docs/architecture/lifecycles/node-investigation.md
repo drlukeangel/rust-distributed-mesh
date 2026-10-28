@@ -29,7 +29,7 @@ Data dir: if the provider step finds the runtime exited, the re-created node tak
 dir; on any other verdict, a newly allocated one (R-FM2).
 
 A caller birth a primary does not hold (its Digest refused by name under [gossip.md §3.1 receiver
-rules](../gossip.md#31-frame-catalog), or its status declaration refused `SubjectUnknown`) is decided by
+rules](../gossip.md#31-frame-catalog), its status declaration refused `SubjectUnknown`, or its join report refused `JoinMismatch` because the row at its path.name holds another node) is decided by
 its path.name and the primary's atlas, one decision for the fabric-primary and every mesh-primary
 (Q207): another birth at that path.name now, or an op executing that re-creates it there, deletes the
 caller; nothing there, its record live and the topology needing the path re-admits it through
