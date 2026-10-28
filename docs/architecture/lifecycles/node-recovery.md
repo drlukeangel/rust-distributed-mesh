@@ -19,7 +19,7 @@ node.create of a node-admin into the live mesh.)
 | Detection | The mesh-primary's tick (every gossip interval) reads the members its view marks `PendingReconnect`: unheard past the staleness floor, or marked at once when a command to them was never sent for a reachability reason (step 1) |
 | Investigation | [node investigation](node-investigation.md): the by-destination connections index, node.tickle direct and via peers, node.runtime.inspect; one verdict |
 | Trigger | The verdict (Q111). Reached: commanded back through node.mesh.join. Any other verdict: re-created. Nothing waits on a proof of termination |
-| Execution | The mesh-primary reports the drift up as `build.create { Change(Recover) }`; the fabric-primary opens the attempt at `(build_id, mesh, attempt)`, the mesh-primary claims it through [BuildClaim](../node-rpc-envelope.md#buildclaim-op-0x1c-rdm), and the fabric-primary calls `build.attempt.run` naming the mesh; the mesh-primary runs it and reports each receipt up that stream, and the fabric-primary writes every Build record ([build.md](../build.md), Q118). While the mesh is cut from the fabric-primary, its recoveries fail by name and run after the heal |
+| Execution | The mesh-primary opens the recovery as the next attempt of the current Build at `(build_id, mesh, attempt)` on its mesh's rows, claims it there and runs it through its own executor, writing each receipt and the attempt's verdict to the Build journal on the store root, where the fabric-primary reads them (R-BI7); it makes no call to the fabric-primary, which may be offline. An unheard mesh-primary's recovery is the fabric-primary's ([mesh investigation](mesh-investigation.md)) |
 | Steps | node.delete of the unheard instance, node.create at the same path.name; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
 | Retained | path.name, placement and storage (from the path's create spec, which a Build has applied to the row), config and tags (inherited from the deleted row) and the executable (seeded from the deleted row: a recovered node runs the bin its row records, never the recovering admin's) ; a row written before the executable field decodes with none, and node recovery of that birth is refused by name: the topology's entry is the target, not what the birth ran; the repair is a request naming that path's executable, the ordinary replacement ([build-deployment.md](../build-deployment.md)); the inherited data dir and endpoint key when the verdict is `exited` |
 | New | node.id, incarnation, OS-assigned port, exact runtime; a newly allocated data dir and endpoint key on any verdict but `exited`, and when the inherited data dir is absent (`R-FM2`) |
@@ -70,15 +70,13 @@ doubling from the gossip interval to the staleness floor.
 
 ## Numbered end-to-end sequence
 
-1. The mesh-primary's investigation ends in a verdict other than `reached`, and it reports the drift up
-   as `build.create { Change(Recover) }`, keyed on the target birth `(node.id, incarnation)`. The
-   fabric-primary opens the recovery as the next attempt of the current Build at
-   `(build_id, mesh, attempt)` (for an unheard mesh-primary, it opens it itself). A repeat answers
-   AlreadyApplied or BuildInProgress, never a second recovery.
-2. The mesh-primary claims the attempt through BuildClaim, the fabric-primary calls `build.attempt.run`
-   naming the mesh, and the mesh-primary runs it through its own executor, reporting each receipt up
-   that stream; the fabric-primary writes the records. A mesh cut from the fabric-primary gets no
-   attempt until the heal.
+1. The mesh-primary's investigation ends in a verdict other than `reached`, and it opens the recovery
+   as the next attempt of the current Build at `(build_id, mesh, attempt)` on its mesh's rows, keyed on
+   the target birth `(node.id, incarnation)` (for an unheard mesh-primary, the fabric-primary opens it
+   itself). A repeat answers AlreadyApplied or BuildInProgress, never a second recovery.
+2. The mesh-primary claims the attempt on its mesh's rows and runs it through its own executor, writing
+   each receipt and the verdict to the Build journal on the store root, where the fabric-primary reads
+   them (R-BI7); no call to the fabric-primary is made.
 3. [node.delete](node-delete.md#numbered-end-to-end-sequence) of the target instance, as a target with
    no RPC to the old process and no stop frames. Its first step is
    `TerminateRuntime { node_id, incarnation, handle }` on the exact runtime handle recorded at launch,
