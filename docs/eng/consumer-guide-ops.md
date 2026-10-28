@@ -303,8 +303,9 @@ application resumption after a new invocation are different: define the latter i
 ## 7. Checklist for a new op
 
 1. A code no ledger row holds (§1), and its row in your product's ledger rows.
-2. The protocol: ceilings, variant counts, the six refusals as reply variants, `classify_reply`,
-   `reply_detail`, `read_only` where it is true.
+2. The protocol: ceilings, the six refusals as reply variants, and `read_only` where it is true;
+   `rdm_core::protocol_variants!` writes the variant counts, `classify_reply`, `reply_detail` and the
+   six refusal constructors from the variants in wire order (§2).
 3. `serve` or `serve_stream` in the builder your `run_with` gets.
 4. Spans named `<owner>.<domain>.<entity>.<action>.via-<reason>` for what the handler does
    ([telemetry.md](../architecture/telemetry.md), the envelope's runtime spans).
@@ -316,10 +317,9 @@ application resumption after a new invocation are different: define the latter i
 
 ## 8. Consumer tooling to build next
 
-These are proposed RDM improvements, not available APIs or prerequisites for using Node RPC:
+The protocol declaration helper is available: `rdm_core::protocol_variants!` (§2). These are proposed
+RDM improvements, not available APIs or prerequisites for using Node RPC:
 
-- A protocol declaration helper that derives variant counts, classification and reserved-variant
-  plumbing while preserving explicit wire positions and application-owned reply enums.
 - A reusable conformance harness for unary and streaming protocols: named refusals, frame limits,
   duplicate delivery, ordering, backpressure, cancellation and loss of the reply.
 - Recovery integration helpers with application-provided persistence, making acceptance and
