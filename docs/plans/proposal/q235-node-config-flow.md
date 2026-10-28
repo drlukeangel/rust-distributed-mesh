@@ -39,7 +39,8 @@ Two flows read the upper copies, and each fails if a node's own change stays on 
 4. The mesh-primary pushes the map up to the fabric-primary, owed until acknowledged. The
    fabric-primary writes it into its Atlas. A mesh-primary that is the fabric-primary does steps 3 and
    4 as one.
-5. The node holds the map on the mesh-primary's `Applied` (§5, P2), in its memory and on its own
+5. The node holds the map it sent at once (§5, P2, decided); the mesh-primary's reply carries the row, and
+   the node installs the reply's map at its revision over an older one, in its memory and on its own
    entry (Q234). No `ApplyNodeConfig` comes back.
 
 **A caller's update (external), down, unchanged:**
