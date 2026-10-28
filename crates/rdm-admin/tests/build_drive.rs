@@ -1513,6 +1513,110 @@ fn a_leave_that_ends_incomplete_with_nothing_changed_claims_one_attempt_per_chan
     assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2), ("mesh1.admin.1".to_string(), 3)], "three attempts for three states of the world, not one per pass");
 }
 
+/// Adds `mesh3` (a Mesh record and its primary and one rpc node) to the rig's view: a mesh the leave
+/// of `mesh2` does not act on.
+async fn add_mesh3(r: &Rig) {
+    let mut t = r.env.topology.write().await;
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh3".into(), status: ScopeStatus::Ready });
+    t.nodes.push(node("mesh3.admin.1", true, false));
+    t.nodes.push(node("mesh3.rpc.1", false, false));
+}
+
+/// CONTRACT (Q253 A; the drive's wait after an attempt handed back with nothing moved waits on
+/// `world()`: the first operation left, the Build's receipts, the members of the mesh that operation
+/// acts on by birth, status and primary, whether the fabric holds ready): a member change in a mesh the
+/// next attempt's first operation does not act on claims no attempt. The leave of `mesh2` ends
+/// incomplete; `mesh3`'s primary changes status, its rpc node is born again and its primary moves, and
+/// the drive stays idle through each: no claim, no dispatch, one via-stalled span. A change of `mesh2`'s
+/// own primary then claims the next attempt.
+/// Must NOT happen: an attempt claimed for a change in another mesh.
+#[test]
+fn a_member_change_in_a_mesh_the_next_attempt_does_not_act_on_claims_no_attempt() {
+    use rdm_admin::build_state::BuildState;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, passes, state, dispatched) = cap.run(async {
+        let root = tracing::info_span!("cell.other-mesh-change-claims-nothing");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        add_mesh3(&r).await;
+        let drive = Drive::detached(r.build.clone());
+        let mut passes = Vec::new();
+        for pass in 0..6 {
+            match pass {
+                2 => {
+                    for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh3.admin.1") {
+                        n.status = NodeStatus::PendingReconnect;
+                    }
+                }
+                3 => {
+                    for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh3.rpc.1") {
+                        n.incarnation_id = Some(IncarnationId::mint());
+                    }
+                }
+                4 => {
+                    let mut t = r.env.topology.write().await;
+                    for n in t.nodes.iter_mut().filter(|n| n.name.to_string().starts_with("mesh3.")) {
+                        n.is_primary = !n.is_primary;
+                    }
+                }
+                5 => {
+                    *mesh_deleter.ends.lock().unwrap() = None;
+                    mesh2_primary_becomes(&r, NodeStatus::Dead).await;
+                }
+                _ => {}
+            }
+            let end = r.env.run(&drive).await;
+            passes.push((matches!(end, DriveEnd::Stalled(_)), r.builds.read_build(&r.build).await.unwrap().attempt, r.dispatch.dispatched.lock().unwrap().len()));
+        }
+        let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
+        (trace_id, passes, r.builds.read_build(&r.build).await.unwrap().state, dispatched)
+    });
+    let spans = cap.spans();
+    let stalls: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-stalled" && s["trace_id"] == trace_id.as_str()).collect();
+    println!("trace_id={trace_id}");
+    assert_eq!(passes[..5], [(true, 1, 1); 5], "attempt 1 handed back; mesh3's status, birth and primary changes claim nothing and dispatch nothing: {passes:?}");
+    assert_eq!(passes[5], (false, 2, 2), "mesh2's own primary changing claims attempt 2, which completes: {passes:?}");
+    assert_eq!(state, BuildState::Complete);
+    assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2)], "two attempts: the other mesh's changes added none");
+    assert_eq!(stalls.len(), 1, "the idle wait is installed once across the five passes that made or kept it: {stalls:?}");
+}
+
+/// CONTRACT (Q253 A: "a successor reconstructs it by one claim"): a successor fabric-primary is a fresh
+/// drive with no idle marker over a Build whose last attempt was handed back with nothing moved. It
+/// claims exactly one attempt; that attempt ends the same way and installs the wait; further passes with
+/// the world unchanged claim nothing.
+/// Must NOT happen: no claim by the successor (the Build never resumes), or one attempt per pass.
+#[test]
+fn a_successor_drive_over_a_handed_back_build_claims_one_attempt_installs_the_wait_and_claims_no_more() {
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, first_run, successor, dispatched) = cap.run(async {
+        let root = tracing::info_span!("cell.successor-claims-one-attempt");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        // The first fabric-primary's drive: attempt 1 ends handed back, the wait is installed.
+        let first_end = r.env.run(&Drive::detached(r.build.clone())).await;
+        let first_run = (matches!(first_end, DriveEnd::Stalled(_)), r.builds.read_build(&r.build).await.unwrap().attempt, r.dispatch.dispatched.lock().unwrap().len());
+        // The successor's drive: no idle marker in memory, the same Build and the same world.
+        let drive = Drive::detached(r.build.clone());
+        let mut successor = Vec::new();
+        for _ in 0..4 {
+            let end = r.env.run(&drive).await;
+            successor.push((matches!(end, DriveEnd::Stalled(_)), r.builds.read_build(&r.build).await.unwrap().attempt, r.dispatch.dispatched.lock().unwrap().len()));
+        }
+        let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
+        (trace_id, first_run, successor, dispatched)
+    });
+    let spans = cap.spans();
+    let stalls: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-stalled" && s["trace_id"] == trace_id.as_str()).collect();
+    println!("trace_id={trace_id}");
+    assert_eq!(first_run, (true, 1, 1), "the first drive claims attempt 1, which is handed back");
+    assert_eq!(successor, [(true, 2, 2); 4], "the successor claims exactly one attempt, which ends the same way; the three passes after claim nothing: {successor:?}");
+    assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2)], "two dispatches in all: one per drive, never one per pass");
+    assert_eq!(stalls.len(), 2, "the wait is installed once by each drive: {stalls:?}");
+}
+
 /// CONTRACT (mesh-delete.md, "Resume after the primary's loss": the lost primary's Exited is recorded,
 /// the amendment admits the new primary, "the new mesh-primary gets a fresh claim and runs only the
 /// tiers without a terminal receipt"): a leave whose primary was lost records the exit and the
