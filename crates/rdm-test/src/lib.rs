@@ -15,6 +15,7 @@ pub mod declare_probe;
 pub mod pre_node_ready_probe;
 pub mod proof_store;
 pub mod families;
+pub mod conformance;
 pub use rdm_node::held_name;
 pub mod resolve_probe;
 pub mod faults;

@@ -133,16 +133,14 @@ struct Rig {
     finished: Arc<tokio::sync::Notify>,
 }
 
-async fn rig() -> Rig {
-    let produced = Arc::new(AtomicU64::new(0));
-    let caller_gone = Arc::new(AtomicU64::new(0));
-    let finished = Arc::new(tokio::sync::Notify::new());
-    let (p, g, fin) = (produced.clone(), caller_gone.clone(), finished.clone());
-    let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-    let server = ServerBuilder::new()
-        .ledger([LedgerEntry { op: Count::OP, family: "count".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }])
-        .serve_stream::<Count, _, _>(OpOwner::Product("test".into()), move |_peer, req: CountRequest, sink| {
-            let (p, g, fin) = (p.clone(), g.clone(), fin.clone());
+/// Count's registration, as a process's `serve_app` adds it: its ledger row and its streaming
+/// handler, which counts the frames it produced and the writes that found the caller gone, and
+/// notifies `finished` once it stops producing.
+fn serve_count(b: ServerBuilder, produced: Arc<AtomicU64>, caller_gone: Arc<AtomicU64>, finished: Arc<tokio::sync::Notify>) -> ServerBuilder {
+    b.ledger([LedgerEntry { op: Count::OP, family: "count".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }]).serve_stream::<Count, _, _>(
+        OpOwner::Product("test".into()),
+        move |_peer, req: CountRequest, sink| {
+            let (p, g, fin) = (produced.clone(), caller_gone.clone(), finished.clone());
             async move {
                 let CountRequest::Count { n, size, mode } = req;
                 if mode == Mode::Refuse {
@@ -177,7 +175,16 @@ async fn rig() -> Rig {
                 }
                 Ok(CountFrame::Done { sent, caller_gone: gone })
             }
-        })
+        },
+    )
+}
+
+async fn rig() -> Rig {
+    let produced = Arc::new(AtomicU64::new(0));
+    let caller_gone = Arc::new(AtomicU64::new(0));
+    let finished = Arc::new(tokio::sync::Notify::new());
+    let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
+    let server = serve_count(ServerBuilder::new(), produced.clone(), caller_gone.clone(), finished.clone())
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let stats = server.stats();
@@ -391,4 +398,64 @@ async fn a_stream_that_panics_or_ends_without_its_terminal_is_refused_under_its_
         let named = attr(refused, key).unwrap_or_default();
         assert!(named.contains(names), "{mode:?}: the refusal's {key} names {names:?}: {named:?}");
     }
+}
+
+/// Count's consumer: each frame recorded at its position, then acknowledged.
+fn count_consumer() -> rdm_test::conformance::Consume<Count> {
+    Arc::new(|mut s: rdm_transport::stream::ReplyStream<Count>, record: rdm_test::conformance::StreamRecord| {
+        Box::pin(async move {
+            while let Some(StreamItem::Frame(kind, _)) = s.next().await {
+                record.put(s.position(), kind);
+                s.accepted().await;
+            }
+        })
+    })
+}
+
+/// Count as the harness takes it: its registration, a short stream, a stream of 200 frames, its one
+/// named refusal, and `consume` its consumer.
+fn count_fixture(consume: rdm_test::conformance::Consume<Count>) -> rdm_test::conformance::Streaming<Count> {
+    rdm_test::conformance::Streaming {
+        serve: Arc::new(|b| serve_count(b, Arc::default(), Arc::default(), Arc::default())),
+        answered: count(3, 8, Mode::Normal),
+        long: count(200, 8, Mode::Normal),
+        refusals: vec![(count(1, 8, Mode::Refuse), "busy")],
+        consume,
+    }
+}
+
+/// CONTRACT: `Count`, served as this file serves it, passes every streaming check of the conformance
+/// harness: each named refusal answered, the request over its ceiling refused `Malformed(TooLarge)`,
+/// frames in order, the 64-frame bound holding the producer, a caller dropped mid-stream releasing the
+/// invocation, a duplicate delivery suppressed, frames lost after acceptance resent once, and its
+/// consumer acknowledging only what it recorded. Its evidence: one trace per check, under
+/// `rdm.test.conformance.serve.via-check`.
+#[test]
+fn count_passes_the_conformance_harness() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-conformance-count").expect("the cell's evidence file can be created");
+    let report = capture.run(4, async { rdm_test::conformance::streaming(&count_fixture(count_consumer())).await });
+    println!("{}", report.summary());
+    assert!(report.failed().is_empty(), "{}", report.summary());
+}
+
+/// CONTRACT: the harness's acknowledgement check fails a consumer that calls `accepted` before it
+/// records the frame it acknowledges: the terminal acknowledged, then recorded, is named. Must NOT
+/// happen: the check passing a consumer whose terminal is acknowledged before it is recorded.
+#[test]
+fn a_consumer_that_acknowledges_before_it_records_fails_the_conformance_harness() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-conformance-early-ack").expect("the cell's evidence file can be created");
+    let early: rdm_test::conformance::Consume<Count> = Arc::new(|mut s: rdm_transport::stream::ReplyStream<Count>, record: rdm_test::conformance::StreamRecord| {
+        Box::pin(async move {
+            while let Some(StreamItem::Frame(kind, _)) = s.next().await {
+                let position = s.position().map(|(id, seq)| (id.clone(), seq));
+                s.accepted().await;
+                record.put(position.as_ref().map(|(id, seq)| (id, *seq)), kind);
+            }
+        })
+    });
+    let check = rdm_test::conformance::Check::AcceptedAfterRecord;
+    let report = capture.run(4, async { rdm_test::conformance::streaming_checks(&count_fixture(early), &[check]).await });
+    println!("{}", report.summary());
+    let failure = report.outcome(check).and_then(|o| o.failure.clone()).unwrap_or_default();
+    assert!(failure.contains("Terminal") && failure.contains("accepted() was called before it was recorded"), "the early acknowledgement of the terminal is named: {}", report.summary());
 }

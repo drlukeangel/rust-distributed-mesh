@@ -219,4 +219,27 @@ mod tests {
             "each reserved constructor builds its own variant"
         );
     }
+
+    /// CONTRACT: `BrokerData`, served as a broker serves it (`for_kind`), passes every unary check of
+    /// the conformance harness: each named refusal answered, the request over its ceiling refused
+    /// `Malformed(TooLarge)`, a duplicate delivery suppressed, a reply lost after acceptance delivered
+    /// once. Its evidence: one trace per check, under `rdm.test.conformance.serve.via-check`.
+    #[test]
+    fn broker_data_passes_the_conformance_harness() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/rdm-test");
+        std::fs::create_dir_all(&dir).expect("the evidence directory can be created");
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-test-conformance-broker-data").expect("the cell's evidence file can be created");
+        let report = capture.run(4, async {
+            let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
+            let fixture = crate::conformance::Unary::<BrokerData> {
+                serve: Arc::new(move |b| for_kind(NodeKind::Broker, "conformance-broker", b, client.clone())),
+                answered: BrokerDataRequest::Append { key: "k".into(), value: vec![7] },
+                refusals: Vec::new(),
+            };
+            crate::conformance::unary(&fixture).await
+        });
+        println!("{}", report.summary());
+        assert!(report.failed().is_empty(), "{}", report.summary());
+    }
 }
