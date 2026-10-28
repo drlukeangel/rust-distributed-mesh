@@ -355,6 +355,15 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    // The cut admin judges mesh1 from direct backbone receipt only, and that receipt alone starts its
+    // clock on mesh1 (gossip.md §3.2 "Peer-mesh silence uses direct backbone receipt at node-admins, never
+    // forwarded topology"; mesh-investigation.md: "Only that receipt starts or resets t"): mesh1 as its mesh
+    // channel and its join's topology read hand it is topology, never silent. The cut follows its first
+    // backbone install of mesh1.
+    wait_for(&format!("{victim} holds mesh1 by direct backbone receipt before the cut"), floor * 2, || async {
+        named(&estate.spans(), "rdm.mesh.topology.update.via-snapshot-installed").into_iter().find(|sp| attr(sp, "node") == victim && attr(sp, "channel") == "backbone" && attr(sp, "mesh") == "mesh1").map(|_| ())
+    })
+    .await;
     // The first attempt claimed after the cut, the cut admin's recovery, is held before its dispatch.
     let fp_door = Door::at(&estate, fp).await;
     fp_door.arm("cut-admin-recovery", json!({"kind": "claimed-attempt"})).await;
@@ -503,15 +512,19 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
 /// is the same birth, mesh1's primary and the fabric-primary. Must NOT happen: the fabric-primary's
 /// `TerminateRuntime`, its row written deleted, its name released, or a recovery opened for its birth by
 /// the isolated admin.
+///
+/// The isolated admin is kept to its provider read by the testkit's claimed-attempt cut on the
+/// fabric-primary: mesh1's primary, the fabric-primary itself, reaches it through no peer, reads its
+/// runtime `running` and recovers it at once (node-recovery.md step 3, Q111), and its claim of that
+/// attempt is held before its dispatch, so the isolated admin is not re-created while the cut holds. Its
+/// own ladder on the fabric-primary may ask peers its view still holds ready in the cut's first floor,
+/// each bounded by the call's deadline (node-tickle.md "Probe").
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_and_reads_it_running_writes_nothing() {
     let test = "an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_and_reads_it_running_writes_nothing";
     let fp = "mesh1.admin.1";
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
-    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &shape).await;
-    estate.settles_to(&shape, Duration::from_secs(60)).await;
-    estate.until_fabric_ready(Duration::from_secs(60)).await;
+    let mut estate = estate_of(test, &shape).await;
     let nodes = estate.node_values().await;
     let holder = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     assert_eq!(s(&holder["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
@@ -531,6 +544,9 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    // The first attempt claimed after the cut, the isolated admin's recovery, is held before its dispatch.
+    let fp_door = Door::at(&estate, fp).await;
+    fp_door.arm("isolated-admin-recovery", json!({"kind": "claimed-attempt"})).await;
     let cut = match Partition::isolate(&udp_ports(&nodes, &[victim.clone()])) {
         Ok(p) => p,
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
