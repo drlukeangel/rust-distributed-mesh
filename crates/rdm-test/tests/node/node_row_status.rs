@@ -58,8 +58,8 @@ fn row_status(root: &Path, node_id: &str) -> String {
 /// then starting from the start's acknowledgement, pending and ready-for-traffic; then deleting from
 /// node.delete's claim and the frames of the stop it composes, stopping through stopped (delete is the
 /// mesh-primary's workflow). The node's Stopped declaration may reach the mesh-primary before a stop
-/// stream's last frames, whichever first is applied (node-stop.md step 5): each stop's leaving and left
-/// are written before its stopped, or arrive after it and leave the row stopped.
+/// stream's last frames, whichever first is applied (node-stop.md step 5): each frame after it leaves
+/// the row stopped (`node_stop::stop_row_writes`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let mut estate = Estate::bootstrap(owner("a_node_row_carries_its_status_through_ready_stop_and_start"), "fabric1", "mesh1").await;
@@ -96,23 +96,11 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     rows.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
     let at = |sp: &Value| (sp["attributes"]["status"].as_str().unwrap_or_default().to_string(), sp["attributes"]["outcome"].as_str().unwrap_or_default().to_string());
     let all: Vec<(String, String)> = rows.iter().map(|sp| at(sp)).collect();
-    // A stop's leaving and left: written, or reaching the mesh-primary after the node's Stopped declaration.
-    let late = ["Leaving", "Left"];
-    let written: Vec<String> = all.iter().filter(|(s, o)| o == "written" && !late.contains(&s.as_str())).map(|(s, _)| s.clone()).collect();
-    assert_eq!(
-        written,
-        ["Pending", "ReadyForTraffic", "ConnectionsDeleting", "ConnectionsDeleted", "Stopping", "ConnectionsDeleting", "ConnectionsDeleted", "Stopped", "Starting", "Pending", "ReadyForTraffic", "Deleting", "Stopping", "ConnectionsDeleting", "ConnectionsDeleted", "Stopped"],
-        "{path}'s mesh-primary wrote each status from the node's frame or its own receipt, in states.md's order: {all:?}"
+    let written = |statuses: &[&str]| statuses.iter().map(|s| (s.to_string(), "written".to_string())).collect::<Vec<_>>();
+    let (created, between) = (written(&["Pending", "ReadyForTraffic", "ConnectionsDeleting", "ConnectionsDeleted"]), written(&["Starting", "Pending", "ReadyForTraffic", "Deleting"]));
+    let stops = crate::node_stop::stop_row_writes();
+    assert!(
+        stops.iter().any(|stop| stops.iter().any(|deleted| created.iter().chain(stop).chain(&between).chain(deleted).eq(all.iter()))),
+        "{path}'s mesh-primary wrote each status from the node's frame or its own receipt, in states.md's order, each stop's frames moving the row until the node's stopped is taken: {all:?}"
     );
-    let stops: Vec<usize> = all.iter().enumerate().filter(|(_, (s, _))| s == "Stopping").map(|(i, _)| i).collect();
-    assert_eq!(stops.len(), 2, "node.stop's and node.delete's stop each acknowledged once: {all:?}");
-    for (k, &from) in stops.iter().enumerate() {
-        let stop = &all[from..stops.get(k + 1).copied().unwrap_or(all.len())];
-        let stopped = stop.iter().position(|(s, o)| s == "Stopped" && o == "written").unwrap_or_else(|| panic!("stop {k}: no stopped written on {path}'s row: {stop:?}"));
-        for status in late {
-            let i = stop.iter().position(|(s, _)| s == status).unwrap_or_else(|| panic!("stop {k}: no {status} from the stop's frame on {path}'s row: {stop:?}"));
-            let outcome = stop[i].1.as_str();
-            assert!((outcome == "written" && i < stopped) || (outcome == "unchanged" && i > stopped), "stop {k}: {status} is written before stopped, or arrives after the node's stopped and leaves the row stopped: {stop:?}");
-        }
-    }
 }

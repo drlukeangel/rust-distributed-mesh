@@ -236,6 +236,19 @@ fn rows_taken(spans: &[Value], node: &str, from: u64) -> Vec<(String, String)> {
     of.into_iter().map(|sp| (attr(sp, "status"), attr(sp, "outcome"))).collect()
 }
 
+/// Every order a stop's row writes can take at its mesh-primary, each `(status, outcome)`: the stop
+/// stream's frames in order, each written, until the node's Stopped is taken, which writes stopped,
+/// and every frame after it finds the row stopped and leaves it unchanged. The node's declaration of
+/// Stopped and the stream's own stopped frame are applied whichever first reaches the mesh-primary
+/// (node-stop.md step 5), so the declaration may be taken after any of the frames; taken before the
+/// stop's acknowledgement, the stop is applied already and stopping is not written at all.
+pub(crate) fn stop_row_writes() -> Vec<Vec<(String, String)>> {
+    let frames = ["Stopping", "ConnectionsDeleting", "ConnectionsDeleted", "Leaving", "Left"];
+    let at = |status: &str, outcome: &str| (status.to_string(), outcome.to_string());
+    let shape = |k: usize, from: usize| -> Vec<(String, String)> { frames[from..k].iter().map(|s| at(*s, "written")).chain([at("Stopped", "written")]).chain(frames[k..].iter().map(|s| at(*s, "unchanged"))).collect() };
+    (1..=frames.len()).map(|k| shape(k, 0)).chain([shape(1, 1)]).collect()
+}
+
 /// The statuses the mesh-primary wrote on `node`'s row from `from` on, in order.
 fn rows_written(spans: &[Value], node: &str, from: u64) -> Vec<String> {
     let mut of: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-row-status").into_iter().filter(|sp| attr(sp, "subject") == node && attr(sp, "outcome") == "written" && start_ns(sp) >= from).collect();
@@ -303,7 +316,7 @@ async fn a_commanded_stop_streams_each_primitives_acknowledgement_and_completion
 /// writes the row from each frame (Q205, Q233: the stop's acknowledgement sets stopping over the left
 /// row), stopping, connections-deleting, connections-deleted, leaving, left, stopped; the node's Stopped
 /// declaration may be taken before the stream's last frames, whichever first is applied (node-stop.md
-/// step 5), and then the stop's leaving and left arrive after it and leave the row stopped. Must NOT
+/// step 5), and each frame after it leaves the row stopped ([`stop_row_writes`]). Must NOT
 /// happen: a 0x1B `LeaveMesh`, a second `via-leaving`, or a second closure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_of_a_node_already_connections_deleted_and_left_answers_each_primitive_at_once_and_repeats_no_work() {
@@ -324,17 +337,11 @@ async fn a_stop_of_a_node_already_connections_deleted_and_left_answers_each_prim
     assert_eq!(command_frames(&spans, NODE, &leave), ["command-accepted", "mesh-left"], "the standalone leave is a node command: its acknowledgement, then its completion");
     let rows = rows_taken(&spans, NODE, began(&spans, &leave));
     let at = |status: &str, outcome: &str| (status.to_string(), outcome.to_string());
-    assert_eq!(rows.get(..2), Some(&[at("Leaving", "written"), at("Left", "written")][..]), "the leave writes leaving then left: {rows:?}");
-    let of_stop = &rows[2..];
-    let late = ["Leaving", "Left"];
-    let written: Vec<&str> = of_stop.iter().filter(|(s, o)| o == "written" && !late.contains(&s.as_str())).map(|(s, _)| s.as_str()).collect();
-    assert_eq!(written, ["Stopping", "ConnectionsDeleting", "ConnectionsDeleted", "Stopped"], "the stop's acknowledgement sets stopping over the left row and each frame moves it on: {rows:?}");
-    let stopped = of_stop.iter().position(|(s, o)| s == "Stopped" && o == "written").expect("the stop wrote stopped");
-    for status in late {
-        let i = of_stop.iter().position(|(s, _)| s == status).unwrap_or_else(|| panic!("the stop's {status} frame took the row: {rows:?}"));
-        let outcome = of_stop[i].1.as_str();
-        assert!((outcome == "written" && i < stopped) || (outcome == "unchanged" && i > stopped), "the stop's {status} is written before stopped, or arrives after the node's stopped and leaves the row stopped: {rows:?}");
-    }
+    let leave_rows = [at("Leaving", "written"), at("Left", "written")];
+    assert!(
+        stop_row_writes().iter().any(|stop| leave_rows.iter().chain(stop).eq(rows.iter())),
+        "the leave writes leaving then left; the stop's acknowledgement sets stopping over the left row and each of its frames moves it on until the node's stopped is taken: {rows:?}"
+    );
     assert_eq!(
         command_frames(&spans, NODE, &stop),
         ["command-accepted", "connections-deleting", "stop-connections-deleted", "leaving", "stop-mesh-left", "node-stopped"],
