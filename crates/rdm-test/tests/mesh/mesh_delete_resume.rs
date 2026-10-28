@@ -290,7 +290,16 @@ pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
         assert!(published.len() <= 1, "{name}'s NodeDeleted is published by its node.delete's executor alone, never again by a later primary, under {b}: {published:?}");
     }
     let lost_published: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == lost.0 && s(&sp["attributes"]["build_id"]) == *b).collect();
-    assert_eq!(lost_published.len(), 1, "the lost primary's NodeDeleted is published once, by the fabric-primary, its node.delete's executor: {lost_published:?}");
+    assert_eq!(lost_published.len(), 1, "the lost primary's NodeDeleted is published once, by the executor that writes its Deleted row: {lost_published:?}");
+    // The lost primary's Deleted row has one writer (node-identity-and-state.md §4.3, R-OW1): the
+    // fabric-primary, acting primary of mesh2 while it holds no primary; once mesh2's election names
+    // the survivor, the new mesh-primary, which runs on the delete from the fabric-primary's exact Exited
+    // receipt (mesh-delete.md "Resume after the primary's loss" steps 1 and 3). It is never refused.
+    let lost_rows: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| s(&sp["attributes"]["subject"]) == lost.0).collect();
+    assert!(lost_rows.iter().all(|sp| sp["attributes"]["outcome"] == "row-deleted"), "the lost primary's Deleted row is written by its mesh's one writer and never refused: {lost_rows:?}");
+    let handed: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-exit-for-writer").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == lost.0).collect();
+    let writer = if handed.is_empty() { "mesh1.admin.1" } else { next };
+    assert!(lost_rows.len() == 1 && s(&lost_rows[0]["attributes"]["node"]) == writer, "the lost primary's Deleted row is written once, by {writer}: {lost_rows:?}");
     assert!(s(&applied[0]["attributes"]["final_primary"]).starts_with(&format!("{next} ")), "{}", applied[0]);
     assert!(attr_u(applied[0], "attempt") >= 2, "the amendment belongs to a resumed attempt: {}", applied[0]);
     let mesh_left = one("rdm.node_admin.mesh.update.via-mesh-left-receipt");
@@ -344,12 +353,16 @@ async fn a_leave_whose_primary_is_lost_after_a_members_terminate_runtime_receipt
     let eprint_trace = assert_resumed(&run, survivor, 4);
     let outer = format!("mesh.delete:{}", run.mesh2_id);
     let rpc1 = "mesh2.rpc.1";
-    // The survivor's resumed attempt keeps the lost primary's exit as its only finished delete and
-    // runs the two ordinary members: rpc.1 holds an exited verdict and is still owed its delete.
+    // The survivor's resumed attempt runs the two ordinary members: rpc.1 holds an exited verdict and is
+    // still owed its delete. The lost primary's delete is finished when the fabric-primary wrote its row
+    // (mesh2 held no primary), else owed from its exact Exited to the survivor, mesh2's one writer.
     let resumed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && attr_u(sp, "attempt") >= 2).collect();
+    let handed = !named(&run.spans, "rdm.node_admin.node.delete.via-exit-for-writer").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == run.lost.0).collect::<Vec<_>>().is_empty();
+    let (retained, owed, remaining) = if handed { (String::new(), format!("{},{rpc1}", run.lost.0), 3) } else { (run.lost.0.clone(), rpc1.to_string(), 2) };
     assert!(
-        resumed.iter().any(|sp| attr_u(sp, "roster") == 4 && s(&sp["attributes"]["retained_births"]) == run.lost.0 && attr_u(sp, "remaining") == 2 && s(&sp["attributes"]["delete_owed"]) == rpc1),
-        "the resumed attempt names rpc.1 as holding an exited verdict and owed the rest of its delete: {resumed:?}"
+        resumed.iter().any(|sp| attr_u(sp, "roster") == 4 && s(&sp["attributes"]["retained_births"]) == retained && attr_u(sp, "remaining") == remaining && s(&sp["attributes"]["delete_owed"]).split(',').collect::<BTreeSet<_>>() == owed.split(',').collect::<BTreeSet<_>>()),
+        "the resumed attempt names rpc.1 as holding an exited verdict and owed the rest of its delete (the lost primary's delete {}): {resumed:?}",
+        if handed { "owed to the survivor" } else { "finished" }
     );
     // rpc.1's delete in the resumed attempt: its receipted TerminateRuntime is reused, never run
     // again; its NodeDeleted is executed once.

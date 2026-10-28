@@ -482,6 +482,20 @@ impl NodeRows {
         Some(format!("{me} ({}) is not the writer of {mesh}'s node rows and refuses the row at {subject}: {writer}", self.me_id))
     }
 
+    /// Whether this admin, the fabric-primary, writes the row of the node-admin `node_id` at `name` as
+    /// acting primary of its mesh: the mesh holds no primary but that node (node-identity-and-state.md §4.3).
+    fn acting_for(&self, t: &Topology, name: &PathName, node_id: &NodeId) -> bool {
+        t.is_fabric_primary(&self.me_id) && !t.node_type_primary(&name.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id != *node_id)
+    }
+
+    /// Whether this admin writes the `Deleted` row of the unreached birth `record` now, over its view as it
+    /// is now ([`Self::deleted_unreached`]): as the writer of its mesh's rows, or, for a node-admin, as the
+    /// fabric-primary acting for a mesh with no primary but that node.
+    pub async fn writes_unreached(&self, record: &Node) -> bool {
+        let t = self.view.read().await;
+        (record.kind == NodeKind::NodeAdmin && self.acting_for(&t, &record.name, &record.node_id)) || self.not_writer(&t, &record.name.mesh, &record.name).is_none()
+    }
+
     /// This admin's `path.name`.
     pub fn me(&self) -> &PathName {
         &self.me
@@ -790,8 +804,7 @@ impl NodeRows {
                 // node; a mesh with an elected primary has its row written by that primary, its one writer.
                 let me = if fabric_recovery {
                     let t = self.view.read().await;
-                    let elected = t.node_type_primary(&name.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id != *node_id);
-                    if t.is_fabric_primary(&self.me_id) && !elected {
+                    if self.acting_for(&t, name, node_id) {
                         self.held_name_in(&t)
                     } else {
                         drop(t);

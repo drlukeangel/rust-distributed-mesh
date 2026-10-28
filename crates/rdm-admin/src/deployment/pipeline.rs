@@ -1237,7 +1237,12 @@ impl DeploymentPipeline<'_> {
                 return Err(PipelineError { step: "ReadBuild", reason , code: rdm_core::outcome::Code::FailedPrecondition });
             }
         };
-        let earlier: Vec<BuildStepReceipt> = view.steps.into_iter().filter(|r| r.operation == operation && r.attempt < attempt).collect();
+        // The same attempt's receipts another executor recorded for this operation hand on too: the lost final
+        // primary's delete the fabric-primary ran to its exact Exited, which the new mesh-primary, its mesh's
+        // writer, runs on in the same attempt (mesh-delete.md "Resume after the primary's loss" steps 1 and 3:
+        // "Completed member receipts stand").
+        let me = self.template.executor();
+        let earlier: Vec<BuildStepReceipt> = view.steps.into_iter().filter(|r| r.operation == operation && (r.attempt < attempt || (r.attempt == attempt && r.executor.as_deref().is_some_and(|e| e != me)))).collect();
         let ended = last_ended_attempt(&earlier.iter().collect::<Vec<_>>(), &operation, attempt);
         let handed_on: Vec<BuildStepReceipt> = earlier.into_iter().filter(|r| r.attempt > ended && r.outcome == StepOutcome::Complete).collect();
         let owner = handed_on.iter().map(|r| (r.step.clone(), r.executor.clone())).collect();
@@ -2250,10 +2255,11 @@ impl DeploymentPipeline<'_> {
         // moment it is announced, so a successor derives it from the same facts.
         let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone()))).await?;
         self.lifecycle.deleting(&op).await;
-        let terminal = if req.unreached {
+        let terminal = if req.unreached || run.done.contains_key(DeleteStep::TerminateRuntime.name()) {
             // An unreached birth (node-recovery.md sequence step 3): nothing is sent to it and no node
             // reply or receipt is fabricated; `TerminateRuntime` first when its runtime runs at the
-            // step's instant, and nothing waits for a proof of termination.
+            // step's instant, and nothing waits for a proof of termination. A delete handed its exact
+            // Exited runs on from it: the exited verdict is a step already taken, and nothing is stopped.
             self.terminate_step_when(&mut run, &node, handle, unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?
         } else if node.stopped {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its connections delete
@@ -2273,6 +2279,20 @@ impl DeploymentPipeline<'_> {
             // terminal proof.
             self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
+        // An explicit delete of an unreached birth whose mesh's rows this executor does not write, read at the
+        // write's instant: the lost final primary of a leaving mesh whose election named a surviving admin
+        // (mesh-delete.md "Resume after the primary's loss" steps 1 and 3; node-identity-and-state.md §4.3,
+        // R-OW1). Its steps end at the provider's exact Exited, the roster receipt the amendment rests on;
+        // NodeDeleted and the steps after it are the new mesh-primary's, which runs the delete on from them.
+        let writes = match (unreached, self.sink.node_rows()) {
+            (Terminate::Explicit, Some(rows)) if req.unreached => rows.writes_unreached(&node).await,
+            _ => true,
+        };
+        if !writes {
+            tracing::info_span!("rdm.node_admin.node.delete.via-exit-for-writer", node = %name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %req.build_id.log(), attempt = req.attempt, operation = %run.operation)
+                .in_scope(|| tracing::info!("the birth's exact Exited is recorded; its Deleted row and the steps after it are its mesh's writer's"));
+            return Ok(terminal);
+        }
         // The departure: the step above. Nothing earlier (the node's Leaving, its connections-deleted reply, the
         // claim) is.
         let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
