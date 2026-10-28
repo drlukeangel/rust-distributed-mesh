@@ -811,8 +811,8 @@ One frame of a BuildFacts read.
 | `NAME` | `"build"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | trait default `false` |
-| `REQUEST_VARIANTS` | `4` |
-| `REPLY_VARIANTS` | `26` |
+| `REQUEST_VARIANTS` | `5` |
+| `REPLY_VARIANTS` | `30` |
 | `MAX_REQUEST_FRAME_BYTES` | `256 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
@@ -820,7 +820,7 @@ One frame of a BuildFacts read.
 
 ### `BuildRequest`
 
-`crates/rdm-core/src/build.rs` · enum · 4 variants · rdm-core
+`crates/rdm-core/src/build.rs` · enum · 5 variants · rdm-core
 
 A Build call.
 
@@ -841,12 +841,14 @@ A Build call.
 | 2.0 | `build_id` | `String` |  |  | The Build. |
 | 3 | **`Delete`** |  |  | `op() = "delete"` | `build.delete`: a finished Build leaves history. |
 | 3.0 | `build_id` | `String` |  |  | The Build. |
+| 4 | **`GetBuilds`** |  |  | `op() = "builds.get"` | `builds.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair |
+| 4.0 | `filter` | `crate::filter::Filter` → [`Filter`](#t-rdm_core-filter-Filter) |  |  | The pairs the Build header must match. |
 
 <a id="t-rdm_core-build-BuildReply"></a>
 
 ### `BuildReply`
 
-`crates/rdm-core/src/build.rs` · enum · 26 variants · rdm-core
+`crates/rdm-core/src/build.rs` · enum · 30 variants · rdm-core
 
 One frame of a Build stream.
 
@@ -943,6 +945,25 @@ One frame of a Build stream.
 | 25.0 | `mesh` | `Option<String>` |  |  | The mesh the request acts in. |
 | 25.1 | `fabric_primary` | `Option<String>` |  |  | The fabric-primary the receiver sees, when it sees one. |
 | 25.2 | `mesh_primary` | `Option<String>` |  |  | The mesh's mesh-primary the receiver sees, when it sees one. |
+| 26 | **`Topology`** |  |  | `name() = "topology"` | A chunk of one Build's topology `GetBuilds` reads: its nodes' create specs, in `path.name` |
+| 26.0 | `build_id` | `String` |  |  | The Build. |
+| 26.1 | `chunk_index` | `u32` |  |  | This chunk's index. |
+| 26.2 | `chunk_count` | `u32` |  |  | The number of chunks. |
+| 26.3 | `nodes` | `Vec<crate::meta::NodeSpec>` → [`NodeSpec`](#t-rdm_core-meta-NodeSpec) |  |  | The create specs in this chunk. |
+| 27 | **`Build`** |  |  | `name() = "build"` | The header that closes one Build of a `GetBuilds` stream, after its `Topology` and `Steps` |
+| 27.0 | `build_id` | `String` |  |  | The Build. |
+| 27.1 | `phase` | `BuildPhase` → [`BuildPhase`](#t-rdm_core-build-BuildPhase) |  |  | Where the Build is in its life. |
+| 27.2 | `attempt` | `u32` |  |  | The current attempt. |
+| 27.3 | `executor` | `Option<String>` |  |  | The executor of the current attempt, when one is. |
+| 27.4 | `reason` | `String` |  |  | Why the current attempt exists. |
+| 27.5 | `last_failure` | `Option<String>` |  |  | Why the last attempt failed, when one did. |
+| 27.6 | `current` | `bool` |  |  | Whether this is the current Build, selected once for the read. |
+| 27.7 | `steps` | `u32` |  |  | The number of receipts sent for it. |
+| 27.8 | `chunks` | `u32` |  |  | The number of `Steps` chunks sent for it. |
+| 28 | **`End`** |  |  | `name() = "end"` | Terminal of `GetBuilds`: the read is complete. A stream that ends before it is an incomplete |
+| 28.0 | `builds` | `u32` |  |  | The number of Builds streamed. |
+| 29 | **`RejectedFilter`** |  |  | `name() = "rejected-filter"` | Refusal: a `GetBuilds` pair the Build header's schema refuses (Q167 R-RD2), naming the pair. |
+| 29.0 | `reason` | `String` |  |  | Why, naming the pair. |
 
 ## 0x21 `node-primary-update`
 
@@ -1812,12 +1833,12 @@ A Build's identity (build.md §3): minted once when the Build is accepted, carri
 
 Where a Build is in its life.
 
-| # | variant · field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | **`Pending`** |  |  | No executor runs an attempt. |
-| 1 | **`Running`** |  |  | An executor holds and runs an attempt. |
-| 2 | **`Complete`** |  |  | Every step is complete. |
-| 3 | **`Failed`** |  |  | The last attempt failed. |
+| # | variant · field | type | serde | labels | doc |
+|---|---|---|---|---|---|
+| 0 | **`Pending`** |  |  | `page_name() = "pending"` | No executor runs an attempt. |
+| 1 | **`Running`** |  |  | `page_name() = "running"` | An executor holds and runs an attempt. |
+| 2 | **`Complete`** |  |  | `page_name() = "complete"` | Every step is complete. |
+| 3 | **`Failed`** |  |  | `page_name() = "failed"` | The last attempt failed. |
 
 <a id="t-rdm_core-build-BuildSubmit"></a>
 
