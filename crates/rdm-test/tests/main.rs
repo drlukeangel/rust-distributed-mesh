@@ -200,6 +200,8 @@ mod admin_reads_from_atlas;
 mod mesh_primary_store_reads;
 #[path = "node/mesh_primary_reads.rs"]
 mod mesh_primary_reads;
+#[path = "node/non_primary_reads.rs"]
+mod non_primary_reads;
 #[path = "node/node_delete.rs"]
 mod node_delete;
 #[path = "node/node_connections_delete.rs"]
