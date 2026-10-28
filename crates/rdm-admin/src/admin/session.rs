@@ -518,6 +518,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 floor: s.entry_floor.clone(),
                 fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.client.clone(), s.local.clone(), s.responders.clone()),
                 progress: None,
+                held: Some(s.local.clone()),
             },
             leave: self.operation.operation.starts_with("node.mesh.join:").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), pre_node_ready_task: s.pre_node_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
         };
@@ -639,6 +640,10 @@ pub(crate) struct AdminFloor {
     pub(crate) fetch_build: crate::fetch_build::FetchBuild,
     /// Where the Ready check of a first start reads what the start waits on.
     pub(crate) progress: Option<StartProgress>,
+    /// The Build log a start served a join checks its floor against as it holds the facts now, reading
+    /// no store (Q227: "only FP reads the builds"): every launched node-admin's first start and every
+    /// start after a stop. `None`: a start with no launcher reads its builds store.
+    pub(crate) held: Option<Arc<dyn crate::build_state::LocalBuildLog>>,
 }
 
 impl AdminFloor {
@@ -650,7 +655,10 @@ impl AdminFloor {
         let mut seen: Vec<&'static str> = Vec::new();
         loop {
             let floor = self.floor.lock().unwrap().clone();
-            let blocker = node_admin_not_ready(&self.me, &*self.builds, floor).await;
+            let blocker = match &self.held {
+                Some(log) => crate::admin::reconcile::node_admin_not_ready_held(&self.me, &**log, floor).await,
+                None => node_admin_not_ready(&self.me, &*self.builds, floor).await,
+            };
             self.fetch_build.tick(blocker.as_ref()).await;
             let Some(blocker) = blocker else { break };
             if !seen.contains(&blocker.kind()) {
@@ -752,6 +760,13 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         for m in &read.stored {
             if let Some(id) = &m.mesh_id {
                 self.records.meshes.lock().unwrap().entry(m.mesh.clone()).or_insert_with(|| id.clone());
+            }
+        }
+        // So are the ids the snapshots it installed carry on their members: a launched admin holds its
+        // meshes' ids from this hydration sync, never from the Build records (Q227).
+        for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id) {
+            if let Some(id) = &d.mesh_id {
+                self.records.meshes.lock().unwrap().entry(d.node.name.mesh.clone()).or_insert_with(|| id.clone());
             }
         }
         if map.iter().any(|n| n.name.mesh == self.mesh && n.node_id != self.me_id) {

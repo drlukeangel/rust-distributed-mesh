@@ -2017,8 +2017,9 @@ pub trait LocalBuildLog: BuildStateAdapter {
     /// append the unseen ones; intents, opens and claims are insert-and-fail, receipts deduplicate.
     async fn absorb_facts(&self, facts: &[BuildFact]);
     /// Run `derive` over the facts of the Builds it reads ([`FactDerivation::reads`]: the current
-    /// Build and the held ones, then also those the new facts belong to), once now and again each
-    /// time facts enter the log, whoever put them there (an own append or an absorbed fact), before
+    /// Build and the held ones, then also those the new facts belong to), once now over the facts it
+    /// holds, reading no store, and again each time facts enter the log, whoever put them there (an
+    /// own append, an absorbed fact or a fact its read of the store took), before
     /// any reader sees them and before the append returns: what is derived from the facts never lags
     /// a reader of them. Never the whole log: an adapter that keeps none in memory reads those Builds
     /// one by one. It runs under the writer's turn, never under the lock readers take. A log whose
@@ -2033,6 +2034,22 @@ pub trait LocalBuildLog: BuildStateAdapter {
     async fn put_attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), crate::storage_error::StorageError>;
     /// The context of `(build_id, lane, attempt)`, when one was put: a point read of its key.
     async fn attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, crate::storage_error::StorageError>;
+    /// Merge one Build's whole facts, as `FetchBuildFacts` carried them complete (op 0x1F), into what
+    /// this log holds, reading no store (Q227: "only FP reads the builds"). A whole Build's facts are
+    /// ordered among themselves, so a later read of the store takes only the facts they lack. A log
+    /// that reads no store merges them as [`Self::absorb_facts`] does.
+    async fn absorb_build(&self, facts: &[BuildFact]) {
+        self.absorb_facts(facts).await
+    }
+    /// `build_id` as the facts this log holds now, reading no store: what a launched node-admin's Build
+    /// floor is checked against at its start (node-start.md step 4; Q227).
+    async fn held_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+        self.read_build(build_id).await
+    }
+    /// The current Build as the facts this log holds now, reading no store ([`Self::held_build`]).
+    async fn held_current_build(&self) -> Result<CurrentBuild, BuildStateError> {
+        self.current_build().await
+    }
 }
 
 /// The key of attempt `(build_id, lane, attempt)`'s context: `<build_id>-<attempt>` for the fabric
@@ -2072,7 +2089,8 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
 impl LocalBuildLog for FileJournal {
     async fn derive_on_every_fact(&self, derive: FactDerivation) {
         let mut w = self.turn("derive_on_every_fact").await;
-        let _ = self.sync(&w).await;
+        // Over the facts the log holds now, reading no store (Q227): every fact a later read of the
+        // store root takes is derived as it is published, as an own append's is.
         derive.run(&self.log, &snapshot(&self.log), &[]);
         w.0 = Some(derive);
     }
@@ -2089,6 +2107,28 @@ impl LocalBuildLog for FileJournal {
         }
         drop(held);
         publish(&self.log, w.0.as_ref(), new);
+    }
+
+    async fn absorb_build(&self, facts: &[BuildFact]) {
+        // Under the writer's turn, which the derivation runs under; the store root is not read.
+        let w = self.turn("absorb_build").await;
+        let held = snapshot(&self.log);
+        let mut new: Vec<BuildFact> = Vec::new();
+        for f in facts {
+            if is_new(&held, f) && is_new(&new, f) {
+                new.push(f.clone());
+            }
+        }
+        drop(held);
+        publish(&self.log, w.0.as_ref(), new);
+    }
+
+    async fn held_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+        read_own(&self.log, build_id)
+    }
+
+    async fn held_current_build(&self) -> Result<CurrentBuild, BuildStateError> {
+        Ok(current_build(&self.log))
     }
 
     async fn put_attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), crate::storage_error::StorageError> {

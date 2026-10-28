@@ -193,7 +193,7 @@ fn a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_w
         // The take of mesh1's writing: the writer's fill (SeatFold's, `WrittenRows::fill`), the install's
         // arrivals, the atlas. The Day-0 admin's start reads before it are not the take: its contradictory-start
         // check (no launcher), and the primaries recorded on the rows (`take_recorded_primaries`, an election
-        // input at every admin's start: rust-distributed-mesh#97).
+        // input read only at a start with no launcher, Q227).
         let take = root_calls.through(Some("nodes"), &["node_rows.rs", "status_rpc.rs", "atlas.rs"]);
         assert_eq!(take.iter().filter(|c| c.subject == "mesh1").count(), 1, "the mesh-primary lists its mesh's records once as it takes the mesh's writing: {take:#?}");
         let atlas = root_calls.through(None, &["atlas.rs"]);

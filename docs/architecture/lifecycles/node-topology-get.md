@@ -26,6 +26,9 @@ command/completion gossip hook, and the same running endpoint and birth are reus
 node.topology.get { mesh, since: held source version }     exact member → own mesh-primary
   ← Started
   ← Snapshot chunks | Unchanged | Stored
+  ← Primaries (each recorded primary the mesh-primary holds, gone or not)
+  ← RafkaTime
+  ← OwnRow (the reader's own whole row)
   ← End
 install complete source snapshots, then resume deltas
 ```

@@ -1181,9 +1181,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // such mesh, as every node does. Held behind the gate: a stopped admin tops up nothing, and a
                 // gap signalled while it was stopped is topped up once it runs again.
                 tasks_early.push(stop_gate.spawn(topology_view.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
-                // The primaries recorded on the node rows of the fabric's store root: an election input this admin
-                // enters with (elections §3), its own included. A record older than one held changes nothing.
-                crate::admin::rows_writer::take_recorded_primaries(&*mesh_storage, &*nodes_storage, &cfg.mesh, topology_view.primaries()).await.map_err(storage_err)?;
+                // The recorded primaries: an election input this admin enters with (elections §3), its own
+                // included. A launched admin reads no store (Q227): its mesh-primary's hydration sync serves
+                // them (`Primaries`, node.topology.get), a lost birth's record marked gone. A start with no
+                // launcher, the re-born fabric-primary with nobody to pull from, reads them off the node
+                // records of the fabric's store root. A record older than one held changes nothing.
+                if cfg.launch.is_none() {
+                    crate::admin::rows_writer::take_recorded_primaries(&*mesh_storage, &*nodes_storage, &cfg.mesh, topology_view.primaries()).await.map_err(storage_err)?;
+                }
                 if let Some(own) = &inherited {
                     topology_view.digest_view.seats.mark_gone(own.incarnation_id.clone());
                 }
@@ -1342,15 +1347,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
                                 }
                             }
-                            // The meshes the accepted Build names keep the ids the Build carries for them; a start with no
-                            // launcher, the ids its store holds for them (Q227: a launched admin reads no store at its
-                            // start).
-                            if let Some(named) = builds_dyn.current().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.map(|b| b.topology) {
-                                if cfg.launch.is_some() {
-                                    for (mesh, m) in &named.meshes {
-                                        records.meshes.lock().unwrap().insert(mesh.clone(), m.mesh_id.clone());
-                                    }
-                                } else {
+                            // A start with no launcher, the re-born fabric-primary (Q227, the one reader of the Build
+                            // records), holds the ids its store holds for the meshes the current Build names. A launched
+                            // admin reads neither (Q227: "only FP reads the builds"): the meshes' ids come in its
+                            // hydration sync, node.topology.get at node.start's topology step (`AdminFirstStart`).
+                            if cfg.launch.is_none() {
+                                if let Some(named) = builds_dyn.current().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.map(|b| b.topology) {
                                     for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| !m.dead && named.meshes.contains_key(&m.name)) {
                                         records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
                                     }
@@ -2123,6 +2125,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     floor: entry_floor.clone(),
                                     fetch_build: crate::fetch_build::FetchBuild::new(name.clone(), node_rpc.client.clone(), journal.clone(), responders.clone()),
                                     progress: Some(progress.clone()),
+                                    held: cfg.launch.is_some().then(|| journal.clone()),
                                 },
                                 progress: progress.clone(),
                                 read_seam: wiring.read_seam.clone(),
@@ -2151,6 +2154,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // The adoption launch's attempt completes once it is Ready (Q156).
                                         let adopted = adoption_claim.clone().map(|c| (c, journal.clone(), mesh_claims.clone()));
                                         let (hydrated, start_progress, entering_gate) = (builds_dyn.clone(), progress.clone(), entering.clone());
+                                        // A launched admin's Ready names the current Build its log holds, reading no store (Q227).
+                                        let held_log = cfg.launch.is_some().then(|| journal.clone());
                                         let sweep_slot_gate = sweep_slot.clone();
                                         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
                                         let runtime = runtime.clone();
@@ -2220,7 +2225,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                     // The current Build the not-ready check above found held: the Ready span names it,
                                                     // so "it held the current Build before Ready" is read off the Ready itself.
-                                                    let held_build = match hydrated.current_build().await {
+                                                    let held_build = match match &held_log {
+                                                        Some(log) => log.held_current_build().await,
+                                                        None => hydrated.current_build().await,
+                                                    } {
                                                         Ok(c) => c.into_build_id().map(|b| b.to_string()).unwrap_or_default(),
                                                         Err(e) => format!("unreadable: {e}"),
                                                     };

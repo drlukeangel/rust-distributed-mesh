@@ -286,7 +286,8 @@ pub struct TopologyStorageHandle {
     /// the new provider.
     names: std::sync::Mutex<Vec<PathName>>,
     /// The derivation installed on the Build journal (`LocalBuildLog::derive_on_every_fact`): a
-    /// replacement installs it on the new provider's journal, which derives over its facts at once.
+    /// replacement installs it on the new provider's journal, which derives over each fact as the fact
+    /// enters its log (its first read of the store root takes the facts the store holds).
     derivation: std::sync::Mutex<Option<crate::build_state::FactDerivation>>,
     /// One replacement at a time, and no connections open or derivation installed during one.
     replacing: tokio::sync::Mutex<()>,
@@ -725,6 +726,16 @@ impl LocalBuildLog for Through {
     }
     async fn attempt_context(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, StorageError> {
         self.read().stores().boundaries.builds.attempt_context(build_id, lane, attempt).await
+    }
+    async fn absorb_build(&self, facts: &[crate::build_state::BuildFact]) {
+        let w = self.write();
+        w.boundaries.builds.absorb_build(facts).await
+    }
+    async fn held_build(&self, build_id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
+        self.read().stores().boundaries.builds.held_build(build_id).await
+    }
+    async fn held_current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
+        self.read().stores().boundaries.builds.held_current_build().await
     }
 }
 

@@ -280,7 +280,8 @@ impl FetchBuild {
                     Ok(f) if f.complete => {
                         span.record("facts", f.facts.len() as u64);
                         span.record("chunks", f.chunks);
-                        local.absorb_facts(&f.facts).await;
+                        // A whole Build's facts, merged reading no store (Q227).
+                        local.absorb_build(&f.facts).await;
                         span.record("outcome", "absorbed");
                         span.in_scope(|| tracing::info!("the responder's complete holdings of the Build are absorbed into the local Build log"));
                         End::Absorbed(target.node_id)

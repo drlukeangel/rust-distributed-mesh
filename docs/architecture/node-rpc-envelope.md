@@ -1222,6 +1222,12 @@ snapshot wins. The reader never installs Stored as topology: it uses the map onl
 a live node of its own mesh. A read from a node of another mesh installs topology only for
 other meshes and holds none of the reader's own mesh as heard.
 
+Primaries is reply position 12: one per recorded primary the answerer holds (the fabric-primary
+and each mesh's mesh-primary), `gone` when its election holds that birth lost. The reader holds
+each as an election input before it computes any (elections §3), over an older revision, and a
+gone birth as lost: a node-admin started by a launch takes its recorded primaries here, never
+from the store (Q227).
+
 OwnRow is reply position 14. A read by a node of its OWN mesh-primary answers one OwnRow,
 after RafkaTime and before End: the reader's whole row as the mesh-primary's Atlas holds it
 (every node property: config, tags, executable, storage, placement, listeners, status,

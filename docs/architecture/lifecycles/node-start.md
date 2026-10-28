@@ -35,7 +35,10 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    Ready waits for the hook; its Ok, Blocked and Failed outcomes, the Blocked probe
    answer and cancellation follow [Outcomes and the gate](../fabric-node-hooks.md#outcomes-and-the-gate).
 4. Obtain complete topology through [node.topology.get](node-topology-get.md). Install
-   only complete source snapshots; partial snapshots never complete start. Fetch Build
+   only complete source snapshots; partial snapshots never complete start. The read is the
+   node's hydration sync (Q234): with the topology it carries the node's own whole row, the
+   recorded primaries the mesh-primary holds (a lost birth's marked gone) and each mesh's id,
+   and a node-admin started by a launch reads none of them from the store (Q227). Fetch Build
    facts only when the node is below the primary's floor, after the hook and before
    node.started: the node-admin Ready check reports a missing pointer, an unreadable Build
    or holdings behind the required floor, and the node reads the facts with
@@ -43,7 +46,9 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    else with [FetchBuildFacts](../node-rpc-envelope.md#build-facts-op-0x1f-rdm) of the Build named, each served
    only by a node-admin, under that schema's resolution order and backoff. The
    facts are absorbed through the Build log; the step completes when the Ready check holds
-   the required facts, never on a received frame alone. Refresh rafka-time **last**, so it
+   the required facts, never on a received frame alone. A node-admin started by a launch, and
+   any node-admin started after a stop, checks the facts its Build log holds and reads no
+   Build record from the store (Q227). Refresh rafka-time **last**, so it
    is current when the node re-enters.
 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot nor a
    Blocked hook permits it. That frame is the node's report: the mesh-primary sets

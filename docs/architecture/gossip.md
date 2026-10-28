@@ -663,7 +663,7 @@ section owns only what gossip is to a joiner:
   node-admin backbone when it is a node-admin; a mesh with no live listener has its channel created
   again by its first listener under the mesh's own MeshId;
 - topology is not in the join answer and not learned from gossip first: the joiner reads complete
-  source snapshots and its own row with [node.topology.get](lifecycles/node-topology-get.md), and later deltas, fulls
+  source snapshots, the recorded primaries and its own row with [node.topology.get](lifecycles/node-topology-get.md), and later deltas, fulls
   and top-ups (§3.3) keep them current;
 - the accepted topology is the current Build, read last in, first out from `builds.storage`; it is
   never reconstructed from Build gossip. Gossip disseminates; it is not the persistence of a Build;

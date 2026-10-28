@@ -485,39 +485,50 @@ mod tests {
 
     /// CONTRACT (elections §3: the recorded primary is an election input, "the recorded primary, not yet
     /// heard -> it waits"; the Q122 line: the node-admin type of a mesh whose unheard mesh-primary was
-    /// also the fabric-primary elects no node-admin until fabric recovery's restore; node-delete.md step
-    /// 3: the deleted birth's record stays; Q149 arm A): the node-admin re-created at the lost
-    /// fabric-primary's path.name takes the lost birth's recorded primaries off its `Deleted` record at
-    /// boot, so a standby's Ready digest heard before its entry elects nobody; the restore at
-    /// revision 2 names the re-created birth. Must NOT happen: a transient standby winner.
+    /// also the fabric-primary elects no node-admin until fabric recovery's restore; Q227: a launched
+    /// node-admin reads no store at its start and pulls what it needs from its mesh-primary or the
+    /// fabric-primary): the node-admin re-created at the lost fabric-primary's path.name is launched by
+    /// the standby that runs fabric recovery, which holds the lost birth's records (mesh-primary and
+    /// fabric-primary, revision 1) and holds that birth gone. The re-created birth takes them from the
+    /// `Primaries` frames its pull is served (node.topology.get: each record the server holds, `gone`
+    /// as the server's election holds the birth lost), as `TopologyView::learn_primaries` takes them, so
+    /// a standby's Ready digest heard before its entry elects nobody; the restore at revision 2 names
+    /// the re-created birth. Must NOT happen: a transient standby winner, or a record read from the store.
     #[tokio::test]
-    async fn a_re_created_admin_holds_the_lost_primarys_deleted_record_and_elects_no_node_admin_until_the_restore() {
-        for (backend, nodes, meshes) in record_stores("lost-primary-held").await {
-            let lost = primaries(digest("mesh1.admin.1", MemberStatus::Ready), Some(1), Some(1));
-            let standby = digest("mesh1.admin.2", MemberStatus::Ready);
-            for d in [&lost, &standby] {
-                claimed(&*nodes, d).await;
+    async fn a_re_created_admin_holds_the_lost_primarys_records_from_its_pull_and_elects_no_node_admin_until_the_restore() {
+        let lost = digest("mesh1.admin.1", MemberStatus::Ready);
+        let standby = digest("mesh1.admin.2", MemberStatus::Ready);
+        let lost_record = rdm_core::Primary { mesh: "mesh1".into(), node_id: lost.node.node_id.clone(), incarnation: lost.node.incarnation.clone(), revision: 1 };
+        // The standby that launches the re-created birth: it holds the lost birth's records, and the birth gone.
+        let server = DigestView::default();
+        server.seats.take(rdm_core::Seat::MeshPrimary, &lost_record);
+        server.seats.take(rdm_core::Seat::FabricPrimary, &lost_record);
+        server.seats.mark_gone(lost.node.incarnation.clone());
+        // The Primaries frames its topology door serves (boot.rs: the records it holds, `gone` from its election's lost set).
+        let lost_set = super::projection::incumbency_of(&server, &Records::default()).lost;
+        let mut served: Vec<(rdm_core::Seat, rdm_core::Primary, bool)> = server.seats.meshes().into_values().map(|p| (rdm_core::Seat::MeshPrimary, p)).chain(server.seats.fabric().map(|p| (rdm_core::Seat::FabricPrimary, p))).map(|(s, p)| { let gone = lost_set.contains(&p.incarnation); (s, p, gone) }).collect();
+        served.sort_by_key(|(s, _, _)| s.name());
+        assert_eq!(served.iter().map(|(s, p, g)| (s.name(), p.node_id.clone(), *g)).collect::<Vec<_>>(), vec![("fabric-primary", lost.node.node_id.clone(), true), ("mesh-primary", lost.node.node_id.clone(), true)], "the pull serves both of the lost birth's records, each gone");
+        // The re-created birth takes them as `TopologyView::learn_primaries` does, then hears the standby's Ready.
+        let digest_view = DigestView::default();
+        for (seat, primary, gone) in &served {
+            digest_view.seats.take(*seat, primary);
+            if *gone {
+                digest_view.seats.mark_gone(primary.incarnation.clone());
             }
-            let mut writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), Default::default());
-            writer.sweep(&[lost.clone(), standby.clone()], &writing(&["mesh1"]), |_| false).await;
-            // Fabric recovery's node.delete of the lost birth: its record is Deleted, its births kept.
-            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &lost.node.name, &lost.node.node_id, None).await.ok().expect("the lost birth's Deleted record");
-            // The re-created birth: its boot read first, then the standby's Ready heard before its entry.
-            let digest_view = DigestView::default();
-            rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &digest_view.seats).await.unwrap();
-            let recreated = digest("mesh1.admin.1", MemberStatus::Pending);
-            let mut view = vec![elected_node(&recreated, NodeStatus::Pending), elected_node(&standby, NodeStatus::Ready)];
-            crate::election::resolve_with(&mut view, &super::projection::incumbency_of(&digest_view, &Records::default()));
-            assert_eq!(mesh_primary_of(&view, "mesh1"), None, "{backend}: the lost primary's record holds the election: no node-admin is elected");
-            assert!(view.iter().all(|n| !n.is_fabric_primary), "{backend}: nor fabric-primary");
-            // Fabric recovery's restore at revision 2.
-            let restored = rdm_core::Primary { mesh: "mesh1".into(), node_id: recreated.node.node_id.clone(), incarnation: recreated.node.incarnation.clone(), revision: 2 };
-            digest_view.seats.take(rdm_core::Seat::MeshPrimary, &restored);
-            digest_view.seats.take(rdm_core::Seat::FabricPrimary, &restored);
-            let mut view = vec![elected_node(&recreated, NodeStatus::Ready), elected_node(&standby, NodeStatus::Ready)];
-            crate::election::resolve_with(&mut view, &super::projection::incumbency_of(&digest_view, &Records::default()));
-            assert_eq!(mesh_primary_of(&view, "mesh1"), Some(recreated.node.node_id.clone()), "{backend}: the restore names the re-created birth");
         }
+        let recreated = digest("mesh1.admin.1", MemberStatus::Pending);
+        let mut view = vec![elected_node(&recreated, NodeStatus::Pending), elected_node(&standby, NodeStatus::Ready)];
+        crate::election::resolve_with(&mut view, &super::projection::incumbency_of(&digest_view, &Records::default()));
+        assert_eq!(mesh_primary_of(&view, "mesh1"), None, "the lost primary's record holds the election: no node-admin is elected");
+        assert!(view.iter().all(|n| !n.is_fabric_primary), "nor fabric-primary");
+        // Fabric recovery's restore at revision 2.
+        let restored = rdm_core::Primary { mesh: "mesh1".into(), node_id: recreated.node.node_id.clone(), incarnation: recreated.node.incarnation.clone(), revision: 2 };
+        digest_view.seats.take(rdm_core::Seat::MeshPrimary, &restored);
+        digest_view.seats.take(rdm_core::Seat::FabricPrimary, &restored);
+        let mut view = vec![elected_node(&recreated, NodeStatus::Ready), elected_node(&standby, NodeStatus::Ready)];
+        crate::election::resolve_with(&mut view, &super::projection::incumbency_of(&digest_view, &Records::default()));
+        assert_eq!(mesh_primary_of(&view, "mesh1"), Some(recreated.node.node_id.clone()), "the restore names the re-created birth");
     }
 
     /// CONTRACT (elections §3: a recorded primary is held only when it supersedes the one held;

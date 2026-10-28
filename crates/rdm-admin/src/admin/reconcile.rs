@@ -716,16 +716,60 @@ pub(crate) fn mesh_state_of(status: &str) -> Result<rdm_core::status::MeshState,
 /// reason is typed ([`crate::fetch_build::NodeAdminNotReady`]): the Ready check recovers each one with
 /// the request it names.
 pub async fn node_admin_not_ready(me: &PathName, builds: &dyn BuildStateAdapter, floor: Option<(crate::build::BuildId, u32)>) -> Option<crate::fetch_build::NodeAdminNotReady> {
+    not_ready_in(me, &FromStore(builds), floor).await
+}
+
+/// [`node_admin_not_ready`] over the facts `log` holds now, reading no store: a launched node-admin's
+/// Build floor at its start (Q227: "only FP reads the builds"), its facts fetched from a node-admin
+/// with `FetchBuildFacts` and merged whole ([`crate::build_state::LocalBuildLog::absorb_build`]).
+pub(crate) async fn node_admin_not_ready_held(me: &PathName, log: &dyn crate::build_state::LocalBuildLog, floor: Option<(crate::build::BuildId, u32)>) -> Option<crate::fetch_build::NodeAdminNotReady> {
+    not_ready_in(me, &Held(log), floor).await
+}
+
+/// Where a node-admin's Ready check reads its Build holdings.
+#[async_trait::async_trait]
+trait Holdings: Send + Sync {
+    async fn build(&self, id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError>;
+    async fn current(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError>;
+}
+
+/// The Build log's reads, each reading its store.
+struct FromStore<'a>(&'a dyn BuildStateAdapter);
+
+#[async_trait::async_trait]
+impl Holdings for FromStore<'_> {
+    async fn build(&self, id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
+        self.0.read_build(id).await
+    }
+    async fn current(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
+        self.0.current_build().await
+    }
+}
+
+/// What the Build log holds now, reading no store.
+struct Held<'a>(&'a dyn crate::build_state::LocalBuildLog);
+
+#[async_trait::async_trait]
+impl Holdings for Held<'_> {
+    async fn build(&self, id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
+        self.0.held_build(id).await
+    }
+    async fn current(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
+        self.0.held_current_build().await
+    }
+}
+
+async fn not_ready_in(me: &PathName, builds: &dyn Holdings, floor: Option<(crate::build::BuildId, u32)>) -> Option<crate::fetch_build::NodeAdminNotReady> {
     use crate::fetch_build::NodeAdminNotReady as B;
     if let Some((id, attempt)) = floor {
-        match builds.read_build(&id).await {
+        match builds.build(&id).await {
             Ok(held) if held.attempt < attempt => return Some(B::BehindFloor { me: me.clone(), build_id: id, held: held.attempt, floor: attempt }),
             Ok(_) => {}
             Err(crate::build_state::BuildStateError::UnknownBuild(_)) => return Some(B::NoCurrentBuild { me: me.clone(), wanted: Some(id) }),
             Err(e) => return Some(B::UnreadableBuild { me: me.clone(), build_id: id, error: e.to_string() }),
         }
     }
-    match builds.current_build().await {
+    match builds.current().await {
         Ok(crate::build_state::CurrentBuild::None) => Some(B::NoCurrentBuild { me: me.clone(), wanted: None }),
         Ok(_) => None,
         Err(e) => Some(B::BuildStoreUnreadable { me: me.clone(), error: e.to_string() }),
