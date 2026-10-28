@@ -1015,10 +1015,13 @@ enum HeldBirth {
 }
 
 fn judge_held_birth(nodes: &[Value], path: &str, inc: &str) -> HeldBirth {
-    if nodes.iter().any(|n| n["name"] == path && n["incarnation_id"] == inc && n["status"] == "ready-for-traffic") {
+    let of_birth: Vec<&Value> = nodes.iter().filter(|n| n["name"] == path && n["incarnation_id"] == inc).collect();
+    if of_birth.is_empty() {
+        HeldBirth::Replaced
+    } else if of_birth.iter().any(|n| n["status"] == "ready-for-traffic") {
         HeldBirth::Ready
     } else {
-        HeldBirth::Replaced
+        HeldBirth::Returning
     }
 }
 
@@ -1586,9 +1589,20 @@ impl Driver {
         // A silenced birth that node recovery did not re-create is the same birth back; one it re-created
         // (a verdict other than `reached`, Q110, Q111) was checked replaced with its runtime ended.
         if let Some((path, inc)) = held.as_ref().filter(|_| entry["recreated"] != true) {
-            let now_nodes = self.estate.node_values().await;
-            if judge_held_birth(&now_nodes, path, inc) == HeldBirth::Replaced {
-                return Err(broken("silence-is-not-death", format!("{path} came back as another birth than {inc}: silence replaced a running runtime")));
+            // The released birth is commanded back and runs its start sequence before it is ready
+            // (node-recovery.md §3): judged another birth only when no row of it stands; otherwise
+            // waited for within the converge window.
+            let wait_until = Instant::now() + CONVERGE;
+            loop {
+                let now_nodes = self.estate.node_values().await;
+                match judge_held_birth(&now_nodes, path, inc) {
+                    HeldBirth::Ready => break,
+                    HeldBirth::Replaced => return Err(broken("silence-is-not-death", format!("{path} came back as another birth than {inc}: silence replaced a running runtime"))),
+                    HeldBirth::Returning if Instant::now() >= wait_until => {
+                        return Err(broken("silence-is-not-death", format!("{path}: the released birth {inc} did not read ready-for-traffic within {}s", CONVERGE.as_secs())));
+                    }
+                    HeldBirth::Returning => tokio::time::sleep(Duration::from_millis(250)).await,
+                }
             }
         }
         // The replaced node's id names no node: a call to it is refused, never dispatched.
