@@ -1872,6 +1872,16 @@ struct View {
 }
 
 impl View {
+    /// The sources this node serves on a topology read, one per mesh: what it forwards as its
+    /// mesh's primary, else what its receivers hold.
+    fn held_sources(&self) -> Vec<SourceSnapshot> {
+        if self.primary.load(Ordering::Relaxed) {
+            self.forwarder.lock().unwrap().snapshots()
+        } else {
+            self.mesh_rx.lock().unwrap().snapshots()
+        }
+    }
+
     fn new(mesh: &str, node: &str) -> Self {
         let mut view = Self { mesh: mesh.to_string(), node: node.to_string(), ..Self::default() };
         *view.digest_view.observer_name.lock().unwrap() = node.to_string();
@@ -3133,11 +3143,7 @@ impl TopologyView {
     /// The baselines of the source meshes this node holds: while it is its Mesh's primary, what
     /// it last published into its Mesh; otherwise what it holds from its primary.
     fn held_sources(&self) -> Vec<SourceSnapshot> {
-        if self.view.primary.load(Ordering::Relaxed) {
-            self.view.forwarder.lock().unwrap().snapshots()
-        } else {
-            self.view.mesh_rx.lock().unwrap().snapshots()
-        }
+        self.view.held_sources()
     }
 
     /// The topology this node holds, one snapshot per mesh (Node RPC op `0x1E` serves it), each at
@@ -7728,6 +7734,40 @@ mod tests {
         assert!(spans.named("rdm.mesh.topology.reject.via-snapshot").is_empty(), "no earlier frame reached the receiver: {:#?}", spans.named("rdm.mesh.topology.reject.via-snapshot"));
         assert_eq!(spans.named("rdm.mesh.topology.update.via-duplicate").len(), 1, "the receiver absorbed the copy and nothing else");
         assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "nothing is marked desynchronized: {:?}", member.mesh_rx.lock().unwrap().desynced());
+    }
+
+    /// CONTRACT (R-RX3, gossip.md §3.1: "a frame whose order key is earlier than the newest the
+    /// receiver holds from that source is ignored ... whichever channel or read it arrives by": one held
+    /// version per source; `node.topology.get` serves each source "at the publisher and version it holds
+    /// it at"): a node-admin that is not its mesh's primary hears a peer mesh (mesh1) on the backbone and,
+    /// forwarded by its own primary, on its mesh channel. The backbone runs ahead (v9, v10: mesh1's
+    /// members deleted down to its last admin); the forwarded v9 then reaches the mesh channel and is
+    /// ignored as earlier than the held v10. Its topology read serves mesh1 at v10 with the last
+    /// admin its only member. Must NOT happen: the read serving the mesh channel's v8 with all four
+    /// births (rdm#154: mesh3.admin.2 served mesh1@9 with four births for 30 s while it held v22,
+    /// rdm.mesh.topology.serve.via-read members=mesh1@9:mesh1.rpc.2,mesh1.admin.2,mesh1.rpc.1,mesh1.admin.1).
+    #[test]
+    fn a_non_primary_admins_read_serves_the_newest_version_it_holds_of_a_peer_mesh_whichever_channel_installed_it() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let admin = test_view("mesh3", "mesh3.admin.2");
+        let hears = |f: &Frame, side: Side| hear(&mut admin.order.lock().unwrap(), &admin, f, &fabric, side);
+        let (a1, a2, r1, r2) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.rpc.1", 1), birth_at("mesh1.rpc.1", 1), birth_at("mesh1.rpc.2", 1));
+        let a2 = { let mut d = a2; d.node.name = "mesh1.admin.2".parse().unwrap(); d };
+        let p = publisher_of(&a1);
+        let all = vec![a1.clone(), a2.clone(), r1.clone(), r2.clone()];
+        let full = |version: u64, digests: Vec<MeshDigest>, forwarded_by: Option<&str>| snapshot_of("mesh1", &p, forwarded_by, version, version, digests, vec![], vec![]);
+
+        // As mesh3.admin.2 heard them (rdm#154): its primary's forwarded v8 first, then the backbone's.
+        assert!(hears(&full(8, all.clone(), Some("mesh3.admin.1")), Side::MeshChannel), "the forwarded v8 is taken");
+        assert!(hears(&full(8, all.clone(), None), Side::Backbone));
+        assert!(hears(&full(9, vec![a1.clone(), a2.clone()], None), Side::Backbone));
+        assert!(hears(&full(10, vec![a1.clone()], None), Side::Backbone));
+        assert!(!hears(&full(9, vec![a1.clone(), a2.clone()], Some("mesh3.admin.1")), Side::MeshChannel), "the forwarded v9 is earlier than the held v10");
+
+        let served: Vec<_> = admin.held_sources().into_iter().filter(|s| s.mesh == "mesh1").collect();
+        assert_eq!(served.len(), 1, "one source of mesh1 is served: {served:#?}");
+        let names: Vec<String> = served[0].digests.iter().map(|d| d.node.name.to_string()).collect();
+        assert_eq!((served[0].publisher.clone(), served[0].topology_version, names.clone()), (p.clone(), 10, vec!["mesh1.admin.1".to_string()]), "the read serves the version this node holds, v10, with the last admin its only member: {names:?} at v{}", served[0].topology_version);
     }
 
     /// CONTRACT (R-RX1, Luke 2026-10-12: no receiver refuses an input because of who sent it; R-RX3:

@@ -128,6 +128,7 @@ impl TopologyDoor {
             rafka_time_ms = tracing::field::Empty,
             kind = tracing::field::Empty,
             own_row = tracing::field::Empty,
+            members = tracing::field::Empty,
             bytes = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
@@ -175,6 +176,8 @@ impl TopologyDoor {
                     return TopologyReply::End { meshes: 0 };
                 }
             };
+            // What the read answers, per held source: `<mesh>@<topology_version>:<path.name>,...`.
+            span.record("members", held.iter().map(|s| format!("{}@{}:{}", s.mesh, s.topology_version, s.digests.iter().map(|d| d.node.name.to_string()).collect::<Vec<_>>().join(","))).collect::<Vec<_>>().join(";").as_str());
             let (mut answered, mut snapshots, mut unchanged, mut bytes) = (0u32, 0u64, 0u64, 0u64);
             for s in &held {
                 let same = mesh.is_some() && since.as_ref().is_some_and(|v| v.publisher == s.publisher && v.topology_version == s.topology_version);
