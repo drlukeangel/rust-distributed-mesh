@@ -168,6 +168,57 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
     }
 }
 
+/// CONTRACT (lifecycles/node-replace.md "Inherited": "The successor's tag-index entries use its own id.
+/// Retained predecessor labels are removed from the active index, not erased from its row"; step 3: the
+/// retained `<name>.old` row "whose labels leave the active tags index"; rollback step 3: the
+/// predecessor's "tag-index entries restored under its" id; query.md §1: a set field (`tags`) matches
+/// when it contains the value): the successor at `mesh1.rpc.1` and the retained predecessor at
+/// `mesh1.rpc.1.old`, marked `inherited_by` the successor, both carry `rabbit` on their rows.
+/// `nodes.get [tags: rabbit]` names the successor alone, while `nodes.get [mesh: mesh1]` answers the
+/// retained row with its `rabbit` kept. Once the mark is cleared (the predecessor takes its name back at a
+/// rollback), `[tags: rabbit]` names it again. Must NOT happen: the retained predecessor named under its
+/// label, or its row's labels erased from what `nodes.get` answers.
+#[tokio::test]
+async fn a_retained_predecessors_labels_leave_the_tags_match_and_stay_on_its_row() {
+    let (admin, successor, predecessor) = (node("mesh1.admin.1"), node("mesh1.rpc.1"), node("mesh1.rpc.1.old"));
+    let view = Topology {
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        nodes: vec![admin.clone(), successor.clone(), predecessor.clone()],
+    };
+    let rabbit: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
+    let write = |inherited: bool| {
+        let (successor, predecessor, admin, rabbit) = (&successor, &predecessor, &admin, &rabbit);
+        async move {
+            let status = MemoryNodesStorage::default();
+            status.write_record(&NodeRow::new(admin.name.clone(), admin.node_id.clone(), NodeStatus::ReadyForTraffic)).await.unwrap();
+            let mut s = NodeRow::new(successor.name.clone(), successor.node_id.clone(), NodeStatus::ReadyForTraffic);
+            s.tags = rabbit.clone();
+            status.write_record(&s).await.unwrap();
+            let mut p = NodeRow::new(predecessor.name.clone(), predecessor.node_id.clone(), NodeStatus::ReadyForTraffic);
+            p.tags = rabbit.clone();
+            p.inherited_by = inherited.then(|| successor.node_id.clone());
+            status.write_record(&p).await.unwrap();
+            status
+        }
+    };
+    let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
+    let ids = |nodes: Vec<rdm_core::views::NodeView>| nodes.into_iter().map(|n| n.node_id).collect::<Vec<_>>();
+
+    let marked = write(true).await;
+    assert_eq!(ids(answer(&view, &marked, &planned, Filter::new().eq("tags", ["rabbit"])).await), [successor.node_id.clone()], "[tags: rabbit] names the successor, not the retained predecessor");
+    let listed = answer(&view, &marked, &planned, Filter::new().eq("mesh", ["mesh1"])).await;
+    let retained = listed.iter().find(|n| n.node_id == predecessor.node_id).unwrap_or_else(|| panic!("the retained predecessor is answered at mesh1.rpc.1.old: {listed:#?}"));
+    assert_eq!(retained.tags, rabbit, "the retained row keeps its labels: {retained:?}");
+
+    let restored = write(false).await;
+    let mut both = ids(answer(&view, &restored, &planned, Filter::new().eq("tags", ["rabbit"])).await);
+    both.sort();
+    let mut want = vec![successor.node_id.clone(), predecessor.node_id.clone()];
+    want.sort();
+    assert_eq!(both, want, "with no inherited_by mark the predecessor's labels are in the match again");
+}
+
 /// A nodes store that fails every call, read or write, and counts them: a read answered while it is
 /// the admin's store read nothing of it.
 #[derive(Default)]
