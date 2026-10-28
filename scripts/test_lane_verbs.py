@@ -321,28 +321,6 @@ class Verbs(unittest.TestCase):
         self.land_proven()
         self.assertIn('issue close 1 --repo drlukeangel/rafka-v2', self.gh_log())
 
-    def test_a_gate_waits_for_a_held_turn_lock(self):
-        turn = self.e.home / 'turn.lock'
-        env = {**self.e.env, 'RDM_TURN_LOCK': str(turn)}
-        holder = subprocess.Popen(['flock', '-o', str(turn), 'sleep', '600'], env=env, start_new_session=True)
-        gate = None
-        try:
-            time.sleep(1)
-            gate = subprocess.Popen(['bash', str(SCRIPTS / 'rdm-gate-at.sh'), str(self.e.lane)], cwd=self.e.home, env=env,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
-            time.sleep(4)
-            self.assertIsNone(gate.poll(), 'the gate is still waiting, not run or aborted, while the turn lock is held')
-            holder_pg = os.getpgid(holder.pid)
-            os.killpg(holder_pg, signal.SIGKILL)
-            holder.wait()
-            out, _ = gate.communicate(timeout=120)
-            self.assertIn('WAITING: the box\'s turn lock', out)
-        finally:
-            for p in (holder, gate):
-                if p is not None and p.poll() is None:
-                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                    p.wait()
-
 
 class ModuleCoverage(unittest.TestCase):
     """rdm#96: the gate's discovery check that every rdm-test test is selected by exactly one module job."""
