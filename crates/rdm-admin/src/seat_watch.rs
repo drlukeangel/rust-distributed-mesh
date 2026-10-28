@@ -172,9 +172,13 @@ impl Looker {
         commands.unanswered_since(&n.node_id, incarnation, self.topology_view.digest_view.staleness_floor(), std::time::Instant::now()).is_some()
     }
 
-    /// The provider's inspection of `n`'s exact runtime.
+    /// The provider's inspection of `n`'s exact runtime (node.runtime.inspect), its span the evidence
+    /// (node-runtime-inspect.md "Observability contract"), named by the path.name this admin holds.
     async fn inspect(&self, n: &Node) -> Finding {
-        inspect_birth(&*self.provider, &self.topology_view.digest_view, self.nodes.as_deref(), n).await
+        let (inspected, handle) = crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.topology_view.digest_view, self.nodes.as_deref(), n).await;
+        let me = self.topology_view.digest_view.held_path_name().unwrap_or_else(|| self.me.clone());
+        crate::node_investigation::span_inspection(&me.to_string(), n, &inspected, handle.as_ref(), "the seat watch's investigation asked the provider about the unreached birth's exact runtime");
+        inspected.into()
     }
 }
 

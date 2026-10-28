@@ -283,15 +283,7 @@ impl RecoverySubmitter {
     /// The inspection's span (node-runtime-inspect.md "Spans"), with `handle` the exact runtime handle
     /// the provider was asked about (none when nothing was asked).
     pub(crate) fn span_inspection(&self, node: &Node, outcome: &Inspected, handle: Option<&DeploymentHandle>) {
-        let (exit_code, reason) = match outcome {
-            Inspected::Exited(code) => (code.map(|c| c.to_string()).unwrap_or_default(), String::new()),
-            Inspected::Running | Inspected::OsStopped => (String::new(), String::new()),
-            Inspected::Unavailable(why) => (String::new(), why.clone()),
-        };
-        let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
-        let handle = handle.map(|h| format!("{h:?}")).unwrap_or_default();
-        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.held_name(), handle = %handle, verdict = verdict_name(outcome), exit_code, reason = %reason)
-            .in_scope(|| tracing::info!("the mesh primary asked the provider about the TRUE OFFLINE member's exact runtime"));
+        crate::node_investigation::span_inspection(&self.held_name().to_string(), node, outcome, handle, "the mesh primary asked the provider about the TRUE OFFLINE member's exact runtime");
     }
 
     /// The recovery of `node`'s unreached birth on its verdict `outcome`: this mesh primary submits

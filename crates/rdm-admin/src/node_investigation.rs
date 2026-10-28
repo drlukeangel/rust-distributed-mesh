@@ -181,6 +181,23 @@ pub async fn inspect_birth_with_handle(provider: &dyn crate::deployment::provide
     }
 }
 
+/// node.runtime.inspect's span (node-runtime-inspect.md "Observability contract"), the one every
+/// caller's inspection emits: `inspector` the caller's path.name, `handle` the exact runtime handle the
+/// provider was asked about (empty when nothing was asked), `verdict` the provider's answer and `why`
+/// the event naming what the caller asked it for.
+pub fn span_inspection(inspector: &str, node: &Node, outcome: &crate::deployment::provider::Inspected, handle: Option<&crate::deployment::provider::DeploymentHandle>, why: &str) {
+    use crate::deployment::provider::Inspected;
+    let (exit_code, reason) = match outcome {
+        Inspected::Exited(code) => (code.map(|c| c.to_string()).unwrap_or_default(), String::new()),
+        Inspected::Running | Inspected::OsStopped => (String::new(), String::new()),
+        Inspected::Unavailable(why) => (String::new(), why.clone()),
+    };
+    let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
+    let handle = handle.map(|h| format!("{h:?}")).unwrap_or_default();
+    tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %inspector, handle = %handle, verdict = crate::admin::verdict_name(outcome), exit_code, reason = %reason)
+        .in_scope(|| tracing::info!("{why}"));
+}
+
 /// [`inspect_birth_with_handle`]'s answer as the investigation's verdict: the provider's inspection of
 /// the exact runtime of `n`'s birth, unproven by name when no runtime fact is held.
 pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, digest_view: &rdm_transport::topology::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
