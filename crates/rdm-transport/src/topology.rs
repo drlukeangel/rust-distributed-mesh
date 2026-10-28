@@ -2749,28 +2749,26 @@ impl TopologyView {
     /// name only what gossip carries ([`rdm_core::filter::GOSSIPED`]), matched as `nodes.get` matches a
     /// row ([`rdm_core::filter::Filter::matches`]); a pair naming a row-only property (`tags`,
     /// `config.<key>`, `executable`, ...) or one the node schema refuses is `Err` naming the pair, the
-    /// row-only one naming `nodes.get`, whatever digests would have matched. One
-    /// `rdm.mesh.node.serve.via-topology-view` span names the pairs and how many nodes were answered.
+    /// row-only one naming `nodes.get`, whatever digests would have matched. A refusal is the one
+    /// `rdm.mesh.node.serve.via-topology-view` span, naming the pairs and why; an answer is a local
+    /// read of what this node holds, on every routing decision, and emits nothing, as
+    /// [`DigestView::get_by_path_name`] does.
     pub fn nodes_get(&self, filter: &rdm_core::filter::Filter) -> std::result::Result<Vec<MeshDigest>, String> {
-        let span = tracing::info_span!(
-            "rdm.mesh.node.serve.via-topology-view",
-            node = %self.node_name(),
-            read = "topology_view.nodes_get",
-            properties = %filter.properties(),
-            nodes = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-            detail = tracing::field::Empty,
-            "otel.kind" = "internal",
-        );
         if let Some(reason) = filter.local_refusal() {
-            span.record("outcome", "rejected-filter").record("detail", reason.as_str());
-            span.in_scope(|| tracing::info!("the local query names a pair the topology this node holds does not carry; nothing is matched"));
+            tracing::info_span!(
+                "rdm.mesh.node.serve.via-topology-view",
+                node = %self.node_name(),
+                read = "topology_view.nodes_get",
+                properties = %filter.properties(),
+                outcome = "rejected-filter",
+                detail = reason.as_str(),
+                "otel.kind" = "internal",
+            )
+            .in_scope(|| tracing::info!("the local query names a pair the topology this node holds does not carry; nothing is matched"));
             return Err(reason);
         }
         let mut nodes: Vec<MeshDigest> = self.digest_view.current(self.digest_view.staleness_floor()).into_iter().filter(|d| filter.matches(d)).collect();
         nodes.sort_by(|a, b| a.node.name.cmp(&b.node.name));
-        span.record("nodes", nodes.len() as u64).record("outcome", "answered");
-        span.in_scope(|| tracing::info!("the nodes this node's topology holds answered"));
         Ok(nodes)
     }
 
