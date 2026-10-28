@@ -35,7 +35,7 @@ You are the seat for $REPO issue #$ISSUE, "$TITLE", in lane $d on branch $B.
 2. Your plan is $s/plan.md. Read every file in $s/inbox/ numbered above the last one you acted on, in order.
 3. Work only in $d, only on $B. Never land, never push, never switch branch, never \`cargo test -p\`,
    never export CARGO_TARGET_DIR, never touch iroh, iroh-base, iroh-gossip or noq.
-4. Run cells only through \`flock -o /tmp/rdm-gate-turn.lock $d/scripts/cells.sh <crate> lib|main -- <filter>\`.
+4. Run cells through \`$d/scripts/cells.sh <crate> lib|main -- <filter>\`, with no lock (the box's turn lock is gone, Luke 2026-10-27); independent cells.sh calls run in parallel, each in the background at once, never one after another in a queue.
 5. A cause is stated only with its span lines; otherwise it is unattributed.
 6. End every turn with one line: \`STATUS: <done|blocked|working> inbox <NNNN> commits <sha,…>\`, then what you ran and its result.
 7. End the unit with its evidence, which the lead reviews before anything lands: run \`bash $d/scripts/post-land-gate.sh $LANE\` yourself, not under the turn lock (it rebases on origin/main and proves the tip; resolve rebase conflicts yourself: generated docs/reference/rdm/*.md by regenerating with rdm-docgen, INDEX/PRD rows by keeping both sides); report its GREEN line; the cells you ran with their results; and Jaeger links (http://192.168.68.99:16687/trace/<trace id>, found in ClickHouse otel.otel_traces on 192.168.68.99:18123, which the gate exports to) for the traces that show your fix working. A RED is read and fixed in this lane, never re-run to see if it passes; a red that is another known issue's is reported as that issue.

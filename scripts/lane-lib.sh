@@ -45,7 +45,7 @@ lane_warm() {
   members=$(cd "$d" && cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c 'import json,sys; print(" ".join("-p "+p["name"] for p in json.load(sys.stdin)["packages"]))')
   [ -n "$members" ] || { echo "REFUSED: cargo metadata failed in $d"; return 1; }
   local s=$(date +%s)
-  (cd "$d" && flock -o /tmp/rdm-gate-turn.lock env CARGO_BUILD_INCREMENTAL=true cargo build --tests --bins $members >/dev/null 2>&1) \
+  (cd "$d" && env CARGO_BUILD_INCREMENTAL=true cargo build --tests --bins $members >/dev/null 2>&1) \
     || { echo "REFUSED: lane $1 does not build at $(git -C "$d" rev-parse --short HEAD)"; return 1; }
   echo "lane $1: warm at $(git -C "$d" rev-parse --short HEAD) in $(( $(date +%s)-s ))s"
 }
