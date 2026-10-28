@@ -279,11 +279,11 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     assert!(matches!(followed.frames.last(), Some(BuildFrame::Complete { .. })), "the Build ends Complete: {followed:?}");
 
     let receipts = Builds::new(carrier.clone()).get(&build_id).await.expect("build.get");
-    // The Build put the fabric back to pending, so it is Complete only once its ready state is set (Q154): its run
-    // hands back to the fabric-primary, and the one attempt after it, claimed once the fabric is
-    // ready, completes it and runs no step. The close opened none: every step ran in the
-    // attempt the watcher watched.
-    assert_eq!(receipts.attempt, attempt + 1, "the close opened no second attempt; the one after the run is the Complete after the fabric's change: {receipts:?}");
+    // The Build put the fabric back to pending, so it is Complete only once its ready state is set (Q154): when the
+    // fabric is ready before the run ends the run completes it in the watched attempt; otherwise it hands back
+    // and the one attempt after it, claimed once the fabric is ready, completes it and runs no step. The close
+    // opened none: every step ran in the attempt the watcher watched.
+    assert!(receipts.attempt == attempt || receipts.attempt == attempt + 1, "the close opened no second attempt; the Complete is the watched attempt's or the one after the fabric's change: {receipts:?}");
     assert!(receipts.steps.iter().all(|r| r.attempt == attempt), "every step ran in attempt {attempt}, the one the watcher watched: {receipts:?}");
     let mut keys: Vec<(u32, String, String)> = receipts.steps.iter().map(|r| (r.attempt, r.operation.clone(), r.step.clone())).collect();
     let all = keys.len();
