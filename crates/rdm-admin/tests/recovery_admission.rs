@@ -1179,7 +1179,7 @@ async fn the_fabric_primary_opens_no_recovery_of_an_unheard_mesh_primary_until_t
     let (node_id, birth) = (unheard.node_id.clone(), unheard.incarnation_id.clone().unwrap());
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
     let fp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time()));
-    // Its primaries already hold the election's record (the seat watch woke on it), the view not yet.
+    // Its primaries already hold the election's record (the investigation woke on it), the view not yet.
     election_replaced(&fp, &t, "mesh2.admin.1", "mesh2.admin.2");
     let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
     settle_other(&builds, &b0).await;
