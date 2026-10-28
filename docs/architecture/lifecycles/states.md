@@ -13,9 +13,9 @@ lives on its own page; op fields and enums live only in the
 - **Node:** starting → pending → ready-for-traffic → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted under the [node object contract](../node-rpc-envelope.md#typed-object-contract). Stopped is a status: a live, stopped process. Start rejoins that same process and restores readiness only after all start gates pass. Delete proves exact runtime exit, writes the durable row deleted and releases identity/name; it is not a return to readiness.
 - **Node row silence marks:** a node row may carry the observer-inferred marks `PendingReconnect` and `Dead` (TRUE OFFLINE), written by the node's mesh-primary. They are never themselves a reason to act ([node recovery](node-recovery.md)).
 
-A mesh is ready-for-traffic when every planned exact member birth for the accepted
+A mesh is ready when every planned exact member birth for the accepted
 Build that is not stopped is ready: a stopped birth is at rest by command (below), receives no
-traffic and holds neither its mesh nor a checklist (Q240). When every planned mesh is ready-for-traffic the fabric-primary sets the fabric
+traffic and holds neither its mesh nor a checklist (Q240). When every planned mesh is ready the fabric-primary sets the fabric
 ready-for-traffic (Q174); no node is commanded to open traffic and none checks in.
 Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 
