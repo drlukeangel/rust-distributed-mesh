@@ -67,7 +67,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_DATA_DIR_GONE_FLOORS` | `crates/rdm-admin/src/admin/records.rs` | 10 | const `ENV_DATA_DIR_GONE_FLOORS` | literal |
 | `RDM_DATA_DIR_GONE_FLOORS` | `crates/rdm-admin/src/admin/records.rs` | 17 | fn `data_dir_gone_floors` | `ENV_DATA_DIR_GONE_FLOORS`, argument to `std::env::var` |
 | `RDM_DATA_DIR_GONE_FLOORS` | `crates/rdm-admin/src/admin/records.rs` | 31 | const `PASSTHROUGH` | `ENV_DATA_DIR_GONE_FLOORS` |
-| `RDM_DEBUG_GOSSIP` | `crates/rdm-transport/src/evidence_capture.rs` | 194 | fn `EvidenceCapture::open` | argument to `std::env::var` |
+| `RDM_DEBUG_GOSSIP` | `crates/rdm-transport/src/evidence_capture.rs` | 246 | fn `EvidenceCapture::open` | argument to `std::env::var` |
 | `RDM_DECLARED_SECRETS` | `crates/rdm-admin/src/deployment/declared.rs` | 116 | fn `DeclaredSecrets::spellings` | `ENV_DECLARED_SECRETS`, argument to `.push` |
 | `RDM_DECLARED_SECRETS` | `crates/rdm-core/src/launch.rs` | 78 | const `ENV_DECLARED_SECRETS` | literal |
 | `RDM_DECLARED_SECRETS` | `crates/rdm-core/src/launch.rs` | 82 | const `RDM_SECRETS` | `ENV_DECLARED_SECRETS` |
@@ -91,7 +91,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/boot.rs` | 1610 | fn `start_booted` | `ENV_EXECUTABLE_DIRS`, argument to `.insert` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 154 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, argument to `get` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 156 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, in `format!` |
-| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/control_plane.rs` | 1320 | fn `named_executable_refusal` | `ENV_EXECUTABLE_DIRS`, in `format!` |
+| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/control_plane.rs` | 1356 | fn `named_executable_refusal` | `ENV_EXECUTABLE_DIRS`, in `format!` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 283 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, argument to `.get` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 285 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, in `format!` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 286 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, in `format!` |

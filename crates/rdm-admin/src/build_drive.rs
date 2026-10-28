@@ -1738,11 +1738,25 @@ impl DriveEnv {
         // "The fabric-primary writes a row only as acting primary of a mesh with no primary. No other
         // process writes a Node row" (node-identity-and-state.md §4.3). It is this admin's only while no
         // admin of that mesh executes it: the acting primary of a mesh with no primary.
-        let seated = first
-            .as_ref()
-            .filter(|op| matches!(op, BuildOperation::CreateNode { .. } | BuildOperation::RetireNode { .. }) && mesh_primary_recovery_admits(p, op))
-            .and_then(|op| crate::executor::executor_for(op, &view))
-            .filter(|to| to != me);
+        // A node-admin's is claimed for the mesh-primary the election named in its place, read from this
+        // view as the claim at its open reads it ([`crate::executor::unheard_mesh_primary_executor`]):
+        // while the view names none and the mesh holds another node-admin, nothing is claimed and the
+        // attempt waits, named, for the election's result.
+        let recovery = first.as_ref().filter(|op| matches!(op, BuildOperation::CreateNode { .. } | BuildOperation::RetireNode { .. }) && mesh_primary_recovery_admits(p, op));
+        let seated = match (recovery, p.action.as_ref()) {
+            (Some(op), Some(crate::accepted::AttemptAction::Recover { path, node_id, .. })) if path.kind == NodeKind::NodeAdmin => match crate::executor::unheard_mesh_primary_executor(path, node_id, &view) {
+                Some(to) => Some(to),
+                None => {
+                    let admins: Vec<String> = crate::executor::held_admins(&path.mesh, Some(path), &view).into_iter().map(|n| format!("{} ({:?})", n.name, n.status)).collect();
+                    let why = format!("{me}: attempt {attempt} of Build {id} recovers {path}, mesh {}'s unheard mesh-primary: this view names no mesh-primary of mesh {} in its place and the mesh holds node-admin(s) {}, so the election has not named it here; nothing is claimed for {}", path.mesh, path.mesh, admins.join(", "), op.key());
+                    self.blocked(drive, attempt, "", "mesh-primary-not-named", &why);
+                    return Err(self.stalled(me, drive, why));
+                }
+            },
+            (Some(op), _) => crate::executor::executor_for(op, &view),
+            (None, _) => None,
+        }
+        .filter(|to| to != me);
         let forced = match seated {
             Some(to) => Some(to),
             None if recover => Some(me.clone()),

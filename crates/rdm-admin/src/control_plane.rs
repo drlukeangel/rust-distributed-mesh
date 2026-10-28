@@ -993,7 +993,7 @@ impl ControlPlane {
     /// lane's attempt already opened with this very recovery and claimed by no one (its opener lost
     /// between its open and its claim) is claimed as it stands: never opened again, and nothing ends it.
     pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, mesh = %path.mesh, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), open_attempt = tracing::field::Empty, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, mesh = %path.mesh, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), open_attempt = tracing::field::Empty, mesh_primary = tracing::field::Empty, admins = tracing::field::Empty, executor = tracing::field::Empty, outcome = tracing::field::Empty);
         let outer = tracing::Span::current();
         let r = async {
             // A deleted birth opens nothing (node-investigation.md: "A node that comes back after it was
@@ -1075,6 +1075,47 @@ impl ControlPlane {
                 });
                 return Err(Refusal::NotClaimant { mesh: path.mesh.clone(), fabric_primary, mesh_primary });
             }
+            // An unheard mesh-primary's recovery the fabric-primary opens in the fabric lane is claimed for
+            // the mesh-primary the election named in the birth's place, the one writer of its mesh's rows
+            // (node-recovery.md step 2: the fabric-primary runs it "after the election has named the new
+            // mesh-primary"; "Execution": "the mesh-primary claims it ... the mesh-primary runs it"), and for
+            // this admin only as acting primary of a mesh with no other node-admin
+            // (node-identity-and-state.md: "The fabric-primary writes a row only as acting primary of a mesh
+            // with no primary"). The writer is decided here, once, before anything is opened: while this
+            // admin's view names no mesh-primary in the birth's place and the mesh holds another node-admin,
+            // the election has not named it here yet, and nothing is opened or claimed; the submit is owed
+            // and made again.
+            let fabric_lane = unheard_mesh_primary && fabric_recovery.is_none() && !reported;
+            let executor = if fabric_lane {
+                let now = match self.view_now.get() {
+                    Some(project) => project().await,
+                    None => t.clone(),
+                };
+                let named = crate::executor::unheard_mesh_primary_executor(&path, &node_id, &now);
+                let mesh_primary = now.node_type_primary(&path.mesh, NodeKind::NodeAdmin).map(|n| n.name.to_string()).unwrap_or_default();
+                let admins: Vec<String> = crate::executor::held_admins(&path.mesh, Some(&path), &now).into_iter().map(|n| n.name.to_string()).collect();
+                span.record("mesh_primary", mesh_primary.as_str());
+                span.record("admins", admins.join(",").as_str());
+                match named {
+                    Some(executor) => executor,
+                    None => {
+                        let why = format!(
+                            "{me}: the recovery of mesh {}'s unheard mesh-primary {path} ({node_id}) is not opened: this admin's view names {} mesh {}'s primary and the mesh holds node-admin(s) {}, so the election has not named the mesh-primary in its place here; the submit is made again",
+                            path.mesh,
+                            if mesh_primary.is_empty() { "no node-admin".to_string() } else { mesh_primary.clone() },
+                            path.mesh,
+                            admins.join(", ")
+                        );
+                        outer.in_scope(|| {
+                            tracing::info_span!("rdm.node_admin.build.reject.via-mesh-primary-not-named", route, node = %me, mesh = %path.mesh, member = %path, node_id = %node_id, mesh_primary = %mesh_primary, admins = %admins.join(","))
+                                .in_scope(|| tracing::info!("an unheard mesh-primary's recovery is claimed for the mesh-primary the election names in its place: none is named in this admin's view yet"))
+                        });
+                        return Err(Refusal::Unavailable(why));
+                    }
+                }
+            } else {
+                me.clone()
+            };
             let action = AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: route == "fabric-recovery-backbone" };
             // A reported recovery whose attempt still runs under the reporter is reattached, never
             // claimed again (build.md: "A live run is reattached, never re-claimed"): the fabric-primary
@@ -1104,7 +1145,7 @@ impl ControlPlane {
             // the mesh.
             // Fabric recovery's re-create runs in its target mesh's lane: free while the fabric lane holds an
             // attempt the lost fabric-primary claimed, which the restored fabric-primary resumes.
-            let lane = if unheard_mesh_primary && fabric_recovery.is_none() && !reported { None } else { Some(path.mesh.as_str()) };
+            let lane = if fabric_lane { None } else { Some(path.mesh.as_str()) };
             // The lane's attempt opened with this very recovery and claimed by no one is claimed as
             // it stands; otherwise the lane's next attempt is opened for it.
             // A fabric-lane attempt opened with this very recovery and claimed by no one (an executor's open whose
@@ -1148,18 +1189,13 @@ impl ControlPlane {
             if let Some(claimant) = recoverer.filter(|_| reported) {
                 return Ok(Recovery::Reported { opened, claimant });
             }
-            // An unheard mesh-primary's recovery opened here in the fabric lane is claimed for the admin its
-            // mesh seats in the birth's place, once one is seated, and the fabric-primary's drive calls
-            // build.attempt.run on it: "the fabric-primary opens the attempt ...; the mesh-primary claims it
-            // through BuildClaim, and the fabric-primary calls build.attempt.run naming the mesh; the
-            // mesh-primary runs it and reports each receipt up that stream, and the fabric-primary writes
-            // every Build record" (node-recovery.md "Execution"); "The fabric-primary writes a row only as
-            // acting primary of a mesh with no primary" (node-identity-and-state.md §4.3). A mesh with no
-            // other admin keeps this admin, its acting primary, as the executor.
-            let executor = match (unheard_mesh_primary && fabric_recovery.is_none() && lane.is_none(), crate::executor::node_admin_recoverer(&path, &t)) {
-                (true, Some(elected)) if elected != me => elected,
-                _ => me.clone(),
-            };
+            // An unheard mesh-primary's recovery opened here in the fabric lane is claimed for the executor
+            // decided above, and the fabric-primary's drive calls build.attempt.run on it: "the
+            // fabric-primary opens the attempt ...; the mesh-primary claims it through BuildClaim, and the
+            // fabric-primary calls build.attempt.run naming the mesh; the mesh-primary runs it and reports
+            // each receipt up that stream, and the fabric-primary writes every Build record"
+            // (node-recovery.md "Execution").
+            span.record("executor", executor.to_string().as_str());
             let claim = crate::build_state::BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: executor.to_string(), claimant: Some(me.to_string()), mesh: opened.mesh.clone() };
             let own = self.node_rows.get().zip(self.node_id.get()).filter(|_| executor == me).map(|(rows, id)| (&**rows, id));
             match crate::build_claim::decide_claim(&me, &*self.builds, &*self.claims, &self.contexts, &claim, &path.mesh, own).await {

@@ -151,15 +151,17 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
     let fp_name = fp.name.to_string();
     let first = hold_until_recovered(&estate, &mp.name.to_string()).await;
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
-    // The second hold begins once the first recovery's attempt has its terminal at the fabric-primary
-    // (its build.attempt.run to mesh2.admin.2 answered complete): the cell holds an admin between
-    // recoveries, never the executor of one still reporting its receipts.
+    // The second hold begins once the first recovery has its terminal at the fabric-primary (the
+    // build.attempt.run of an attempt the fabric-primary opened for it, to mesh2.admin.2, answered
+    // complete): the cell holds an admin between recoveries, never the executor of one still reporting
+    // its receipts. Any attempt of the recovery: one that ended Failed is opened again (node-recovery.md
+    // "Failure and receipts"), and the one that completes is the recovery's.
     let fp_view = fp_name.clone();
     let first_id = first.node_id.clone();
     wait_for("the first recovery's attempt complete at the fabric-primary", crate::node_recovery_due(), || async {
         let spans = estate.spans();
-        let attempt = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| attr(sp, "node_id") == first_id && attr(sp, "route") == "node-recovery" && attr(sp, "outcome") == "admitted").map(|sp| attr(sp, "attempt"))?;
-        named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().any(|sp| attr(sp, "node") == fp_view && attr(sp, "attempt") == attempt && attr(sp, "outcome") == "complete").then_some(())
+        let attempts: Vec<String> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == first_id && attr(sp, "outcome") == "admitted").map(|sp| attr(sp, "attempt")).collect();
+        named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().any(|sp| attr(sp, "node") == fp_view && attempts.contains(&attr(sp, "attempt")) && attr(sp, "outcome") == "complete").then_some(())
     })
     .await;
     let second = hold_until_recovered(&estate, &other.name.to_string()).await;
@@ -190,18 +192,19 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
         assert!(stopped.is_empty(), "{}: the recovery's create stops no runtime as a lost executor's launch: {stopped:#?}", held.path);
         let claimed: Vec<&Value> = named(&spans, "rdm.node_admin.node.resolve.via-claimed-allocation").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id).collect();
         assert!(claimed.is_empty(), "{}: the deleted birth's row stands Deleted, so the recovery's create finds no claim of it: {claimed:#?}", held.path);
-        // The fabric-primary opened the recovery of the unheard mesh-primary and claimed it for the
-        // admin the mesh seats in its place (node-recovery.md "Execution"): its own spans name both, as the
-        // held birth's executor is killed by this cell before its spans are flushed.
-        let opened = named(&spans, "rdm.node_admin.build.update.via-recovery")
+        // The fabric-primary opened the recovery of the unheard mesh-primary and claimed every attempt of
+        // it for the admin the election named in its place (node-recovery.md step 2 and "Execution"): its
+        // own spans name both, as the held birth's executor is killed by this cell before its spans are
+        // flushed. An attempt claimed for any other admin is a writer its mesh's rows refuse.
+        let opened: Vec<String> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id && attr(sp, "outcome") == "admitted").map(|sp| attr(sp, "attempt")).collect();
+        assert!(!opened.is_empty(), "{}: the fabric-primary opens the recovery", held.path);
+        let executors: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.build.update.via-claim-decision")
             .into_iter()
-            .find(|sp| attr(sp, "node_id") == held.node_id && attr(sp, "route") == "node-recovery" && attr(sp, "outcome") == "admitted")
-            .unwrap_or_else(|| panic!("{}: the fabric-primary opens the recovery", held.path));
-        let claimed = named(&spans, "rdm.node_admin.build.update.via-claim-decision")
-            .into_iter()
-            .find(|sp| attr(sp, "node") == fp_name && attr(sp, "lane") == "fabric" && attr(sp, "attempt") == attr(opened, "attempt") && attr(sp, "outcome") == "won")
-            .unwrap_or_else(|| panic!("{}: the fabric-primary claims the recovery's attempt {}", held.path, attr(opened, "attempt")));
-        creators.push((held.path.clone(), attr(claimed, "executor")));
+            .filter(|sp| attr(sp, "node") == fp_name && attr(sp, "lane") == "fabric" && opened.contains(&attr(sp, "attempt")) && attr(sp, "outcome") == "won")
+            .map(|sp| attr(sp, "executor"))
+            .collect();
+        assert_eq!(executors.len(), 1, "{}: every attempt {opened:?} of the recovery is claimed in the fabric lane for one executor: {executors:?}", held.path);
+        creators.push((held.path.clone(), executors.into_iter().next().unwrap_or_default()));
         let deleted = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id && attr(sp, "outcome") == "row-deleted").map(|sp| attr(sp, "node")).collect::<Vec<_>>();
         assert!(!deleted.iter().any(|w| *w == fp_name), "{}: the fabric-primary writes no row of a mesh with a primary: {deleted:?}", held.path);
     }

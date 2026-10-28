@@ -214,6 +214,24 @@ pub fn node_admin_recoverer(node: &PathName, t: &Topology) -> Option<PathName> {
     }
 }
 
+/// The admin that runs the recovery of an unheard mesh-primary, the birth `node_id` at `node`, and
+/// writes its mesh's rows (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs
+/// it ... after the election has named the new mesh-primary"; "Execution": "the mesh-primary claims it
+/// ... the mesh-primary runs it"; node-identity-and-state.md: "The fabric-primary writes a row only as
+/// acting primary of a mesh with no primary"), decided once, at the attempt's claim, from view `t`, the
+/// view its rows are written against: the mesh-primary the view names in the unheard birth's place,
+/// read from the election and not from liveness, as [`mesh_executor`] reads it; the fabric-primary,
+/// the acting primary, while the mesh holds no other node-admin that is not proven gone
+/// ([`held_admins`]); `None` while the view names no mesh-primary in its place and the mesh holds one:
+/// the election has not named it here yet.
+pub fn unheard_mesh_primary_executor(node: &PathName, node_id: &crate::model::NodeId, t: &Topology) -> Option<PathName> {
+    match t.node_type_primary(&node.mesh, NodeKind::NodeAdmin) {
+        Some(p) if p.node_id != *node_id => Some(p.name.clone()),
+        _ if held_admins(&node.mesh, Some(node), t).is_empty() => t.fabric_primary().map(|n| n.name.clone()),
+        _ => None,
+    }
+}
+
 /// The admin the election seats as `target`'s mesh primary once `target`'s exited birth is proven
 /// gone (elections §5: "a holder ... whose exact birth is proven gone hands the seat to the lowest
 /// ReadyForTraffic NodeId of its own mesh"). A proven loss only: a planned move is node.primary.update.
