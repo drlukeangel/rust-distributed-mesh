@@ -1117,6 +1117,14 @@ impl PrimaryView {
 
 }
 
+/// `op` carrying the trace context of the envelope `f` arrived in (gossip.md §3.4): the publishing
+/// executor's span, kept through every forward, so the application's span made from the operation is
+/// its child (telemetry.md §3, the deletion operation). Observability only: nothing reads it to decide.
+fn traced_by_envelope(f: &Frame, op: &LifecycleOp) -> LifecycleOp {
+    let context = f.context();
+    op.clone().traced(context.and_then(|c| c.traceparent.clone()), context.and_then(|c| c.tracestate.clone()))
+}
+
 /// What a peer mesh's primary puts on its own mesh channel for a lifecycle or status frame it
 /// heard on the backbone: the frame, unchanged but for `forwarded_by`, or nothing. A source Mesh's
 /// members are never forwarded as heard: the [`Forwarder`] derives the delta or the stripped full
@@ -1976,12 +1984,14 @@ impl View {
                     Frame::NodeDeleting { .. } => StatusEvent::Deleting,
                     _ => StatusEvent::Stopped,
                 };
+                let op = &traced_by_envelope(f, op);
                 if !self.refuses_status_event(kind, op, publisher, *topology_version, via) {
                     self.apply_status_event(kind, op, Some((publisher.to_string(), *topology_version)), via);
                 }
                 Vec::new()
             }
             Frame::NodeDeleted { op, forwarded_by } => {
+                let op = &traced_by_envelope(f, op);
                 let span = tracing::info_span!(
                     "rdm.mesh.topology.update.via-node-deleted",
                     node = %self.current_name(),

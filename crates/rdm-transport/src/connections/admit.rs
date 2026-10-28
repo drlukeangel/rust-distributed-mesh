@@ -132,7 +132,9 @@ fn presented_expiry(cert: &[u8]) -> u64 {
 pub(super) struct PresentFrame {
     pub(super) caller: Birth,
     pub(super) cert: Vec<u8>,
+    /// The opener's W3C context (telemetry.md §3): observability only, never read to admit.
     pub(super) traceparent: Option<String>,
+    pub(super) tracestate: Option<String>,
 }
 
 /// The acceptor's verdict, written back on the same stream.

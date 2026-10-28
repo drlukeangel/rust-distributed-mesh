@@ -639,10 +639,10 @@ impl ConnectionsRegistry {
             registry: self.clone(),
         };
         let caller_span = tracing::Span::current();
-        let traceparent = crate::traceparent_of(&caller_span);
+        let trace = Trace::of(&caller_span, Trace::default());
         let own = self.inner.sink.own_birth();
         let conn = dialer
-            .open_direct(&own, destination, &caller_span, traceparent)
+            .open_direct(&own, destination, &caller_span, trace)
             .await?;
         if let Some(entry) = self.inner.active.lock().unwrap().get_mut(conn.id()) {
             entry._keep_alive = Some(conn.inner.clone());
@@ -875,6 +875,9 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
         let Some(admit::Admitted { mut ctrl_send, mut ctrl_recv, present }) = admit::admit(&self.registry, &self.alpn, &connection).await else {
             return Ok(());
         };
+        // The opener's context, as its present frame carried it: what the accepted connection hands
+        // the application (telemetry.md §3), and what a carrier's tunnel span parents to.
+        let opener = Trace::presented(&present);
 
         let intent: ControlIntent = match tokio::time::timeout(floor, read_control_msg(&mut ctrl_recv)).await {
             Ok(Ok(Some(i))) => i,
@@ -945,7 +948,7 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
                     ctrl_send,
                     ctrl_recv,
                     closed_rx,
-                    Trace::default(),
+                    opener.clone(),
                 );
                 if let Some(tx) = self.registry.inner.accept_txs.get(&self.alpn.name) {
                     let _ = tx.send(conn);
@@ -982,7 +985,7 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
                     ctrl_send,
                     ctrl_recv,
                     closed_rx,
-                    Trace::default(),
+                    opener.clone(),
                 );
                 if let Some(tx) = self.registry.inner.accept_txs.get(&self.alpn.name) {
                     let _ = tx.send(conn);
@@ -996,7 +999,7 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
                 alpn,
                 via: None,
             } => {
-                self.carry(connection, ctrl_send, ctrl_recv, present.traceparent, id, origin, destination, alpn).await;
+                self.carry(connection, ctrl_send, ctrl_recv, opener, id, origin, destination, alpn).await;
             }
         }
         Ok(())
@@ -1033,7 +1036,7 @@ impl AlpnProtocolHandler {
         connection: iroh::endpoint::Connection,
         mut ctrl_send: iroh::endpoint::SendStream,
         ctrl_recv: iroh::endpoint::RecvStream,
-        traceparent: Option<String>,
+        opener: Trace,
         id: ConnectionId,
         origin: Birth,
         destination: Birth,
@@ -1051,11 +1054,11 @@ impl AlpnProtocolHandler {
             entry = %id,
             outcome = tracing::field::Empty,
         );
-        if let Some(tp) = traceparent.as_deref() {
-            crate::set_parent(&tunnel_span, tp);
+        if let Some(tp) = opener.traceparent.as_deref() {
+            crate::set_remote_parent(&tunnel_span, tp, opener.tracestate.as_deref());
         }
         tunnel_span.in_scope(|| tracing::info!("carrier splicing data-plane proxy tunnel to destination"));
-        let carrier_tp = crate::traceparent_of(&tunnel_span).or(traceparent);
+        let carrier_tp = Trace::of(&tunnel_span, opener);
         let ended_names = (origin.name.to_string(), own_now.name.to_string(), destination.name.to_string(), id.to_string());
         let opened = self
             .open_carrier_legs(&mut ctrl_send, carrier_tp.clone(), id, origin, destination, alpn, own_now, &tunnel_span)
@@ -1090,8 +1093,8 @@ impl AlpnProtocolHandler {
                     closed_by = closed_by,
                     closed = %closed,
                 );
-                if let Some(tp) = carrier_tp.as_deref() {
-                    crate::set_parent(&ended, tp);
+                if let Some(tp) = carrier_tp.traceparent.as_deref() {
+                    crate::set_remote_parent(&ended, tp, carrier_tp.tracestate.as_deref());
                 }
                 ended.in_scope(|| tracing::info!("carrier closed both legs of the proxy tunnel"));
             }
@@ -1109,7 +1112,7 @@ impl AlpnProtocolHandler {
     async fn open_carrier_legs(
         &self,
         ctrl_send: &mut iroh::endpoint::SendStream,
-        carrier_tp: Option<String>,
+        carrier_tp: Trace,
         id: ConnectionId,
         origin: Birth,
         destination: Birth,
@@ -1180,7 +1183,8 @@ impl AlpnProtocolHandler {
         let dst_present = PresentFrame {
             caller: own_now.clone(),
             cert,
-            traceparent: carrier_tp,
+            traceparent: carrier_tp.traceparent,
+            tracestate: carrier_tp.tracestate,
         };
         tunnel_span.in_scope(|| {
             tracing::info_span!(
@@ -1447,7 +1451,7 @@ impl Dialer {
             return Err(ConnectError::Deleted);
         }
         let caller_span = tracing::Span::current();
-        let traceparent = crate::traceparent_of(&caller_span);
+        let trace = Trace::of(&caller_span, Trace::default());
         // A cold discovery's cost runs from the open's start to its Proxy Connected (connections.md §12).
         let begun = std::time::Instant::now();
         let own = self.registry.inner.sink.own_birth();
@@ -1492,14 +1496,14 @@ impl Dialer {
                     incarnation: carrier_inc,
                 };
                 return self
-                    .open_tunnel(&own, &carrier_birth, destination, Some(&proxy), None, &caller_span, traceparent)
+                    .open_tunnel(&own, &carrier_birth, destination, Some(&proxy), None, &caller_span, trace)
                     .await;
             }
             EffectiveRoute::Direct { .. } => {}
         }
 
         match self
-            .open_direct(&own, destination, &caller_span, traceparent.clone())
+            .open_direct(&own, destination, &caller_span, trace.clone())
             .await
         {
             Ok(conn) => Ok(conn),
@@ -1524,7 +1528,7 @@ impl Dialer {
                     let Some(node) = live.iter().find(|n| n.name == name) else { continue };
                     let carrier_birth = Birth { name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
                     match self
-                        .open_tunnel(&own, &carrier_birth, destination, None, Some(begun), &caller_span, traceparent.clone())
+                        .open_tunnel(&own, &carrier_birth, destination, None, Some(begun), &caller_span, trace.clone())
                         .await
                     {
                         Ok(conn) => return Ok(conn),
@@ -1545,7 +1549,7 @@ impl Dialer {
         own: &Birth,
         destination: &Birth,
         caller_span: &tracing::Span,
-        traceparent: Option<String>,
+        trace: Trace,
     ) -> Result<Connection, ConnectError> {
         #[cfg(feature = "testkit-gossip")]
         if self
@@ -1597,7 +1601,8 @@ impl Dialer {
         let present = PresentFrame {
             caller: own.clone(),
             cert,
-            traceparent,
+            traceparent: trace.traceparent,
+            tracestate: trace.tracestate,
         };
         caller_span.in_scope(|| {
             tracing::info_span!(
@@ -1721,7 +1726,7 @@ impl Dialer {
                     ctrl_send,
                     ctrl_recv,
                     closed_rx,
-                    Trace::default(),
+                    Trace::presented(&present),
                 ))
             }
         }
@@ -1735,7 +1740,7 @@ impl Dialer {
         held_proxy: Option<&NodeConnection>,
         cold_discovery: Option<std::time::Instant>,
         caller_span: &tracing::Span,
-        traceparent: Option<String>,
+        trace: Trace,
     ) -> Result<Connection, ConnectError> {
         let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
         let tunnel_span = caller_span.in_scope(|| {
@@ -1753,7 +1758,7 @@ impl Dialer {
             )
         });
         tunnel_span.in_scope(|| tracing::info!("opening data-plane proxy tunnel through carrier"));
-        let tunnel_tp = crate::traceparent_of(&tunnel_span).or(traceparent);
+        let tunnel_tp = Trace::of(&tunnel_span, trace);
 
         let resolved = self
             .registry
@@ -1780,7 +1785,8 @@ impl Dialer {
         let present = PresentFrame {
             caller: own.clone(),
             cert,
-            traceparent: tunnel_tp,
+            traceparent: tunnel_tp.traceparent,
+            tracestate: tunnel_tp.tracestate,
         };
         tunnel_span.in_scope(|| {
             tracing::info_span!(
@@ -1929,7 +1935,7 @@ impl Dialer {
                     ctrl_send,
                     ctrl_recv,
                     closed_rx,
-                    Trace::default(),
+                    Trace::presented(&present),
                 ))
             }
         }
@@ -2078,6 +2084,21 @@ struct ConnectionInner {
 struct Trace {
     traceparent: Option<String>,
     tracestate: Option<String>,
+}
+
+impl Trace {
+    /// `span`'s context, or `or` whole when `span` has none (no layer gives it one).
+    fn of(span: &tracing::Span, or: Trace) -> Trace {
+        match crate::traceparent_of(span) {
+            Some(traceparent) => Trace { traceparent: Some(traceparent), tracestate: crate::tracestate_of(span) },
+            None => or,
+        }
+    }
+
+    /// What a present frame carried.
+    fn presented(present: &PresentFrame) -> Trace {
+        Trace { traceparent: present.traceparent.clone(), tracestate: present.tracestate.clone() }
+    }
 }
 
 impl std::fmt::Debug for Connection {

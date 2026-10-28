@@ -394,9 +394,14 @@ pub fn set_remote_parent(span: &tracing::Span, traceparent: &str, tracestate: Op
 
 /// The W3C `tracestate` of the current tracing span, when one rides its context.
 pub fn current_tracestate() -> Option<String> {
+    tracestate_of(&tracing::Span::current())
+}
+
+/// The W3C `tracestate` of `span`, when one rides its context.
+pub fn tracestate_of(span: &tracing::Span) -> Option<String> {
     use opentelemetry::trace::TraceContextExt;
     use tracing_opentelemetry::OpenTelemetrySpanExt;
-    let cx = tracing::Span::current().context();
+    let cx = span.context();
     let span = cx.span();
     let sc = span.span_context();
     let header = sc.trace_state().header();
