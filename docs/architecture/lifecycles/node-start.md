@@ -29,6 +29,9 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    pending from that frame. node.start clears NodeStopped at NodeJoined. No state is written
    before `CommandAccepted`; the mesh-primary records starting from that frame, the node's
    acknowledgement (a create's starting from the launch), and a query answers it ([states](states.md)).
+   The join and the start stream are two calls with no order between them: a starting whose frame
+   reaches the mesh-primary after the node's join has set pending finds the row past it and moves it
+   nowhere, as a late frame does on the stop ([node.stop](node-stop.md)).
 3. Run [pre_node_ready](../fabric-node-hooks.md#pre_node_ready) with the
    start kind and inherited-data-dir indication. The app subscribes its kind topics
    through the joined channel and reads no topology snapshot as a prerequisite.

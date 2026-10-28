@@ -3310,3 +3310,5 @@ Q240 (a stopped birth does not hold its mesh below ready nor a checklist) ruled 
 `missing_members` leave a stopped birth out; RED cells node_stop::a_resize_after_a_stop_reaches_ready_* (the resize
 Blocked on the fabric's change naming the stopped birth not-ready) and the delete-after-stop cell, now asserted Complete. Seat check: lane 2
 (rdm#93) finished its gate at 083d88fe5 and is writing its hand-over, waiting on nothing.
+Q248 (a starting frame after the join's pending moves the row nowhere, the stop's rule on the start's page) ruled A by
+the lead (INDEX); node-start.md landed; the cell accepts the order, in lane 6's unit.
