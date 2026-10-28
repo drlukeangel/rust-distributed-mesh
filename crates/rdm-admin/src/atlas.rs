@@ -426,6 +426,14 @@ impl Atlas {
         self.held.lock().unwrap().written.insert(mesh.to_string());
     }
 
+    /// `meshes` are the meshes whose rows this admin's writer writes now (its own as its mesh-primary,
+    /// a mesh with no primary as the fabric-primary, `crate::node_rows::writes_for`): the writer read each
+    /// whole once as it took its writing and feeds this atlas every row of it, so a fill reads none of
+    /// them ([`Self::fill`]).
+    pub fn writing(&self, meshes: std::collections::BTreeSet<String>) {
+        self.held.lock().unwrap().written = meshes;
+    }
+
     /// The records the atlas holds of `mesh`'s nodes, a mesh this admin is primary for (Q224; none
     /// otherwise): what `fabrics.get`'s cert summary folds (fabric-certs.md §Tracking), never a store read.
     pub fn records_of(&self, mesh: &str) -> Vec<NodeRow> {
@@ -468,10 +476,13 @@ impl Atlas {
 
     /// Fill the records of each mesh in `meshes` from the node records, read whole (one listing per
     /// mesh): at the fabric-primary's start or hand-over (Q204), and once a Build's attempt completed
-    /// (its op results on every mesh it names, Q197). The number of records held after.
+    /// (its op results on every mesh it names, Q197). A mesh this admin writes is not read: its records
+    /// are its writer's, fed here as they are filled and written ([`Self::writing`]). The number of
+    /// records held after.
     pub async fn fill(&self, rows: &dyn NodesStorage, meshes: impl IntoIterator<Item = String>) -> Result<usize, String> {
+        let written = self.held.lock().unwrap().written.clone();
         let mut read = Vec::new();
-        for mesh in meshes {
+        for mesh in meshes.into_iter().filter(|m| !written.contains(m)) {
             let listed = rows.nodes(&mesh).await.map_err(|e| format!("nodes.storage: the node records of {mesh} could not be read: {e}"))?;
             read.push((mesh, listed));
         }
@@ -491,7 +502,8 @@ impl Atlas {
 
     /// The atlas's meshes set to `meshes`, the meshes this admin is primary for now (Q207): a mesh
     /// taken (a mesh-primary's own at its start or hand-over, every mesh at the fabric-primary's) is
-    /// filled once from its node records ([`Self::fill`], Q204), and a mesh handed away is narrowed off,
+    /// filled once from its node records ([`Self::fill`], Q204), a mesh this admin writes from its
+    /// writer's rows, never the store, and a mesh handed away is narrowed off,
     /// its records no longer held. A mesh whose records could not be read is not taken, so the next
     /// call fills it. The meshes taken and handed away.
     pub async fn scope(&self, rows: &dyn NodesStorage, meshes: std::collections::BTreeSet<String>) -> Result<(Vec<String>, Vec<String>), String> {

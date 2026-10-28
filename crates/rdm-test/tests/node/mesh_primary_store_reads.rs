@@ -191,8 +191,9 @@ fn a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_w
         eprintln!("mesh1.admin.2 calls on the nodes store: {:#?}", admin_calls.0.lock().unwrap());
         let root_id = root.digest.lock().unwrap().node.node_id.to_string();
         // The take of mesh1's writing: the writer's fill (SeatFold's, `WrittenRows::fill`), the install's
-        // arrivals, the atlas. The Day-0 admin's start reads before it (its contradictory-start check, the
-        // primaries recorded on the rows) are not the take.
+        // arrivals, the atlas. The Day-0 admin's start reads before it are not the take: its contradictory-start
+        // check (no launcher), and the primaries recorded on the rows (`take_recorded_primaries`, an election
+        // input at every admin's start: rust-distributed-mesh#97).
         let take = root_calls.through(Some("nodes"), &["node_rows.rs", "status_rpc.rs", "atlas.rs"]);
         assert_eq!(take.iter().filter(|c| c.subject == "mesh1").count(), 1, "the mesh-primary lists its mesh's records once as it takes the mesh's writing: {take:#?}");
         let atlas = root_calls.through(None, &["atlas.rs"]);
@@ -205,7 +206,8 @@ fn a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_w
         assert_eq!(runtime_writes, launched, "the launching admin writes each birth's runtime row once: its own (Day 0) and mesh1.admin.2's at its join: {:#?}", root_calls.0.lock().unwrap());
         assert_eq!(admin_calls.of("put_runtime"), Vec::<String>::new(), "mesh1.admin.2, no primary and no launcher, writes no runtime row");
         assert_eq!(admin_calls.of("put_node"), Vec::<String>::new(), "mesh1.admin.2, no primary, writes no node record");
-        // The offline tick's read of the durable runtime rows (recovery.rs) is not this cell's.
+        // The offline tick's read of every runtime row on every admin (`durable_rows`, recovery.rs) is
+        // rust-distributed-mesh#99, not this cell's.
         let read_back = admin_calls.not_through("runtimes", &["admin/recovery.rs"]);
         assert!(read_back.is_empty(), "mesh1.admin.2 reads no runtime row back at its start: {read_back:#?}");
 

@@ -795,12 +795,9 @@ impl FileNodesStorage {
 #[cfg(feature = "file-backend")]
 #[async_trait]
 impl NodesStorage for FileNodesStorage {
-    /// A runtime row is written once: a row standing as given is not appended again (a launched admin
-    /// is handed its launcher's rows, which the file already holds).
+    /// A blind put of the birth's own row: one append, nothing read first (its one writer is the admin
+    /// that launched the birth, build.md §5.3).
     async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
-        if self.records.latest(RUNTIME_KIND, &row.key()).await?.is_some_and(|l| RuntimeRow::deserialize(&l.record).is_ok_and(|r| r == *row)) {
-            return Ok(());
-        }
         self.records.append(&self.log_writer, RUNTIME_FORMAT, &row.key(), row).await
     }
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {

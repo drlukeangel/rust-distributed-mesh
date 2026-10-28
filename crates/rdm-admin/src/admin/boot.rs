@@ -607,6 +607,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // The adoption launch's own runtime, adopted at its claim (deployment-provider.md §3, the externally
     // started Day-0 adoption): its last step, the publication, runs with the bootstrap's digest below.
     let mut adopted_at_claim: Option<CurrentRuntimeAdoption> = None;
+    // Whether this birth's runtime row was kept at its adoption claim: it is written once.
+    let mut own_runtime_kept = false;
     // The launch on an inherited data dir, its step and the inherited birth, until its check before its
     // first mutation decides it (below).
     let mut inherited_launch: Option<(tracing::Span, crate::storage::NodeRecord)> = None;
@@ -630,20 +632,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             adoption_claim = Some(Arc::new(claimed));
             // An adoption launch is the externally started Day-0 adoption (deployment-provider.md §3), and no
             // launcher records its runtime: right after its claim it adopts its current runtime and keeps its
-            // runtime row on the fabric's store root as well as in its data dir, so a later adoption launch
-            // resolves it from the store when no live node holds its digest. It starts holding every runtime
-            // row the store root keeps, as a launched admin starts holding its launcher's: a lost Day-0 admin's
-            // or earlier adoption launch's runtime is resolved here as any birth's is, its digest first, then
-            // its row.
-            if let Some(root_runtimes) = &root_runtimes {
-                for row in root_runtimes.runtimes().await.map_err(storage_err)? {
-                    nodes_storage.put_runtime(&row).await.map_err(storage_err)?;
-                }
+            // runtime row on the fabric's store root, its nodes store, so a later adoption launch resolves it
+            // from the store when no live node holds its digest. The rows the store root keeps are its nodes
+            // store's: a lost Day-0 admin's or earlier adoption launch's runtime is resolved here as any
+            // birth's is, its digest first, then its row.
+            if root_runtimes.is_some() {
                 let in_container = early.as_ref().and_then(|(p, _)| (p.provider.kind() == ProviderKind::Container && rdm_core::runtime::this_container_id().is_some()).then(|| p.provider.control_domain()));
                 let a = CurrentRuntimeAdoption::begin_in(&at, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).instrument(boot.clone()).await.map_err(|e| format!("refusing to start: {e}"))?;
                 let row = crate::storage::RuntimeRow { node_id: node_id.clone(), name: at.clone(), incarnation_id: incarnation.clone(), runtime: a.fact().clone(), data_dir: Some(cfg.data_dir.display().to_string()) };
-                root_runtimes.put_runtime(&row).await.map_err(storage_err)?;
                 nodes_storage.put_runtime(&row).await.map_err(storage_err)?;
+                own_runtime_kept = true;
                 adopted_at_claim = Some(a);
             }
             // Its contacts are the births the store records, its own mesh first, the lost birth not among them.
@@ -1769,18 +1767,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 deployment_id: runtime.deployment_id.clone(),
                                 incarnation: incarnation.to_string(),
                             });
-                            // This birth's exact runtime, recorded in its own data dir under its own key, a blind put
-                            // (node-recovery.md "Detection and proof" step 3: "the exact runtime recorded at launch"):
-                            // an admin started on this data dir after this birth exits proves this birth's exit from it
-                            // before deleting its row, and every node-admin this one launches is handed it with the
-                            // other runtime rows it holds.
-                            let own_runtime_row = crate::storage::RuntimeRow { node_id: node_id.clone(), name: name.clone(), incarnation_id: incarnation.clone(), runtime: runtime.clone(), data_dir: Some(cfg.data_dir.display().to_string()) };
-                            nodes_storage.put_runtime(&own_runtime_row).await.map_err(storage_err)?;
-                            // An externally started admin (Day 0, an adoption launch) adopted its own runtime and no
-                            // launcher recorded it: its row is kept on the fabric's store root too, where a later
-                            // adoption launch reads it once no live node holds its digest (deployment-provider.md §3).
-                            if let (Some(_), Some(root_runtimes)) = (&adoption, &root_runtimes) {
-                                root_runtimes.put_runtime(&own_runtime_row).await.map_err(storage_err)?;
+                            // This birth's exact runtime, a blind put of its own key (node-recovery.md "Detection and
+                            // proof" step 3: "the exact runtime recorded at launch"; build.md §5.3: "the launching admin a
+                            // birth's runtime row"): a launched admin's is its launcher's, kept at its join; an admin no
+                            // launcher recorded (Day 0, a start on its own data dir) keeps its own, once (an adoption
+                            // launch kept it at its claim). An admin started on this data dir after this birth exits
+                            // proves this birth's exit from it, and a later adoption launch reads it from the fabric's
+                            // store root once no live node holds its digest (deployment-provider.md §3).
+                            if cfg.launch.is_none() && !own_runtime_kept {
+                                let own_runtime_row = crate::storage::RuntimeRow { node_id: node_id.clone(), name: name.clone(), incarnation_id: incarnation.clone(), runtime: runtime.clone(), data_dir: Some(cfg.data_dir.display().to_string()) };
+                                nodes_storage.put_runtime(&own_runtime_row).await.map_err(storage_err)?;
                             }
                             // Own digest, published on the topology cadence.
                             let digest = Arc::new(Mutex::new(MeshDigest { held_hash: topology_view.held_hash(),
@@ -1980,41 +1976,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let own_topology_view = topology_view.clone();
                                 let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(&own.lock().unwrap())), rafka_time.clone()).with_stored(stored).with_gone(gone).with_own_row(own_row)));
                             }
-                            // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
-                            // a blind put (a successor fabric primary proves an exit from it).
-                            let runtime_rows_task = {
-                                let (digest_view, nodes_storage, me, fabric_id) = (topology_view.digest_view.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone());
-                                let stop = stop_gate.clone();
-                                tokio::spawn(async move {
-                                    let turn = stop.turn("runtime-rows").await;
-                                    let mut written: HashSet<(NodeId, IncarnationId)> = nodes_storage.runtimes().await.unwrap_or_default().into_iter().map(|r| (r.node_id, r.incarnation_id)).collect();
-                                    drop(turn);
-                                    let mut births = digest_view.birth_changes();
-                                    loop {
-                                        // Held here while the admin is stopped: its own wait, outside every lock.
-                                        let turn = stop.turn("runtime-rows").await;
-                                        births.borrow_and_update();
-                                        for d in digest_view.all().into_iter().filter(|d| d.fabric_id == fabric_id && d.node.node_id != me) {
-                                            let key = (d.node.node_id.clone(), d.node.incarnation.clone());
-                                            let Some(runtime) = d.node.runtime.clone() else { continue };
-                                            if written.contains(&key) {
-                                                continue;
-                                            }
-                                            let row = crate::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
-                                            match nodes_storage.put_runtime(&row).await {
-                                                Ok(()) => {
-                                                    written.insert(key);
-                                                }
-                                                Err(e) => tracing::info!(node = %d.node.name, error = %e, "a heard birth's runtime could not be stored"),
-                                            }
-                                        }
-                                        drop(turn);
-                                        if births.changed().await.is_err() {
-                                            return;
-                                        }
-                                    }
-                                })
-                            };
                             // A birth the view shows superseded (a later incarnation of its node held, or its node
                             // departed): the declared-state rows this admin put for it as an authority are tombstoned.
                             let superseded_rows_task = {
@@ -2084,7 +2045,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
                                 })
                             };
-                            let mut tasks = vec![contacts_task, node_rpc_feed, runtime_rows_task, superseded_rows_task, app_channels_task];
+                            let mut tasks = vec![contacts_task, node_rpc_feed, superseded_rows_task, app_channels_task];
                             tasks.extend(tasks_early);
                             // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
                             // primary recovered into its mesh from its durable map): connect to a local node, read its
@@ -3005,8 +2966,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 // The atlas covers the meshes this admin is primary for (Q207): every mesh its view and
                                                 // the current Build name as the fabric-primary, its own as a mesh-primary, none else. A
-                                                // mesh taken (a start, a hand-over, an election) is filled once from its node records
-                                                // (Q204); a mesh handed away is narrowed off.
+                                                // mesh this admin writes holds its writer's rows, read once from the store as its writing
+                                                // was taken (storage-whole-records.md); any other mesh taken (the fabric-primary's start or
+                                                // hand-over) is filled once from its node records (Q204); a mesh handed away is narrowed off.
+                                                atlas.writing(written.clone());
                                                 let scope: std::collections::BTreeSet<String> = if fabric_primary {
                                                     t.members().map(|n| n.mesh.clone()).chain(current.and_then(|c| c.as_ref()).map(|b| b.topology.meshes.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()).collect()
                                                 } else if mesh_primary {
@@ -3019,13 +2982,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     filled => {
                                                         let (taken, handed) = filled.as_ref().map(|(t, h)| (t.join(","), h.join(","))).unwrap_or_default();
                                                         tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-filled", node = %me, meshes = %scope.iter().map(String::as_str).collect::<Vec<_>>().join(","), taken = %taken, handed = %handed, fabric_primary, mesh_primary, outcome = if filled.is_ok() { "filled" } else { "fill-refused" }, detail = %filled.err().unwrap_or_default(), "otel.kind" = "internal")
-                                                            .in_scope(|| tracing::info!("the atlas holds the node records of the meshes this admin is primary for, each read once as it was taken"));
+                                                            .in_scope(|| tracing::info!("the atlas holds the node records of the meshes this admin is primary for: those it writes from its writer, each other read once as it was taken"));
                                                     }
                                                 }
                                                 if !scope.is_empty() {
-                                                    // A birth first heard in one of its meshes (a mesh-primary's self-healing among
-                                                    // them) has its record read once into the atlas (Q197, Q203).
-                                                    let births: Vec<(rdm_core::NodeId, rdm_core::IncarnationId)> = t.births().filter(|n| scope.contains(&n.mesh)).filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
+                                                    // A birth first heard in one of its meshes this admin does not write (another
+                                                    // mesh-primary's self-healing among them) has its record read once into the atlas
+                                                    // (Q197, Q203); a mesh it writes holds its writer's rows.
+                                                    let births: Vec<(rdm_core::NodeId, rdm_core::IncarnationId)> = t.births().filter(|n| scope.contains(&n.mesh) && !written.contains(&n.mesh)).filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
                                                     let read = atlas.read_new_births(&*atlas_rows, births).await;
                                                     if read > 0 {
                                                         tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-births-read", node = %me, records = read as u64, "otel.kind" = "internal")

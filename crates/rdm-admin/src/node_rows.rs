@@ -96,6 +96,10 @@ pub struct WrittenRows {
     /// This admin's atlas: every record the writer holds is written to it (Q203: each op
     /// writes the atlas), so a node read answers what this writer wrote without reading the store.
     atlas: std::sync::OnceLock<Arc<crate::atlas::Atlas>>,
+    /// The meshes whose records were filled from storage in this admin's tenure of their writing
+    /// ([`Self::fill`]): each is read once when its writing is taken, never again before it is given up
+    /// ([`Self::release`]).
+    filled: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl WrittenRows {
@@ -182,7 +186,23 @@ impl WrittenRows {
                 None => self.forget(&r.node_id),
             }
         }
+        self.filled.lock().unwrap().insert(mesh.to_string());
         Ok(listed.len())
+    }
+
+    /// Whether `mesh`'s records were filled in this tenure of its writing.
+    pub fn filled(&self, mesh: &str) -> bool {
+        self.filled.lock().unwrap().contains(mesh)
+    }
+
+    /// The meshes filled in this tenure of their writing.
+    pub fn filled_meshes(&self) -> Vec<String> {
+        self.filled.lock().unwrap().iter().cloned().collect()
+    }
+
+    /// The writing of `mesh` was given up: its next take fills its records again.
+    pub fn release(&self, mesh: &str) {
+        self.filled.lock().unwrap().remove(mesh);
     }
 
     /// The record of `node_id` as this writer knows it: its copy, else the record storage holds for the
@@ -784,6 +804,10 @@ impl NodeRows {
         let me = &self.me_id;
         let mut held = self.held.lock().unwrap();
         held.retain(|mesh, _| writes_for(now, me, mesh));
+        // A mesh whose writing this admin gave up: its next take reads its records again.
+        for mesh in self.written.filled_meshes().into_iter().filter(|m| !writes_for(now, me, m)) {
+            self.written.release(&mesh);
+        }
         let births = |t: &Topology, mesh: &str| t.members().filter(|n| n.mesh == mesh).filter_map(|n| n.incarnation_id.clone().map(|inc| (n.node_id.clone(), inc))).collect::<HashSet<_>>();
         let meshes: std::collections::BTreeSet<String> = now.members().map(|n| n.mesh.clone()).filter(|m| writes_for(now, me, m)).collect();
         let mut out = Vec::new();
@@ -808,10 +832,18 @@ impl NodeRows {
         let me = self.held_name_in(now);
         let taken: Vec<String> = std::mem::take(&mut *self.to_fill.lock().unwrap());
         for mesh in taken {
-            let filled = self.written.fill(&*self.storage, &mesh).await;
+            // A mesh this take already filled (the mesh-primary's own, read whole as its status rows are
+            // folded, `crate::status_rpc::SeatFold::on_install`) is not read again.
+            let (filled, outcome) = if self.written.filled(&mesh) {
+                (Ok(self.written.rows_of(&mesh).len()), "held")
+            } else {
+                let filled = self.written.fill(&*self.storage, &mesh).await;
+                let outcome = if filled.is_ok() { "filled" } else { "fill-refused" };
+                (filled, outcome)
+            };
             let pushed = filled.is_ok();
-            tracing::info_span!("rdm.node_admin.node.update.via-records-filled", node = %me, mesh = %mesh, records = filled.as_ref().map(|n| *n as u64).unwrap_or(0), outcome = if filled.is_ok() { "filled" } else { "fill-refused" }, detail = %filled.err().map(|e| e.to_string()).unwrap_or_default(), "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the writing of a mesh's records was taken: its records are read whole"));
+            tracing::info_span!("rdm.node_admin.node.update.via-records-filled", node = %me, mesh = %mesh, records = filled.as_ref().map(|n| *n as u64).unwrap_or(0), outcome, detail = %filled.err().map(|e| e.to_string()).unwrap_or_default(), "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the writing of a mesh's records was taken: its records are read whole, once"));
             // A successor owes every row's push up to the fabric-primary again, from the row (Q235 P3).
             if let (true, Some(door)) = (pushed, self.configs.as_ref().and_then(|slot| slot.get())) {
                 door.owe_pushes(&me, &self.me_id, now, &mesh);
