@@ -1486,7 +1486,7 @@ impl Dialer {
                         Err(e) => return Err(e),
                     }
                 }
-                caller_span.in_scope(|| tracing::info!(direct = %reason, "rdm.node.connections.open.no-active-route: the Direct dial was not sent and every carrier refused"));
+                caller_span.in_scope(|| tracing::info!(direct = %reason, "rdm.node.connections.open.via-no-active-route: the Direct dial was not sent and every carrier refused"));
                 Err(ConnectError::NoActiveRoute { direct: Some(reason) })
             }
             Err(e) => Err(e),
