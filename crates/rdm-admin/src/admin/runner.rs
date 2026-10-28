@@ -1784,7 +1784,7 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
 
 /// A binding a request, a Build or a node row names, checked at the launch that runs it: its
 /// launch id is the node's kind, and its file is re-hashed now, so the launch proves the bytes it
-/// launches are the bound ones. A missing file and a hash that differs are refused by name. The hash
+/// launches are the bound ones; launches of one file and sha at once share one hash (rdm#151). A missing file and a hash that differs are refused by name. The hash
 /// reads the whole file, so it runs on the blocking pool, never on a worker of the runtime: a task the
 /// launching task woke just before waits in that worker's LIFO slot, which no other worker steals,
 /// until the worker is free (Q30).
@@ -1816,14 +1816,73 @@ fn hash_span(launch_id: &str, binding: &rdm_core::binding::Binding, from: &str) 
     tracing::info_span!("rdm.node_admin.deployment.resolve.via-executable-hash", launch_id = %launch_id, executable = %binding.executable.display(), sha256 = %binding.sha256, from, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty)
 }
 
+/// One (file, sha) hash in flight, awaited by every launch of that file and sha that began while it runs.
+type InFlightHash = futures_util::future::Shared<futures_util::future::BoxFuture<'static, Result<String, rdm_core::binding::BindingError>>>;
+
+/// The hash of each (file, sha) a launch is reading now (rdm#151): a launch of the same file and sha
+/// that begins while it runs awaits it, so a mesh's creates launched at once read one file once. The
+/// entry is removed when its hash ends, before any launch sees the answer, so nothing outlives the hash:
+/// a launch after it reads the file again. Held weakly: a hash every launch awaiting it dropped is gone.
+static IN_FLIGHT_HASHES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, String), futures_util::future::WeakShared<futures_util::future::BoxFuture<'static, Result<String, rdm_core::binding::BindingError>>>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// `binding`'s file hashed against its sha on the blocking pool (Q30), or the hash of the same file and
+/// sha another launch has in flight awaited (rdm#151). The launch that hashes records `hashed` or
+/// `refused` on its span; a launch that shares it records `hashed-shared` or `refused-shared` and how
+/// long it waited, and a shared refusal names its own launch id.
 async fn hashed(binding: &rdm_core::binding::Binding, span: tracing::Span) -> Result<(), String> {
+    use futures_util::FutureExt as _;
     let started = std::time::Instant::now();
-    let b = binding.clone();
-    let checked = crate::blocking::blocking_io(move || b.verify()).await;
+    let key = (binding.executable.clone(), binding.sha256.clone());
+    let (hash, shared): (InFlightHash, bool) = {
+        let mut in_flight = IN_FLIGHT_HASHES.lock().unwrap_or_else(|e| e.into_inner());
+        match in_flight.get(&key).and_then(|w| w.upgrade()) {
+            Some(hash) => (hash, true),
+            None => {
+                in_flight.retain(|_, w| w.upgrade().is_some());
+                let (b, k) = (binding.clone(), key.clone());
+                let hash = async move {
+                    let checked = crate::blocking::blocking_io(move || b.verify()).await;
+                    IN_FLIGHT_HASHES.lock().unwrap_or_else(|e| e.into_inner()).remove(&k);
+                    checked
+                }
+                .boxed()
+                .shared();
+                in_flight.insert(key, hash.downgrade().expect("a hash not yet polled downgrades"));
+                (hash, false)
+            }
+        }
+    };
+    let checked = hash.await.map_err(|e| refusal_of(e, &binding.launch_id));
     span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-    span.record("outcome", if checked.is_ok() { "hashed" } else { "refused" });
-    span.in_scope(|| tracing::info!("the executable's bytes are hashed against the binding the create launches"));
+    span.record(
+        "outcome",
+        match (checked.is_ok(), shared) {
+            (true, false) => "hashed",
+            (false, false) => "refused",
+            (true, true) => "hashed-shared",
+            (false, true) => "refused-shared",
+        },
+    );
+    if shared {
+        span.in_scope(|| tracing::info!("the executable's bytes, hashed by the launch of the same file and sha in flight, are checked against the binding the create launches"));
+    } else {
+        span.in_scope(|| tracing::info!("the executable's bytes are hashed against the binding the create launches"));
+    }
     checked.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// A refusal of a shared hash as `launch_id`'s: the launch that hashed named its own launch id.
+fn refusal_of(e: rdm_core::binding::BindingError, launch_id: &str) -> rdm_core::binding::BindingError {
+    use rdm_core::binding::BindingError::*;
+    let id = launch_id.to_string();
+    match e {
+        ExecutableAbsent { path, reason, .. } => ExecutableAbsent { launch_id: id, path, reason },
+        NotExecutable { path, .. } => NotExecutable { launch_id: id, path },
+        BadHash { value, .. } => BadHash { launch_id: id, value },
+        HashMismatch { path, expected, actual, .. } => HashMismatch { launch_id: id, path, expected, actual },
+        other => other,
+    }
 }
 
 /// The binding the bootstrap admin's own birth runs, recorded by its Day-0 claim (build-deployment.md
