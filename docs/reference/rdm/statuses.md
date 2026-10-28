@@ -5,6 +5,7 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 
 | enum | crate | file |
 |---|---|---|
+| [`BuildEndedState`](#t-rdm_admin-wiring-BuildEndedState) | rdm-admin | `crates/rdm-admin/src/wiring.rs` |
 | [`BuildState`](#t-rdm_admin-build_state-BuildState) | rdm-admin | `crates/rdm-admin/src/build_state.rs` |
 | [`BuildState`](#t-rdm_core-dto-BuildState) | rdm-core | `crates/rdm-core/src/dto.rs` |
 | [`ConnectionState`](#t-rdm_core-connections-ConnectionState) | rdm-core | `crates/rdm-core/src/connections.rs` |
@@ -23,6 +24,22 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 | [`ScopeStatus`](#t-rdm_core-model-ScopeStatus) | rdm-core | `crates/rdm-core/src/model.rs` |
 | [`ScopeStatus`](#t-rdm_core-views-ScopeStatus) | rdm-core | `crates/rdm-core/src/views.rs` |
 | [`State`](#t-rdm_node-operation-State) | rdm-node | `crates/rdm-node/src/operation.rs` |
+
+<a id="t-rdm_admin-wiring-BuildEndedState"></a>
+
+### `BuildEndedState`
+
+`crates/rdm-admin/src/wiring.rs` · enum · 2 variants · rdm-admin
+
+The terminal state a Build's ending recorded, as its caller reads it on the Build stream (R-BI4).
+
+| # | variant · field | serde name | type | serde | labels | doc |
+|---|---|---|---|---|---|---|
+| 0 | **`Complete`** | (not serialized) |  |  | `as_str() = "complete"` | The Build is `Complete`. |
+| 1 | **`Failed`** | (not serialized) |  |  | `as_str() = "failed"` | The Build is `Failed`, naming the step that failed, its reason and its code. |
+| 1.0 | `step` |  | `String` |  |  | The step that failed. |
+| 1.1 | `reason` |  | `String` |  |  | Why it failed. |
+| 1.2 | `code` |  | `rdm_core::outcome::Code` |  |  | The standard code captured where it failed. |
 
 <a id="t-rdm_admin-build_state-BuildState"></a>
 
