@@ -3369,7 +3369,7 @@ async fn a_claim_refused_build_in_progress_on_its_mesh_stalls_the_drive_and_fram
 }
 
 /// Refuses every `build.attempt.run` by name, as an executor refuses a call whose claim names another
-/// recipient (`NotExecutor`, node-rpc-envelope.md "Refusals, fencing and bounds").
+/// recipient (`NotExecutor`, node-rpc-envelope.md:1366).
 struct Refuses;
 
 #[async_trait::async_trait]
@@ -3379,7 +3379,7 @@ impl rdm_admin::build_drive::Dispatcher for Refuses {
     }
 }
 
-/// CONTRACT (node-rpc-envelope.md "Refusals, fencing and bounds": build.attempt.run "refuses by name when
+/// CONTRACT (node-rpc-envelope.md:1366: build.attempt.run "refuses by name when
 /// the recipient is not the executor named in the claim (NotExecutor { named, recipient })"; Blocked's
 /// "only source is the subject's Status `Blocked` reply to the executor's ProbeNodeState"): the executor
 /// refuses the dispatch of the claimed attempt by name. The drive records the refusal on its dispatch
