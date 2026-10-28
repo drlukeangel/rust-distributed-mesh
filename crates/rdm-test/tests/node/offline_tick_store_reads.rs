@@ -25,12 +25,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// What a step that ends at once on a correct node is given before the cell fails by name.
-const WRONG: Duration = Duration::from_secs(60);
+pub(crate) const WRONG: Duration = Duration::from_secs(60);
 
 /// The call sites of every read of every runtime row one admin made on its nodes store: per read,
 /// its first frames in rdm-admin past the store's own (`file:line`).
 #[derive(Debug, Clone, Default)]
-struct RuntimeReads(Arc<Mutex<Vec<Vec<String>>>>);
+pub(crate) struct RuntimeReads(Arc<Mutex<Vec<Vec<String>>>>);
 
 impl RuntimeReads {
     fn push(&self) {
@@ -39,8 +39,12 @@ impl RuntimeReads {
         self.0.lock().unwrap().push(sites);
     }
     /// The reads made by the offline tick (`admin/recovery.rs`, `TenureRows`).
-    fn by_the_tick(&self) -> Vec<Vec<String>> {
+    pub(crate) fn by_the_tick(&self) -> Vec<Vec<String>> {
         self.0.lock().unwrap().iter().filter(|s| s.iter().any(|f| f.starts_with("admin/recovery.rs"))).cloned().collect()
+    }
+    /// Every read recorded so far, in order.
+    pub(crate) fn all(&self) -> Vec<Vec<String>> {
+        self.0.lock().unwrap().clone()
     }
 }
 
@@ -125,11 +129,11 @@ impl StorageBackend for Recording {
 
 /// The providers an admin of the cell's store dir `store` registers: RDM's file backend as `file`,
 /// recording that admin's reads of the runtime rows into `reads`.
-fn recorded(store: &Path, reads: &RuntimeReads) -> TopologyStorageProviders {
+pub(crate) fn recorded(store: &Path, reads: &RuntimeReads) -> TopologyStorageProviders {
     TopologyStorageProviders::new().register(rdm_core::launch::TOPOLOGY_STORAGE_FILE, Arc::new(Recording { inner: rdm_admin::storage_backend::file_backend(store.to_path_buf()), reads: reads.clone() }))
 }
 
-fn day0_config(dir: &Path) -> AdminConfig {
+pub(crate) fn day0_config(dir: &Path) -> AdminConfig {
     let dir = dir.display().to_string();
     AdminConfig::from_env(|k| match k {
         "RDM_DATA_DIR" | "RDM_STORE_DIR" => Some(dir.clone()),
@@ -185,7 +189,7 @@ fn deployed(launch: &Launch) -> Deployed {
     }
 }
 
-async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
+pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     let waited = async {
         while digest().status != MemberStatus::ReadyForTraffic {
             tokio::time::sleep(Duration::from_millis(20)).await;

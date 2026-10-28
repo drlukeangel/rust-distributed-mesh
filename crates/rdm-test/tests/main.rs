@@ -126,6 +126,9 @@ mod node_recovery_backoff;
 #[cfg(feature = "file-backend")]
 #[path = "node/offline_tick_store_reads.rs"]
 mod offline_tick_store_reads;
+#[cfg(feature = "file-backend")]
+#[path = "node/executor_pass_store_reads.rs"]
+mod executor_pass_store_reads;
 #[path = "build/node_create_after_delete.rs"]
 mod node_create_after_delete;
 #[path = "mesh/stopped_last_admin.rs"]
