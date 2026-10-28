@@ -688,7 +688,7 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
         assert_eq!(reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await), StatusReply::Applied);
 
         // The authority restarts over the same facts: what it folds is what it applied.
-        let folded = Declared::rehydrate(&rdm_admin::storage::MemoryNodesStorage::default(), &*store, &*store, "mesh2").await.unwrap();
+        let folded = folded(&rdm_admin::storage::MemoryNodesStorage::default(), &*store, &*store, "mesh2").await;
         assert_eq!(folded.meshes.get(&mesh2), Some(&MeshState::Pending));
         let me_again = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let restarted = rig_with(me_again, &[&fabric_primary], ids, store.clone(), folded, Some(fabric.clone())).await;
@@ -895,7 +895,7 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         assert_eq!(reply(&call(&rig, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::Applied, "a new event applies");
         assert_eq!(reply(&call(&rig, &fp1, &shutdown, &CallOptions::default()).await), StatusReply::AlreadyApplied, "once, whoever sends it");
         // The receiver restarts over the fabric's facts.
-        let folded = Declared::rehydrate(&rdm_admin::storage::MemoryNodesStorage::default(), &*store, &*store, "mesh2").await.unwrap();
+        let folded = folded(&rdm_admin::storage::MemoryNodesStorage::default(), &*store, &*store, "mesh2").await;
         let receiver2 = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let rig2 = rig_with(receiver2, &[&fp1, &fp2], BTreeMap::new(), store.clone(), folded, Some(fabric.clone())).await;
         {
@@ -1354,4 +1354,13 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
     });
     let rows: Vec<String> = capture.spans().iter().filter(|sp| sp["name"] == "rdm.node_admin.node.update.via-row-status" && sp["attributes"]["subject"] == "mesh1.rpc.1").map(|sp| format!("{}:{}", sp["attributes"]["status"].as_str().unwrap_or_default(), sp["attributes"]["outcome"].as_str().unwrap_or_default())).collect();
     assert_eq!(rows, ["ConnectionsDeleting:written", "ConnectionsDeleting:unchanged", "ConnectionsDeleted:written"], "the mesh-primary's row writes, in order: connections-deleted only from the Established completion");
+}
+
+/// What a mesh-primary folds from the stores as it takes `mesh` (`SeatFold::on_install`'s read): the
+/// facts on every mesh and on the fabric, and on every birth of `mesh`'s node records.
+async fn folded(nodes: &dyn rdm_admin::storage::NodesStorage, meshes: &dyn rdm_admin::storage::MeshStorage, fabric: &dyn rdm_admin::fabric_storage::FabricStorage, mesh: &str) -> rdm_admin::status_rpc::Declared {
+    let (m, f, n) = (meshes.meshes().await.unwrap(), fabric.fabric().await.unwrap(), nodes.nodes(mesh).await.unwrap());
+    let mut declared = rdm_admin::status_rpc::Declared::default();
+    declared.fold_records(&m, f.as_ref(), &n, |_, _| true);
+    declared
 }

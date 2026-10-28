@@ -208,17 +208,6 @@ impl Declared {
         }
         births
     }
-
-    /// The facts on every mesh, on the fabric and on the births of `mesh`, folded
-    /// ([`Declared::fold_records`]): what the mesh's primary rebuilds from.
-    pub async fn rehydrate(nodes: &dyn crate::storage::NodesStorage, meshes: &dyn crate::storage::MeshStorage, fabric: &dyn crate::fabric_storage::FabricStorage, mesh: &str) -> Result<Self, String> {
-        let meshes = meshes.meshes().await.map_err(|e| format!("mesh.storage: {e}"))?;
-        let fabric = fabric.fabric().await.map_err(|e| format!("fabric.storage: {e}"))?;
-        let nodes = nodes.nodes(mesh).await.map_err(|e| format!("nodes.storage: {e}"))?;
-        let mut declared = Self::default();
-        declared.fold_records(&meshes, fabric.as_ref(), &nodes, |_, _| true);
-        Ok(declared)
-    }
 }
 
 /// The status rows of this admin's own mesh, which it folds into what it applied when it takes
@@ -2575,6 +2564,15 @@ fn _assert_send_sync() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a mesh-primary folds from the stores as it takes `mesh` (`SeatFold::on_install`'s read): the
+    /// facts on every mesh and on the fabric, and on every birth of `mesh`'s node records.
+    async fn folded(nodes: &dyn crate::storage::NodesStorage, meshes: &dyn crate::storage::MeshStorage, fabric: &dyn crate::fabric_storage::FabricStorage, mesh: &str) -> Declared {
+        let (m, f, n) = (meshes.meshes().await.unwrap(), fabric.fabric().await.unwrap(), nodes.nodes(mesh).await.unwrap());
+        let mut declared = Declared::default();
+        declared.fold_records(&m, f.as_ref(), &n, |_, _| true);
+        declared
+    }
     use rdm_core::status::StatusReply as R;
 
     fn node(name: &str) -> crate::model::Node {
@@ -2744,7 +2742,7 @@ mod tests {
             vec![(declared_first.node_id.clone(), stop.operation.clone(), 2), (stream_first.node_id.clone(), stop2.operation.clone(), 2)],
             "NodeStopped once per stop, from whichever reached the mesh-primary first, and from nothing else"
         );
-        let recovered = Declared::rehydrate(&*authority.nodes_storage, &*authority.meshes_storage, &*authority.fabric_storage, &authority.me.mesh).await.unwrap();
+        let recovered = folded(&*authority.nodes_storage, &*authority.meshes_storage, &*authority.fabric_storage, &authority.me.mesh).await;
         assert_eq!(recovered.operations, authority.declared.lock().unwrap().operations, "Q49: the successor folds every applied operation, including the previous cycle's stop");
 
     }
@@ -3140,7 +3138,7 @@ mod tests {
         let facts = record.birth(&birth).expect("the birth's facts");
         assert!(facts.declared.contains(&NodeState::Stopped), "the greater declaration stands on the record: {facts:?}");
         assert_eq!(facts.cert.as_ref(), Some(&dates), "the renewal's dates stand beside them");
-        let rehydrated = Declared::rehydrate(&*status, &*authority.meshes_storage, &*authority.fabric_storage, "mesh1").await.unwrap();
+        let rehydrated = folded(&*status, &*authority.meshes_storage, &*authority.fabric_storage, "mesh1").await;
         assert_eq!(rehydrated.node(&rpc.node_id, &birth), held, "a restarted authority folds the record back to the state it held");
     }
 
@@ -3601,7 +3599,7 @@ mod tests {
         assert_eq!(held.node(&restarted.node_id, restarted.incarnation_id.as_ref().unwrap()), None, "the restarted node's old birth is forgotten");
         assert_eq!(held.node(&deleted.node_id, deleted.incarnation_id.as_ref().unwrap()), None, "the deleted birth is forgotten");
         assert_eq!(held.node(&standing.node_id, standing.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "the held birth keeps its state");
-        assert_eq!(Declared::rehydrate(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.unwrap().nodes.len(), 1, "a restarted authority folds only the held birth back");
+        assert_eq!(folded(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.nodes.len(), 1, "a restarted authority folds only the held birth back");
     }
 
     /// CONTRACT (node-recovery.md "Steps": "node.create at the same path.name", "New: node.id"): a
@@ -3691,7 +3689,7 @@ mod tests {
         use crate::storage::NodesStorage as _;
         assert!(Declaration::of_records(&status.nodes("mesh1").await.unwrap()).is_empty(), "no declared state of the exited birth is left");
         assert_eq!(authority.declared.lock().unwrap().node(&exited.node_id, exited.incarnation_id.as_ref().unwrap()), None, "the exited birth is forgotten");
-        assert!(Declared::rehydrate(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.unwrap().nodes.is_empty(), "a restarted authority folds nothing of it back");
+        assert!(folded(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.nodes.is_empty(), "a restarted authority folds nothing of it back");
     }
 
     /// CONTRACT (Q197: an action decision reads the records, never gossip; node-identity-and-state.md
@@ -3785,6 +3783,6 @@ mod tests {
         let rows: Vec<String> = Declaration::of_records(&status.nodes("mesh1").await.unwrap()).into_iter().map(|r| r.node_id.to_string()).collect();
         assert_eq!(rows, vec![current.node_id.to_string()], "the current birth keeps its declared-state row");
         assert_eq!(authority.declared.lock().unwrap().node(&current.node_id, current.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "the current birth keeps its state");
-        assert_eq!(Declared::rehydrate(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.unwrap().nodes.len(), 1, "a restarted authority folds the current birth back");
+        assert_eq!(folded(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.nodes.len(), 1, "a restarted authority folds the current birth back");
     }
 }

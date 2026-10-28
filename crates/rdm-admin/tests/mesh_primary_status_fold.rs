@@ -329,7 +329,7 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
         w.update(&*store.nodes, &node_id, None, |r| r.birth_mut(&incarnation, &row.name).declared.clear()).await.unwrap();
     }
     let successor = stores(&root, &IncarnationId::mint()).await;
-    let held = rdm_admin::status_rpc::Declared::rehydrate(&*successor.nodes, &*successor.meshes, &*successor.fabric, "mesh1").await.unwrap();
+    let held = folded(&*successor.nodes, &*successor.meshes, &*successor.fabric, "mesh1").await;
     assert_eq!(held.node(&node_id, &incarnation), None, "only the current cycle's state was cleared");
     assert_eq!(held.operations.len(), 2, "both attempts are still applied");
     assert_eq!(held.operations.get(&row.key()), Some(&row));
@@ -466,4 +466,13 @@ fn a_successor_ignores_declared_rows_for_births_it_does_not_hold() {
         drop(held);
         let _ = std::fs::remove_dir_all(dir);
     });
+}
+
+/// What a mesh-primary folds from the stores as it takes `mesh` (`SeatFold::on_install`'s read): the
+/// facts on every mesh and on the fabric, and on every birth of `mesh`'s node records.
+async fn folded(nodes: &dyn rdm_admin::storage::NodesStorage, meshes: &dyn rdm_admin::storage::MeshStorage, fabric: &dyn rdm_admin::fabric_storage::FabricStorage, mesh: &str) -> rdm_admin::status_rpc::Declared {
+    let (m, f, n) = (meshes.meshes().await.unwrap(), fabric.fabric().await.unwrap(), nodes.nodes(mesh).await.unwrap());
+    let mut declared = rdm_admin::status_rpc::Declared::default();
+    declared.fold_records(&m, f.as_ref(), &n, |_, _| true);
+    declared
 }
