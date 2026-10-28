@@ -5,7 +5,7 @@
 //! unheard birth's runtime and opens the next attempt of the accepted Build on proof),
 //! the fabric-primary's drive (`DriveEnv::run`: the claim on its own log, `accepted::plan`, `executor_for`,
 //! `build.attempt.run` to each executor in turn, hand-off, receipts),
-//! `election::resolve` (the seats), and `seat_revision::fence` before every create — over a world
+//! `election::resolve` (the seats), and `seat_revision::target` before every create — over a world
 //! fixture: a provider whose runtimes run or have exited, and a probe answering whether a birth
 //! answers. Only the world is a fixture; every decision is the product code's.
 //!
@@ -16,7 +16,7 @@
 //!
 //! The cells: an exited rpc node is recovered once by its mesh-primary, whatever its exit code;
 //! a silent node whose runtime runs opens no attempt and is never replaced; a lost mesh-primary admin and a lost fabric-primary admin are
-//! recovered by the right executor; members unheard through a lost forwarder are fenced, never
+//! recovered by the right executor; members unheard through a lost forwarder are targeted, never
 //! duplicated; a path the view does not hold but where a runtime runs is held. After every
 //! loss: exactly the lost paths have new births, every path of the accepted topology has
 //! exactly one live birth, and the accepted Build is complete (a recovery's attempt in its mesh's
@@ -31,7 +31,7 @@ use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentP
 use rdm_admin::build_drive::{Drive, DriveEnd, DriveEnv, OpenGate};
 use rdm_admin::executor::OperationRunner;
 use rdm_admin::node_investigation::Finding;
-use rdm_admin::seat_revision::{investigate_path, FenceOutcome, PathProbe};
+use rdm_admin::seat_revision::{investigate_path, TargetOutcome, PathProbe};
 use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -137,7 +137,7 @@ impl DeploymentProvider for Provider {
     }
 }
 
-/// The fence's questions, answered by the world.
+/// The target's questions, answered by the world.
 struct Probe(Arc<World>);
 
 #[async_trait::async_trait]
@@ -250,13 +250,13 @@ fn birth(world: &World, digest_view: &DigestView, fabric_id: &FabricId, path: &s
 }
 
 /// Realises `CreateNode` as the admin does (a Build's node.create is the create workflow,
-/// `AdminRunner::step`): the real fence first; a birth only when it clears.
+/// `AdminRunner::step`): the real target first; a birth only when it clears.
 struct Runner {
     world: Arc<World>,
     view: Arc<RwLock<Topology>>,
     digest_view: DigestView,
     fabric_id: FabricId,
-    ran: Mutex<Vec<(String, BuildOperation, FenceOutcome)>>,
+    ran: Mutex<Vec<(String, BuildOperation, TargetOutcome)>>,
     born: Mutex<Vec<String>>,
     /// The Build log the recovery's receipts are written to, as the admin's delete, create and update
     /// workflows write them.
@@ -298,7 +298,7 @@ impl OperationRunner for Runner {
         };
         match op {
             // node.delete of the exited instance (node-delete.md "Crashed target"): no RPC, no stop
-            // frames, no probe; the provider's exit proof is the fence. A runtime that still runs is
+            // frames, no probe; the provider's exit proof is the target. A runtime that still runs is
             // no proof: refused by name, as the admin's crashed-target delete inspects before it deletes.
             BuildOperation::RetireNode { node: path, exited: Some(from), .. } => {
                 self.recovering.lock().unwrap().push(op.key());
@@ -330,13 +330,13 @@ impl OperationRunner for Runner {
             }
             _ => {}
         }
-        // A creation at a path whose exact birth the provider's proof clears: the fence stands for the
+        // A creation at a path whose exact birth the provider's proof clears: the target stands for the
         // exact terminal proof.
         let BuildOperation::CreateNode { node: path, over: None, .. } = op else { return Err(format!("unexpected {op:?}").into()) };
         let prev = self.view.read().await.node(path).cloned();
         let out = investigate_path(path, prev.clone(), &Probe(self.world.clone())).await;
         self.ran.lock().unwrap().push((path.to_string(), op.clone(), out.clone()));
-        if matches!(out, FenceOutcome::Clear { .. }) {
+        if matches!(out, TargetOutcome::Clear { .. }) {
             let n = birth(&self.world, &self.digest_view, &self.fabric_id, &path.to_string(), prev.and_then(|p| p.incarnation_id));
             let mut v = self.view.write().await;
             v.nodes.retain(|x| x.name != *path);
@@ -408,7 +408,7 @@ impl Estate {
         self.converge_under(Arc::new(OpenGate)).await
     }
 
-    /// [`Self::converge`] with the fabric-primary's drive reading `gate`: the fence on a peer mesh the
+    /// [`Self::converge`] with the fabric-primary's drive reading `gate`: the target on a peer mesh the
     /// investigation holds unheard is the gate's `peer_mesh`.
     async fn converge_under(&self, gate: Arc<dyn rdm_admin::build_drive::Gate>) {
         for _ in 0..8 {
@@ -600,7 +600,7 @@ impl Estate {
         self.runner.born.lock().unwrap().clone()
     }
 
-    fn investigations_of(&self, path: &str) -> Vec<FenceOutcome> {
+    fn investigations_of(&self, path: &str) -> Vec<TargetOutcome> {
         self.runner.ran.lock().unwrap().iter().filter(|(p, _, _)| p == path).map(|(_, _, o)| o.clone()).collect()
     }
 }
@@ -612,7 +612,7 @@ impl Estate {
 /// (`node.delete:<path>`), then node.create at the same path.name (`node.create:<path>`); no
 /// node.update follows (proposal node-properties-own-commands.md §5 item 8). The fabric-primary
 /// dispatches nothing and the fabric lane is untouched.
-/// Exactly the lost path has a new node (new node.id), `seat_revision::fence` probes nothing and nothing else is
+/// Exactly the lost path has a new node (new node.id), `seat_revision::target` probes nothing and nothing else is
 /// created.
 #[tokio::test]
 async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_else_is_created() {
@@ -633,7 +633,7 @@ async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_el
     e.recovered_by("mesh1.rpc.2", &mp).await;
     assert_eq!(e.runner.recovering.lock().unwrap().clone(), ["node.delete:mesh1.rpc.2", "node.create:mesh1.rpc.2"].map(String::from).to_vec(), "node.delete, then node.create, once each, and nothing after");
     assert_eq!(e.born(), vec!["mesh1.rpc.2".to_string()], "exactly the lost path is recovered");
-    assert_eq!(e.investigations_of("mesh1.rpc.2"), vec![], "the exit proof fences the old birth: no probe");
+    assert_eq!(e.investigations_of("mesh1.rpc.2"), vec![], "the exit proof targets the old birth: no probe");
     assert_ne!(e.node_id("mesh1.rpc.2").await, old, "a new node, not the old one");
     e.holds_the_shape().await;
     let after = e.builds.current().await.unwrap().unwrap();
@@ -793,7 +793,7 @@ async fn members_unheard_through_a_lost_forwarder_are_held_never_duplicated() {
     e.executed_only_by(&survivor);
     assert_eq!(e.born(), vec![primary.clone()], "only the proven-exited admin is recovered: {:?}", e.runner.ran.lock().unwrap());
     for m in members.iter().filter(|m| **m != primary) {
-        assert!(e.investigations_of(m).iter().all(|o| *o == FenceOutcome::Alive), "{m} answers: never created over: {:?}", e.investigations_of(m));
+        assert!(e.investigations_of(m).iter().all(|o| *o == TargetOutcome::Alive), "{m} answers: never created over: {:?}", e.investigations_of(m));
     }
     // Heard again through the recovered forwarder: the topology holds.
     e.holds_the_shape().await;
@@ -807,7 +807,7 @@ async fn a_path_the_view_does_not_hold_but_where_a_runtime_runs_is_held() {
     e.world.freeze(&hidden);
     e.view.write().await.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.3");
     // A real loss elsewhere opens a recovery whose plan is exactly that birth: the path the view
-    // lacks is its own attempt's, so this one neither creates over it nor fences it.
+    // lacks is its own attempt's, so this one neither creates over it nor targets it.
     e.world.kill(&e.node_id("mesh1.rpc.2").await);
     e.unheard(&["mesh1.rpc.2"]).await;
     e.recover("mesh1.rpc.2").await;
@@ -839,7 +839,7 @@ async fn members_heard_again_mid_attempt_through_the_recovered_forwarder_are_nev
     e.executed_only_by(&survivor);
     assert_eq!(e.born(), vec![primary.clone()], "only the proven-exited admin is recovered: {:?}", e.runner.ran.lock().unwrap());
     for m in members.iter().filter(|m| **m != primary) {
-        assert!(e.investigations_of(m).iter().all(|o| *o == FenceOutcome::Alive), "{m} is live in the view by the time its operation runs: never created over: {:?}", e.investigations_of(m));
+        assert!(e.investigations_of(m).iter().all(|o| *o == TargetOutcome::Alive), "{m} is live in the view by the time its operation runs: never created over: {:?}", e.investigations_of(m));
     }
     e.holds_the_shape().await;
 }
@@ -938,7 +938,7 @@ async fn every_exit_is_recovered_one_birth_per_attempt_and_a_submit_waits_for_th
         assert_eq!(e.born().last().map(String::as_str), Some(path));
     }
     assert_eq!(e.born().len(), 3);
-    assert!(paths.iter().all(|p| e.investigations_of(p).is_empty()), "no recovery fences by probe");
+    assert!(paths.iter().all(|p| e.investigations_of(p).is_empty()), "no recovery targets by probe");
     e.holds_the_shape().await;
     assert_eq!(e.drift().await, None, "nothing is left to repair");
 }
@@ -1445,7 +1445,7 @@ mod one_attempt_number {
 /// never heard on the backbone as `ready` from topology alone (topology is not liveness). Once the
 /// ladder has decided that mesh's recovery (`carrier-edge-lost`), the verdict opens the next attempt of
 /// the accepted Build with node.create of the mesh's first node-admin, a single step whose reason is
-/// `steps`; the create's own fence asks the provider about the lost admin and deletes it only on its
+/// `steps`; the create's own target asks the provider about the lost admin and deletes it only on its
 /// exact exit, so the opening recovers nothing. Must NOT happen: the decided mesh
 /// waits forever because its view never says it is silent, or the verdict opens a Recover.
 #[tokio::test]
@@ -1514,7 +1514,7 @@ mod fully_crashed_mesh {
     /// The same mesh before the decision opens (30 s: silent-marked, probes outstanding).
     const BEFORE_THE_DECISION: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(30_000), recovery_decided: false, unreachable_decided: false });
 
-    /// The fabric-primary's gate while the investigation holds one peer mesh unheard: the drive's fence
+    /// The fabric-primary's gate while the investigation holds one peer mesh unheard: the drive's target
     /// reads what the ladder holds of it.
     pub(super) struct HeldPeer {
         pub(super) mesh: String,
@@ -1575,7 +1575,7 @@ mod fully_crashed_mesh {
             let current = e.builds.current().await.unwrap().unwrap();
             assert_eq!(one_step_create_of(&current.action).as_deref(), Some(admins[0].as_str()), "node.create of the mesh's first node-admin, a single step on the existing carrier: {:?}", current.action);
             assert_eq!(current.reason, rdm_admin::build_state::AttemptReason::Steps, "the attempt carries steps");
-            // The drive reads the ladder's hold: the create the decision opened is the one thing that crosses the fence.
+            // The drive reads the ladder's hold: the create the decision opened is the one thing that crosses the target.
             e.converge_under(Arc::new(HeldPeer { mesh: peer_mesh.clone(), held: DECIDED_UNREACHABLE.unwrap() })).await;
             assert_eq!(e.born(), vec![admins[0].clone()], "the create ran: the mesh's first node-admin is born, and nothing else of the mesh");
             let settled = e.builds.current().await.unwrap().unwrap();

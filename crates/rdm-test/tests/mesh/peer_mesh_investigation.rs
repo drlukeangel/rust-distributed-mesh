@@ -364,8 +364,8 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     // mesh is reconciled once the mesh is heard again (by its new mesh primary's own sweep or the drift pass).
     // The window ends when the fabric primary hears the mesh again, or when it loses the seat to the mesh's new
     // mesh (its drift pass is then no one's but the new holder's). Heard again is its first direct backbone receipt
-    // of the mesh after the verdict (the snapshot installed off the backbone), the instant the R-D1 fence reads
-    // (`Ladder::fence` over `DigestView::mesh_unheard`); the ladder's own heard-again verdict comes on its next
+    // of the mesh after the verdict (the snapshot installed off the backbone), the instant the R-D1 target reads
+    // (`Ladder::target` over `DigestView::mesh_unheard`); the ladder's own heard-again verdict comes on its next
     // checklist, after it.
     let heard_again = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed")
         .into_iter()

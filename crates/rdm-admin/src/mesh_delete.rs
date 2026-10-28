@@ -590,7 +590,7 @@ where
 /// fabric-primary created for it, the only new birth a leaving mesh may gain"): a new birth, so a
 /// path no birth ever held, the next admin ordinal of `mesh` above every one the accepted roster
 /// (`roster`) and the view (`held`, every status, `.old` names included) hold. A path a lost birth
-/// still holds is never reused: the create door would fence against that birth and replace it.
+/// still holds is never reused: the create door would target against that birth and replace it.
 pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate::model::PathName]) -> Result<crate::model::PathName, String> {
     let named = roster.iter().filter_map(|b| b.node.parse::<crate::model::PathName>().ok());
     let top = named.chain(held.iter().cloned()).filter(|p| p.mesh == mesh && p.kind == NodeKind::NodeAdmin).map(|p| p.ordinal).max().unwrap_or(0);

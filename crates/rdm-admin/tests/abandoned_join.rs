@@ -210,8 +210,8 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             "the late join names the Build, the attempt and the exact birth"
         );
         let other = IncarnationId::mint();
-        let fenced = door.serve(endpoint_id.clone(), ask(&digest(&other))).await;
-        assert!(matches!(&fenced, JoinReply::JoinMismatch { field, .. } if field == "incarnation"), "another incarnation is not the abandoned birth: {fenced:?}");
+        let targeted = door.serve(endpoint_id.clone(), ask(&digest(&other))).await;
+        assert!(matches!(&targeted, JoinReply::JoinMismatch { field, .. } if field == "incarnation"), "another incarnation is not the abandoned birth: {targeted:?}");
         assert_eq!(installed.load(std::sync::atomic::Ordering::SeqCst), 0, "a refused join installs nothing");
         let _ = std::fs::remove_dir_all(&data_root);
     });

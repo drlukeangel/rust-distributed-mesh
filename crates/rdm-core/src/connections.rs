@@ -16,7 +16,7 @@
 //! [`resolve`] answers how a new invocation from this node reaches one exact destination under
 //! its protocol's [`CarrierPolicy`]: a valid own Proxy, else an active Direct, else no route.
 //! A Proxy is valid only while the destination process and the carrier process it recorded are the
-//! ones the topology view holds now (a superseded one is fenced by name) and the carrier's own Direct
+//! ones the topology view holds now (a superseded one is targeted by name) and the carrier's own Direct
 //! edge to the destination is Active. The incarnations reach the source through the topology view
 //! ([`CurrentIncarnations`]); the carrier's edge is the carrier's own fact, learned from the
 //! carried call that returns `carrier-edge-lost` (connections.md section 8), never held here.
@@ -102,7 +102,7 @@ pub struct ConnectionEnd {
     pub name: PathName,
     /// The end's logical node id.
     pub node_id: NodeId,
-    /// `None` when the writer could not learn the process birth; such an end is never fencing
+    /// `None` when the writer could not learn the process birth; such an end is never targeting
     /// evidence.
     pub incarnation: Option<IncarnationId>,
 }

@@ -707,7 +707,7 @@ impl ControlPlane {
         Ok(Opened { build_id: current.build_id.clone(), attempt: opened.attempt, mesh: opened.mesh })
     }
 
-    /// Open the next attempt of the current Build with a fenced action (a connections delete,
+    /// Open the next attempt of the current Build with a targeted action (a connections delete,
     /// stop, start or delete of one birth). The topology is unchanged; the Build stays the current one.
     pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind) -> Result<Opened, Refusal> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
@@ -802,7 +802,7 @@ impl ControlPlane {
             // found in the view (below), which reads a renamed birth by its node id through the node-row
             // id index (R12). Any other action's `.old` name is its accepted path's (node-replace.md: a
             // predecessor renamed `<name>.old` live and stopped there): a stopped `.old` node is started by
-            // its row's name (rollback step 2), and its birth is fenced below in the view, which lists it at
+            // its row's name (rollback step 2), and its birth is targeted below in the view, which lists it at
             // its row's name.
             let stopped_old = kind == ActionKind::Delete && path.old;
             // A birth of a mesh deleted at mesh.deleted (its last admin, alive): no accepted Build names
@@ -1261,7 +1261,7 @@ fn in_progress(route: &'static str, outer: &tracing::Span, path: &PathName, curr
     Refusal::BuildInProgress(held)
 }
 
-/// What an attempt opened at a node route does to the exact birth it is fenced to.
+/// What an attempt opened at a node route does to the exact birth it is targeted to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     /// `node.connections.delete:<path>`.

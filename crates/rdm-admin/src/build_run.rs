@@ -16,7 +16,7 @@
 //!   kept in memory per attempt, sent on a new blocker or a changed reason and never on a timer,
 //!   and is never a step outcome.
 //! - **a cut call cancels nothing.** The run is its own task; the stream is a view of its
-//!   [`RunLog`]. Only a failed step or a fence ends an attempt.
+//!   [`RunLog`]. Only a failed step or a target ends an attempt.
 //! - **a run is a turn of the admin's stop gate** (stop_gate.rs). A run served for a call begins
 //!   its turn at its own wait point, before it runs anything: while the admin is stopped it waits
 //!   there, and a stop's quiesce waits for a run already past it, so nothing a run does follows the

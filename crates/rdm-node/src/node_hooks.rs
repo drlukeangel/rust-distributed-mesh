@@ -14,7 +14,7 @@
 //!
 //! The Day-0 root and a fabric-primary re-born from its durable map have no authority to pull from:
 //! their context says so ([`Authority::None`]) and the hook completes from local state
-//! (`gossip.md` section 9's fenced exception).
+//! (`gossip.md` section 9's targeted exception).
 //!
 //! One span per attempt (`rdm.mesh.node.update.via-pre-node-ready-attempt`) under the boot span carries
 //! the outcome and the blocker or reason; `via-ready` follows the successful attempt.

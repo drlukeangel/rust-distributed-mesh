@@ -941,8 +941,8 @@ pub(crate) type PreNodeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<
 /// Work a create awaits inside its `DeployRuntime` step right before it launches the new runtime,
 /// and only then: a step an earlier attempt receipted (its runtime still runs and is reused) and a
 /// runtime the provider finds this deployment already started run none of it. A create over an
-/// exited birth's data dir fences that birth here (node-recovery.md "Delete fences the old instance
-/// before the new join"): the new runtime carries the same endpoint key, so the fence is done before
+/// exited birth's data dir targets that birth here (node-recovery.md "Delete targets the old instance
+/// before the new join"): the new runtime carries the same endpoint key, so the target is done before
 /// it exists and never once it does.
 pub(crate) type BeforeLaunch<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
 
@@ -1359,7 +1359,7 @@ impl DeploymentPipeline<'_> {
             }
         };
         // The receipt is the step's durable commit: a step whose receipt the Build state does not
-        // write to the executor's own log (a fact with no wire shape, a fenced seat, a failed local
+        // write to the executor's own log (a fact with no wire shape, a targeted seat, a failed local
         // write) is not complete, and the run stops at it by name. A failed broadcast after the
         // local write is not a refusal: the Build state names it and the step is committed.
         let appended = self
@@ -2131,7 +2131,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// The `Complete` receipt of a standalone connections delete or start (a stop's commits its lifecycle op). It commits no output: the attempt it
-    /// belongs to carried the action fenced to the exact birth (its `Opened` fact,
+    /// belongs to carried the action targeted to the exact birth (its `Opened` fact,
     /// `BuildProjection::attempt_actions`), so a later attempt's plan reads it as that birth's and
     /// plans nothing more for it.
     async fn complete(&self, run: &mut Run<'_>) -> Result<(), PipelineError> {

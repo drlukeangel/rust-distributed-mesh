@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// The gates of the fabric-primary's drive: the Build log's fence, read from the fabric-primary
+/// The gates of the fabric-primary's drive: the Build log's target, read from the fabric-primary
 /// record this admin holds.
 pub(crate) struct SeatGate {
     pub(crate) builds: Arc<FabricBuildStateAdapter>,
@@ -21,11 +21,11 @@ pub(crate) struct SeatGate {
 
 #[async_trait::async_trait]
 impl crate::build_drive::Gate for SeatGate {
-    async fn fence(&self) -> Result<Option<String>, crate::build_state::BuildStateError> {
-        self.builds.fence_check().await
+    async fn target(&self) -> Result<Option<String>, crate::build_state::BuildStateError> {
+        self.builds.target_check().await
     }
-    async fn fence_set(&self) {
-        self.builds.fence_set().await
+    async fn target_set(&self) {
+        self.builds.target_set().await
     }
     fn peer_mesh(&self, mesh: &str) -> Option<crate::investigate::PeerMesh> {
         self.control.peer_mesh.get().and_then(|f| f(mesh))
@@ -221,9 +221,9 @@ pub async fn give_mesh_node_admin(records: &Records, me: &PathName, view: &RwLoc
 /// whose investigation decided `unreachable` (no member answered either probe, no carrier reported its
 /// edge to a node-admin lost) is owed node.create of its first node-admin in process here, on the
 /// investigation's verdict (Q111): the probes reached none of its node-admins, so they are re-created;
-/// the create's own fence asks the provider about the birth at the path and decides its data dir
+/// the create's own target asks the provider about the birth at the path and decides its data dir
 /// (`R-FM2`). Answers the mesh and the node-admin owed (the mesh's first in path order, or the one the
-/// Build already carried across the fence).
+/// Build already carried across the target).
 pub(crate) fn unanswered_peer_mesh(me: &PathName, current: &crate::build_state::BuildProjection, unreachable: &(dyn Fn(&str) -> bool + Sync)) -> Option<(String, PathName)> {
     current.topology.meshes.values().filter(|m| m.name != me.mesh && unreachable(&m.name)).find_map(|m| {
         let first = m.nodes_of_type(NodeKind::NodeAdmin).min()?;
@@ -297,7 +297,7 @@ impl FabricTenureRows {
 /// - a peer mesh whose investigation decided `carrier-edge-lost` (`decided`): the verdict runs
 ///   node.create of the mesh's first node-admin into the live mesh, on this same Build and the mesh's
 ///   own MeshId (mesh-investigation.md step 6). The attempt is the single step of that create
-///   (`AttemptAction::Steps`, reason Steps); the create's own fence asks the provider about the lost
+///   (`AttemptAction::Steps`, reason Steps); the create's own target asks the provider about the lost
 ///   admin and deletes it only on its exact exit, so nothing is proven or recorded here;
 /// - a peer mesh whose investigation decided `unreachable` (`unreachable`: mesh-investigation.md step
 ///   5, "No member answers"): the same steps, for the mesh's first node-admin
@@ -377,7 +377,7 @@ pub async fn reconcile_drift(
     // decided its recovery is owed node.create of a node-admin. A mesh this authority never heard on the
     // backbone is held `ready` in its view from topology alone (topology is not liveness), so the
     // ladder's decision, not a status, names the mesh. The admin is the one the Build already carried
-    // across the fence, else the mesh's first in path order.
+    // across the target, else the mesh's first in path order.
     let verdict: Option<(String, PathName)> = current.topology.meshes.values().filter(|m| m.name != me.mesh && decided(&m.name)).find_map(|m| {
         let first = m.nodes_of_type(NodeKind::NodeAdmin).min()?;
         crate::build_drive::first_admin_owed(&current, &m.name, first).map(|admin| (m.name.clone(), admin))
@@ -397,7 +397,7 @@ pub async fn reconcile_drift(
         // A birth the Build stopped on request is not drift: its `node.stop:<path>` operation completed
         // for this exact birth (node-stop.md: no bind, no JoinNode, no replacement), and the exit it
         // proves is the one that was asked for.
-        // The stop's `Complete` is that birth's when its attempt carried the stop fenced to it.
+        // The stop's `Complete` is that birth's when its attempt carried the stop targeted to it.
         let operation = format!("node.stop:{}", n.name);
         let stop = n.incarnation_id.clone().map(|from_incarnation| crate::accepted::AttemptAction::Stop { path: n.name.clone(), node_id: n.node_id.clone(), from_incarnation });
         if stop.as_ref().is_some_and(|stop| current.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && current.carried(s.attempt, stop))) {
@@ -482,7 +482,7 @@ pub async fn reconcile_drift(
     let short = crate::drift::shortfall(&current.topology, t, &exited);
     // One unheard birth per attempt, the ones whose runtime does not run first, then in path.name
     // order; the next pass takes the next remaining one. A runtime that runs may still answer: the
-    // create's fence asks it before anything is created over it ([`crate::seat_revision::fence`]).
+    // create's target asks it before anything is created over it ([`crate::seat_revision::target`]).
     let first_exited: Option<(&PathName, &crate::drift::ExitedBirth)> =
         proven.iter().filter(|(p, _)| short.iter().any(|s| s.exited.iter().any(|e| *e == p.to_string()))).min_by_key(|(p, b)| (b.verdict == "running", p.to_string()));
     // Surplus: a live birth of a kept Mesh the accepted topology does not name (a removal the
@@ -524,7 +524,7 @@ pub async fn reconcile_drift(
             Some((path, _)) => {
                 // Only a node-admin of a mesh that lost its mesh-primary reaches here (every other member is
                 // its mesh-primary's to recover): its mesh gets node.create of a node-admin, run by this
-                // fabric-primary (node-recovery.md step 3); the create's fence deletes the unheard birth it
+                // fabric-primary (node-recovery.md step 3); the create's target deletes the unheard birth it
                 // finds there, `TerminateRuntime` first when it runs.
                 let scope = short.iter().filter(|s| s.exited.iter().any(|e| *e == path.to_string())).map(ToString::to_string).collect::<Vec<_>>().join("; ");
                 match create_of(path) {

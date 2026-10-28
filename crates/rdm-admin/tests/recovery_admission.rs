@@ -117,7 +117,7 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     };
     settle(1).await;
 
-    // The first submit: the next attempt of the accepted Build, fenced to the exited birth.
+    // The first submit: the next attempt of the accepted Build, targeted to the exited birth.
     let first = match cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await {
         Ok(Recovery::Opened(o)) => o,
         other => panic!("the first recovery is admitted: {other:?}"),

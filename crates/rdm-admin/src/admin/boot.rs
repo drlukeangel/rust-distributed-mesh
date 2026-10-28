@@ -47,7 +47,7 @@ pub struct Running {
     pub(crate) node_self: Arc<crate::node_self::NodeSelf>,
     /// Asked before each leave announcement publish (a testkit executable's wiring; none in the product).
     pub(crate) leave_seam: Option<Arc<dyn crate::wiring::LeaveSeam>>,
-    /// This admin's Build log: fenced before the first `Leaving` (ruling R-A2).
+    /// This admin's Build log: targeted before the first `Leaving` (ruling R-A2).
     pub(crate) builds: Arc<FabricBuildStateAdapter>,
     /// Cancelled when this admin is retired (stop-node, leaving): its hook and any pull
     /// it has in flight end.
@@ -764,7 +764,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let build_facts_slot: crate::build_facts_read::BuildFactsSlot = Arc::new(std::sync::OnceLock::new());
     let build_slot: crate::build_op::BuildSlot = Arc::new(std::sync::OnceLock::new());
     let handover_slot: crate::fabric_handover::HandoverSlot = Arc::new(std::sync::OnceLock::new());
-    // This admin's view, once built: the Build log's fence reads fabric recovery from it (Q122).
+    // This admin's view, once built: the Build log's target reads fabric recovery from it (Q122).
     let view_slot: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<Topology>>>> = Arc::new(std::sync::OnceLock::new());
     // The process's one Node RPC client is made before the server: core Forward is one direct inner
     // call through it, and every other caller in the process takes it by clone.
@@ -3183,7 +3183,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // drift check below to replace that mesh's node-admins.
                                     let ladder = Arc::new(Mutex::new(crate::investigate::Ladder::new(crate::investigate::Rungs::configured())));
                                     {
-                                        // The R-D1 fence as the Build door and the drive read it: t from this admin's last direct
+                                        // The R-D1 target as the Build door and the drive read it: t from this admin's last direct
                                         // backbone receipt of the mesh, whether or not the ladder has stepped the mesh yet.
                                         let (ladder, digest_view) = (ladder.clone(), digest_view.clone());
                                         let _ = control.peer_mesh.set(Arc::new(move |mesh: &str| ladder.lock().unwrap().peer_mesh_unheard(mesh, digest_view.mesh_unheard(mesh, std::time::Instant::now()))));

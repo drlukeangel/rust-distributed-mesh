@@ -5442,7 +5442,7 @@ async fn partition_run(cell: &str, shape: Shape) {
             .collect();
         assert!(silent_own.is_empty(), "no admin lost its own mesh: {silent_own:?}");
         // Recovery follows node investigation's verdict (Q111): every recovery submitted through cut and heal,
-        // and every create's fence, names a verdict other than `reached`.
+        // and every create's target, names a verdict other than `reached`.
         let life = lifecycle_marks(spans, marks.0, marks.3);
         recovery_follows_the_verdict(spans, marks.0, marks.3);
         let tv = topology_versions(spans);
@@ -5524,7 +5524,7 @@ async fn one_live_birth_per_path(f: &Formed, admins: &[String], paths: &[String]
 }
 
 /// Recovery follows node investigation's verdict (Q111; fabric-recovery.md step 3): every recovery submitted
-/// between `from` and `to`, and every create's fence, names a verdict other than `reached`.
+/// between `from` and `to`, and every create's target, names a verdict other than `reached`.
 fn recovery_follows_the_verdict(spans: &[Value], from: u64, to: u64) {
     for sp in spans.iter().filter(|sp| start_ns(sp) >= from && start_ns(sp) <= to && (sp["name"] == "rdm.node_admin.build.update.via-node-recovery" || (sp["name"] == "rdm.node_admin.deployment.delete.via-path-investigation" && sp["attributes"]["outcome"] == "unreached"))) {
         assert_ne!(sp["attributes"]["verdict"], "reached", "a recovery follows node investigation's verdict, never `reached`: {sp}");

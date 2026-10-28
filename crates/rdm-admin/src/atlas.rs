@@ -252,7 +252,7 @@ fn accepted_on(action: &AttemptAction) -> Vec<(PathName, String)> {
 }
 
 /// The birth a completed step of `p` acted on at `path`: the stop receipt's own birth, else the one the
-/// attempt's action is fenced to.
+/// attempt's action is targeted to.
 fn birth_of_step(p: &BuildProjection, attempt: u32, path: &PathName, output: Option<&serde_json::Value>) -> Option<IncarnationId> {
     if let Some(op) = output.and_then(|v| serde_json::from_value::<rdm_core::LifecycleOp>(v.clone()).ok()) {
         return Some(op.incarnation);

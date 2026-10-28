@@ -13,7 +13,7 @@ pub(crate) fn incumbency_of(digest_view: &DigestView, _records: &Records) -> cra
     crate::election::Incumbency { fabric: digest_view.seats.fabric(), meshes: digest_view.seats.meshes(), cohorts: digest_view.seats.node_type_primaries(), lost }
 }
 
-/// What this birth's Build log reads its fence from: the fabric-primary record `digest_view` holds, the
+/// What this birth's Build log reads its target from: the fabric-primary record `digest_view` holds, the
 /// election's result this admin installed, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
 /// lost set every election takes, [`incumbency_of`]) and named from the digests `digest_view` holds.
 ///
@@ -36,7 +36,7 @@ pub(crate) fn fabric_seat_source(digest_view: &DigestView, records: &Arc<Records
     crate::fabric_builds::SeatSource { read, changed }
 }
 
-/// Where this birth's drift-lane opens and claims read their fence (R-BI7): the mesh-primary record
+/// Where this birth's drift-lane opens and claims read their target (R-BI7): the mesh-primary record
 /// of its own mesh `digest_view` holds, judged as [`fabric_seat_record`] judges the fabric
 /// seat's.
 ///

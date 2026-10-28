@@ -314,6 +314,6 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // A create whose view holds a removed birth at its path investigates it (admin.rs create -> seat_revision.rs
     // `via-path-investigation`, the incarnation it investigated): no create of the recreated mesh investigates one.
     let old_incarnations: BTreeSet<String> = regrown.iter().filter(|n| n["mesh"] == "mesh2").map(|n| s(&n["incarnation_id"])).collect();
-    let fenced_old: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| old_incarnations.contains(&s(&sp["attributes"]["incarnation"]))).collect();
-    assert!(fenced_old.is_empty(), "no member of the recreated mesh is created over a removed birth: {fenced_old:?}");
+    let targeted_old: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| old_incarnations.contains(&s(&sp["attributes"]["incarnation"]))).collect();
+    assert!(targeted_old.is_empty(), "no member of the recreated mesh is created over a removed birth: {targeted_old:?}");
 }

@@ -163,8 +163,8 @@ pub enum Swept {
     },
 }
 
-/// Whether an attempt's fenced action acts on the birth `incarnation`: the one birth a node op is
-/// fenced to, or any birth a Build pinned.
+/// Whether an attempt's targeted action acts on the birth `incarnation`: the one birth a node op is
+/// targeted to, or any birth a Build pinned.
 fn acts_on(action: &AttemptAction, incarnation: &IncarnationId) -> bool {
     match action {
         AttemptAction::DeleteConnections { from_incarnation, .. }
@@ -221,7 +221,7 @@ impl crate::control_plane::ControlPlane {
 
     /// The open Build that references the birth: a Build still Pending or Running, or the accepted
     /// Build while it is not complete (a replacement left mid-transfer keeps its rollback point),
-    /// whose current attempt's fenced action acts on the birth.
+    /// whose current attempt's targeted action acts on the birth.
     async fn open_reference(&self, incarnation: &IncarnationId) -> Result<Option<BuildId>, String> {
         let mut open = self.builds.list_active().await.map_err(|e| format!("the active Builds cannot be read: {e}"))?;
         if let Some(current) = self.builds.current().await.map_err(|e| format!("the current Build cannot be read: {e}"))? {

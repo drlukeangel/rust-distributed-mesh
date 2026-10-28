@@ -1,4 +1,4 @@
-//! i143.e4.s2: the generic connection model — held projection, incarnation fencing and the
+//! i143.e4.s2: the generic connection model — held projection, incarnation targeting and the
 //! effective route (`rdm_core::connections`).
 
 use rdm_core::connections::{
@@ -231,7 +231,7 @@ fn a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call
 }
 
 /// CONTRACT: a destination that deleted (retired) is no current birth: the Direct fact toward it
-/// is not the current edge and a Proxy to it is fenced by name.
+/// is not the current edge and a Proxy to it is targeted by name.
 #[test]
 fn a_direct_fact_and_a_proxy_naming_a_deleted_destination_are_not_current() {
     let (mut held, own, carrier, dest) = estate();

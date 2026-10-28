@@ -110,7 +110,7 @@ impl BuildDoor {
         let r = match change {
             // The stopped predecessor a replacement left at `<path>.old`, and the last admin of a mesh
             // deleted at mesh.deleted (mesh-delete.md step 7: a separate node.delete after
-            // mesh.deleted), are deleted by the next attempt of the accepted Build, fenced to the exact
+            // mesh.deleted), are deleted by the next attempt of the accepted Build, targeted to the exact
             // birth: the topology never names that path.
             BuildChange::RemoveNode { node } => {
                 if node.old || cp.of_deleted_mesh(node).await {
@@ -565,7 +565,7 @@ impl BuildDoor {
     ) -> Result<BuildReply, HandlerFault> {
         // The caller of `build.attempt.run` is the fabric-primary that drives the Build. When this
         // executor became fabric-primary during the run (the attempt's own node.primary.update), the
-        // caller is no longer the driver: its fence is set and its stream ends here with
+        // caller is no longer the driver: its target is set and its stream ends here with
         // FabricPrimaryMoved naming this admin, never with a write into
         // a stream the old driver stopped. The run goes on in its own task; this admin's own drive
         // reads its frames.

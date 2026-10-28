@@ -4,7 +4,7 @@
 //! t is the time since its last direct backbone receipt from the mesh (mesh-investigation.md), and
 //! from the track rung (`investigate::Rungs::track`, twice the backbone interval) the mesh is held
 //! unheard and nothing of it is restarted, replaced or deleted (R-D1). A publisher that goes quiet
-//! for longer than that while it is live and serving fences its own mesh.
+//! for longer than that while it is live and serving targets its own mesh.
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`), its mesh's primary, at the
 //! gate's cadence (`tools/test-runner` CADENCE, set by the binary's ctor in `tests/main.rs`), in a

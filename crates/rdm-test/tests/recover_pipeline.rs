@@ -139,7 +139,7 @@ const CREATE_ORDER: [&str; 13] = [
 /// runs the delete and create workflows, each as its own operation of the Build, in order. node.delete of the unreached birth (`node.delete:<path>`):
 /// NodeDeleting, `TerminateRuntime` reading the exact runtime at its instant (nothing sent to the
 /// process: no connections delete, no stop frames; nothing terminated, it reads exited), NodeDeleted once for the
-/// exact birth, exactly that birth removed; the old birth is fenced before the new one is created;
+/// exact birth, exactly that birth removed; the old birth is targeted before the new one is created;
 /// node.create at the same path.name (`node.create:<path>`): the same data dir (its storage still
 /// there) and the same endpoint key, a new node.id and incarnation, no supersedes, ready. No operation
 /// writes a receipt of another, and every receipt has a wire shape on the Build topic.
@@ -174,8 +174,8 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
         .delete_node(&RetireRequest { build_id: recover_build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), unreached: true })
         .await
         .unwrap_or_else(|e| panic!("delete: {e}"));
-    // The executor fences the exited birth before the create that takes its key.
-    rig.log.lock().unwrap().push(format!("fenced:{}", first.node.node_id));
+    // The executor targets the exited birth before the create that takes its key.
+    rig.log.lock().unwrap().push(format!("targeted:{}", first.node.node_id));
     // node.create over the exited birth's data dir.
     let second = pipeline
         .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new() })
@@ -212,13 +212,13 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     assert_eq!(std::fs::read(old_dir.join("wal").join("seg-0")).unwrap(), b"records", "storage retained");
     assert_eq!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Running);
 
-    // Delete, fence, then create: nothing sent to the exited process.
+    // Delete, target, then create: nothing sent to the exited process.
     let log = rig.log.lock().unwrap().clone();
     let (old, new) = (first.node.node_id.to_string(), second.node.node_id.to_string());
     assert!(!log.iter().any(|l| l.starts_with("node.connections.delete:") || l.starts_with("node.stop:")), "nothing is sent to the exited birth: {log:?}");
     let at = |what: &str| log.iter().position(|l| l.starts_with(what)).unwrap_or_else(|| panic!("{what} not in {log:?}"));
     assert!(at(&format!("NodeDeleting:{old}:{delete}")) < at(&format!("NodeDeleted:{old}:{delete}")), "{log:?}");
-    assert!(at(&format!("NodeDeleted:{old}:{delete}")) < at(&format!("fenced:{old}")) && at(&format!("fenced:{old}")) < at(&format!("ready:{new}")), "node.deleted, the fence, then the new node: {log:?}");
+    assert!(at(&format!("NodeDeleted:{old}:{delete}")) < at(&format!("targeted:{old}")) && at(&format!("targeted:{old}")) < at(&format!("ready:{new}")), "node.deleted, the target, then the new node: {log:?}");
     assert_eq!(log.iter().filter(|l| l.starts_with("NodeDeleted")).count(), 1, "{log:?}");
     assert!(rig.sink.removed.lock().unwrap().is_empty(), "no path-keyed removal: only the exact exited birth leaves");
     assert_eq!(*rig.sink.removed_births.lock().unwrap(), vec![(path(), first.node.node_id.clone(), old_inc.clone())], "the exited instance leaves the path once");

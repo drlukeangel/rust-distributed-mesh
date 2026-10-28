@@ -143,7 +143,7 @@ impl LocationView {
     }
 }
 
-/// The `(node.id, incarnation)` pairs a `node.deleted` fenced in the peer-location view: a digest of
+/// The `(node.id, incarnation)` pairs a `node.deleted` targeted in the peer-location view: a digest of
 /// one never registers its socket for its key. A new node over a deleted one's data dir keeps the
 /// key and sets no `supersedes`, so lineage alone cannot refuse the deleted instance's late digest.
 fn deleted_incarnations() -> &'static Mutex<std::collections::HashSet<(String, String)>> {
@@ -151,12 +151,12 @@ fn deleted_incarnations() -> &'static Mutex<std::collections::HashSet<(String, S
     F.get_or_init(Mutex::default)
 }
 
-/// Fence the exact birth `(node_id, incarnation)` in the peer-location view.
+/// Target the exact birth `(node_id, incarnation)` in the peer-location view.
 pub fn delete_incarnation(node_id: &NodeId, incarnation: &rdm_core::IncarnationId) {
     deleted_incarnations().lock().unwrap().insert((node_id.to_string(), incarnation.to_string()));
 }
 
-/// Whether `(node_id, incarnation)` is fenced in the peer-location view.
+/// Whether `(node_id, incarnation)` is targeted in the peer-location view.
 fn incarnation_deleted(node_id: &NodeId, incarnation: &rdm_core::IncarnationId) -> bool {
     deleted_incarnations().lock().unwrap().contains(&(node_id.to_string(), incarnation.to_string()))
 }
@@ -1816,19 +1816,19 @@ struct Prior {
 
 impl Prior {
     fn of(rx: &SnapshotReceiver, mesh: &str) -> Self {
-        Self { held: rx.held_version(mesh), stops: Fence::stops_of(rx.held_full(mesh)) }
+        Self { held: rx.held_version(mesh), stops: Target::stops_of(rx.held_full(mesh)) }
     }
 
-    /// The fence of a frame of `publisher` at `version` arriving on `side`, `after` the projection the
+    /// The target of a frame of `publisher` at `version` arriving on `side`, `after` the projection the
     /// receiver holds once it applied.
-    fn fence(self, publisher: &PublisherId, side: Side, version: u64, after: Option<&Full>) -> Fence {
-        Fence {
+    fn target(self, publisher: &PublisherId, side: Side, version: u64, after: Option<&Full>) -> Target {
+        Target {
             publisher: publisher.to_string(),
             channel: side.name(),
             held: self.held.map(|(p, v)| (p.to_string(), v)),
             version,
             prior_stops: self.stops,
-            post_stops: Fence::stops_of(after),
+            post_stops: Target::stops_of(after),
         }
     }
 }
@@ -2039,7 +2039,7 @@ impl View {
             }
             let Some(full) = rx.held_full(mesh) else { continue };
             let listed = full.digests().iter().any(|d| d.node.node_id == op.node_id && d.node.incarnation == op.incarnation);
-            if !listed || Fence::stops_of(Some(full)).contains(&key) {
+            if !listed || Target::stops_of(Some(full)).contains(&key) {
                 continue;
             }
             drop(rx);
@@ -2180,8 +2180,8 @@ impl View {
                         .in_scope(|| tracing::info!("a delta applied at exactly its base version"));
                         let full = Full::new(delta.changed.clone(), delta.in_flight.clone(), delta.deleted.clone());
                         let held_full = rx.held_full(mesh);
-                        let fence = prior.fence(source_publisher, side, *topology_version, held_full);
-                        let carried = self.apply_full(mesh, &full, held_full, fabric, side, &fence);
+                        let target = prior.target(source_publisher, side, *topology_version, held_full);
+                        let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target);
                         let installed_full = held_full.expect("applied delta has a full").clone();
                         drop(rx);
                         order.installed_projection(mesh, source_publisher, *topology_version, Some(*published_at_rafka_ms), &installed_full, None);
@@ -2315,8 +2315,8 @@ impl View {
             refreshed = i.refreshed,
         )
         .in_scope(|| tracing::debug!("a complete snapshot installed"));
-        let fence = prior.fence(&i.publisher, side, i.topology_version, Some(&i.full));
-        let carried = self.apply_full(&i.mesh, &i.full, Some(&i.full), fabric, side, &fence);
+        let target = prior.target(&i.publisher, side, i.topology_version, Some(&i.full));
+        let carried = self.apply_full(&i.mesh, &i.full, Some(&i.full), fabric, side, &target);
         let source = (side == Side::Backbone && i.mesh != self.mesh).then(|| (i.mesh.clone(), i.publisher.clone(), i.topology_version, i.full.clone()));
         // A mesh topology with no digests (a deleted mesh's, gossip.md "Mesh delete": "`digests`
         // empty") lists no birth of its publisher: it carries no rafka-time sample.
@@ -2331,11 +2331,11 @@ impl View {
     /// Apply the members, overlays and departures of a snapshot or a delta to the view. Departures
     /// first: a digest of a deleted birth in the same snapshot is refused. A listed birth this view
     /// holds stopped ends its stop only when the source moved, in order, from a version carrying the
-    /// stop to this one (`fence`); any other entry of it is refused by name. An own-mesh birth's
+    /// stop to this one (`target`); any other entry of it is refused by name. An own-mesh birth's
     /// entry gives its status and nothing else (gossip.md §3.1: liveness, endpoints and the runtime
     /// fact come from its Digest), unless this node is the primary that authors it. A peer mesh's
     /// primary carries only the members it hears (R-RX4: only a mesh's own primary publishes it).
-    fn apply_full(&self, mesh: &str, full: &Full, complete: Option<&Full>, fabric: &FabricId, side: Side, fence: &Fence) -> Vec<MeshDigest> {
+    fn apply_full(&self, mesh: &str, full: &Full, complete: Option<&Full>, fabric: &FabricId, side: Side, target: &Target) -> Vec<MeshDigest> {
         let complete_digests = complete.map(Full::digests).unwrap_or_default();
         let final_delete = if complete_digests.len() == 1
             && complete_digests[0].status == rdm_core::MemberStatus::Leaving
@@ -2377,7 +2377,7 @@ impl View {
                 self.digest_view.deleting(op);
             }
         }
-        self.digest_view.note_stops_carried(fence);
+        self.digest_view.note_stops_carried(target);
         let authors = self.primary.load(Ordering::Relaxed);
         let me_name = self.current_name();
         let mut carried = Vec::new();
@@ -2398,7 +2398,7 @@ impl View {
             if own && authors && matches!(side, Side::MeshChannel | Side::Backbone) {
                 continue;
             }
-            if !(own && authors) && self.digest_view.stopped_entry(&d, fence) == Some(false) {
+            if !(own && authors) && self.digest_view.stopped_entry(&d, target) == Some(false) {
                 continue;
             }
             let prior = self.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
@@ -2406,7 +2406,7 @@ impl View {
                 // An own-mesh member's status from its primary's projection (gossip.md §3.1 `MeshTopology`
                 // author): nothing else of it, so no liveness from it.
                 (Side::Backbone, true) | (Side::MeshChannel, true) => {
-                    self.digest_view.take_projected_status(&d, fence);
+                    self.digest_view.take_projected_status(&d, target);
                     continue;
                 }
                 (Side::Backbone, false) => self.digest_view.record_forwarded(d.clone()),
@@ -3984,7 +3984,7 @@ struct StopMark {
 /// carried a stop ([`StopMark::carried`]), what tells a projection that moved past a stop from one
 /// that never carried it here.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Fence {
+pub(crate) struct Target {
     /// The source's publisher (its exact birth): the version's revision.
     publisher: String,
     /// Where the frame arrived.
@@ -3999,7 +3999,7 @@ pub(crate) struct Fence {
     post_stops: BTreeSet<(String, String)>,
 }
 
-impl Fence {
+impl Target {
     /// The stop births a source projection carries.
     fn stops_of(full: Option<&crate::snapshot::Full>) -> BTreeSet<(String, String)> {
         full.map(|f| f.in_flight().into_iter().filter(LifecycleOp::is_stop).map(|o| (o.node_id.to_string(), o.incarnation.to_string())).collect()).unwrap_or_default()
@@ -4130,7 +4130,7 @@ pub struct DigestView {
     /// birth was in (gossip.md §3.1 `NodeDeleted`: the "executor's own mesh channel; backbone
     /// Members.deleted"). A deletion this view only heard is not one of them.
     executed_deletions: Arc<Mutex<std::collections::HashSet<String>>>,
-    /// The departures the deleted fence refused, by the NodeId of the departure held: each operation
+    /// The departures the deleted target refused, by the NodeId of the departure held: each operation
     /// key refused by name once. Its publisher carries it in every mesh topology for the retention, and a
     /// later copy is a copy of a refusal already made. Forgotten with the departure it was refused by.
     refused_departures: Arc<Mutex<HashMap<String, BTreeSet<(String, u32, String)>>>>,
@@ -4826,7 +4826,7 @@ impl DigestView {
     /// A projection frame applied: every stopped birth whose stop the source carried, before the
     /// frame at the version held or after it at the frame's version, is marked carried at the highest
     /// such version of that publisher.
-    fn note_stops_carried(&self, fence: &Fence) {
+    fn note_stops_carried(&self, target: &Target) {
         let mut marks = self.stopped_marks.lock().unwrap();
         let mut note = |key: &(String, String), publisher: &str, version: u64| {
             if let Some(m) = marks.get_mut(&key.0).filter(|m| m.incarnation.as_str() == key.1) {
@@ -4835,13 +4835,13 @@ impl DigestView {
                 }
             }
         };
-        if let Some((publisher, version)) = &fence.held {
-            for key in &fence.prior_stops {
+        if let Some((publisher, version)) = &target.held {
+            for key in &target.prior_stops {
                 note(key, publisher, *version);
             }
         }
-        for key in &fence.post_stops {
-            note(key, &fence.publisher, fence.version);
+        for key in &target.post_stops {
+            note(key, &target.publisher, target.version);
         }
     }
 
@@ -4850,7 +4850,7 @@ impl DigestView {
         self.stopped_marks.lock().unwrap().get(d.node.node_id.as_str()).filter(|m| m.incarnation == d.node.incarnation).and_then(|m| m.carried.clone())
     }
 
-    /// What the projection frame `fence` describes does to the stop of the birth `d` lists: `None`
+    /// What the projection frame `target` describes does to the stop of the birth `d` lists: `None`
     /// when this view holds no stop of that exact birth. The projection moved, in order, past the stop
     /// when a projection of the source this view applied carried the stop at some version, this frame
     /// is newer than that version, and the projection after it no longer carries the stop; then the
@@ -4860,20 +4860,20 @@ impl DigestView {
     /// the receive path took it as newer than every publication of the mesh it held (R-RX3).
     /// Decided and taken under one hold of the stop marks: a node's backbone and mesh channel each
     /// apply their projections under their own receiver, and the stop ends on one of them, once.
-    fn stopped_entry(&self, d: &MeshDigest, fence: &Fence) -> Option<bool> {
+    fn stopped_entry(&self, d: &MeshDigest, target: &Target) -> Option<bool> {
         let key = (d.node.node_id.to_string(), d.node.incarnation.to_string());
         let mark = {
             let mut marks = self.stopped_marks.lock().unwrap();
             let held = marks.get(d.node.node_id.as_str()).filter(|m| m.incarnation == d.node.incarnation)?;
-            let moved = held.carried.as_ref().is_some_and(|(publisher, version)| *publisher != fence.publisher || fence.version > *version) && !fence.post_stops.contains(&key);
+            let moved = held.carried.as_ref().is_some_and(|(publisher, version)| *publisher != target.publisher || target.version > *version) && !target.post_stops.contains(&key);
             if !moved {
                 drop(marks);
-                self.refuse_in_projection(d, fence);
+                self.refuse_in_projection(d, target);
                 return Some(false);
             }
             marks.remove(d.node.node_id.as_str()).expect("the mark is held under this hold")
         };
-        self.stop_ended_in_projection(d, fence, mark);
+        self.stop_ended_in_projection(d, target, mark);
         Some(true)
     }
 
@@ -4884,7 +4884,7 @@ impl DigestView {
     /// the primary, from the latest digest of it this view refused while the stop stood: with the
     /// projection's status, and the instant and channel that digest was heard on (the projection
     /// refreshes no liveness). With none refused, its next heartbeat holds it.
-    fn stop_ended_in_projection(&self, d: &MeshDigest, fence: &Fence, mark: StopMark) {
+    fn stop_ended_in_projection(&self, d: &MeshDigest, target: &Target, mark: StopMark) {
         let cleared: Vec<String> = self.in_flight().into_iter().filter(|o| o.is_stop() && o.node_id == d.node.node_id).map(|o| o.operation).collect();
         let carried = mark.carried.as_ref().map(|(_, v)| *v as i64).unwrap_or(-1);
         let latest = mark.latest;
@@ -4909,11 +4909,11 @@ impl DigestView {
             node_id = %d.node.node_id,
             incarnation_id = %d.node.incarnation.as_str(),
             stops_cleared = %cleared.join(","),
-            publisher = %fence.publisher,
-            channel = fence.channel,
-            held_version = fence.held_version(),
+            publisher = %target.publisher,
+            channel = target.channel,
+            held_version = target.held_version(),
             stop_carried_at = carried,
-            topology_version = fence.version,
+            topology_version = target.version,
             status = ?d.status,
             held_again = held_again.is_some(),
             held_digest_seq = held_again.unwrap_or(0),
@@ -4923,7 +4923,7 @@ impl DigestView {
 
     /// A projection entry of the stopped birth `d` from a version that never carried its stop here:
     /// published before the stop, or a refresh at the version held. Refused by name; the stop stands.
-    fn refuse_in_projection(&self, d: &MeshDigest, fence: &Fence) {
+    fn refuse_in_projection(&self, d: &MeshDigest, target: &Target) {
         tracing::info_span!(
             "rdm.mesh.topology.reject.via-stopped-birth",
             node = %self.observer_name.lock().unwrap(),
@@ -4933,10 +4933,10 @@ impl DigestView {
             status = ?d.status,
             digest_seq = d.digest_seq,
             door = "projection",
-            publisher = %fence.publisher,
-            channel = fence.channel,
-            held_version = fence.held_version(),
-            topology_version = fence.version,
+            publisher = %target.publisher,
+            channel = target.channel,
+            held_version = target.held_version(),
+            topology_version = target.version,
             stop_carried_at = self.stop_carried_at(d).map(|(_, v)| v as i64).unwrap_or(-1),
         )
         .in_scope(|| tracing::info!("a projection entry of a stopped birth from a version that never carried its stop here: refused, the stop stands"));
@@ -4977,7 +4977,7 @@ impl DigestView {
     /// projection): the status is held for the birth, and the held digest, liveness, endpoints and
     /// runtime as its own heartbeat said, takes that status. Nothing else of `d` is taken. `false`
     /// when nothing moved.
-    fn take_projected_status(&self, d: &MeshDigest, fence: &Fence) -> bool {
+    fn take_projected_status(&self, d: &MeshDigest, target: &Target) -> bool {
         // This node's own birth is its own word: no projection moves the status it holds of itself.
         if !self.own_mesh_member(d) || self.is_deleted(d.node.node_id.as_str()) || self.is_stopped(d) {
             return false;
@@ -5006,9 +5006,9 @@ impl DigestView {
             status = ?d.status,
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
             heartbeat_held = held,
-            publisher = %fence.publisher,
-            channel = fence.channel,
-            topology_version = fence.version,
+            publisher = %target.publisher,
+            channel = target.channel,
+            topology_version = target.version,
         )
         .in_scope(|| tracing::info!("an own-mesh member's status taken from its mesh-primary's projection; its liveness stays its own heartbeat's"));
         true
@@ -5879,7 +5879,7 @@ mod tests {
 
     /// CONTRACT (ops-naming, `node.deleted`): a new node over the data dir of a deleted one keeps
     /// the endpoint key and sets no `supersedes`, so the location view cannot tell the deleted
-    /// instance's late digest from a newer one. The departure of `(node.id, incarnation)` fences
+    /// instance's late digest from a newer one. The departure of `(node.id, incarnation)` targets
     /// that incarnation in the view: its digest is refused by name and the key keeps the new
     /// instance's socket. Must NOT happen: the key pointed back at the deleted instance's old port.
     #[test]
@@ -7328,7 +7328,7 @@ mod tests {
     }
 
     /// CONTRACT (R-NS1 change 3): a NodeStopped arriving after its birth's mesh left, and a
-    /// NodeDeleted other than the departure held, are refused by the deleted fence by name and
+    /// NodeDeleted other than the departure held, are refused by the deleted target by name and
     /// resurrect nothing; a copy of the departure held (every mesh topology carries it for the retention)
     /// is a copy, not a refusal.
     #[test]
@@ -7358,7 +7358,7 @@ mod tests {
         assert!(refused.iter().all(|f| f["node_id"] == id.to_string() && f["incarnation_id"] == inc.as_str()));
     }
 
-    /// CONTRACT (R-NS1 change 3): a departure refused by the deleted fence is refused by name once.
+    /// CONTRACT (R-NS1 change 3): a departure refused by the deleted target is refused by name once.
     /// Its publisher carries it in every mesh topology for the retention (it never held the departure this
     /// view holds), so each later copy of the same refused departure is a copy of a refusal already
     /// made: refused again, opening no second span. Must NOT happen: one refusal span per mesh topology
@@ -7811,9 +7811,9 @@ mod tests {
 
     /// Two receive paths of one node (its backbone and its mesh channel) applying a projection of
     /// the stopped birth `d` at once, each having found the stop held and the projection past it.
-    fn both_paths_end_the_stop(digest_view: &DigestView, d: &MeshDigest, fence: &Fence) {
+    fn both_paths_end_the_stop(digest_view: &DigestView, d: &MeshDigest, target: &Target) {
         for _ in 0..2 {
-            digest_view.stopped_entry(d, fence);
+            digest_view.stopped_entry(d, target);
         }
     }
 
@@ -7843,8 +7843,8 @@ mod tests {
         assert!(!view.digest_view.record(late), "the stopped birth's heartbeat is refused and kept as the latest");
         let mut listed = rpc.clone();
         listed.status = MemberStatus::Pending;
-        let fence = Fence { publisher: publisher_of(&primary).to_string(), channel: "mesh-channel", held: Some((publisher_of(&primary).to_string(), 11)), version: 12, ..Fence::default() };
-        both_paths_end_the_stop(&view.digest_view, &listed, &fence);
+        let target = Target { publisher: publisher_of(&primary).to_string(), channel: "mesh-channel", held: Some((publisher_of(&primary).to_string(), 11)), version: 12, ..Target::default() };
+        both_paths_end_the_stop(&view.digest_view, &listed, &target);
         assert!(view.digest_view.in_flight().is_empty(), "the stop is over");
         let ended = spans.named("rdm.mesh.topology.update.via-stop-ended-in-projection");
         assert_eq!(ended.iter().map(|f| (f["stop_carried_at"].clone(), f["held_again"].clone(), f["held_digest_seq"].clone())).collect::<Vec<_>>(), vec![("11".to_string(), "true".to_string(), "6".to_string())], "ended once: {ended:#?}");

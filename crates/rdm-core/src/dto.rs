@@ -103,7 +103,7 @@ pub struct BuildView {
     pub last_failure: Option<String>,
     /// Why the current attempt exists (`requested`, `proven-drift`, `stop`, `steps`, ...).
     pub reason: String,
-    /// The fenced action the current attempt carries, if any.
+    /// The targeted action the current attempt carries, if any.
     #[serde(default)]
     pub action: Option<serde_json::Value>,
 }

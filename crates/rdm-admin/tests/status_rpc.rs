@@ -855,7 +855,7 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
 
 /// CONTRACT (#2805, acceptance 10): an event applied by the fabric-primary stays applied when the
 /// seat moves. Each event applies once at the mesh primary on its natural key, whoever sends it
-/// (node-rpc.md §14: nothing inside the mesh checks who is calling; the fence that stops an old
+/// (node-rpc.md §14: nothing inside the mesh checks who is calling; the target that stops an old
 /// fabric-primary is its own moved seat record, at the sender): the old authority's repeat of an
 /// applied key and the new authority's are AlreadyApplied, a new event applies once, and a
 /// receiver restarted over its rows still answers both AlreadyApplied. What must NOT happen: an

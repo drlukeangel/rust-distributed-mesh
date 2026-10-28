@@ -241,7 +241,7 @@ mod tests {
     /// digest is still held, heard or silent past the staleness floor (its `NodeDeleted` never reached
     /// this view). The successor was then stopped. The projection lists the successor, stopped, at
     /// mesh1.rpc.2. Must NOT happen: the predecessor's held digest taking the path from the stopped
-    /// successor (release red at 31666a3c3: `node.start:mesh2.admin.1 is fenced to birth ptkpqdd24s4x,
+    /// successor (release red at 31666a3c3: `node.start:mesh2.admin.1 is targeted to birth ptkpqdd24s4x,
     /// the view holds z8pb1w7gckwy at that path`).
     #[tokio::test]
     async fn a_stopped_birth_keeps_its_path_from_an_older_birth_whose_row_is_deleted() {

@@ -98,7 +98,7 @@ pub enum SeatRecord {
     },
 }
 
-/// Where a Build log reads its fence: the primary record this admin holds, and a receiver that wakes
+/// Where a Build log reads its target: the primary record this admin holds, and a receiver that wakes
 /// each time a record is held.
 #[derive(Clone)]
 pub struct SeatSource {
@@ -124,7 +124,7 @@ impl SeatSource {
 pub struct Authority {
     node: String,
     decisions: Arc<tokio::sync::Mutex<()>>,
-    /// The primary record this birth's fence is read from.
+    /// The primary record this birth's target is read from.
     seat: SeatSource,
 }
 
@@ -136,7 +136,7 @@ impl Authority {
 
     /// Resolves once the seat record ends this birth's authority (at once when it already has;
     /// never for a log no seat record governs).
-    pub async fn fence_set(&self) {
+    pub async fn target_set(&self) {
         let Some(mut changed) = self.seat.changed.clone() else { return std::future::pending().await };
         loop {
             if matches!((self.seat.read)(), SeatRecord::Moved { .. }) {
@@ -188,15 +188,15 @@ impl FabricBuildStateAdapter {
     /// Whether this admin's Build log still decides anything: refused by name once the committed
     /// seat record names another live birth, else the holder the open record names. The
     /// fabric-primary's drive passes this before every dispatch; it holds the gate only for the
-    /// check, because an attempt lasts as long as its steps and the fence is sticky.
-    pub async fn fence_check(&self) -> Result<Option<String>, BuildStateError> {
+    /// check, because an attempt lasts as long as its steps and the target is sticky.
+    pub async fn target_check(&self) -> Result<Option<String>, BuildStateError> {
         self.authority.enter_naming().await.map(|(_, holder)| holder)
     }
 
-    /// Resolves once this admin's Build log is fenced: the drive's wait on an executor's run ends
+    /// Resolves once this admin's Build log is targeted: the drive's wait on an executor's run ends
     /// there.
-    pub async fn fence_set(&self) {
-        self.authority.fence_set().await
+    pub async fn target_set(&self) {
+        self.authority.target_set().await
     }
 
     /// The lock a seat commit on this admin holds across the record's move: a decision in flight
@@ -412,7 +412,7 @@ mod tests {
     /// else is written): the Build log reads its authority from the committed
     /// fabric seat record. Once the record names another live birth, every decision is refused by
     /// name, naming that birth's path.name from the digest view even when the projected view does not
-    /// hold it yet, and a wait on the fence resolves; no fence write is made. A record naming a birth
+    /// hold it yet, and a wait on the target resolves; no target write is made. A record naming a birth
     /// proven gone (a vacancy the election fills before this birth's own record lands) ends nothing.
     /// What must NOT happen: a moved record that still lets the old seat decide, or a refusal naming
     /// no admin while a digest of the holder is held.
@@ -434,7 +434,7 @@ mod tests {
         let authority = Authority::new("mesh2.admin.2".into(), source);
         seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
         assert!(authority.enter().await.is_ok(), "the record names this birth: it decides");
-        assert!(authority.fence_set().now_or_never().is_none(), "no fence while the record names this birth");
+        assert!(authority.target_set().now_or_never().is_none(), "no target while the record names this birth");
         seats.take(Seat::FabricPrimary, &next);
         lost.lock().unwrap().insert(next.incarnation.clone());
         assert!(authority.enter().await.is_ok(), "a record naming a birth proven gone ends nothing");
@@ -446,7 +446,7 @@ mod tests {
             }
             other => panic!("the moved record must refuse the old seat's decision by name, got {:?}", other.map(|_| ())),
         }
-        assert!(authority.fence_set().now_or_never().is_some(), "a wait on the fence resolves once the record moved");
+        assert!(authority.target_set().now_or_never().is_some(), "a wait on the target resolves once the record moved");
     }
 
     /// CONTRACT (R-A2 item 2): a seat commit on this admin waits for the decision in flight (it

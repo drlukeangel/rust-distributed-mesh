@@ -14,7 +14,7 @@
 //! projection: a successor fabric-primary resumes from it, and the attempt it finds claimed it
 //! dispatches again (start-or-reattach), so no completed step runs twice.
 //!
-//! Before every claim and every dispatch the drive passes two gates: the Build log's fence is not set
+//! Before every claim and every dispatch the drive passes two gates: the Build log's target is not set
 //! (a fabric-primary whose view, by the election's result it installed, names another live birth
 //! fabric-primary dispatches nothing), and this admin is the fabric-primary in its view. A loss names
 //! the fabric-primary the installed result names.
@@ -45,15 +45,15 @@ use tracing::Instrument as _;
 /// The gates every claim and dispatch passes.
 #[async_trait::async_trait]
 pub trait Gate: Send + Sync {
-    /// The fence of the Build log, read from the fabric-primary this admin's view holds (the election's
+    /// The target of the Build log, read from the fabric-primary this admin's view holds (the election's
     /// result it installed): refused by name once it names another live birth; otherwise the path.name
     /// of the birth it names when that is this birth, `None` when it names none or a birth proven gone.
-    async fn fence(&self) -> Result<Option<String>, BuildStateError> {
+    async fn target(&self) -> Result<Option<String>, BuildStateError> {
         Ok(None)
     }
     /// Resolves once the view names another live birth fabric-primary (never, for a gate with none):
     /// a drive waiting on an executor's run ends there, not when that run's stream does.
-    async fn fence_set(&self) {
+    async fn target_set(&self) {
         std::future::pending::<()>().await
     }
     /// What the peer-mesh investigation holds of `mesh` now (`crate::investigate::Ladder::peer_mesh`),
@@ -165,12 +165,12 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
     }
 }
 
-/// A gate that is always open: a fixture with no topology view and no seat fence.
+/// A gate that is always open: a fixture with no topology view and no seat target.
 pub struct OpenGate;
 
 #[async_trait::async_trait]
 impl Gate for OpenGate {
-    async fn fence(&self) -> Result<Option<String>, BuildStateError> {
+    async fn target(&self) -> Result<Option<String>, BuildStateError> {
         Ok(None)
     }
 }
@@ -662,7 +662,7 @@ pub struct DriveEnv {
     pub door: Arc<ClaimDoor>,
     /// Calls executors.
     pub dispatcher: Arc<dyn Dispatcher>,
-    /// The cut-off rule and the seat fence.
+    /// The cut-off rule and the seat target.
     pub gate: Arc<dyn Gate>,
     /// Proof of an executor's departure.
     pub departure: Arc<dyn DepartureProof>,
@@ -807,7 +807,7 @@ fn node_of_key(key: &str) -> Option<PathName> {
 /// operation yet still lists it, and it is not planned, claimed or dispatched again. The stream reply
 /// is the authority: a remote executor's receipt reaches this admin's log from the store root, and
 /// nothing waits for that copy. A lost executor's run reported nothing: what it left is planned from
-/// the view again, and the create pipeline's fence decides against the world.
+/// the view again, and the create pipeline's target decides against the world.
 /// Whether an attempt ended incomplete: `me` ran it as its executor and it was handed back to `me`
 /// having moved nothing. A hand-off to `me` that another executor reported is that executor's end,
 /// and the drive attaching to the finished run of it replays the same terminal.
@@ -890,7 +890,7 @@ fn waits_for_the_fabric_change(p: &BuildProjection) -> bool {
     changes_the_fabric(p) && p.completed_at.is_none()
 }
 
-/// The node-admin of `mesh` the Build already carried across the R-D1 fence: an operation on it has a
+/// The node-admin of `mesh` the Build already carried across the R-D1 target: an operation on it has a
 /// step receipt in an attempt held by an admin outside `mesh`, later than the last attempt an admin of
 /// `mesh` held (a mesh that has executed its own work since stands on its own again). That admin is
 /// the mesh's first recovering node-admin (mesh-investigation.md step 6: the restore runs on the SAME
@@ -914,7 +914,7 @@ fn own_attempt(p: &BuildProjection, mesh: &str) -> u32 {
 
 /// The node-admin the carrier-edge-lost verdict of `mesh` still owes a node.create (mesh-investigation.md
 /// step 6), when the investigation decided the mesh's recovery: the node-admin the Build already carried
-/// across the fence ([`crossed_admin`]) until its create completed since the mesh last executed its own
+/// across the target ([`crossed_admin`]) until its create completed since the mesh last executed its own
 /// work, and `first` (the mesh's first node-admin in path order) while the Build carried none.
 pub(crate) fn first_admin_owed(p: &BuildProjection, mesh: &str, first: &PathName) -> Option<PathName> {
     let Some(crossed) = crossed_admin(p, mesh) else { return Some(first.clone()) };
@@ -928,9 +928,9 @@ enum Inner {
     Refused(BuildReply),
     Unreached(String),
     Broke(String),
-    /// The Build log's fence was set while the executor's run was open: this admin is no longer the
+    /// The Build log's target was set while the executor's run was open: this admin is no longer the
     /// fabric-primary. The drive ends there without waiting for the run's stream, except for the
-    /// executor the fence names, whose stream ends `FabricPrimaryMoved` once it is fabric-primary.
+    /// executor the target names, whose stream ends `FabricPrimaryMoved` once it is fabric-primary.
     SeatYielded,
 }
 
@@ -964,12 +964,12 @@ impl DriveEnv {
     }
 
     /// The fabric-primary and the target: `Some` when this admin may not claim or dispatch now. The
-    /// fence is read first: the election's result this admin installed names the fabric-primary every
+    /// target is read first: the election's result this admin installed names the fabric-primary every
     /// decision is judged against (lifecycles/node-primary-update.md step 4: the successor "becomes
     /// primary" when it installs it).
     async fn may_act(&self, drive: &Arc<Drive>) -> Option<DriveEnd> {
         let me = self.held_name().await;
-        let record_holder = match self.gate.fence().await {
+        let record_holder = match self.gate.target().await {
             Ok(holder) => holder,
             Err(e) => {
                 let why = e.to_string();
@@ -991,7 +991,7 @@ impl DriveEnv {
             (t.is_fabric_primary(&self.door.node_id), t.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone())))
         };
         if !held {
-            // Past the fence the installed result names this birth, none, or a birth proven gone
+            // Past the target the installed result names this birth, none, or a birth proven gone
             // (no fabric-primary).
             let shows = seat.as_ref().map(|(name, id)| format!("{name} ({id})")).unwrap_or_else(|| "none".into());
             let names = record_holder.as_deref().unwrap_or("none");
@@ -1057,7 +1057,7 @@ impl DriveEnv {
     }
 
     /// What the peer-mesh investigation holds of the mesh of `op`'s node when that mesh is a peer
-    /// mesh it holds unheard (R-D1: loss of peer-mesh control-plane visibility fences lifecycle
+    /// mesh it holds unheard (R-D1: loss of peer-mesh control-plane visibility targets lifecycle
     /// mutation for every node in that mesh): the mesh, how long it is unheard, and whether its
     /// recovery is decided. `None` for a mesh operation, a node of this admin's own mesh, or a mesh
     /// the investigation does not hold unheard.
@@ -1074,7 +1074,7 @@ impl DriveEnv {
     /// 5-6; Q221): `op` is the decision step's operation on a node-admin of a peer mesh held unheard, the
     /// node.create of that node-admin on a decided recovery (carrier-edge-lost) or on the fully crashed
     /// mesh's exit proof ([`Self::crash_admits`]), and the Build carried no other admin of that mesh
-    /// across the fence ([`crossed_admin`]); no other operation of the mesh is exempt. The
+    /// across the target ([`crossed_admin`]); no other operation of the mesh is exempt. The
     /// fabric-primary executes it, whatever else the mesh's view holds (an admin held silent
     /// included): it is the mesh's first recovering node-admin.
     fn recovery_admits(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> bool {
@@ -1084,9 +1084,9 @@ impl DriveEnv {
 
     /// The node.create of the node-admin a mesh no member of which answers is owed (mesh-investigation.md
     /// step 5, "No member answers"): `op` creates `node`, the mesh's first node-admin in path order (or
-    /// the one the Build already carried across the fence, [`first_admin_owed`]), and `crashed` (this
+    /// the one the Build already carried across the target, [`first_admin_owed`]), and `crashed` (this
     /// pass's [`Self::unanswered_meshes`]) holds its mesh: the investigation's 60 s decision on it came
-    /// out `unreachable`. Nothing else of that mesh crosses the fence, and the create's own fence decides
+    /// out `unreachable`. Nothing else of that mesh crosses the target, and the create's own target decides
     /// the birth it finds at the path.
     fn crash_admits(&self, p: &BuildProjection, op: &BuildOperation, node: &PathName, crashed: &HashSet<String>) -> bool {
         op.created_node() == Some(node)
@@ -1096,15 +1096,15 @@ impl DriveEnv {
 
     /// The peer meshes of `p` no member of which answers (mesh-investigation.md step 5, "No member
     /// answers"): each mesh the investigation decided `unreachable`. Its first node-admin's create may be
-    /// admitted on that verdict (Q111); the create's own fence decides the birth at the path.
+    /// admitted on that verdict (Q111); the create's own target decides the birth at the path.
     fn unanswered_meshes(&self, p: &BuildProjection) -> HashSet<String> {
         p.topology.meshes.values().filter(|m| m.name != self.me.mesh && !m.nodes.is_empty() && self.gate.peer_mesh(&m.name).is_some_and(|pm| pm.unreachable_decided)).map(|m| m.name.clone()).collect()
     }
 
-    /// The fence on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for,
+    /// The target on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for,
     /// except the mesh's first recovering node-admin once the investigation decided its recovery
     /// ([`Self::recovery_admits`]). `Some` names the
-    /// fence.
+    /// target.
     fn peer_mesh_held(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> Option<(PathName, u64, bool)> {
         if p.topology.meshes.is_empty() || self.recovery_admits(p, op, crashed) {
             return None;
@@ -1112,7 +1112,7 @@ impl DriveEnv {
         self.unheard_peer(op)
     }
 
-    /// The drive stops at the fence on `op` by name: once per mesh, operation and verdict on its own
+    /// The drive stops at the target on `op` by name: once per mesh, operation and verdict on its own
     /// span, framed as the attempt's blocker, and stalled until the investigation's state changes.
     fn stop_at_peer_mesh_held(&self, me: &PathName, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool), crashed: &HashSet<String>) -> DriveEnd {
         let unreachable = self.gate.peer_mesh(&node.mesh).is_some_and(|m| m.unreachable_decided);
@@ -1140,7 +1140,7 @@ impl DriveEnv {
 
     /// What this admin dispatches to `executor` for what is left of `p` in view `t` ([`left`]). The
     /// mesh's first recovering node-admin under a recovery verdict runs alone, on this admin (the
-    /// fabric-primary); its receipts are what fence every other admin of that mesh. Otherwise the executor's run
+    /// fabric-primary); its receipts are what target every other admin of that mesh. Otherwise the executor's run
     /// ([`run_of`]) is cut before the first operation on a peer mesh held unheard (R-D1) and before
     /// an operation no admin executes in this view (it waits for its mesh's own seat, never for the
     /// run's executor); a cut run hands back to this admin, whose next claim re-reads the view and
@@ -1433,10 +1433,10 @@ impl DriveEnv {
                 }
                 Inner::SeatYielded => {
                     dspan.record("outcome", "seat-yielded");
-                    // The fence is sticky: `may_act` ends the drive SeatLost naming the new holder.
+                    // The target is sticky: `may_act` ends the drive SeatLost naming the new holder.
                     return match self.may_act(drive).await {
                         Some(end) => end,
-                        None => self.stalled(&me, drive, format!("{me}: attempt {attempt} of Build {id} stopped at a seat fence that the gate no longer reports")),
+                        None => self.stalled(&me, drive, format!("{me}: attempt {attempt} of Build {id} stopped at a seat target that the gate no longer reports")),
                     };
                 }
                 Inner::Unreached(why) | Inner::Broke(why) => {
@@ -1850,7 +1850,7 @@ impl DriveEnv {
                 span.record("outcome", "seat-yielded");
                 return Some(match self.may_act(drive).await {
                     Some(end) => end,
-                    None => self.stalled(me, drive, format!("{me}: the replay of Build {id} stopped at a seat fence that the gate no longer reports")),
+                    None => self.stalled(me, drive, format!("{me}: the replay of Build {id} stopped at a seat target that the gate no longer reports")),
                 });
             }
             Inner::Terminal(t) => format!("it answered {}", t.name()),
@@ -1943,19 +1943,19 @@ impl DriveEnv {
             Dispatched::Refused(r) => return Inner::Refused(r),
             Dispatched::Unreached(why) => return Inner::Unreached(why),
         };
-        // Set once the fence names this run's executor: the run's own node.primary.update made it
+        // Set once the target names this run's executor: the run's own node.primary.update made it
         // fabric-primary.
         let mut seated_executor = false;
         loop {
-            // Only the wait for the next item races the fence: a frame in hand is handled whole.
+            // Only the wait for the next item races the target: a frame in hand is handled whole.
             let item = tokio::select! {
                 biased;
-                _ = self.gate.fence_set(), if !seated_executor => {
+                _ = self.gate.target_set(), if !seated_executor => {
                     // This run's executor is fabric-primary once it has installed the election's result,
                     // and it says so on this stream by ending it with FabricPrimaryMoved naming itself. The callers are sent to it only
                     // then: before, its door would answer them as an admin that is not the
-                    // fabric-primary. Any other holder ends the drive at the fence at once.
-                    match self.gate.fence().await {
+                    // fabric-primary. Any other holder ends the drive at the target at once.
+                    match self.gate.target().await {
                         Err(BuildStateError::SeatYielded { to: Some(to), .. }) if parse_path(&to).as_ref() == Some(executor) => {
                             seated_executor = true;
                             continue;
@@ -1983,16 +1983,16 @@ impl DriveEnv {
                         stream.accepted().await;
                         drive.push(f);
                     }
-                    // Past the fence this admin decides nothing of the attempt: the executor, now the
+                    // Past the target this admin decides nothing of the attempt: the executor, now the
                     // fabric-primary, reports its end to its own callers.
                     _ if seated_executor => return Inner::SeatYielded,
                     t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. }) => return Inner::Terminal(t),
-                    // The executor became fabric-primary during the run: the fence names it, and the
+                    // The executor became fabric-primary during the run: the target names it, and the
                     // drive ends there.
                     BuildReply::FabricPrimaryMoved { .. } => return Inner::SeatYielded,
                     other => return Inner::Refused(other),
                 },
-                // The fence is the answer whatever became of the stream.
+                // The target is the answer whatever became of the stream.
                 InnerItem::Ended | InnerItem::Broke(_) if seated_executor => return Inner::SeatYielded,
                 InnerItem::Ended => return Inner::Broke("the inner stream ended without its terminal".into()),
                 InnerItem::Broke(why) => return Inner::Broke(why),
@@ -2059,7 +2059,7 @@ pub fn describe(r: &BuildReply) -> String {
 /// the fabric-primary opens it", in the fabric lane): `op` is one of the attempt's own operations on the
 /// exact birth its `Recover` action names, the delete of that birth (`TerminateRuntime` first when its
 /// runtime runs, nothing sent to it) or the create over it at the same path.name. They act on node
-/// investigation's verdict, so R-D1's fence does not hold them; nothing else of the unheard mesh
+/// investigation's verdict, so R-D1's target does not hold them; nothing else of the unheard mesh
 /// crosses it.
 fn mesh_primary_recovery_admits(p: &BuildProjection, op: &BuildOperation) -> bool {
     let Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) = p.action.as_ref() else { return false };

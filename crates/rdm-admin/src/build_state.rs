@@ -97,7 +97,7 @@ impl AttemptReason {
 }
 
 /// An attempt opened on a Build by the authority (the first one by acceptance itself): what it
-/// is for, and the fenced action it carries. Insert-and-fail on `(build_id, attempt)`: two
+/// is for, and the targeted action it carries. Insert-and-fail on `(build_id, attempt)`: two
 /// authorities proving the same drift open one attempt, never two.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptOpened {
@@ -107,7 +107,7 @@ pub struct AttemptOpened {
     pub attempt: u32,
     /// Why the attempt was opened.
     pub reason: AttemptReason,
-    /// The fenced action the attempt carries, when it carries one.
+    /// The targeted action the attempt carries, when it carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<AttemptAction>,
     /// The opener's `path.name`.
@@ -314,10 +314,10 @@ pub struct BuildProjection {
     pub last_failure: Option<String>,
     /// Why the current attempt exists, and what it carries.
     pub reason: AttemptReason,
-    /// The fenced action the current attempt carries, when it carries one.
+    /// The targeted action the current attempt carries, when it carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<AttemptAction>,
-    /// The fenced action each claimed attempt carried, by attempt (from its `Opened` fact). A
+    /// The targeted action each claimed attempt carried, by attempt (from its `Opened` fact). A
     /// receipt names its attempt; this names the birth that attempt acted on, so a standalone
     /// operation's `Complete` needs no output of its own to say which birth it completed for.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -682,7 +682,7 @@ pub enum BuildStateError {
         wanted: String,
     },
     /// The fabric-primary record this admin holds names another live birth: this admin's Build log
-    /// decides nothing from that record's revision on (the fence stays set for this birth).
+    /// decides nothing from that record's revision on (the target stays set for this birth).
     SeatYielded {
         /// The admin whose Build log yielded the seat.
         node: String,
@@ -1285,7 +1285,7 @@ fn describe_open(o: &AttemptOpened) -> String {
         Some(crate::accepted::AttemptAction::Delete { path, node_id, from_incarnation }) => format!("delete of {path} from {node_id} at {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Steps { steps, .. }) => format!("{} step(s): {}", steps.len(), steps.iter().map(crate::build::step_key).collect::<Vec<_>>().join(", ")),
         Some(crate::accepted::AttemptAction::Terminate { path, node_id, from_incarnation }) => format!("termination of the deleted birth {node_id} at {from_incarnation} of {path}"),
-        None => "no fenced action".to_string(),
+        None => "no targeted action".to_string(),
     };
     let lane = o.mesh.as_ref().map(|m| format!(", in {m}'s drift lane")).unwrap_or_default();
     format!("{} ({action}, opened by {}{lane})", o.reason.as_str(), o.opened_by)
@@ -3004,7 +3004,7 @@ mod tests {
         }
         let mut other_birth = opened("b1", 2, AttemptReason::Stop);
         other_birth.action = act("mesh1.rpc.2", &other);
-        assert!(matches!(m.open_attempt(&other_birth).await, Err(BuildStateError::AttemptTaken { .. })), "the same path fenced to another birth is another action");
+        assert!(matches!(m.open_attempt(&other_birth).await, Err(BuildStateError::AttemptTaken { .. })), "the same path targeted to another birth is another action");
         assert_eq!(m.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(_))).count(), 1, "the refused opens appended nothing");
     }
 

@@ -1900,7 +1900,7 @@ One end of an entry, or a Proxy's carrier: its path, logical node and process bi
 |---|---|---|---|---|
 | 0 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The end's `path.name`. |
 | 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The end's logical node id. |
-| 2 | `incarnation` | `Option<IncarnationId>` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | `None` when the writer could not learn the process birth; such an end is never fencing |
+| 2 | `incarnation` | `Option<IncarnationId>` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | `None` when the writer could not learn the process birth; such an end is never targeting |
 
 <a id="t-rdm_core-ids-ConnectionId"></a>
 

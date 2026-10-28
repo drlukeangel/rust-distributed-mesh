@@ -69,7 +69,7 @@ fn shape(r2: u32) -> FabricDesired {
 /// node-admins mid-Build while three of its members live on. The fabric-primary (mesh1's primary)
 /// probes mesh2 through a member that answers, hears `carrier-edge-lost` for each node-admin,
 /// records the verdict, and only then runs node.create of mesh2's first node-admin under B; B
-/// completes. Must NOT happen: a node of mesh2 created by B before the verdict (the fence holds), a
+/// completes. Must NOT happen: a node of mesh2 created by B before the verdict (the target holds), a
 /// new MeshId, a member that stayed alive born again, or mesh1 touched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier_edge_lost_verdict_and_the_build_completes() {
@@ -150,7 +150,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier
         named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").iter().any(|v| attr(v, "mesh") == "mesh2" && attr(v, "outcome") == "carrier-edge-lost" && at(v) <= at(&create)),
         "the verdict was recorded before the node.create attempt opened"
     );
-    // The fence held: no node of mesh2 was created by B before the verdict.
+    // The target held: no node of mesh2 was created by B before the verdict.
     let early: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .chain(named(&spans, "rdm.node_admin.node.update.via-build"))

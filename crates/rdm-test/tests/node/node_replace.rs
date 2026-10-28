@@ -480,7 +480,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     );
 
     // Each process exports its own spans: the new node's boot span is read once the new node exported it.
-    let spans = wait_for("the recovery's last operation, the fabric-primary's serve of its report, the exited birth's fence and the new node's boot span are exported", SETTLE, || async {
+    let spans = wait_for("the recovery's last operation, the fabric-primary's serve of its report, the exited birth's target and the new node's boot span are exported", SETTLE, || async {
         let spans = estate.spans();
         let run = in_trace(&spans, &recovery);
         (create_span(&run, &birth_build, &attempt, node_path).is_some() && (mesh_primary == s(&primary["name"]) || report_served(&run, &before, &attempt)) && !exited_birth_spans(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
@@ -503,19 +503,19 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
-    assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (fenced) before the new node joins");
-    // node-recovery.md "Delete fences the old instance before the new join": the fence is the
+    assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (targeted) before the new node joins");
+    // node-recovery.md "Delete targets the old instance before the new join": the target is the
     // create's, run by the executor that launches the new node with the retained key, inside the
-    // create's own operation and before that launch. A fence run after the delete's Complete is left
-    // undone when that executor is lost before it, and the next attempt's create launches unfenced.
+    // create's own operation and before that launch. A target run after the delete's Complete is left
+    // undone when that executor is lost before it, and the next attempt's create launches untargeted.
     let create = named(&run, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == node_path)
         .expect("the recovery's create operation span");
-    let fences = exited_birth_spans(&spans, &before);
-    assert_eq!(fences.len(), 1, "the exited birth is fenced once: {fences:?}");
-    assert!(start(create) <= start(fences[0]) && end(fences[0]) <= end(create), "the fence runs inside the create operation: {} vs {create}", fences[0]);
-    assert!(end(fences[0]) <= start(boot), "the fence is done before the new node with the same key boots: {} vs {boot}", fences[0]);
+    let targets = exited_birth_spans(&spans, &before);
+    assert_eq!(targets.len(), 1, "the exited birth is targeted once: {targets:?}");
+    assert!(start(create) <= start(targets[0]) && end(targets[0]) <= end(create), "the target runs inside the create operation: {} vs {create}", targets[0]);
+    assert!(end(targets[0]) <= start(boot), "the target is done before the new node with the same key boots: {} vs {boot}", targets[0]);
     for step in ["StopNode", "AwaitNodeLeft"] {
         assert!(step_span(&run, &birth_build, &attempt, node_path, step).is_none(), "no RPC to the exited process: {step} ran");
     }
@@ -576,7 +576,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "the recovery's terminal: {recovery}");
 
     // Each process exports its own spans: the successor's boot span is read once the successor exported it.
-    let spans = wait_for("the recovery's last operation, its reconcile span, the exited birth's fence and the successor's boot span are exported", Duration::from_secs(60), || async {
+    let spans = wait_for("the recovery's last operation, its reconcile span, the exited birth's target and the successor's boot span are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
         let run = in_trace(&spans, &recovery);
         (create_span(&run, &birth_build, &attempt, NODE).is_some() && lane_reconcile_span(&run, &birth_build, "mesh1", &attempt).is_some() && !exited_birth_spans(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
@@ -614,19 +614,19 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
-    assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (fenced) before the new node joins");
-    // node-recovery.md "Delete fences the old instance before the new join": the fence is the
+    assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (targeted) before the new node joins");
+    // node-recovery.md "Delete targets the old instance before the new join": the target is the
     // create's, run by the executor that launches the new node with the retained key, inside the
-    // create's own operation and before that launch. A fence run after the delete's Complete is left
-    // undone when that executor is lost before it, and the next attempt's create launches unfenced.
+    // create's own operation and before that launch. A target run after the delete's Complete is left
+    // undone when that executor is lost before it, and the next attempt's create launches untargeted.
     let create = named(&run, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE)
         .expect("the recovery's create operation span");
-    let fences = exited_birth_spans(&spans, &before);
-    assert_eq!(fences.len(), 1, "the exited birth is fenced once: {fences:?}");
-    assert!(start(create) <= start(fences[0]) && end(fences[0]) <= end(create), "the fence runs inside the create operation: {} vs {create}", fences[0]);
-    assert!(end(fences[0]) <= start(boot), "the fence is done before the new node with the same key boots: {} vs {boot}", fences[0]);
+    let targets = exited_birth_spans(&spans, &before);
+    assert_eq!(targets.len(), 1, "the exited birth is targeted once: {targets:?}");
+    assert!(start(create) <= start(targets[0]) && end(targets[0]) <= end(create), "the target runs inside the create operation: {} vs {create}", targets[0]);
+    assert!(end(targets[0]) <= start(boot), "the target is done before the new node with the same key boots: {} vs {boot}", targets[0]);
     // Each operation is its workflow: its node operation span and its own pipeline, never a recovery
     // pipeline of its own.
     for (op, pipeline) in [("delete", "retire"), ("create", "create")] {
@@ -885,7 +885,7 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
     estate.shutdown().await;
 }
 
-/// The fence spans of the exited birth `old` (node-recovery.md "Delete fences the old instance
+/// The target spans of the exited birth `old` (node-recovery.md "Delete targets the old instance
 /// before the new join"): its resolver entry and the direct paths of its endpoint key retired.
 fn exited_birth_spans<'a>(spans: &'a [Value], old: &Value) -> Vec<&'a Value> {
     named(spans, "rdm.node_admin.node.update.via-exit-paths-removed").into_iter().filter(|sp| sp["attributes"]["node_id"] == old["node_id"] && sp["attributes"]["kind"] == "recovery").collect()
@@ -1294,7 +1294,7 @@ const DELETE_STOPPED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "No
 /// connections deleted, leaves its mesh, is renamed `mesh1.rpc.1.old` live by node.name.update at its
 /// mesh-primary and is stopped there (the predecessor's half of the replace steps), then `build.create` of a
 /// RemoveNode change at `<path>.old` is the next attempt of the accepted Build (reason delete,
-/// action delete fenced to the exact stopped birth, no Build minted). One operation
+/// action delete targeted to the exact stopped birth, no Build minted). One operation
 /// `node.delete:<path>.old` (node.delete's one key) asks the provider to end the stopped runtime
 /// and inspects it; only the provider's Exited is the proof, after which the executor publishes
 /// NodeDeleted for the exact birth and the mesh's primary, which executes it, writes the Deleted
@@ -1311,7 +1311,7 @@ async fn deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted
 /// CONTRACT: the same delete when the fabric-primary is in another mesh than the node (R13: the
 /// mesh-primary of a node's mesh is the only writer of that mesh's rows). The fabric-primary in mesh1
 /// admits `node.delete:<path>.old` of a mesh2 node from its view, which reads the stopped birth at the
-/// row's name by its node id (R12), fenced to that exact birth; mesh2's primary executes the delete
+/// row's name by its node id (R12), targeted to that exact birth; mesh2's primary executes the delete
 /// and writes the Deleted row at `<path>.old`; the fabric-primary writes no row of mesh2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_primary_held_record() {
@@ -1328,7 +1328,7 @@ async fn deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_pr
 /// CONTRACT: the same delete when the stopped birth's mesh changed its primary between the rename and
 /// the delete (node-delete.md: "Stop and inspect the exact runtime through provider control"). mesh2's
 /// primary is stopped, its seats moving to mesh2's other admin; that admin did not rename the birth.
-/// It resolves the exact stopped birth the action is fenced to from what it holds of that birth (its
+/// It resolves the exact stopped birth the action is targeted to from what it holds of that birth (its
 /// topology view's stopped digest, else its durable runtime row of it), ends it with the provider's
 /// Exited proof and publishes NodeDeleted for it, and, as mesh2's primary, writes the Deleted row at
 /// `<path>.old`.
@@ -1466,7 +1466,7 @@ async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, stopped: 
         .map(|p| serde_json::to_value(p).expect("a Build view serializes"))
         .unwrap_or_else(|end| panic!("{end}"));
     assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("delete", old_name.as_str()), "{opened}");
-    assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "fenced to the exact stopped birth: {opened}");
+    assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "targeted to the exact stopped birth: {opened}");
     estate.follow(delete).await;
     let attempt = attempt_no.to_string();
     let spans = wait_for("the delete's last step, its reconcile span, its dispatch and the Deleted row are exported", Duration::from_secs(60), || async {
@@ -1782,7 +1782,7 @@ async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_f
 }
 
 /// CONTRACT (node-recovery.md sequence step 1: "A repeat submit answers AlreadyApplied or
-/// BuildInProgress, never a second recovery"; step 3: "the old (node.id, incarnation) fenced in the
+/// BuildInProgress, never a second recovery"; step 3: "the old (node.id, incarnation) targeted in the
 /// peer-location view"): a member of the mesh that does not hold the fabric-primary is killed and
 /// recovered through its mesh-primary's report (node-recovery.md "Execution", Q118). Once the
 /// fabric-primary holds the recovery's receipts in that mesh's lane, the same recovery submitted

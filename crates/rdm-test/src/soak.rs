@@ -1806,7 +1806,7 @@ impl Driver {
                 tokio::time::sleep(floor.min(hold.saturating_sub(held_from.elapsed())).max(Duration::from_millis(200))).await;
                 let now_nodes = self.estate.node_values().await;
                 let at_path: Vec<&Value> = now_nodes.iter().filter(|x| x["name"] == path.as_str()).collect();
-                let fenced: Vec<Value> = terminates.poll().iter().filter(|sp| sp["attributes"]["node"] == path.as_str()).cloned().collect();
+                let targeted: Vec<Value> = terminates.poll().iter().filter(|sp| sp["attributes"]["node"] == path.as_str()).cloned().collect();
                 checks.push(json!({
                     "held_ms": held_from.elapsed().as_millis() as u64,
                     "proc_state": hold_rt.as_ref().and_then(|r| proc_state(r.pid)).map(String::from),
@@ -1817,9 +1817,9 @@ impl Driver {
                     entry["held_past_floors"] = json!({"hold_ms": hold.as_millis() as u64, "checks": checks});
                     return Err(broken("silence-is-not-death", format!("{path} held {} ms: the path holds {} births", held_from.elapsed().as_millis(), at_path.len())));
                 }
-                if !fenced.is_empty() {
+                if !targeted.is_empty() {
                     entry["held_past_floors"] = json!({"hold_ms": hold.as_millis() as u64, "checks": checks});
-                    return Err(broken("silence-is-not-death", format!("{path} held {} ms: its runtime was terminated while held and reading OsStopped: {}", held_from.elapsed().as_millis(), fenced[0])));
+                    return Err(broken("silence-is-not-death", format!("{path} held {} ms: its runtime was terminated while held and reading OsStopped: {}", held_from.elapsed().as_millis(), targeted[0])));
                 }
             }
             entry["held_past_floors"] = json!({"hold_ms": hold.as_millis() as u64, "checks": checks});

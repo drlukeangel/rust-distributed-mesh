@@ -25,7 +25,7 @@ fn owner() -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-rpc".into(),
-        subfeature: "restart-fence".into(),
+        subfeature: "restart-target".into(),
         rung: "SN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
         test: "a_gateway_reaches_the_brokers_new_birth_after_its_restart".into(),

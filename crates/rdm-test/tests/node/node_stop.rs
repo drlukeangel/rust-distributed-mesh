@@ -590,7 +590,7 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
 }
 
 /// CONTRACT: `node.stop` opens the next attempt of the accepted Build (reason
-/// stop, action stop fenced to the live birth, no Build minted). The operation is exactly
+/// stop, action stop targeted to the live birth, no Build minted). The operation is exactly
 /// `node.stop:<path>`: stop-node to the birth, whose reply is `left`, then Complete. The runtime is
 /// not terminated and no NodeDeleted is published; the accepted topology still names the path and no
 /// repair attempt follows.
@@ -612,7 +612,7 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     let opened = build_log::build_fact(&estate.carrier().await, &birth_build, "the stop attempt is the Build's current attempt", Duration::from_secs(30), |b| serde_json::to_value(b).is_ok_and(|b| b["reason"] == "stop")).await.unwrap_or_else(|end| panic!("{end}"));
     let opened = serde_json::to_value(opened).expect("a Build view serializes");
     assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("stop", NODE), "{opened}");
-    assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "fenced to the live birth: {opened}");
+    assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "targeted to the live birth: {opened}");
     Estate::complete(&mut stop).await;
     build_log::attempt_complete(&estate.carrier().await, &birth_build, attempt_no, SETTLE).await;
     assert!(alive(pid), "the stopped process {pid} is stopped, alive");

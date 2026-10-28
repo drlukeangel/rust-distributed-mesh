@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::seat_revision::FenceOutcome;
+use crate::seat_revision::TargetOutcome;
 
 /// The exact id of `mesh` a launch or a hand-off names: what this admin created (`records`), else what
 /// its view holds from the mesh's members, else the mesh's own row, a point read by its name in
@@ -505,11 +505,11 @@ impl AdminRunner {
         Ok((record, handle))
     }
 
-    /// Fence `path` before a new birth (`crate::fence`): this admin answers the fence's questions.
-    pub(crate) async fn revise_predecessor(&self, path: &PathName) -> FenceOutcome {
+    /// Target `path` before a new birth (`crate::target`): this admin answers the target's questions.
+    pub(crate) async fn revise_predecessor(&self, path: &PathName) -> TargetOutcome {
         let prev = self.topology.read().await.node(path).cloned();
         let out = crate::seat_revision::investigate_path(path, prev, self).await;
-        if matches!(out, FenceOutcome::Clear { .. }) {
+        if matches!(out, TargetOutcome::Clear { .. }) {
             self.handles.lock().unwrap().remove(path);
         }
         out
@@ -562,7 +562,7 @@ impl AdminRunner {
             // A stopped birth the check reached is still present (states.md "Stopped nodes"): this
             // Build's create of its path is complete, and its `Complete` receipt is what the plan reads
             // so the create is never planned again in this Build (`accepted::plan_with`).
-            FenceOutcome::Alive => {
+            TargetOutcome::Alive => {
                 let stopped = self.topology.read().await.node(node).is_some_and(|n| n.stopped);
                 if stopped && matches!(claim_for, crate::node_rows::ClaimFor::Create) {
                     let operation = format!("node.create:{node}");
@@ -580,14 +580,14 @@ impl AdminRunner {
             // create of a path its topology names, the path's entry), never the unreached birth's
             // row's in its place (proposal executable-bindings-at-create.md rule 5: one whose entry
             // differs from its row is replaced; rule 6 is a recovery's create, which names none).
-            FenceOutcome::Clear { gone: Some(prev) } => {
+            TargetOutcome::Clear { gone: Some(prev) } => {
                 if let Some(incarnation) = prev.incarnation_id.clone() {
                     let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
                     self.delete_unreached(&*self.builds, build_id, attempt, node, &from).await?;
                     return self.create_over(&*self.builds, build_id, attempt, node, &from, executable).await;
                 }
             }
-            FenceOutcome::Clear { gone: None } => {}
+            TargetOutcome::Clear { gone: None } => {}
         }
         let mut template = self.create_template(node, executable).await?;
         if node.kind == NodeKind::NodeAdmin {
@@ -693,7 +693,7 @@ impl AdminRunner {
     /// Node recovery's node.delete (node-recovery.md sequence step 3): the exact unreached birth `from`
     /// at `node`, deleted through the delete workflow, nothing sent to it: `TerminateRuntime` first
     /// when its runtime runs at the step's instant, and nothing waits for a proof of termination. The
-    /// fence of the old birth is the create's ([`Self::create_over`]), done right before the new birth
+    /// target of the old birth is the create's ([`Self::create_over`]), done right before the new birth
     /// with its key is launched. Answers the delete's `TerminateRuntime` receipt: a mesh.delete takes
     /// it as the birth's roster receipt.
     pub(crate) async fn delete_unreached(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
@@ -784,14 +784,14 @@ impl AdminRunner {
     /// unreached birth `from`'s data dir when its delete read the old runtime exited, through the create
     /// workflow: it loads the endpoint key that dir holds and binds port 0, with a new node.id and
     /// incarnation, no supersedes; over a newly allocated data dir with a newly minted key otherwise. Not through
-    /// the create door's fence: the birth at the path is the exited one this recovery deleted, and
-    /// the fence would replace it.
+    /// the create door's target: the birth at the path is the exited one this recovery deleted, and
+    /// the target would replace it.
     ///
-    /// The exited birth is fenced here, by the create (node-recovery.md "Delete fences the old
+    /// The exited birth is targeted here, by the create (node-recovery.md "Delete targets the old
     /// instance before the new join"): right before the new runtime with the same key is launched,
     /// inside its `DeployRuntime` step ([`crate::deployment::pipeline::BeforeLaunch`]). Whichever
-    /// executor runs the create fences, so an executor lost after the delete's Complete leaves
-    /// nothing unfenced; a rerun that reuses a runtime an earlier attempt launched (it was fenced
+    /// executor runs the create targets, so an executor lost after the delete's Complete leaves
+    /// nothing untargeted; a rerun that reuses a runtime an earlier attempt launched (it was targeted
     /// before that launch) cuts none of that runtime's paths.
     pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, executable: Option<&rdm_core::binding::Binding>) -> Result<(), crate::executor::RunEnd> {
         let (exited, _) = self.exited_birth("node.create", node, from).await?;
@@ -815,11 +815,11 @@ impl AdminRunner {
         }
         let pipeline = self.pipeline_with(&template, builds);
         let data_dir = pipeline.birth_dir(&exited);
-        // The key the fence names is the one the kept data dir holds (a record resolved from the
+        // The key the target names is the one the kept data dir holds (a record resolved from the
         // durable runtime rows carries none): the node created over that dir loads exactly it.
-        let mut fenced = exited;
-        if fenced.endpoint_id.is_none() {
-            fenced.endpoint_id = crate::deployment::pipeline::load_transport_key(&data_dir).ok();
+        let mut targeted = exited;
+        if targeted.endpoint_id.is_none() {
+            targeted.endpoint_id = crate::deployment::pipeline::load_transport_key(&data_dir).ok();
         }
         // A node-admin's recovery is a node-admin birth whose maker is this mesh-primary (the
         // template's seed): it is handed the durable runtime rows before it runs, as every admin
@@ -834,7 +834,7 @@ impl AdminRunner {
         let exited = self.delete_read_exited(builds, build_id, attempt, node, from).await?;
         let created = if lost || !exited {
             let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: None, held_runtimes };
-            pipeline.create_recovery_with(&req, pre_node_ready, Some(Box::pin(self.revise_exited(&fenced)))).await.map_err(crate::executor::RunEnd::from)?
+            pipeline.create_recovery_with(&req, pre_node_ready, Some(Box::pin(self.revise_exited(&targeted)))).await.map_err(crate::executor::RunEnd::from)?
         } else {
             if let Err(crate::deployment::pipeline::InheritedDirError::Broken(ref cause)) = crate::deployment::pipeline::inspect_transport_key(&data_dir) {
                 if let Some(fold) = self.records.status.get() {
@@ -854,7 +854,7 @@ impl AdminRunner {
                 .in_scope(|| tracing::info!("inherited data dir is broken; holding recovery until repaired"));
             }
             let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
-            pipeline.create_with(&req, pre_node_ready, Some(Box::pin(self.revise_exited(&fenced)))).await.map_err(crate::executor::RunEnd::from)?
+            pipeline.create_with(&req, pre_node_ready, Some(Box::pin(self.revise_exited(&targeted)))).await.map_err(crate::executor::RunEnd::from)?
         };
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
@@ -932,7 +932,7 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// node-recovery.md "Delete fences the old instance before the new join": the exited birth's
+    /// node-recovery.md "Delete targets the old instance before the new join": the exited birth's
     /// resolver entry is retired and its direct paths dropped, awaited, right before the new birth
     /// with the same endpoint key is launched (the create over its data dir, [`Self::create_over`]).
     ///
@@ -1532,7 +1532,7 @@ impl AdminRunner {
     }
 
     /// One step of a Build (`BuildChange::Steps`; lifecycles/node-replace.md): the op it names, run
-    /// as that op's own workflow on the exact birth the step acts on, the one it is fenced to, or for a
+    /// as that op's own workflow on the exact birth the step acts on, the one it is targeted to, or for a
     /// node an earlier step of the Build created, the birth this executor holds at the step's path.
     /// node.create is the create workflow, its claim a replace successor's ([`ClaimFor::Successor`]);
     /// node.connections.delete the standalone `{ All }`; node.mesh.leave carried by this admin as the

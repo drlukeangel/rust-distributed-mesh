@@ -117,9 +117,9 @@ pub fn decite(text: &str) -> String {
 
 /// `text` as inline code, safe for a table cell.
 pub fn code(text: &str) -> String {
-    let fence = if text.contains('`') { "``" } else { "`" };
-    let pad = if fence.len() > 1 { " " } else { "" };
-    format!("{fence}{pad}{}{pad}{fence}", text.replace('|', "\\|"))
+    let target = if text.contains('`') { "``" } else { "`" };
+    let pad = if target.len() > 1 { " " } else { "" };
+    format!("{target}{pad}{}{pad}{target}", text.replace('|', "\\|"))
 }
 
 /// The string labels the declaring crate's methods give each variant of `decl` (an enum):

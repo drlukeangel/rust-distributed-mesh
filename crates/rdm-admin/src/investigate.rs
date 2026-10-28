@@ -162,7 +162,7 @@ impl State {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerMesh {
     /// `Some(ms unheard)` while the ladder tracks the mesh as unheard: loss of its control-plane
-    /// visibility fences lifecycle mutation for every node of the mesh (R-D1).
+    /// visibility targets lifecycle mutation for every node of the mesh (R-D1).
     pub unheard_ms: Option<u64>,
     /// The ladder has decided the recovery of the mesh's node-admins.
     pub recovery_decided: bool,
@@ -225,12 +225,12 @@ impl Ladder {
         Some(PeerMesh { unheard_ms: st.tracked.then(|| st.unheard.as_millis() as u64), recovery_decided: st.verdict == Some(true), unreachable_decided: st.verdict == Some(false) })
     }
 
-    /// What the R-D1 fence reads of `mesh`, for the Build door, the drive and the drift check alike:
+    /// What the R-D1 target reads of `mesh`, for the Build door, the drive and the drift check alike:
     /// `unheard` is the elapsed time since this admin's last valid direct backbone receipt from the
     /// mesh (`DigestView::mesh_unheard`, mesh-investigation.md: "Let t be the elapsed monotonic time
     /// since the fabric-primary's last valid direct backbone receipt from mesh-x"), `None` for a mesh
     /// the backbone never carried here.
-    /// A mesh heard on the backbone is fenced from the rung the ladder tracks it from
+    /// A mesh heard on the backbone is targeted from the rung the ladder tracks it from
     /// ([`Rungs::track`]), whether or not the ladder has stepped it yet (a fabric-primary that took the
     /// seat a moment ago has stepped nothing), and its decided recovery is the ladder's; a mesh the
     /// backbone never carried is what the ladder holds of it (watched from the seat).
@@ -444,7 +444,7 @@ pub async fn run(w: Watch) {
         never_since.retain(|m, _| current_never.contains(m));
         // The clock of a mesh never heard starts once the accepted Build is settled: from the seat,
         // and from each settling, because a mesh the Build is still birthing has not had its chance
-        // to be heard; once started for a settled mesh, it runs across a subsequent Build fenced on it.
+        // to be heard; once started for a settled mesh, it runs across a subsequent Build targeted on it.
         match (w.settled)().await {
             Ok(true) => {
                 let track = w.ladder.lock().unwrap().rungs.track;
@@ -970,14 +970,14 @@ mod tests {
         assert_eq!(never_heard(&t, "mesh1", &heard), BTreeSet::from(["mesh2".to_string()]), "mesh2 only: mesh1 is this admin's own, mesh3 was heard on the backbone");
     }
 
-    /// CONTRACT (R-D1: loss of peer-mesh control-plane visibility fences lifecycle mutation for every
+    /// CONTRACT (R-D1: loss of peer-mesh control-plane visibility targets lifecycle mutation for every
     /// node in that mesh; mesh-investigation.md: "Let t be the elapsed monotonic time since the
     /// fabric-primary's last valid direct backbone receipt from mesh-x"; step 5: "No answer from any
-    /// member in either probe means hold"): the fence reads t, not whether the ladder has stepped the
+    /// member in either probe means hold"): the target reads t, not whether the ladder has stepped the
     /// mesh yet. An admin that took the fabric-primary seat a moment ago holds a ladder that has
-    /// stepped nothing, and a peer mesh its view last heard on the backbone 7 s ago is fenced from that
+    /// stepped nothing, and a peer mesh its view last heard on the backbone 7 s ago is targeted from that
     /// moment, unheard 7000 ms, no recovery decided; a mesh heard within the tracking rung is not
-    /// fenced; a decided recovery is read from the ladder; a mesh the backbone never carried here is
+    /// targeted; a decided recovery is read from the ladder; a mesh the backbone never carried here is
     /// what the ladder holds of it. Must NOT happen: a node of a mesh unheard past the rung claimed or
     /// dispatched for because the ladder has not stepped it yet (mesh_recover at a fabric-primary seat
     /// take ran node.create:mesh1.admin.1 0.25 s before its ladder first stepped mesh1).
@@ -987,7 +987,7 @@ mod tests {
         assert_eq!(
             l.peer_mesh_unheard("mesh1", Some(Duration::from_secs(7))),
             Some(PeerMesh { unheard_ms: Some(7000), recovery_decided: false, unreachable_decided: false }),
-            "a seat taken a moment ago: the ladder stepped nothing, t is 7 s, the mesh is fenced"
+            "a seat taken a moment ago: the ladder stepped nothing, t is 7 s, the mesh is targeted"
         );
         assert_eq!(l.peer_mesh_unheard("mesh1", Some(Duration::from_millis(200))), None, "heard within the tracking rung: no peer_mesh_unheard");
         // The ladder steps the mesh: probe 1, probe 2, both carrier-edge-lost, then the decision.
@@ -1300,8 +1300,8 @@ mod tests {
         let mut l = ladder();
         walk(&mut l, [Unreachable, Unreachable]);
         assert!(l.unreachable_decided("mesh2") && !l.recovery_decided("mesh2"));
-        let fenced = l.peer_mesh_unheard("mesh2", Some(Duration::from_secs(61))).expect("an unheard mesh is fenced");
-        assert_eq!((fenced.recovery_decided, fenced.unreachable_decided), (false, true), "the fence reads the hold: {fenced:?}");
+        let targeted = l.peer_mesh_unheard("mesh2", Some(Duration::from_secs(61))).expect("an unheard mesh is targeted");
+        assert_eq!((targeted.recovery_decided, targeted.unreachable_decided), (false, true), "the target reads the hold: {targeted:?}");
         assert_eq!(l.peer_mesh("mesh2").map(|p| (p.recovery_decided, p.unreachable_decided)), Some((false, true)));
         let mut recovered = ladder();
         walk(&mut recovered, [CarrierEdgeLost, CarrierEdgeLost]);

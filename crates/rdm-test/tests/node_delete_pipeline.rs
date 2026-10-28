@@ -94,7 +94,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         assert!(first_dir.join("node-key").is_file(), "the delete keeps the endpoint key in the data dir: {first_dir:?}");
         assert!(view.steps.iter().all(|r| r.step != "ReleaseStorage"), "no step of a delete releases storage: {:?}", view.steps.iter().map(|r| r.step.as_str()).collect::<Vec<_>>());
         // RemoveTopologyMembership removes exactly the deleted birth (node-delete.md step 5: the old
-        // `(node.id, incarnation)` is what is fenced), never whatever the path holds.
+        // `(node.id, incarnation)` is what is targeted), never whatever the path holds.
         assert!(sink.removed.lock().unwrap().is_empty(), "no path-keyed removal");
         assert_eq!(*sink.removed_births.lock().unwrap(), vec![(node.clone(), first.node.node_id.clone(), first.node.incarnation_id.clone().unwrap())]);
 

@@ -412,8 +412,8 @@ impl AdminRunner {
         })?;
         let executable = self.predecessor_executable(path, predecessor).await?;
         match self.revise_predecessor(path).await {
-            crate::seat_revision::FenceOutcome::Clear { gone: None } => {}
-            other => return Err(format!("{path} is not a path no birth held: the create door fenced {other:?}")),
+            crate::seat_revision::TargetOutcome::Clear { gone: None } => {}
+            other => return Err(format!("{path} is not a path no birth held: the create door targeted {other:?}")),
         }
         let hand_off = self.mesh_state_hook(path, state)?;
         let template = self.with_issuing_material(self.template_bound(path, executable, "row").await?, &path.mesh).await?;

@@ -382,7 +382,7 @@ fn replaced_by_target(target: Option<&rdm_core::binding::Binding>, row: Option<&
 }
 
 /// What one attempt of a Build does beyond realizing its topology: a standalone node op, a recovery
-/// or steps, fenced to the births they act on. Never part of the topology.
+/// or steps, targeted to the births they act on. Never part of the topology.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AttemptAction {
@@ -506,7 +506,7 @@ pub(crate) fn steps_action(steps: Vec<Step>, observed: &Topology) -> Result<Atte
     Ok(AttemptAction::Steps { steps, pinned })
 }
 
-/// The exact birth each step of a Build is fenced to: the pinned birth of the node its path names
+/// The exact birth each step of a Build is targeted to: the pinned birth of the node its path names
 /// when the step runs, followed through the Build's own creates and renames; `None` for a node an
 /// earlier step creates (its executor resolves it at its path). `Err` names the first step acting on
 /// a path that holds no node when it runs.
@@ -777,7 +777,7 @@ impl ActionProgress {
     /// The progress of `build`'s action, `default` for an attempt that carries none.
     pub(crate) fn of(build: &crate::build_state::BuildProjection) -> Self {
         // A standalone connections delete, stop, start or stopped delete: the receipts of its operation in an
-        // attempt that carried this exact action (its `Opened` fact fenced the attempt to the birth)
+        // attempt that carried this exact action (its `Opened` fact targeted the attempt to the birth)
         // are this birth's, from the attempt the request opened on (`opened`): an earlier request's run
         // of the same action (a stop, a start, then a second stop of one birth, Q183) is not this
         // run's progress. Its first step's receipt says the operation began; its `Complete`, that it
@@ -1380,7 +1380,7 @@ fn plan_with(
         }
         for p in &m.nodes {
             // A path whose birth the view holds live is satisfied; any other path is planned and the
-            // create pipeline's fence decides against the world (a running runtime at the path is
+            // create pipeline's target decides against the world (a running runtime at the path is
             // held, never replaced: `AdminRunner::revise_predecessor`).
             if creates_owed.contains_key(p) {
                 continue;
@@ -1741,7 +1741,7 @@ mod tests {
         let fresh = plan(&cur, &observed(vec![], &[]), None);
         assert_eq!(fresh.operations[0], BuildOperation::CreateMesh { mesh: "mesh1".into(), mesh_id: cur.mesh("mesh1").unwrap().mesh_id.clone() });
         assert_eq!(fresh.operations.len(), 6);
-        // A dead (unheard) birth's path is planned again — the create pipeline's fence then holds a
+        // A dead (unheard) birth's path is planned again — the create pipeline's target then holds a
         // runtime that still runs; a live node outside the topology is retired.
         let mut o = mn();
         o.nodes[3].status = NodeStatus::PendingReconnect;
@@ -1788,7 +1788,7 @@ mod tests {
     }
 
     /// CONTRACT (mesh-delete.md step 7: "A separate node.delete deletes the mesh-primary"): the
-    /// fenced `Delete` action on a birth of a deleted mesh (no `.old` path: the topology names no
+    /// targeted `Delete` action on a birth of a deleted mesh (no `.old` path: the topology names no
     /// such mesh) is the ordinary node.delete of that exact birth, `RetireNode`, planned while the
     /// view holds it, and nothing once it left or its `Complete` is receipted; a `Delete` of a stopped
     /// `.old` stays `DeleteNode`. Must NOT happen: the last admin of a deleted mesh deleted through a
@@ -2112,7 +2112,7 @@ mod tests {
         let op = vec![BuildOperation::DeleteNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }];
         assert_eq!(plan(&cur, &held, Some(&delete)).operations, op, "only the delete, never a repair of mesh1.rpc.3");
         assert_eq!(op[0].key(), "node.delete:mesh1.rpc.2.old");
-        // The Complete commits no output: the attempt's fenced action names the birth.
+        // The Complete commits no output: the attempt's targeted action names the birth.
         let step = |attempt: u32, step: &str| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
@@ -2163,7 +2163,7 @@ mod tests {
         let path: PathName = "mesh1.rpc.3".parse().unwrap();
         let from = IncarnationId::mint();
         let node_id = NodeId::mint();
-        // The Complete commits no output: the attempt's fenced action names the birth.
+        // The Complete commits no output: the attempt's targeted action names the birth.
         let step = |attempt: u32, step: &str| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),

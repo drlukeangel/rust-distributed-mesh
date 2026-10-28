@@ -125,7 +125,7 @@ fn birth(t: &Topology, p: &str) -> (PathName, NodeId, IncarnationId) {
 }
 
 /// A standalone stop (`stop` true) or start of the exact birth, as its own attempt of the accepted
-/// Build: the attempt carries the fenced action, and its operation's `Complete` receipt is written
+/// Build: the attempt carries the targeted action, and its operation's `Complete` receipt is written
 /// at `at_ms` (a stop's names the birth and its rafka-time, the stop's lifecycle op).
 async fn period(cp: &ControlPlane, builds: &MemoryBuildStateAdapter, (path, node_id, incarnation): &(PathName, NodeId, IncarnationId), stop: bool, at_ms: u64) {
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();

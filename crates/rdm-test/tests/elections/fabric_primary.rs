@@ -135,7 +135,7 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_whose_runtime_exited_is_replaced() {
     let mut estate = Estate::bootstrap(
-        Owner { subfeature: "path-fence".into(), rung: "MN".into(), test: "a_member_whose_runtime_exited_is_replaced".into(), ..owner() },
+        Owner { subfeature: "path-target".into(), rung: "MN".into(), test: "a_member_whose_runtime_exited_is_replaced".into(), ..owner() },
         "fabric1",
         "mesh1",
     )

@@ -179,12 +179,12 @@ pub enum BuildOperation {
     /// own workflow on the node its path names when it runs, `create-node`, `stop-node`,
     /// `update-node` (node.update's own core at the node's mesh-primary), `start-node`,
     /// `retire-node` (node.delete), node.connections.delete `{ All }` or node.mesh.leave. `birth`
-    /// fences it to the exact birth its node was when the Build was accepted; `None` for a node an
+    /// targets it to the exact birth its node was when the Build was accepted; `None` for a node an
     /// earlier step of the Build created, which the executor resolves at its path when the step runs.
     Step {
         /// The step.
         step: rdm_core::build::Step,
-        /// The exact birth the step is fenced to, for a node the Build did not create.
+        /// The exact birth the step is targeted to, for a node the Build did not create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         birth: Option<PinnedBirth>,
     },
@@ -576,7 +576,7 @@ pub enum BuildReject {
         extra: Vec<String>,
     },
     /// The node belongs to a peer mesh this fabric-primary holds unheard: loss of that mesh's
-    /// control-plane visibility fences lifecycle mutation for every node of it (R-D1).
+    /// control-plane visibility targets lifecycle mutation for every node of it (R-D1).
     UnheardMesh {
         /// The node.
         node: String,
@@ -810,7 +810,7 @@ mod tests {
     use rdm_core::build::Step;
 
     /// CONTRACT: the node a create operation makes is named for `create-node` and for a Build's Create
-    /// step alike, and for no other operation: the drive's fence on a fully crashed mesh admits a create
+    /// step alike, and for no other operation: the drive's target on a fully crashed mesh admits a create
     /// of its first node-admin and nothing else.
     #[test]
     fn only_a_create_operation_names_the_node_it_creates() {

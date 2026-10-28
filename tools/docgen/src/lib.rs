@@ -397,7 +397,7 @@ mod tests {
         write("architecture/gossip.md", "# Gossip\n");
         write("architecture/lifecycles/states.md", "# States\n");
         write("architecture/lifecycles/node-start.md", "# node.start\n");
-        write("architecture/ignored.md", "# Ignored by the fence, listed with the rest\n");
+        write("architecture/ignored.md", "# Ignored by the target, listed with the rest\n");
         write("architecture/zeta.md", "no heading\n");
         write("architecture/alpha.md", "# Alpha [draft]\n");
         write("eng/not-architecture.md", "# Not listed\n");
@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(
             got,
             format!(
-                "{MARKER}\n# Summary\n\n[Lifecycles](architecture/fabric-mesh-node-lifecycles.md)\n\n# Pages\n\n- [Gossip](architecture/gossip.md)\n- [States](architecture/lifecycles/states.md)\n\n# Node workflows\n\n- [node.start](architecture/lifecycles/node-start.md)\n\n# Architecture\n\n- [Alpha \\[draft\\]](architecture/alpha.md)\n- [Ignored by the fence, listed with the rest](architecture/ignored.md)\n- [zeta](architecture/zeta.md)\n\n# Reference (generated)\n\n- [Node RPC wire bodies](reference/rdm/wire.md)\n- [Spans](reference/rdm/spans.md)\n"
+                "{MARKER}\n# Summary\n\n[Lifecycles](architecture/fabric-mesh-node-lifecycles.md)\n\n# Pages\n\n- [Gossip](architecture/gossip.md)\n- [States](architecture/lifecycles/states.md)\n\n# Node workflows\n\n- [node.start](architecture/lifecycles/node-start.md)\n\n# Architecture\n\n- [Alpha \\[draft\\]](architecture/alpha.md)\n- [Ignored by the target, listed with the rest](architecture/ignored.md)\n- [zeta](architecture/zeta.md)\n\n# Reference (generated)\n\n- [Node RPC wire bodies](reference/rdm/wire.md)\n- [Spans](reference/rdm/spans.md)\n"
             )
         );
     }
