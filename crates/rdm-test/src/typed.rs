@@ -148,21 +148,28 @@ impl Estate {
     /// `mesh.nodes.get` of every node of every mesh `admin` holds, as that admin's view holds them, `None`
     /// when it does not answer for this Fabric within 2 s.
     pub async fn node_views_at(&self, admin: &PathName) -> Option<Vec<NodeView>> {
+        self.views_at(admin).await.ok()
+    }
+
+    /// [`Self::node_views_at`], naming the read that ended ([`views_of`]).
+    pub async fn views_at(&self, admin: &PathName) -> Result<Vec<NodeView>, ViewsEnd> {
         let peers = self.peers().await;
-        let views = match node_views_of(peers.as_ref(), admin, &self.fabric_id).await {
-            Some(views) => views,
+        let views = match views_of(peers.as_ref(), admin, &self.fabric_id).await {
+            Ok(views) => views,
+            // A read carried up and not answered yet ends the same way at any birth of the path.
+            Err(end @ ViewsEnd::NotYet(_)) => return Err(end),
             // The path may hold a new birth (a node-admin re-created at its path.name, by fabric recovery
             // or a replace): every known admin's view names it, and the read goes to that birth once more.
-            None => {
+            Err(ViewsEnd::Ended(_)) => {
                 self.relearn(&peers).await;
-                node_views_of(peers.as_ref(), admin, &self.fabric_id).await?
+                views_of(peers.as_ref(), admin, &self.fabric_id).await?
             }
         };
         // What the view lists is reachable from here on: a node created again at a path.name (a new node
         // id, as a retired admin's successor is) is dialled as the view names it, never by the id the
         // path held before.
         self.note(&peers, &views);
-        Some(views)
+        Ok(views)
     }
 
     /// Forget the handover of the entry admin: the next call makes it again, reading the views of every
@@ -184,10 +191,14 @@ impl Estate {
         let printed = self.learn_printed(&peers);
         match printed.iter().rev().find(|birth| birth.name == *admin) {
             Some(birth) => self.await_door(&peers, admin, birth).await,
-            None => {
-                let views = node_views_of(&peers, admin, &self.fabric_id).await.unwrap_or_else(|| panic!("enter: {admin} does not answer mesh.nodes.get for {} over Node RPC; admins held: {:?}", self.fabric_id, self.births.lock().unwrap().keys().collect::<Vec<_>>()));
-                self.note(&peers, &views);
-            }
+            // Its views are read and noted. An admin whose birth the estate already holds needs no answer:
+            // after a loss its reads of other meshes are carried up to a fabric-primary that may not answer
+            // them yet (query.md §1), and the birth it holds is the one the calls go to.
+            None => match views_of(&peers, admin, &self.fabric_id).await {
+                Ok(views) => self.note(&peers, &views),
+                Err(_) if self.births.lock().unwrap().contains_key(admin) => {}
+                Err(end) => panic!("enter: {admin}, whose birth the estate does not hold, does not answer for {} over Node RPC: {end}; admins held: {:?}", self.fabric_id, self.births.lock().unwrap().keys().collect::<Vec<_>>()),
+            },
         }
         if self.admin != *admin {
             self.births.lock().unwrap().remove(&self.admin);
@@ -277,7 +288,7 @@ impl Estate {
         // first, and ask that birth once more.
         self.rehandover().await;
         let entry = self.entry().await;
-        the_fabric(&self.fabrics_obj().await).await.unwrap_or_else(|e| panic!("fabric.get at {entry}: {e}"))
+        the_fabric(&self.fabrics_obj().await).await.unwrap_or_else(|e| panic!("fabrics.get at {entry}: {e}"))
     }
 
     /// `meshes.get [name: mesh]` at the admin the estate asks, `None` when it holds no such mesh.
@@ -299,14 +310,38 @@ impl Estate {
         views
     }
 
-    /// `nodes.get [mesh: m]` of every mesh the admin holds.
+    /// `nodes.get [mesh: m]` of every mesh the admin holds. A read the admin carried up and has not
+    /// answered yet ([`not_yet`]: no fabric-primary answers it, query.md §1) lists nothing yet, and a wait
+    /// on the views goes on to its own bound; any other end of a read panics naming it.
     pub async fn node_views(&self) -> Vec<NodeView> {
+        let fabric = match the_fabric(&self.fabrics_obj().await).await {
+            Ok(view) => view,
+            Err(e) if not_yet(&e) => return Vec::new(),
+            // The entry admin's path may hold a new birth: hand over again and ask once more.
+            Err(_) => {
+                self.rehandover().await;
+                let entry = self.entry().await;
+                match the_fabric(&self.fabrics_obj().await).await {
+                    Ok(view) => view,
+                    Err(e) if not_yet(&e) => return Vec::new(),
+                    Err(e) => panic!("fabrics.get at {entry}: {e}"),
+                }
+            }
+        };
         let mut all = Vec::new();
-        for mesh in self.fabric_view().await.meshes {
+        for mesh in fabric.meshes {
             if mesh.nodes.is_empty() {
                 continue;
             }
-            all.extend(self.mesh_node_views(&mesh.name).await);
+            let entry = self.entry().await;
+            match mesh_nodes(&self.nodes_obj().await, &mesh.name).await {
+                Ok(views) => {
+                    self.learn(&views).await;
+                    all.extend(views);
+                }
+                Err(e) if not_yet(&e) => return Vec::new(),
+                Err(e) => panic!("nodes.get [mesh: {}] at {entry}: {e}", mesh.name),
+            }
         }
         all
     }
@@ -519,9 +554,15 @@ impl Estate {
 
     /// [`Self::node_views_at`] of the admin named `admin`, as JSON; an admin that does not answer for this
     /// Fabric is named.
+    /// A read the admin carried up and has not answered yet ([`not_yet`]) lists nothing yet: a wait on
+    /// it goes on to its own bound.
     pub async fn node_values_at(&self, admin: &str) -> Vec<serde_json::Value> {
         let path: PathName = admin.parse().unwrap_or_else(|e| panic!("{admin} is not a path.name: {e:?}"));
-        let views = self.node_views_at(&path).await.unwrap_or_else(|| panic!("{admin} does not answer mesh.nodes.get for {}", self.fabric_id));
+        let views = match self.views_at(&path).await {
+            Ok(views) => views,
+            Err(ViewsEnd::NotYet(_)) => Vec::new(),
+            Err(ViewsEnd::Ended(why)) => panic!("{admin} does not answer for {}: {why}", self.fabric_id),
+        };
         views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect()
     }
 
@@ -845,11 +886,54 @@ pub async fn fabric_view_of(peers: &Peers, admin: &PathName, fabric_id: &str) ->
 /// `mesh.nodes.get` of every mesh `admin` holds, over `peers`, as that admin's view holds them:
 /// `None` when it does not answer for the Fabric `fabric_id` within 2 s a call.
 pub async fn node_views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Option<Vec<NodeView>> {
-    let f = fabric_view_of(peers, admin, fabric_id).await?;
+    views_of(peers, admin, fabric_id).await.ok()
+}
+
+/// Whether a read ended `not-ready` (`UNAVAILABLE`): a read a mesh-primary carried up to a
+/// fabric-primary that has not answered it, or that its view names none to carry it to (query.md §1:
+/// "A mesh-primary answers a read of its own mesh from its atlas and carries any other read up to the
+/// fabric-primary"). The read is not answered yet, and a wait goes on to its own bound.
+pub fn not_yet(end: &CallEnd) -> bool {
+    matches!(end, CallEnd::Rejected { reason, .. } if reason == "not-ready")
+}
+
+/// How a read of an admin's views ended without them, naming the read that ended.
+#[derive(Debug, Clone)]
+pub enum ViewsEnd {
+    /// The read is not answered yet ([`not_yet`]).
+    NotYet(String),
+    /// The read ended otherwise: no answer within 2 s, another Fabric, or another refusal.
+    Ended(String),
+}
+
+impl std::fmt::Display for ViewsEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ViewsEnd::NotYet(why) | ViewsEnd::Ended(why) => f.write_str(why),
+        }
+    }
+}
+
+/// [`node_views_of`], naming the read that ended: `fabrics.get` first, then `nodes.get [mesh: m]` of
+/// each mesh the fabric names, each bounded at 2 s.
+pub async fn views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Result<Vec<NodeView>, ViewsEnd> {
+    let ended = |read: String, e: CallEnd| if not_yet(&e) { ViewsEnd::NotYet(format!("{read} at {admin} is not answered yet: {e}")) } else { ViewsEnd::Ended(format!("{read} at {admin} ended: {e}")) };
+    let fabrics = Fabrics::new(peers.carrier_at(admin.clone()));
+    let f = match tokio::time::timeout(std::time::Duration::from_secs(2), the_fabric(&fabrics)).await {
+        Err(_) => return Err(ViewsEnd::Ended(format!("fabrics.get at {admin} did not answer within 2 s"))),
+        Ok(Err(e)) => return Err(ended("fabrics.get".into(), e)),
+        Ok(Ok(f)) if f.id.to_string() != fabric_id => return Err(ViewsEnd::Ended(format!("fabrics.get at {admin} answered the Fabric {}, not {fabric_id}", f.id))),
+        Ok(Ok(f)) => f,
+    };
     let nodes = Nodes::new(peers.carrier_at(admin.clone()));
     let mut all = Vec::new();
     for mesh in f.meshes.iter().filter(|m| !m.nodes.is_empty()) {
-        all.extend(tokio::time::timeout(std::time::Duration::from_secs(2), mesh_nodes(&nodes, &mesh.name)).await.ok()?.ok()?);
+        let read = format!("nodes.get [mesh: {}]", mesh.name);
+        match tokio::time::timeout(std::time::Duration::from_secs(2), mesh_nodes(&nodes, &mesh.name)).await {
+            Err(_) => return Err(ViewsEnd::Ended(format!("{read} at {admin} did not answer within 2 s"))),
+            Ok(Err(e)) => return Err(ended(read, e)),
+            Ok(Ok(views)) => all.extend(views),
+        }
     }
-    Some(all)
+    Ok(all)
 }
