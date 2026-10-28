@@ -344,14 +344,14 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.update.via-fabric-primary-changed` | `crates/rdm-admin/src/build_op.rs` | 618 |
 | `rdm.node_admin.build.update.via-fabric-primary-changed` | `crates/rdm-admin/src/build_op.rs` | 650 |
 | `rdm.node_admin.build.update.via-fetch-facts` | `crates/rdm-admin/src/fetch_build.rs` | 254 |
-| `rdm.node_admin.build.update.via-interrupted` | `crates/rdm-admin/src/executor.rs` | 595 |
+| `rdm.node_admin.build.update.via-interrupted` | `crates/rdm-admin/src/executor.rs` | 642 |
 | `rdm.node_admin.build.update.via-interrupted-terminal` | `crates/rdm-admin/src/build_drive.rs` | 1546 |
 | `rdm.node_admin.build.update.via-journal-turn` | `crates/rdm-admin/src/build_state.rs` | 2443 |
 | `rdm.node_admin.build.update.via-node-recovery` | `crates/rdm-admin/src/admin/recovery.rs` | 492 |
 | `rdm.node_admin.build.update.via-node-rpc` | `crates/rdm-admin/src/build_op.rs` | 95 |
 | `rdm.node_admin.build.update.via-owner-facts-absorbed` | `crates/rdm-admin/src/mesh_delete.rs` | 641 |
 | `rdm.node_admin.build.update.via-proven-drift` | `crates/rdm-admin/src/admin/reconcile.rs` | 605 |
-| `rdm.node_admin.build.update.via-reconcile` | `crates/rdm-admin/src/executor.rs` | 471 |
+| `rdm.node_admin.build.update.via-reconcile` | `crates/rdm-admin/src/executor.rs` | 474 |
 | `rdm.node_admin.build.update.via-reconciling-stopped` | `crates/rdm-admin/src/build_drive.rs` | 764 |
 | `rdm.node_admin.build.update.via-recovery` | `crates/rdm-admin/src/control_plane.rs` | 996 |
 | `rdm.node_admin.build.update.via-rest` | `crates/rdm-admin/src/control_plane.rs` | 713 |
