@@ -342,7 +342,11 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let spans: Vec<Value> = estate.spans();
     let sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().filter(|sp| attr(sp, "node") == old && attr(sp, "subject") == subject_name).collect();
     assert_eq!(sent.len(), 1, "one node.config.update at the fabric-primary: {sent:?}");
-    assert_eq!((attr(sent[0], "outcome").as_str(), attr(sent[0], "atlas").as_str()), ("config-updated", "written"), "{:?}", sent[0]);
+    // The fabric-primary's atlas holds the row as written at the completion's revision: installed from the
+    // completion, or already held from the mesh-primary's push of the same row (Q235 P1, P3).
+    let revision = attr(sent[0], "revision");
+    assert_eq!(attr(sent[0], "outcome"), "config-updated", "{:?}", sent[0]);
+    assert!(attr(sent[0], "atlas") == "installed" || attr(sent[0], "atlas") == format!("held:{revision}"), "the atlas holds the completion's revision {revision}: {:?}", sent[0]);
     let filled: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-filled").into_iter().filter(|sp| attr(sp, "node") == successor).collect();
     assert!(filled.iter().any(|sp| attr(sp, "outcome") == "filled"), "the successor filled its atlas as it became the fabric-primary: {filled:?}");
     println!("trace {}: rdm.node_admin.node.update.via-fabric-primary node={old} subject={subject_name} outcome=config-updated route={}", s(&sent[0]["trace_id"]), attr(sent[0], "route"));

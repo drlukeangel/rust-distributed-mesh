@@ -1713,7 +1713,7 @@ mod tests {
             assert_eq!(crate::node_rows::take_name(n, &a.name, &a.node_id).await.unwrap(), Ok(()), "a free name is claimed");
             w.put(n, &a).await.unwrap();
             drop(_one);
-            assert_eq!(n.node_at(&a.name).await.unwrap(), Some(a.clone()), "the index names the record at the name");
+            assert_eq!(n.node_at(&a.name).await.unwrap(), w.row_of(&a.node_id), "the index names the record at the name, as its writer wrote it");
             assert_eq!(crate::node_rows::take_name(n, &a.name, &a.node_id).await.unwrap(), Ok(()), "the node's own claim is its own again");
             let other = row("mesh1.rpc.1");
             assert_eq!(crate::node_rows::take_name(n, &a.name, &other.node_id).await.unwrap(), Err(NameHeld { name: a.name.clone(), by: a.node_id.clone() }), "another node's live claim holds the name");
