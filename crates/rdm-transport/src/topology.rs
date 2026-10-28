@@ -6872,7 +6872,7 @@ mod tests {
     }
 
     /// CONTRACT (rdm#172): a watch of the routing watch whose sender is gone leaves the wait, and the
-    /// others still wake it. Must NOT happen: one closed watch parking the wait for good, so that no
+    /// others still wake it. Must NOT happen: one closed watch holding the wait for good, so that no
     /// fact any other watch moves wakes the view's rebuild again.
     #[tokio::test]
     async fn a_closed_watch_leaves_the_routing_watch_and_every_other_still_wakes_it() {
