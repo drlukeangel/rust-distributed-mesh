@@ -429,6 +429,238 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     estate.record_trace_url(lost["trace_id"].as_str().unwrap_or(""));
 }
 
+/// The executor every os-stopped cell holds: mesh2's primary, which runs the start of a node of mesh2.
+const SUSPENDED: &str = "mesh2.admin.1";
+
+/// An executor the operating system holds suspended in the middle of its attempt: `SUSPENDED` runs the
+/// node.start of `node`, its own Door holds it in the start (the node answered `Started`, its
+/// `StartNode` receipt not yet durable), and its exact runtime is then stopped (SIGSTOP, acknowledged
+/// `T`), so it neither answers nor exits.
+struct Suspended {
+    estate: Estate,
+    carrier: BuildCarrier,
+    node: PathName,
+    accepted: rdm_client::Accepted,
+    stream: WorkflowStream,
+    door: Door,
+    rt: rdm_test::process_faults::ExactRuntime,
+    /// The suspended birth's node id and data dir.
+    node_id: String,
+    data_dir: String,
+    /// Its CPU ticks at the stop.
+    ticks: u64,
+}
+
+async fn suspended_executor(test: &str) -> Suspended {
+    let sha = candidate_sha();
+    let set = binding_set(&sha);
+    let estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let caller = Caller::of(&estate).await;
+    let carrier = born(&estate, &caller, &SHAPE).await;
+    let node = secondary_node(&estate).await;
+    let mut stopped = caller.nodes(&carrier).stop(&node).await.expect("the fabric-primary accepts the stop");
+    assert_eq!(frames_of(&mut stopped).await.last(), Some(&Frame::Complete), "the node is stopped first");
+    let executor = estate.node_value(SUSPENDED).await;
+    assert_eq!(executor["is_primary"], true, "{SUSPENDED} is mesh2's primary, the executor of mesh2's node: {executor}");
+    let node_id = s(&executor["node_id"]);
+    let data_dir = estate.data_dir(SUSPENDED).await;
+    let rt = rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&data_dir)).unwrap_or_else(|r| panic!("{SUSPENDED}: no exact runtime published in {data_dir}: {r:?}"));
+    let door = Door::at(&estate, SUSPENDED).await;
+    door.arm("held", json!({"kind": "receipt", "step": "StartNode", "operation": "node.start", "node": node.to_string()})).await;
+    let stream = caller.nodes(&carrier).start(&node).await.expect("the fabric-primary accepts the start");
+    let accepted = stream.accepted().clone();
+    let held = door.wait_held("held").await;
+    assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
+    assert_eq!(held["hit"]["attempt"], json!(accepted.attempt), "the executor is held in the attempt the start was accepted at: {held}");
+    let stop = rt.apply(rdm_test::process_faults::Fault::Stop).expect("the exact runtime is suspended");
+    assert_eq!(stop.state_after, Some('T'), "the OS holds {SUSPENDED}: {stop:?}");
+    let ticks = rdm_test::process_faults::cpu_ticks(rt.pid);
+    Suspended { estate, carrier, node, accepted, stream, door, rt, node_id, data_dir, ticks }
+}
+
+/// The caller's stream of the start read to its end within the bound of a node recovery: `Complete`,
+/// every event once, `Started` last.
+async fn started_to_the_end(stream: &mut WorkflowStream, why: &str) {
+    let frames = tokio::time::timeout(crate::node_recovery_due() * 2, frames_of(stream)).await.unwrap_or_else(|_| panic!("{why}: the caller's stream of the start has no terminal within {:?}", crate::node_recovery_due() * 2));
+    assert_eq!(frames.last(), Some(&Frame::Complete), "the caller's stream carries the next attempt's frames to the end: {frames:?}");
+    let seen = events(&frames);
+    let mut once = seen.clone();
+    once.dedup();
+    assert_eq!(seen, once, "no event is delivered twice: {frames:?}");
+    assert_eq!(seen.last(), Some(&NodeEvent::Started), "{seen:?}");
+}
+
+/// `path` re-created as a new birth (a node id other than `old`), ready for traffic, within the bound of
+/// a node recovery.
+async fn re_created(estate: &Estate, path: &str, old: &str) -> Value {
+    wait_for(&format!("{path} re-created as a new birth"), crate::node_recovery_due() * 2, || async { estate.node_value_opt(path).await.filter(|n| n["status"] == "ready-for-traffic" && s(&n["node_id"]) != old) }).await
+}
+
+/// The spans one process of the estate wrote, by its pid: the evidence file `<service>.<pid>-*.spans.jsonl`.
+fn spans_of_pid(estate: &Estate, pid: u32) -> Vec<Value> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(&estate.evidence).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.ends_with(".spans.jsonl") && name.contains(&format!(".{pid}-")) {
+            out.extend(std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
+        }
+    }
+    out.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
+    out
+}
+
+fn now_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+}
+
+/// CONTRACT (build.md: "when the executor is lost with the attempt unfinished, after the provider's
+/// inspection of the executor's exact runtime answers `exited` or `os-stopped`"; node-recovery.md step
+/// 3: TerminateRuntime "never skipped for what it reads, except `os-stopped`, which recovery leaves as
+/// it is"; Q239 A narrowed): mesh2's primary is the executor of a node.start and the operating system
+/// holds it suspended in the middle of it. The fabric-primary's inner call ends executor-lost, the
+/// provider reads the exact runtime os-stopped, which proves its departure, and the next attempt is
+/// claimed for mesh2.admin.2, which takes the start to `Complete` on the caller's one stream. The
+/// fabric-primary's one investigation of the unheard mesh-primary finds it os-stopped and its recovery
+/// is admitted once the next attempt ran (a submit while that attempt holds the mesh answers
+/// BuildInProgress, node-recovery.md step 1): the path is re-created as a new birth, and the
+/// suspended runtime is left as it is: still `T`, no CPU used, its TerminateRuntime reading os-stopped.
+/// Must NOT happen: the attempt held on os-stopped while the mesh's recovery is refused BuildInProgress
+/// behind it (gate run gates-4-41c1b4003: attempt 4 executor-lost, then fourteen refusals), a signal to
+/// the suspended runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_its_mesh_recovered_leaving_the_runtime_stopped() {
+    let test = "an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_its_mesh_recovered_leaving_the_runtime_stopped";
+    let Suspended { mut estate, carrier, accepted, mut stream, rt, node_id, data_dir, ticks, .. } = suspended_executor(test).await;
+    started_to_the_end(&mut stream, "the os-stopped executor's attempt is claimed by the next").await;
+    let recovered = re_created(&estate, SUSPENDED, &node_id).await;
+    assert_ne!(estate.data_dir(SUSPENDED).await, data_dir, "a newly allocated data dir, never the suspended runtime's");
+    assert_eq!(rdm_test::process_faults::proc_state(rt.pid), Some('T'), "the suspended runtime is sent nothing: still stopped");
+    assert_eq!(rdm_test::process_faults::cpu_ticks(rt.pid), ticks, "the suspended runtime used no CPU");
+    // The cell's own cleanup: the suspended runtime the recovery left is no estate's.
+    rt.apply(rdm_test::process_faults::Fault::Kill(estate.fabric_ready())).expect("the cell kills the suspended runtime it made");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let fp = carrier.fabric_primary().to_string();
+    let build = &accepted.build_id.to_string();
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let of_build = |name: &str| -> Vec<Value> { spans_named(&spans, name).into_iter().filter(|sp| attr(sp, "build_id") == *build).cloned().collect() };
+    let lost = of_build("rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| attr(sp, "attempt") == accepted.attempt.to_string() && attr(sp, "outcome") == "executor-lost").expect("the inner call to the suspended executor ended executor-lost");
+    let proof = of_build("rdm.node_admin.build.update.via-departure-proven").into_iter().find(|sp| attr(sp, "attempt") == accepted.attempt.to_string()).unwrap_or_else(|| panic!("the os-stopped executor's departure is proven: {:#?}", of_build("rdm.node_admin.fabric.update.via-blocked")));
+    assert_eq!(attr(&proof, "executor"), SUSPENDED, "{proof}");
+    let claim = of_build("rdm.node_admin.build.update.via-claim-decision")
+        .into_iter()
+        .find(|sp| attr(sp, "node") == fp && attr(sp, "outcome") == "won" && attr(sp, "attempt").parse::<u32>().ok() > Some(accepted.attempt))
+        .expect("the next attempt is claimed");
+    assert_eq!(attr(&claim, "executor"), "mesh2.admin.2", "the next attempt is the other node-admin of mesh2's: {claim}");
+    assert!(claim["start_unix_nano"].as_u64() > proof["start_unix_nano"].as_u64(), "the claim follows the proof");
+    // The mesh: the fabric-primary's investigation of the unheard mesh-primary finds it os-stopped, and the
+    // recovery it opens is admitted, never refused behind the held attempt.
+    let investigations: Vec<Value> = spans_named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "suspect_node_id") == node_id).cloned().collect();
+    assert!(!investigations.is_empty() && investigations.iter().all(|sp| attr(sp, "finding") == "os-stopped"), "the fabric-primary's investigation finds the suspended mesh-primary os-stopped: {investigations:#?}");
+    let recoveries: Vec<Value> = spans_named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == node_id).cloned().collect();
+    // A submit while an attempt holds the mesh answers BuildInProgress (node-recovery.md step 1); the
+    // suspended executor's attempt holds it no longer than the next attempt's run.
+    let next_ran = of_build("rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| attr(sp, "attempt") == attr(&claim, "attempt") && attr(sp, "outcome") == "complete").unwrap_or_else(|| panic!("the next attempt {} completes", attr(&claim, "attempt")));
+    let ended = next_ran["end_unix_nano"].as_u64().unwrap_or(0);
+    let refused: Vec<&Value> = recoveries.iter().filter(|sp| attr(sp, "outcome") == "build-in-progress" && sp["start_unix_nano"].as_u64().unwrap_or(0) > ended).collect();
+    assert!(refused.is_empty(), "the recovery of the mesh-primary is never refused behind the suspended executor's attempt once the next attempt ran: {refused:#?}");
+    let admitted = recoveries.iter().find(|sp| attr(sp, "outcome") == "admitted").unwrap_or_else(|| panic!("the recovery is admitted: {recoveries:#?}"));
+    assert!(admitted["start_unix_nano"].as_u64() > proof["start_unix_nano"].as_u64(), "the recovery is admitted after the departure proof: {admitted}");
+    assert_eq!(investigations.len(), 1, "the mesh is recovered within one investigation: {investigations:#?}");
+    let at_delete = spans_named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| attr(sp, "node_id") == node_id && attr(sp, "caller") == "terminate").cloned().expect("the recovery's TerminateRuntime reads the exact runtime at its instant");
+    assert_eq!(attr(&at_delete, "verdict"), "os-stopped", "{at_delete}");
+    let signalled: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.reject.via-lost-executor").into_iter().filter(|sp| attr(sp, "node") == SUSPENDED).collect();
+    assert!(signalled.is_empty(), "the recovery stops no runtime of the suspended birth: {signalled:#?}");
+    println!("recovered {SUSPENDED}: {} -> {}", node_id, s(&recovered["node_id"]));
+    println!("executor lost: http://192.168.68.99:16687/trace/{}", s(&lost["trace_id"]));
+    println!("departure proven os-stopped: http://192.168.68.99:16687/trace/{}", s(&proof["trace_id"]));
+    println!("investigation: http://192.168.68.99:16687/trace/{}", s(&investigations[0]["trace_id"]));
+    println!("runtime left os-stopped: http://192.168.68.99:16687/trace/{}", s(&at_delete["trace_id"]));
+    estate.record_trace_url(&s(&proof["trace_id"]));
+}
+
+/// CONTRACT (build.md: "an os-stopped executor that resumes after the next attempt is claimed is a
+/// deleted birth whose writes every reader refuses"; node-recovery.md step 3: "A birth that comes back
+/// after it was re-created is a deleted birth"; Q239 addendum 0): the os-stopped executor of a
+/// node.start is resumed (SIGCONT) at once after the fabric-primary claimed the next attempt for
+/// mesh2.admin.2, while its mesh's recovery still runs, and its Door lets the held start go on. Every
+/// receipt, frame and row write it makes for the superseded attempt is refused by name and lands
+/// nowhere: the Build's journal holds no `StartNode` receipt and no verdict of the superseded attempt
+/// from it, and the next attempt's `Complete` stands. The re-created birth at its path.name holds.
+/// Must NOT happen: a record of the superseded attempt in the journal, the Build decided by it, or the
+/// re-created birth displaced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_has_every_write_of_its_attempt_refused() {
+    let test = "an_os_stopped_executor_resumed_after_the_next_attempts_claim_has_every_write_of_its_attempt_refused";
+    let Suspended { mut estate, carrier, node, accepted, mut stream, door, rt, node_id, .. } = suspended_executor(test).await;
+    let fp = carrier.fabric_primary().to_string();
+    let build = accepted.build_id.to_string();
+    let superseded = accepted.attempt;
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    // The next attempt's claim and the claim of the mesh-primary's recovery (the investigation ended
+    // os-stopped), then at once the resume and the Door's release, while the recovery runs: before
+    // the path has its new birth.
+    let (claim, recovery) = wait_for("the next attempt and the suspended birth's recovery claimed", crate::node_recovery_due() * 2, || async {
+        let spans = estate.spans();
+        let won = |attempt: &str| spans_named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().find(|sp| attr(sp, "build_id") == build && attr(sp, "node") == fp && attr(sp, "outcome") == "won" && attr(sp, "attempt") == attempt).cloned();
+        let recovery = spans_named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| attr(sp, "node_id") == node_id && attr(sp, "outcome") == "admitted").cloned()?;
+        let next = won(&(superseded + 1).to_string())?;
+        won(&attr(&recovery, "attempt")).map(|_| (next, recovery))
+    })
+    .await;
+    let resumed_at = now_ns();
+    let resumed = rt.apply(rdm_test::process_faults::Fault::Continue).expect("the suspended runtime is resumed");
+    assert_ne!(resumed.state_after, Some('T'), "{resumed:?}");
+    door.release("held").await;
+    let at_resume = estate.node_value_opt(SUSPENDED).await;
+    assert!(at_resume.as_ref().is_none_or(|n| s(&n["node_id"]) == node_id || n["status"] != "ready-for-traffic"), "the resume falls while the recovery still runs: {at_resume:?}");
+    assert_eq!(attr(&claim, "executor"), "mesh2.admin.2", "{claim}");
+    println!("resumed after the next attempt {} and the recovery attempt {} were claimed", attr(&claim, "attempt"), attr(&recovery, "attempt"));
+
+    started_to_the_end(&mut stream, "the next attempt's start").await;
+    let recovered = re_created(&estate, SUSPENDED, &node_id).await;
+    // The resumed birth is a deleted birth: its mesh-primary reports it and the fabric-primary
+    // terminates its runtime.
+    wait_for("the resumed birth's runtime ended", crate::node_recovery_due() * 2, || async { rt.check().is_err().then_some(()) }).await;
+    let held = estate.node_value(SUSPENDED).await;
+    assert_eq!((s(&held["node_id"]), s(&held["status"])), (s(&recovered["node_id"]), "ready-for-traffic".to_string()), "the re-created birth holds its path.name: {held}");
+    assert_eq!(estate.node_value(&node.to_string()).await["status"], "ready-for-traffic", "the started node stands");
+    // The journal: nothing of the superseded attempt from its executor.
+    let facts = crate::build_log::log_read(&carrier, &build).await.unwrap_or_else(|e| panic!("the Build log of {fp}: {e}"));
+    let landed: Vec<&BuildFact> = facts
+        .iter()
+        .filter(|f| match f {
+            BuildFact::Step(r) => r.attempt == superseded && r.step == "StartNode",
+            BuildFact::Attempt(a) => a.attempt == superseded && matches!(a.outcome, rdm_admin::build_state::AttemptOutcome::Converged | rdm_admin::build_state::AttemptOutcome::HandedOff { .. }),
+            _ => false,
+        })
+        .collect();
+    let projection = crate::build_log::projection(&facts, &build).expect("the Build's acceptance");
+    let completed_at = projection.completed_at;
+
+    estate.stop().await;
+    let spans = estate.spans();
+    // What the resumed process wrote after its resume, by span: its receipt, its frame and its rows.
+    let after: Vec<Value> = spans_of_pid(&estate, rt.pid).into_iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= resumed_at).collect();
+    let mut seen: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for sp in &after {
+        let n = s(&sp["name"]);
+        if n.contains(".reject.") || n.contains("via-node-row") || n.contains("receipt") || n.contains("via-attempt-run") || n.contains("via-stale") || n.contains("via-superseded") || n.contains("via-deleted-birth") {
+            seen.entry(n).or_default().push(format!("{} {} {}", attr(sp, "outcome"), attr(sp, "build_id"), attr(sp, "attempt")));
+        }
+    }
+    println!("the resumed birth's spans after its resume ({} in all): {seen:#?}", after.len());
+    let refusals: Vec<Value> = spans.iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= resumed_at && (attr(sp, "build_id") == build || attr(sp, "node_id") == node_id) && s(&sp["name"]).contains(".reject.")).cloned().collect();
+    for sp in &refusals {
+        println!("refusal after the resume: {} at {} attempt {} trace http://192.168.68.99:16687/trace/{}", s(&sp["name"]), attr(sp, "node"), attr(sp, "attempt"), s(&sp["trace_id"]));
+    }
+    assert!(landed.is_empty(), "nothing of the superseded attempt {superseded} lands in the Build's journal: {landed:#?}");
+    assert!(completed_at.is_some_and(|a| a > superseded), "the Build is decided by the next attempt's Complete, never the superseded one's: {projection:?}");
+    println!("next attempt claimed: http://192.168.68.99:16687/trace/{}", s(&claim["trace_id"]));
+    estate.record_trace_url(&s(&claim["trace_id"]));
+}
+
 /// CONTRACT (acceptance 2): the fabric-primary dies after claiming an attempt and before dispatching
 /// it. Fabric recovery restores the node it re-creates at its path.name (Q122), which resumes the Build from its projection: it calls the executor the
 /// claim names with `build.attempt.run`, which starts the claimed attempt, and the caller's re-submit

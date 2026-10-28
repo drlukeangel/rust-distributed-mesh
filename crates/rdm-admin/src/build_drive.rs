@@ -175,12 +175,12 @@ impl Gate for OpenGate {
     }
 }
 
-/// Proof that an executor's birth deleted: the exact runtime inspected and found exited. Silence
-/// is not proof.
+/// Proof that an executor's birth deleted: the exact runtime inspected and found exited or
+/// os-stopped (build.md, Q239). Running, unproven and silence are not proof.
 #[async_trait::async_trait]
 pub trait DepartureProof: Send + Sync {
-    /// `Ok` when the provider reads the birth `executor` names in this admin's view exited; `Err` names why
-    /// it is not.
+    /// `Ok` when the provider reads the birth `executor` names in this admin's view exited or
+    /// os-stopped; `Err` names why it is not.
     async fn proven(&self, executor: &PathName) -> Result<(), String>;
     /// The fabric primary has claimed attempt `attempt` of `build_id`, whose create of the first
     /// node-admin of `mesh`, no member of which answers, was admitted (mesh-investigation.md step 5),

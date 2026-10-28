@@ -1578,6 +1578,63 @@ mod tests {
         assert!(attr(&unreadable, "error").contains("Input/output error (os error 5)"), "{unreadable:?}");
     }
 
+    /// CONTRACT (build.md: "when the executor is lost with the attempt unfinished, after the provider's
+    /// inspection of the executor's exact runtime answers `exited` or `os-stopped`: `running`,
+    /// `unproven` and silence never let another claimant take it"; Q239 A narrowed): the fabric-primary
+    /// proves a lost executor `mesh2.admin.1` departed by its exact runtime as the provider reads it.
+    /// Exited and os-stopped: proven, and the view is projected again for the next attempt. Running
+    /// and unproven (the provider's `Unknown`): refused naming the verdict, nothing projected. Must NOT
+    /// happen: an os-stopped executor's attempt held, or a running or unproven one's taken.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn the_executor_departure_is_proven_on_exited_or_os_stopped_and_never_on_running_or_unproven() {
+        use crate::build_drive::DepartureProof as _;
+        use crate::deployment::provider::DeploymentStatus;
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-verdicts")).unwrap();
+        let mut executor = digest("mesh2.admin.1", MemberStatus::ReadyForTraffic);
+        executor.node.runtime = Some(fact.clone());
+        let digest_view = DigestView::default();
+        for d in [executor.clone(), digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic)] {
+            digest_view.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        let executor_name: PathName = "mesh2.admin.1".parse().unwrap();
+        for (status, verdict, proven) in [
+            (DeploymentStatus::Exited { code: Some(137) }, "exited", true),
+            (DeploymentStatus::OsStopped, "os-stopped", true),
+            (DeploymentStatus::Running, "running", false),
+            (DeploymentStatus::Unknown, "unavailable", false),
+        ] {
+            let refreshed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status, inspected: Default::default() });
+            let departure = ProviderDeparture {
+                me: "mesh1.admin.1".parse().unwrap(),
+                topology: Arc::new(RwLock::new(view.clone())),
+                refresh: {
+                    let refreshed = refreshed.clone();
+                    Arc::new(move || {
+                        refreshed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Box::pin(async {})
+                    })
+                },
+                digest_view: digest_view.clone(),
+                provider: provider.clone(),
+                nodes: Arc::new(crate::storage::MemoryNodesStorage::default()),
+                records: Arc::new(Records::default()),
+            };
+            let answer = departure.proven(&executor_name).await;
+            assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 1, "{verdict}: the exact runtime is inspected once");
+            match (proven, &answer) {
+                (true, Ok(())) => assert_eq!(refreshed.load(std::sync::atomic::Ordering::SeqCst), 1, "{verdict}: the view is projected again for the next attempt"),
+                (false, Err(why)) => {
+                    assert!(why.contains(verdict), "{verdict}: the refusal names the verdict: {why}");
+                    assert_eq!(refreshed.load(std::sync::atomic::Ordering::SeqCst), 0, "{verdict}: nothing is projected for an attempt that is held");
+                }
+                _ => panic!("{verdict}: the departure is {} but the proof answered {answer:?}", if proven { "proven" } else { "not proven" }),
+            }
+        }
+    }
+
     /// The mesh primary `mesh2.admin.1`'s recovery of its own mesh's births, over `digest_view`, `provider`
     /// and `nodes_storage`, and the TRUE OFFLINE member `mesh2.rpc.1` of `view`.
     fn recovery_of(view: &Topology, digest_view: DigestView, provider: Arc<dyn DeploymentProvider>, nodes_storage: Arc<dyn crate::storage::NodesStorage>) -> (RecoverySubmitter, Arc<dyn crate::storage::NodesStorage>, Node) {

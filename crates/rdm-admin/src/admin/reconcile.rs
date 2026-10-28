@@ -174,12 +174,15 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
                 format!("the view holds no runtime for {executor} ({}) at {} and no durable runtime row of that birth was ever written at {me}", n.node_id, incarnation.as_str())
             })?)
         };
+        // Exited or os-stopped is proof (build.md, Q239): an os-stopped runtime is left as it is, and
+        // if it resumes after the next attempt is claimed it is a deleted birth whose writes every
+        // reader refuses. Running and unproven never are.
         match crate::admin::inspection_of(&*self.provider, &held_row, row.as_ref()).await {
-            Inspected::Exited(_) => {
+            Inspected::Exited(_) | Inspected::OsStopped => {
                 (self.refresh)().await;
                 Ok(())
             }
-            other => Err(format!("its exact runtime is not exited: {}", crate::admin::verdict_name(&other))),
+            other => Err(format!("its exact runtime is neither exited nor os-stopped: {}", crate::admin::verdict_name(&other))),
         }
     }
 
