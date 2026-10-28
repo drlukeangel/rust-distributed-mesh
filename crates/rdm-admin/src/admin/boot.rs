@@ -1977,7 +1977,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(&own.lock().unwrap())), rafka_time.clone()).with_stored(stored).with_gone(gone).with_own_row(own_row)));
                             }
                             // A birth the view shows superseded (a later incarnation of its node held, or its node
-                            // departed): the declared-state rows this admin put for it as an authority are tombstoned.
+                            // deleted): the declared-state rows this admin put for it as an authority are tombstoned.
                             let superseded_rows_task = {
                                 let (digest_view, authority) = (topology_view.digest_view.clone(), authority.clone());
                                 let stop = stop_gate.clone();
@@ -2729,7 +2729,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // node-recovery.md "Failure and receipts": a birth whose workflow in the
                                                     // accepted Build stopped at a Failed attempt is submitted again, read from the
                                                     // durable facts each tick, whether or not the view still holds it (a workflow
-                                                    // whose delete completed departed it) and whoever submitted it before. One submit
+                                                    // whose delete completed deleted it) and whoever submitted it before. One submit
                                                     // per birth in flight, whichever way it is due, and on the same backoff.
                                                     let owed_now = recovery.owed_submits(holds_seat, &mesh).await;
                                                     let owed_births: HashSet<(NodeId, IncarnationId)> = owed_now.iter().map(|o| (o.node_id.clone(), o.incarnation.clone())).collect();

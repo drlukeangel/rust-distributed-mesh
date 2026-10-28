@@ -83,7 +83,7 @@ pub fn feed_once(digest_view: &DigestView, resolver: &LiveNodeResolver, node: &s
     let node = held_holder.as_deref().unwrap_or(node);
     for op in digest_view.deleted() {
         let applied = resolver.depart(&op.node_id, &op.incarnation, &op.name);
-        if applied == Applied::Departed {
+        if applied == Applied::Deleted {
             tracing::info_span!("rdm.node_rpc.node.remove.via-topology", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.as_str())
                 .in_scope(|| tracing::info!("the resolver holds the departure: Gone"));
         }
@@ -100,7 +100,7 @@ pub fn feed_once(digest_view: &DigestView, resolver: &LiveNodeResolver, node: &s
         let Some(birth) = resolved(&d) else { continue };
         let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.to_string());
         match resolver.apply(birth, d.node.supersedes.as_ref()) {
-            Applied::Unchanged | Applied::Departed => {}
+            Applied::Unchanged | Applied::Deleted => {}
             Applied::Refused(r) => tracing::info_span!("rdm.node_rpc.node.reject.via-topology", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, reason = ?r)
                 .in_scope(|| tracing::info!("a held birth the resolver does not take")),
             change => tracing::info_span!("rdm.node_rpc.node.update.via-topology", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, change = ?change)

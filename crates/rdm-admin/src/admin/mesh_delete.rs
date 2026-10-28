@@ -439,7 +439,7 @@ impl AdminRunner {
     /// (`primary`, the surviving admin the election seated or the one node-admin this fabric-primary
     /// created for the mesh) is its primary now (mesh-delete.md, "Resume after the primary's loss",
     /// steps 1-2; [`crate::mesh_delete::resume_after_loss`]): the lost birth's runtime is read from
-    /// this admin's durable runtime row of it, never from the view, which drops a departed birth.
+    /// this admin's durable runtime row of it, never from the view, which drops a deleted birth.
     async fn amend_after_loss(&self, key: &MeshDeleteKey, adm: &Admitted, primary: &Node, held: &RosterBirth) -> Result<(), RunEnd> {
         let outer = key.operation.as_str();
         if primary.kind != NodeKind::NodeAdmin {
@@ -689,7 +689,7 @@ impl AdminRunner {
     }
 
     /// mesh-left: the complete proof set `all` (every birth, the final primary included) is recorded
-    /// as the `MeshLeft` receipt after the mesh's departed contacts are dropped and its row Dead is
+    /// as the `MeshLeft` receipt after the mesh's deleted contacts are dropped and its row Dead is
     /// ensured; then the mesh-left hook runs and the mesh's id is dropped.
     async fn record_mesh_left(&self, key: &MeshDeleteKey, mesh: &str, all: ExitManifest) -> Result<(), String> {
         let (build_id, attempt, outer, mesh_id) = (key.build_id.clone(), key.attempt, key.operation.as_str(), &key.mesh_id);

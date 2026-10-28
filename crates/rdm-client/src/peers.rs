@@ -44,7 +44,7 @@ pub struct Peers {
     rpc: Arc<NodeRpcClient>,
     resolver: Arc<StaticResolver>,
     /// The birth each `path.name` resolves to now: a name that moves to another node id retires the
-    /// id it held, so a call by path reaches the current birth and never a departed one.
+    /// id it held, so a call by path reaches the current birth and never a deleted one.
     held: Mutex<HashMap<PathName, NodeId>>,
     _endpoint: iroh::Endpoint,
 }

@@ -66,7 +66,7 @@ pub enum ResolveReply {
         /// The resolved node's incarnation.
         incarnation_id: String,
     },
-    /// The node departed and does not return.
+    /// The node deleted and does not return.
     Gone {
         /// Who answered.
         by: AnsweredBy,

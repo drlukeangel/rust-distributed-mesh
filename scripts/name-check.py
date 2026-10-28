@@ -197,6 +197,8 @@ TREE_BANNED = [
     # rdm#88: the state is connections-deleting (RDM_CONNECTIONS_DELETE_DEADLINE_MS). A serialized name that carries the
     # word (drain-node, via-drain, node-draining) is joined by - or _ and stays; Vec::drain is a method call and stays.
     ("drain", r"(?<![-_.A-Za-z])drain(s|ed|ing)?(?![-_A-Za-z(])", ["crates", "docs/architecture", "docs/reference"]),
+    # rdm#88: a deleted birth (node.deleted); the investigation's exited verdict is the proof.
+    ("departed", r"departed", ["crates", "docs/architecture", "docs/reference"]),
 ]
 for label, pattern, scope in TREE_BANNED:
     out = subprocess.run(["git", "grep", "-n", "-I", "-i", "-P", pattern, head, "--", *scope,

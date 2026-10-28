@@ -355,7 +355,7 @@ The typed result of a Status call.
 | 3.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The answering birth's logical node. |
 | 3.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The answering birth's incarnation. |
 | 3.2 | `state` | `NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  |  | The birth's current state. |
-| 4 | **`RejectedStaleIncarnation`** |  |  | `name() = "rejected-stale-incarnation"` | The receiver holds a newer incarnation of that NodeId, or holds it as departed. |
+| 4 | **`RejectedStaleIncarnation`** |  |  | `name() = "rejected-stale-incarnation"` | The receiver holds a newer incarnation of that NodeId, or holds it as deleted. |
 | 4.0 | `held` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation held. |
 | 5 | **`RejectedStaleMesh`** |  |  | `name() = "rejected-stale-mesh"` | The receiver holds another mesh id under that mesh name. |
 | 5.0 | `held` | `MeshId` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  | The mesh id held. |
@@ -697,7 +697,7 @@ One frame of a topology read.
 | 0.5 | `chunk_count` | `u32` |  |  | The number of chunks in the snapshot. |
 | 0.6 | `digests` | `Vec<ProjectionEntry>` → [`ProjectionEntry`](#t-rdm_core-wire-ProjectionEntry) |  |  | The members this chunk carries, each a member projection entry: its digest, then the |
 | 0.7 | `in_flight` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  |  | The open lifecycle overlays this chunk carries. |
-| 0.8 | `departed` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  |  | The retained proven departures this chunk carries. |
+| 0.8 | `deleted` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  |  | The retained proven departures this chunk carries. |
 | 1 | **`Unchanged`** |  |  | `name() = "unchanged"` | The caller's `since` is the target's held source version for `mesh`. |
 | 1.0 | `mesh` | `String` |  |  | The source mesh's name. |
 | 1.1 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  |  | The publisher of the version held. |
@@ -1327,7 +1327,7 @@ A resolve probe answer.
 | 0.1 | `node_id` | `String` |  |  | The resolved node's id. |
 | 0.2 | `name` | `String` |  |  | The resolved node's `path.name`. |
 | 0.3 | `incarnation_id` | `String` |  |  | The resolved node's incarnation. |
-| 1 | **`Gone`** |  |  | `resolution() = "gone"` | The node departed and does not return. |
+| 1 | **`Gone`** |  |  | `resolution() = "gone"` | The node deleted and does not return. |
 | 1.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-resolve_probe-AnsweredBy) |  |  | Who answered. |
 | 2 | **`Unknown`** |  |  | `resolution() = "unknown"` | No node by that target was ever known. |
 | 2.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-resolve_probe-AnsweredBy) |  |  | Who answered. |
@@ -2897,7 +2897,7 @@ Why a resolver gave no node.
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Unknown`** |  |  | No node by that target was ever known. |
-| 1 | **`Gone`** |  |  | The node departed and does not return. |
+| 1 | **`Gone`** |  |  | The node deleted and does not return. |
 | 2 | **`Unavailable`** |  |  | The node is known and cannot be reached now. |
 
 <a id="t-rdm_core-status-RetryOn"></a>
@@ -2910,7 +2910,7 @@ The event a Blocked `pre_node_ready` hook runs again on (fabric-node-hooks.md, "
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
-| 0 | **`PrimaryChanged`** |  |  | `name() = "primary-changed"` | The authority's birth changed or departed. |
+| 0 | **`PrimaryChanged`** |  |  | `name() = "primary-changed"` | The authority's birth changed or deleted. |
 | 1 | **`TargetReachable`** |  |  | `name() = "target-reachable"` | The named node became reachable (heard after silence, or first heard). |
 | 1.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The node waited for. |
 | 2 | **`PrimaryReady`** |  |  | `name() = "primary-ready"` | The authority published Ready. |

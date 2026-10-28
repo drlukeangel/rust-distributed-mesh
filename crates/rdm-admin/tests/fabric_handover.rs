@@ -692,7 +692,7 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
 /// acknowledged. M (`mesh1.admin.3`) was never mesh1's primary: X, resuming an attempt whose node.stop
 /// acts on M, finds no update to acknowledge and makes no call. Once P's update to N happened (P
 /// replaced by N at 4 in X's view), the same read of the update named for P obtains N's
-/// node.primary.updated on a call. Must NOT happen: a node that was never primary read as a departed
+/// node.primary.updated on a call. Must NOT happen: a node that was never primary read as a deleted
 /// primary, or a 0x21 call made for it.
 #[test]
 fn an_update_named_for_a_node_that_was_never_primary_is_no_update_and_calls_no_one() {

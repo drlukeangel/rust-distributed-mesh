@@ -175,7 +175,7 @@ impl Gate for OpenGate {
     }
 }
 
-/// Proof that an executor's birth departed: the exact runtime inspected and found exited. Silence
+/// Proof that an executor's birth deleted: the exact runtime inspected and found exited. Silence
 /// is not proof.
 #[async_trait::async_trait]
 pub trait DepartureProof: Send + Sync {
@@ -1028,7 +1028,7 @@ impl DriveEnv {
         DriveEnd::Stalled(why)
     }
 
-    /// The end of the fabric lane's `attempt` (its terminal, or its take-over from a proven-departed
+    /// The end of the fabric lane's `attempt` (its terminal, or its take-over from a proven-exited
     /// executor) releases the in-flight row it took (R-BI7 caveat 3), while the row still names that
     /// attempt: its executor's mesh's, and, for a node recovery, the recovered node's mesh's, which the
     /// recovery takes whoever executes it (`ControlPlane`'s recovery claim). A release that cannot be
@@ -1189,7 +1189,7 @@ impl DriveEnv {
     async fn pass(self: &Arc<Self>, drive: &Arc<Drive>, dispatches: &mut u32, last_turn: &mut Option<crate::stop_gate::Turn>) -> DriveEnd {
         let id = drive.build_id.clone();
         let mut handed_to: Option<PathName> = None;
-        let mut departed: Option<String> = None;
+        let mut deleted: Option<String> = None;
         loop {
             // Each pass is one turn of the admin's gate (stop_gate.rs): it begins here, holding
             // nothing, and while the admin is stopped it begins only once the admin starts. A pass in
@@ -1263,9 +1263,9 @@ impl DriveEnv {
                 }
             }
             let crashed = self.unanswered_meshes(&p);
-            // The claim's holder was proven departed by this pass: the next attempt is claimed without
+            // The claim's holder was proven exited by this pass: the next attempt is claimed without
             // calling the lost holder again.
-            let take_over = departed.as_deref().is_some_and(|d| p.executor.as_deref() == Some(d));
+            let take_over = deleted.as_deref().is_some_and(|d| p.executor.as_deref() == Some(d));
             let (attempt, executor, context) = if p.state == BuildState::Running && !take_over {
                 let holder = p.executor.clone().unwrap_or_default();
                 let Some(holder) = parse_path(&holder) else {
@@ -1302,7 +1302,7 @@ impl DriveEnv {
                     Ok(false) => {}
                     Err(end) => return end,
                 }
-                // A taken-over attempt ends with its proven-departed executor: its hold on that
+                // A taken-over attempt ends with its proven-exited executor: its hold on that
                 // executor's mesh goes before the next attempt takes the mesh.
                 if take_over {
                     if let Some(lost) = p.executor.as_deref().and_then(parse_path) {
@@ -1416,7 +1416,7 @@ impl DriveEnv {
                         }
                     }
                     handed_to = Some(next);
-                    departed = None;
+                    deleted = None;
                 }
                 Inner::Terminal(other) => {
                     dspan.record("outcome", "protocol-violation");
@@ -1442,14 +1442,14 @@ impl DriveEnv {
                     // Why the inner call to the executor ended: what the next step (the departure proof) answers.
                     dspan.record("reason", detail.as_str());
                     // Only a proven departure lets another admin take the attempt; silence never does.
-                    if departed.is_some() {
-                        return self.stalled(&me, drive, format!("{executor} was proven departed and the attempt claimed after it could not be dispatched either: {detail}"));
+                    if deleted.is_some() {
+                        return self.stalled(&me, drive, format!("{executor} was proven exited and the attempt claimed after it could not be dispatched either: {detail}"));
                     }
                     match self.departure.proven(&executor).await {
                         Ok(()) => {
                             tracing::info_span!("rdm.node_admin.build.update.via-departure-proven", build_id = %id.log(), attempt, executor = %executor, node = %me)
                                 .in_scope(|| tracing::info!("the executor's exact runtime is proven exited: the next attempt may be claimed"));
-                            departed = Some(executor.to_string());
+                            deleted = Some(executor.to_string());
                         }
                         Err(not_proven) => {
                             let why = format!("executor {executor} is {class} ({detail}); its departure is not proven ({not_proven}); the attempt is not claimed for another admin");
@@ -1497,7 +1497,7 @@ impl DriveEnv {
 
     /// Where `p`, which the fabric.delete `delete` interrupts, stands, and its terminal written once its
     /// attempts ended (build.md §1). An attempt running at its executor ends within its bound: the run
-    /// stops at its next operation and hands back, and one whose executor departed ends on that
+    /// stops at its next operation and hands back, and one whose executor deleted ends on that
     /// departure's exact proof, the attempt failing then. With no attempt running, this fabric-primary
     /// claims the next attempt for itself and ends it `Failed` naming the delete, running nothing: the
     /// Build's terminal, after which nothing reconciles it again.

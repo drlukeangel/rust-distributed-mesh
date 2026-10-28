@@ -121,7 +121,7 @@ pub enum ConnectionKind {
 /// Why a [`Connection`] closed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Closed {
-    /// The peer closed the connection or departed.
+    /// The peer closed the connection or deleted.
     PeerLeft,
     /// Closed by `node.connections.delete`.
     ConnectionsDeleted,

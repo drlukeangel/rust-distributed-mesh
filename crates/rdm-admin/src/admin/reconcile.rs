@@ -133,7 +133,7 @@ impl crate::build_drive::Gate for SeatGate {
     }
 }
 
-/// Proof that an executor's birth departed (build.md: "after exact departure proof"): the provider
+/// Proof that an executor's birth deleted (build.md: "after exact departure proof"): the provider
 /// inspects the exact runtime the digest view or the durable runtime rows name for it, and only an
 /// exited runtime counts.
 pub(crate) struct ProviderDeparture {

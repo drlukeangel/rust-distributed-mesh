@@ -724,7 +724,7 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
 /// and its node.create refuses at PrepareStorage, so the attempt ends Failed. mesh2's primary is then
 /// killed with the key still missing (nothing it submitted can complete), and mesh2's other admin
 /// takes the seat. Once no attempt for the member is in flight, the key is put back. The new
-/// mesh-primary never submitted for the member, never inspects it (its birth departed) and holds
+/// mesh-primary never submitted for the member, never inspects it (its birth deleted) and holds
 /// nothing of it in memory: it reads the accepted Build's Failed attempt and reports the same birth's
 /// recovery to the fabric-primary in mesh1, which opens it; the new mesh-primary claims it through
 /// BuildClaim and runs it (node-recovery.md "Execution", Q118). A later attempt of mesh2's lane of the same Build runs
@@ -863,7 +863,7 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
         .expect("the open of the completing attempt");
     assert!(
         !named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").iter().any(|sp| sp["attributes"]["node_id"] == before["node_id"] && sp["attributes"]["inspector"] == heir.as_str()),
-        "{heir} never inspected the departed birth: the submit came from the durable facts"
+        "{heir} never inspected the deleted birth: the submit came from the durable facts"
     );
     let reconcile = lane_reconcile_span(&run, &birth_build, "mesh2", &attempt.to_string()).expect("the attempt's reconcile span");
     assert_eq!(s(&reconcile["attributes"]["operations"]), format!("node.create:{NODE}"), "only what was left: {reconcile}");

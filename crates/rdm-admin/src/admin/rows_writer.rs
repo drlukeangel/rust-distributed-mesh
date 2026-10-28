@@ -65,12 +65,12 @@ impl MeshRowsWriter {
     /// One sweep over the births `held` (every birth of the fabric this admin holds, itself
     /// included, each with the primaries its view holds for it), `writes` the meshes whose rows this
     /// admin writes now (its own mesh while it is its mesh-primary; a mesh with no primary while it is
-    /// the fabric-primary), `departed` whether the view holds a node departed. Returns whether a row is
+    /// the fabric-primary), `deleted` whether the view holds a node deleted. Returns whether a row is
     /// owed: a write or a read the store did not acknowledge, or a member whose record is not written
     /// yet (its create's claim or its arrival writes it), which the caller retries on its own clock
     /// under the one backoff rule (node-identity-and-state.md §2.7), never waiting for a birth or a
     /// primary change.
-    pub(crate) async fn sweep(&mut self, held: &[MeshDigest], writes: &std::collections::BTreeSet<String>, departed: impl Fn(&NodeId) -> bool) -> bool {
+    pub(crate) async fn sweep(&mut self, held: &[MeshDigest], writes: &std::collections::BTreeSet<String>, deleted: impl Fn(&NodeId) -> bool) -> bool {
         if !writes.contains(&self.mesh) {
             self.claim = None;
         } else if self.claim.is_none() {
@@ -87,11 +87,11 @@ impl MeshRowsWriter {
         // none, and a whole write from this admin's older copy would replace what its primary wrote.
         let primaried: std::collections::BTreeSet<&str> = held
             .iter()
-            .filter(|d| d.node.name.mesh != self.mesh && d.node.name.kind == crate::model::NodeKind::NodeAdmin && d.is_primary.is_some() && !departed(&d.node.node_id))
+            .filter(|d| d.node.name.mesh != self.mesh && d.node.name.kind == crate::model::NodeKind::NodeAdmin && d.is_primary.is_some() && !deleted(&d.node.node_id))
             .map(|d| d.node.name.mesh.as_str())
             .collect();
-        // A departed birth is never written: its node's record is written `Deleted` by its delete.
-        for d in held.iter().filter(|d| !departed(&d.node.node_id) && writes.contains(&d.node.name.mesh) && !primaried.contains(d.node.name.mesh.as_str()) && (d.node.name.mesh != self.mesh || own)) {
+        // A deleted birth is never written: its node's record is written `Deleted` by its delete.
+        for d in held.iter().filter(|d| !deleted(&d.node.node_id) && writes.contains(&d.node.name.mesh) && !primaried.contains(d.node.name.mesh.as_str()) && (d.node.name.mesh != self.mesh || own)) {
             let mesh_id = if d.node.name.mesh == self.mesh { Some(self.mesh_id.clone()) } else { d.mesh_id.clone() };
             // The birth's address and the primaries the view holds, put whole on its record from the copy
             // this admin holds; a `Deleted` record is left as it stands.

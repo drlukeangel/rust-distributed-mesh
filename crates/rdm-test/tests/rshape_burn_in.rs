@@ -2491,7 +2491,7 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
         let id = s(&d["attributes"]["node_id"]);
         let after: Vec<&&Value> = ready.iter().filter(|r| r["attributes"]["node_id"] == id.as_str() && start_ns(r) > start_ns(d)).collect();
         assert!(after.is_empty(), "a retired NodeId {id} was ready again after its departure: {after:?}");
-        retired.push(json!({"node": d["attributes"]["node"], "node_id": id, "incarnation_id": d["attributes"]["incarnation_id"], "departed_ns": start_ns(d)}));
+        retired.push(json!({"node": d["attributes"]["node"], "node_id": id, "incarnation_id": d["attributes"]["incarnation_id"], "deleted_ns": start_ns(d)}));
     }
     inv.holds("no retired NodeId is Ready again after its departure; a replacement is a new NodeId", true, json!({"retired": retired}));
     // A restart keeps the birth: every Ready of a restarted admin's NodeId carries its one incarnation.

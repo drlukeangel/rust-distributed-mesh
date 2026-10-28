@@ -33,7 +33,7 @@ pub enum Birth {
     /// The node's current process birth.
     Current(IncarnationId),
     /// The node left, or another node holds its path now: no birth of it is current.
-    Departed,
+    Deleted,
     /// The topology view does not hold the node: nothing is judged.
     Unknown,
 }
@@ -54,7 +54,7 @@ impl StaticIncarnations {
         self.0.write().unwrap().insert(node_id, (path, Some(incarnation)));
     }
 
-    /// `node_id` departed.
+    /// `node_id` deleted.
     pub fn depart(&self, node_id: NodeId, path: PathName) {
         self.0.write().unwrap().insert(node_id, (path, None));
     }
@@ -64,7 +64,7 @@ impl CurrentIncarnations for StaticIncarnations {
     fn birth(&self, node_id: &NodeId, _path: &PathName) -> Birth {
         match self.0.read().unwrap().get(node_id) {
             Some((_, Some(i))) => Birth::Current(i.clone()),
-            Some((_, None)) => Birth::Departed,
+            Some((_, None)) => Birth::Deleted,
             None => Birth::Unknown,
         }
     }
@@ -310,14 +310,14 @@ impl ConnectionsHeld {
         self.topology_view = Some(topology_view);
     }
 
-    /// Whether `end` names a process the topology view does not hold now: its node departed, another
+    /// Whether `end` names a process the topology view does not hold now: its node deleted, another
     /// node holds its path, or the node is here under another birth. An end naming no process is
     /// judged only on departure; a node the topology view does not hold is not judged.
     pub fn end_superseded(&self, end: &ConnectionEnd) -> Option<bool> {
         let m = self.topology_view.as_ref()?;
         match m.birth(&end.node_id, &end.name) {
             Birth::Current(now) => Some(end.incarnation.as_ref().is_some_and(|named| *named != now)),
-            Birth::Departed => Some(true),
+            Birth::Deleted => Some(true),
             Birth::Unknown => None,
         }
     }

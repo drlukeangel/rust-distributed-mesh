@@ -305,7 +305,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={} outcome=row-written over={}", s(&new_claim["trace_id"]), s(&m2["id"]), mesh_ids["mesh2"]);
     let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["incarnation_id"] == new_admin["incarnation_id"]).expect("the recreated mesh2.admin.1 reports ready");
     assert_eq!(s(&ready["attributes"]["mesh_id"]), s(&m2["id"]), "under the new MeshId");
-    // A mesh created again is a new mesh (R-MN1): the removed mesh's births departed at mesh-left,
+    // A mesh created again is a new mesh (R-MN1): the removed mesh's births deleted at mesh-left,
     // so its first admin enters from none of them, and each member is a create over the Deleted
     // rows, never a replace of a removed birth.
     let old_ids: BTreeSet<String> = regrown.iter().filter(|n| n["mesh"] == "mesh2").map(|n| s(&n["node_id"])).collect();

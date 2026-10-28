@@ -168,7 +168,7 @@ fn mesh_executor(mesh: &str, target: Option<&PathName>, t: &Topology) -> Option<
 /// The node-admins of `mesh` (other than `target`) that hold no seat and are not proven gone: the
 /// same-mesh successors an operation on the mesh waits for. Proven gone in this view is `Dead` (an
 /// exit proven for the exact birth; the offline mark is only for an admin's own mesh, which is
-/// never the fallback case), `Leaving` and `Deleted`; a departed birth has left the view.
+/// never the fallback case), `Leaving` and `Deleted`; a deleted birth has left the view.
 pub fn held_admins<'a>(mesh: &str, target: Option<&PathName>, t: &'a Topology) -> Vec<&'a crate::model::Node> {
     use crate::model::NodeStatus;
     t.nodes_of_type(mesh, NodeKind::NodeAdmin).filter(|n| Some(&n.name) != target && matches!(n.status, NodeStatus::Ready | NodeStatus::ConnectionsDeleting | NodeStatus::PendingReconnect)).collect()

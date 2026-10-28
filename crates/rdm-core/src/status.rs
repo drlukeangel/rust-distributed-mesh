@@ -27,7 +27,7 @@
 //! Legal moves run forward along `Pending -> Ready -> ConnectionsDeleting -> Stopped` (and
 //! `Pending -> Ready -> Leaving -> Dead` for a Mesh), skips included; the same
 //! state again is `AlreadyApplied`, a backward move `RejectedInvalidNodeTransition` or `RejectedInvalidMeshTransition`. A declaration
-//! for a birth the receiver holds a newer incarnation of, or holds as departed, is
+//! for a birth the receiver holds a newer incarnation of, or holds as deleted, is
 //! `RejectedStaleIncarnation`. A receiver that is not the authority, or a sender that is not the
 //! subject or its primary, is `RejectedNotPrimary`, the reply naming which.
 
@@ -1022,7 +1022,7 @@ pub enum StatusReply {
         /// The birth's current state.
         state: NodeState,
     },
-    /// The receiver holds a newer incarnation of that NodeId, or holds it as departed.
+    /// The receiver holds a newer incarnation of that NodeId, or holds it as deleted.
     RejectedStaleIncarnation {
         /// The incarnation held.
         held: IncarnationId,
@@ -1465,7 +1465,7 @@ pub enum StatusReply {
 /// and the gate"). Positional order is part of the wire schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RetryOn {
-    /// The authority's birth changed or departed.
+    /// The authority's birth changed or deleted.
     PrimaryChanged,
     /// The named node became reachable (heard after silence, or first heard).
     TargetReachable {

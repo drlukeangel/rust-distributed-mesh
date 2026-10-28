@@ -99,7 +99,7 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use TopologyReply::*;
     let fixtures = [
-        (Snapshot { mesh: "m".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], departed: vec![] }, "00 016d 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 00 00 00"),
+        (Snapshot { mesh: "m".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] }, "00 016d 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 00 00 00"),
         (Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 7 }, "01 016d 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 07"),
         (End { meshes: 2 }, "0202"),
         (NotReady { reason: "n".into() }, "03016e"),
@@ -162,7 +162,7 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
         load: None,
         gossip: None, is_primary: None, is_fabric_primary: None
     };
-    let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![ProjectionEntry::from(&d)], in_flight: vec![], departed: vec![] };
+    let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![ProjectionEntry::from(&d)], in_flight: vec![], deleted: vec![] };
     let hex = "00 05 6d65736831 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
         0c 313132333435363738396162 0c 303132333435363738396162 0b 6d657368312e7270632e31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
         01 00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
@@ -196,7 +196,7 @@ fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
         chunk_count: 1,
         digests: vec![ProjectionEntry::from(&d)],
         in_flight: vec![op.clone()],
-        departed: vec![op],
+        deleted: vec![op],
     };
     let bytes = Topology::encode_reply(&r).unwrap();
     assert_eq!(bytes[0], 0x00, "variant 0");

@@ -101,13 +101,13 @@ pub type TopologySlot = Arc<OnceLock<Arc<TopologyDoor>>>;
 /// The chunks of one held source as the replies that carry them, in the one chunking gossip uses.
 pub fn snapshot_replies(s: &SourceSnapshot, snapshot_id: u64) -> Vec<TopologyReply> {
     let full = s.full();
-    chunks_measured(&full, |digests, in_flight, departed, chunk_index, chunk_count| TopologyReply::Snapshot {
+    chunks_measured(&full, |digests, in_flight, deleted, chunk_index, chunk_count| TopologyReply::Snapshot {
         mesh: s.mesh.clone(),
         publisher: s.publisher.clone(),
         topology_version: s.topology_version,
         snapshot_id, chunk_index, chunk_count,
         digests: digests.iter().map(ProjectionEntry::from).collect(),
-        in_flight, departed,
+        in_flight, deleted,
     }, |reply| rdm_transport::wire::encode(reply).expect("topology reply serializes"))
 }
 
@@ -483,7 +483,7 @@ async fn read_with(
         match item {
             StreamItem::Frame(FrameKind::Refusal(_), r) => return Err(refusal_of(r)),
             StreamItem::Frame(_, TopologyReply::Started) => {}
-            StreamItem::Frame(_, TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed }) => {
+            StreamItem::Frame(_, TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }) => {
                 let chunk = Chunk {
                     mesh,
                     publisher,
@@ -494,7 +494,7 @@ async fn read_with(
                     chunk_count,
                     digests: digests.into_iter().map(MeshDigest::from).collect(),
                     in_flight,
-                    deleted: departed,
+                    deleted: deleted,
                 };
                 match take(chunk) {
                     Taken::Waiting { .. } => {}

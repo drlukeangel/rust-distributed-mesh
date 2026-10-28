@@ -243,7 +243,7 @@ impl SourceVersion {
 enum Item {
     Digest(MeshDigest),
     InFlight(LifecycleOp),
-    Departed(LifecycleOp),
+    Deleted(LifecycleOp),
 }
 
 fn split(run: Vec<Item>) -> (Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>) {
@@ -252,7 +252,7 @@ fn split(run: Vec<Item>) -> (Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>
         match it {
             Item::Digest(v) => d.push(v),
             Item::InFlight(v) => i.push(v),
-            Item::Departed(v) => x.push(v),
+            Item::Deleted(v) => x.push(v),
         }
     }
     (d, i, x)
@@ -274,7 +274,7 @@ pub fn chunks_measured<T>(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<Lifec
         .into_iter()
         .map(Item::Digest)
         .chain(full.in_flight().into_iter().map(Item::InFlight))
-        .chain(full.deleted().into_iter().map(Item::Departed))
+        .chain(full.deleted().into_iter().map(Item::Deleted))
         .collect();
     let (sized, refused) = crate::chunking::pack_in_order(items, |run: &[Item]| {
         let (d, i, x) = split(run.to_vec());

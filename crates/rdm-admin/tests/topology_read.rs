@@ -93,7 +93,7 @@ fn publisher(node: &str) -> PublisherId {
 /// `s` held by `m` as a complete snapshot its primary put into the mesh.
 fn hold(m: &TopologyView, s: &SourceSnapshot) {
     for r in snapshot_replies(s, 1) {
-        let TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed: deleted } = r else { unreachable!() };
+        let TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted: deleted } = r else { unreachable!() };
         let t = m.take_read_chunk(Chunk {
             mesh,
             publisher,
@@ -320,7 +320,7 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
                     chunk_count: 2,
                     digests: vec![],
                     in_flight: vec![],
-                    departed: vec![],
+                    deleted: vec![],
                 })
                 .await
                 .unwrap();

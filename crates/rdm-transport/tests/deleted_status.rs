@@ -91,7 +91,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 /// CONTRACT (#3068; R-RX1; fabric-authority.md §7; R-ML2): through real gossip on mesh2's channel.
 /// mesh2.admin.2 holds mesh2's status as the old primary X (mesh2.admin.1) published it, then executes
 /// X's node.delete and publishes `NodeDeleted`; the node-admin joining the live mesh at X's path.name
-/// (a new birth Y) and the member mesh2.rpc.1 each hold X departed. Y's entry answer (mesh2.admin.2's
+/// (a new birth Y) and the member mesh2.rpc.1 each hold X deleted. Y's entry answer (mesh2.admin.2's
 /// held statuses, the original publisher kept) gives Y its mesh's status before Y's first heartbeat: Y
 /// takes it and holds X's exact fact to adopt. The same answer at mesh2.rpc.1, where no live birth holds
 /// the name, is taken too: a status is never refused for its publisher. Once Y's heartbeat reaches the
@@ -100,7 +100,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 #[test]
 fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_entry_answer_before_its_first_heartbeat() {
     let dir = crate::evidence_dir();
-    let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-s41-departed-status").expect("the cell's evidence file can be created");
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-s41-deleted-status").expect("the cell's evidence file can be created");
     capture.run(4, async {
         let (p_node, m_node, y_node) = (node().await, node().await, node().await);
         let p_addr = addr_of(&p_node.ep);
@@ -125,7 +125,7 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
         let departure = LifecycleOp { build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "node.delete:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
         p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
-        until("Y and the member to hold X departed", || y.digest_view.is_deleted(x.as_str()) && m.digest_view.is_deleted(x.as_str())).await;
+        until("Y and the member to hold X deleted", || y.digest_view.is_deleted(x.as_str()) && m.digest_view.is_deleted(x.as_str())).await;
         assert!(y.digest_view.all().iter().all(|d| d.node.name.to_string() != "mesh2.admin.1"), "Y has not published: no live birth holds the name in Y's view");
 
         // The entry answer: mesh2.admin.2's held statuses, the original publisher kept.

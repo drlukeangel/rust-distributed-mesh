@@ -231,9 +231,9 @@ impl ControlPlane {
             })
         };
         let mut current = read().await?;
-        // The mesh's own drift attempt whose claimant departed with it unfinished ends on that
-        // departure's exact proof, and the mesh is free for this attempt (`end_departed_attempt`).
-        if holding(&current, Some(mesh)).is_some() && self.end_departed_attempt(&current, mesh).await? {
+        // The mesh's own drift attempt whose claimant exited with it unfinished ends on that
+        // departure's exact proof, and the mesh is free for this attempt (`end_deleted_attempt`).
+        if holding(&current, Some(mesh)).is_some() && self.end_deleted_attempt(&current, mesh).await? {
             current = read().await?;
         }
         if let Some(attempt) = open_unclaimed(&current, mesh, action) {
@@ -275,7 +275,7 @@ impl ControlPlane {
         Ok(proof.proven(claimant).await.ok().map(|()| n))
     }
 
-    /// End `mesh`'s drift attempt of `current` whose claimant departed with it unfinished, when its
+    /// End `mesh`'s drift attempt of `current` whose claimant exited with it unfinished, when its
     /// departure is proven (R-BI7 caveat 2: each mesh-primary claims its mesh's drift attempts on its
     /// mesh's rows; build.md §5.2 as the approved proposal A4 words it: "The next attempt is claimed
     /// after the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the
@@ -285,9 +285,9 @@ impl ControlPlane {
     /// departure (on the fabric's Build journal on the store root, so every fold holds the lane free and
     /// the exits the attempt was recovering are owed a submit again: node-recovery.md "Failure and
     /// receipts"), and its in-flight row of the mesh is released. Answers whether it ended one. An
-    /// attempt this admin claimed, an attempt whose claimant is not proven departed, and the fabric
+    /// attempt this admin claimed, an attempt whose claimant is not proven exited, and the fabric
     /// lane's attempt (its drive takes it over) are left holding the mesh.
-    async fn end_departed_attempt(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<bool, Refusal> {
+    async fn end_deleted_attempt(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<bool, Refusal> {
         let fabric_holds = current.state == BuildState::Running && current.executor.as_deref().and_then(|e| e.parse::<PathName>().ok()).is_some_and(|e| e.mesh == mesh);
         if fabric_holds {
             return self.end_fabric_attempt_of_a_lost_claimant(current, mesh).await;
@@ -299,7 +299,7 @@ impl ControlPlane {
         else {
             return Ok(false);
         };
-        // The admin that runs the attempt departed: its executor (the claimant too, for an attempt its
+        // The admin that runs the attempt deleted: its executor (the claimant too, for an attempt its
         // mesh-primary claimed at its own door; the fabric-primary decided the claim of a reported one).
         let Some(executor) = lane
             .executor
@@ -326,7 +326,7 @@ impl ControlPlane {
             .as_ref()
             .map(|i| i.as_str().to_string())
             .unwrap_or_default();
-        let reason = format!("{executor} ({} at {incarnation}) departed with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven; {me} takes the lane over", n.node_id);
+        let reason = format!("{executor} ({} at {incarnation}) exited with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven; {me} takes the lane over", n.node_id);
         let span = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, executor = %executor, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
         let verdict = crate::build_state::BuildAttemptReceipt {
             mesh: Some(mesh.to_string()),
@@ -339,7 +339,7 @@ impl ControlPlane {
         };
         if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
             span.record("outcome", "verdict-unwritten");
-            span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt could not be ended: the mesh stays held by it"));
+            span.in_scope(|| tracing::info!(error = %e, "the deleted claimant's attempt could not be ended: the mesh stays held by it"));
             return Err(Refusal::State(e));
         }
         let held = crate::mesh_claims::InFlight {
@@ -351,15 +351,15 @@ impl ControlPlane {
         };
         if let Err(e) = self.claims.release_in_flight(mesh, &held).await {
             span.record("outcome", "in-flight-unreleased");
-            span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt is ended and mesh's in-flight row could not be released: the mesh stays held by it"));
+            span.in_scope(|| tracing::info!(error = %e, "the deleted claimant's attempt is ended and mesh's in-flight row could not be released: the mesh stays held by it"));
             return Err(Refusal::Unavailable(format!("{me}: attempt {attempt} of mesh {mesh}'s lane of {} is ended on {executor}'s departure and mesh {mesh}'s in-flight row could not be released: {e}", current.build_id)));
         }
         span.record("outcome", "ended");
-        span.in_scope(|| tracing::info!("the mesh's drift attempt ends with its departed claimant, and its in-flight row is released"));
+        span.in_scope(|| tracing::info!("the mesh's drift attempt ends with its deleted claimant, and its in-flight row is released"));
         Ok(true)
     }
 
-    /// End the fabric lane's attempt of `current` acting in `mesh` whose claimant departed with it unfinished,
+    /// End the fabric lane's attempt of `current` acting in `mesh` whose claimant exited with it unfinished,
     /// on that departure's exact proof: the next one in the same order starts the workflow again, resuming the
     /// attempt from its recorded progress (fabric-recovery.md, Q122; build.md "after exact departure proof").
     async fn end_fabric_attempt_of_a_lost_claimant(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<bool, Refusal> {
@@ -371,22 +371,22 @@ impl ControlPlane {
         let Some(n) = self.departure_of(&claimant).await? else { return Ok(false) };
         let attempt = current.attempt;
         let incarnation = n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default();
-        let reason = format!("{claimant} ({} at {incarnation}) departed with attempt {attempt} of the fabric lane unfinished, acting in mesh {mesh}: its departure is proven; {me} starts the workflow again", n.node_id);
+        let reason = format!("{claimant} ({} at {incarnation}) exited with attempt {attempt} of the fabric lane unfinished, acting in mesh {mesh}: its departure is proven; {me} starts the workflow again", n.node_id);
         let span = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %current.build_id.log(), lane = "fabric", attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
         let verdict = crate::build_state::BuildAttemptReceipt { mesh: None, build_id: current.build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Failed { reason, code: rdm_core::outcome::Code::FailedPrecondition } };
         if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
             span.record("outcome", "verdict-unwritten");
-            span.in_scope(|| tracing::info!(error = %e, "the departed claimant's fabric-lane attempt could not be ended: the mesh stays held by it"));
+            span.in_scope(|| tracing::info!(error = %e, "the deleted claimant's fabric-lane attempt could not be ended: the mesh stays held by it"));
             return Err(Refusal::State(e));
         }
         let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: None, attempt, claimant: claimant.to_string(), claimant_node: None };
         if let Err(e) = self.claims.release_in_flight(mesh, &held).await {
             span.record("outcome", "in-flight-unreleased");
-            span.in_scope(|| tracing::info!(error = %e, "the departed claimant's fabric-lane attempt is ended and the mesh's in-flight row could not be released"));
+            span.in_scope(|| tracing::info!(error = %e, "the deleted claimant's fabric-lane attempt is ended and the mesh's in-flight row could not be released"));
             return Err(Refusal::Unavailable(format!("{me}: attempt {attempt} of {}'s fabric lane is ended on {claimant}'s departure and mesh {mesh}'s in-flight row could not be released: {e}", current.build_id)));
         }
         span.record("outcome", "ended");
-        span.in_scope(|| tracing::info!("the fabric lane's attempt ends with its departed claimant, and the mesh's in-flight row is released"));
+        span.in_scope(|| tracing::info!("the fabric lane's attempt ends with its deleted claimant, and the mesh's in-flight row is released"));
         Ok(true)
     }
 
@@ -1160,21 +1160,21 @@ impl ControlPlane {
                 Err(e) => return Err(Refusal::Unavailable(format!("{me}: the in-flight row of mesh {} could not be read for attempt {attempt} of {}: {e}", path.mesh, current.build_id))),
             };
             if let Some(held) = standing {
-                // A row a departed claimant took for a drift attempt that holds no lane in this admin's
+                // A row a deleted claimant took for a drift attempt that holds no lane in this admin's
                 // fold (its run ended and the row was never released, or nothing of it was written
                 // before the claimant was lost) is released on that departure's exact proof.
-                let departed = match held.claimant.parse::<PathName>() {
+                let deleted = match held.claimant.parse::<PathName>() {
                     Ok(c) if held.lane.as_deref() == Some(path.mesh.as_str()) && c != me && c != self.me => self.departure_of(&c).await?.map(|n| (c, n)),
                     _ => None,
                 };
-                if let Some((claimant, n)) = departed {
+                if let Some((claimant, n)) = deleted {
                     let release = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %held.build_id.log(), lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default(), node = %me, outcome = tracing::field::Empty);
                     if let Err(e) = self.claims.release_in_flight(&path.mesh, &held).await {
                         release.record("outcome", "in-flight-unreleased");
-                        return Err(Refusal::Unavailable(format!("{me}: mesh {}'s in-flight row names attempt {} of {} by {claimant}, which departed; the row could not be released: {e}", path.mesh, held.attempt, held.build_id)));
+                        return Err(Refusal::Unavailable(format!("{me}: mesh {}'s in-flight row names attempt {} of {} by {claimant}, which deleted; the row could not be released: {e}", path.mesh, held.attempt, held.build_id)));
                     }
                     release.record("outcome", "row-released");
-                    release.in_scope(|| tracing::info!("the mesh's in-flight row of a departed claimant's attempt that holds no lane is released"));
+                    release.in_scope(|| tracing::info!("the mesh's in-flight row of a deleted claimant's attempt that holds no lane is released"));
                 } else if self.builds.in_flight_live(&held).await.map_err(Refusal::State)? {
                     return Err(in_progress(route, &outer, &path, held.build_id, Some(held.claimant)));
                 }

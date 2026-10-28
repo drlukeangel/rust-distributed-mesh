@@ -1618,7 +1618,7 @@ impl StatusAuthority {
     /// The declared-state rows of every birth this admin holds that is superseded: the node rows say
     /// another node holds the birth's path.name (a recovery's new node, node-recovery.md) or say the
     /// birth's row released its name (node-delete.md), or `digest_view` holds a later incarnation of
-    /// the node (a superseding birth) or holds the node departed (node.deleted). Which birth holds a
+    /// the node (a superseding birth) or holds the node deleted (node.deleted). Which birth holds a
     /// path.name is the records' answer, never the view's (Q197; node-identity-and-state.md §2.3 "the
     /// deleted row releases the `path.name`"): a birth whose row holds its name live holds it, whatever
     /// digests of other births the view still holds there ([`Self::superseded_on_rows`]). Each such
@@ -3601,7 +3601,7 @@ mod tests {
     /// CONTRACT (#3051, node-recovery.md "Steps": node.delete of the exited instance, then node.create
     /// with a new node.id; a superseding birth: a new incarnation of the same node.id): a birth's declared
     /// state is a fact about that birth only. Once the view holds a later incarnation of the node, or
-    /// holds the node departed (node.deleted), the authority tombstones the old birth's declared-state
+    /// holds the node deleted (node.deleted), the authority tombstones the old birth's declared-state
     /// keys, blind, and forgets them; a birth the view still holds at the same incarnation (silent or
     /// not) keeps its rows. Must NOT happen: an old birth's rows on disk forever, folded back on every
     /// restart of the authority.
@@ -3667,7 +3667,7 @@ mod tests {
         let digest_view = rdm_transport::topology::DigestView::default();
         // rpc.1 restarted: the view holds its next incarnation.
         digest_view.record(digest_of(&restarted, IncarnationId::mint()));
-        // rpc.2 deleted: its exact birth departed.
+        // rpc.2 deleted: its exact birth deleted.
         digest_view.record(digest_of(&deleted, deleted.incarnation_id.clone().unwrap()));
         digest_view.depart(rdm_core::LifecycleOp {
             build_id: "build1".into(),

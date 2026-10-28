@@ -1420,7 +1420,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
     let runtime = |name: &str| RuntimeProof::of(&handles[name].fact().unwrap());
     let (lost, created) = (birth(FINAL), birth(NEW_ADMIN));
     let admitted_births: Vec<Node> = records.iter().filter(|n| n.name.to_string() != NEW_ADMIN).cloned().collect();
-    // The path: above every admin ordinal the roster and the view hold, departed births included.
+    // The path: above every admin ordinal the roster and the view hold, deleted births included.
     let held: Vec<PathName> = ["mesh2.admin.1", "mesh2.admin.2.old", "mesh2.rpc.4"].iter().map(|p| p.parse().unwrap()).collect();
     let path = rdm_admin::mesh_delete::leaving_mesh_admin_path("mesh2", &live_roster(&admitted_births).unwrap(), &held);
     let ran: Mutex<Vec<String>> = Mutex::new(Vec::new());

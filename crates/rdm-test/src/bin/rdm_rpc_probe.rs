@@ -644,11 +644,11 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             while let Some(item) = stream.next().await {
                 match item {
                     StreamItem::Frame(_, f) => frames.push(match f {
-                        TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed } => json!({
+                        TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } => json!({
                             "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version,
                             "snapshot_id": snapshot_id, "chunk_index": chunk_index, "chunk_count": chunk_count,
                             "members": digests.into_iter().map(|d| rdm_core::MeshDigest::from(d).node.name.to_string()).collect::<Vec<_>>(),
-                            "in_flight": in_flight.len(), "departed": departed.len(),
+                            "in_flight": in_flight.len(), "deleted": deleted.len(),
                         }),
                         TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version}),
                         TopologyReply::End { meshes } => json!({"frame": "end", "meshes": meshes}),

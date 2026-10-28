@@ -57,7 +57,7 @@ pub trait NodeResolver: Send + Sync {
     }
 
     /// Every live node this resolver holds now, as the topology it is fed holds them: what a source
-    /// takes a Proxy's carrier from (connections.md §6, Q227). A node stopped, exited or departed is
+    /// takes a Proxy's carrier from (connections.md §6, Q227). A node stopped, exited or deleted is
     /// none of them. Empty for a resolver that holds no topology.
     fn live_nodes(&self) -> Vec<ResolvedNode> {
         Vec::new()

@@ -350,7 +350,7 @@ impl BuildDoor {
                 let (me, id, mesh) = (me.clone(), id.clone(), mesh.clone());
                 async move {
                     match self.env.departure.proven(&executor).await {
-                        Ok(()) => Ok(format!("{executor} departed with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven")),
+                        Ok(()) => Ok(format!("{executor} exited with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven")),
                         Err(not_proven) => Err(rdm_core::reply::build::not_ready(format!("{me}: the run of attempt {attempt} of {id} at {executor} was lost and its departure is not proven ({not_proven}): the attempt holds mesh {mesh}, and the next report reattaches to it"))),
                     }
                 }

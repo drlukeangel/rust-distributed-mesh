@@ -319,7 +319,7 @@ pub fn view_projector(me: PathName, topology: Arc<RwLock<Topology>>, fabric: Str
 }
 
 /// Why [`project`] lacks `name` right now, from the same inputs: every digest the view holds for
-/// the name (incarnation, status, unheard age, predecessor, forwarded, departed, routable), the
+/// the name (incarnation, status, unheard age, predecessor, forwarded, deleted, routable), the
 /// removed set's entries for it, and the records' entry. The text of an unknown-node refusal from
 /// the live view, so the exclusion is named where it happens.
 pub fn describe_absence(digest_view: &DigestView, records: &Records, name: &PathName) -> String {
@@ -331,7 +331,7 @@ pub fn describe_absence(digest_view: &DigestView, records: &Records, name: &Path
         .map(|d| {
             let age = digest_view.get_at(d.node.node_id.as_str(), now).map(|(_, a)| a.as_millis() as u64).unwrap_or(0);
             format!(
-                "digest{{incarnation {}, status {:?}, unheard {} ms, supersedes {}, departed {}, routable {}, floor {} ms}}",
+                "digest{{incarnation {}, status {:?}, unheard {} ms, supersedes {}, deleted {}, routable {}, floor {} ms}}",
                 d.node.incarnation.as_str(),
                 d.status,
                 age,
@@ -558,7 +558,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     // Births this admin started that have not reported yet. A launch record
     // stands in for a birth only until the topology view speaks for it: once heard,
     // it never revives the birth (another admin may have retired it since). A
-    // departed birth was heard and has left: its record never stands in either.
+    // deleted birth was heard and has left: its record never stands in either.
     for op in digest_view.deleted() {
         heard.insert(op.incarnation.clone());
     }

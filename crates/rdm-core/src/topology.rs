@@ -118,7 +118,7 @@ pub enum TopologyReply {
         /// The open lifecycle overlays this chunk carries.
         in_flight: Vec<LifecycleOp>,
         /// The retained proven departures this chunk carries.
-        departed: Vec<LifecycleOp>,
+        deleted: Vec<LifecycleOp>,
     },
     /// The caller's `since` is the target's held source version for `mesh`.
     Unchanged {

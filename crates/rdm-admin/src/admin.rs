@@ -371,7 +371,7 @@ mod tests {
         }
     }
 
-    /// CONTRACT (mesh-delete.md step 7: "Departed births resolve Gone"; node-delete.md step 3: the
+    /// CONTRACT (mesh-delete.md step 7: "Deleted births resolve Gone"; node-delete.md step 3: the
     /// deleted node's record is `Deleted`; a record keeps the facts of its current birth and of the one a
     /// restart replaced, the newest last): a birth that left is no seed and no primary once its
     /// record's next write lands, on either backend. A restarted node's record takes its new birth's
@@ -1515,7 +1515,7 @@ mod tests {
 
     /// CONTRACT (CLAUDE.md read rule: "Every lookup is a point read through a declared index"; error
     /// rule: "never written" and "could not be read" are different errors, distinct arms and spans):
-    /// the fabric-primary proves a lost executor `mesh2.admin.1` departed whose digest carries no
+    /// the fabric-primary proves a lost executor `mesh2.admin.1` deleted whose digest carries no
     /// runtime, so the proof reads that exact birth's durable runtime row by its key. Held and
     /// exited: the departure is proven. Never written: refused on
     /// `rdm.node_admin.node.reject.via-no-runtime-row`. Unreadable: refused on
@@ -1782,7 +1782,7 @@ mod tests {
         digest_view.record(digest("mesh2.admin.1", MemberStatus::Ready));
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
         let (path, node_id, incarnation): (PathName, _, _) = ("mesh2.rpc.1".parse().unwrap(), NodeId::mint(), IncarnationId::mint());
-        assert!(view.node(&path).is_none(), "the exited birth departed: no view holds it");
+        assert!(view.node(&path).is_none(), "the exited birth deleted: no view holds it");
         let b1 = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let deleted = |step: &str| crate::build_state::BuildStepReceipt {
@@ -2081,8 +2081,8 @@ mod tests {
         let mut facts = lane_attempt(&build, &op);
         derive(&facts, &mut named);
         assert_eq!(digest_view.in_flight(), vec![op.clone()], "mesh2's attempt 1 holds the member");
-        // The attempt's verdict in mesh2's lane: Failed (its claimant departed with it unfinished).
-        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: mesh(), build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "mesh2.admin.1 departed with attempt 1 of mesh2's lane unfinished".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
+        // The attempt's verdict in mesh2's lane: Failed (its claimant exited with it unfinished).
+        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: mesh(), build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "mesh2.admin.1 exited with attempt 1 of mesh2's lane unfinished".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
         derive(&facts, &mut named);
         assert_eq!(digest_view.in_flight(), Vec::<rdm_core::LifecycleOp>::new(), "the failed drift attempt's hold closes: the member's exit belongs to no workflow now");
         let closed = capture.named("rdm.mesh.topology.update.via-deleting-closed-by-facts");
@@ -2537,7 +2537,7 @@ mod tests {
         assert!(t.nodes.iter().all(|n| !n.is_primary && !n.is_fabric_primary), "no seat before the entry read");
         records.set_entering(false);
 
-        // Departed: fabric recovery restores the fabric-primary (Q122): nobody, not mesh1's lowest Ready
+        // Deleted: fabric recovery restores the fabric-primary (Q122): nobody, not mesh1's lowest Ready
         // admin and not mesh3's lower id, is fabric-primary or mesh1's primary meanwhile.
         let t = depart(&digest_view, &records, &holder).await;
         assert_eq!(seat_names(&t), (None, None));
@@ -2658,7 +2658,7 @@ mod tests {
 
     /// CONTRACT (R-MN1: a mesh removal deletes every roster birth, and a mesh created again under
     /// the name is a new mesh; mesh-delete.md step 7: at mesh-left the fabric-primary is the acting
-    /// primary of a mesh that has none left, and departed births resolve Gone; R14 item 2: a mesh's
+    /// primary of a mesh that has none left, and deleted births resolve Gone; R14 item 2: a mesh's
     /// records are its primary's rows): mesh-left takes the address and primaries of every birth its
     /// proof set names off its node's record, so the stored map the fabric-primary answers a recreated
     /// mesh's first admin with names none of them; another mesh's record is untouched. Must NOT happen:
@@ -2836,7 +2836,7 @@ mod tests {
         let said = seat_announcements(&t, "mesh1", me_birth, &decided);
         assert!(said.is_empty(), "the yielded incumbent announces nothing over the committed successor: {said:?} (decided against {:?})", decided.fabric);
 
-        // A legitimate succession is still announced: the recorded mesh-primary's birth departed (the
+        // A legitimate succession is still announced: the recorded mesh-primary's birth deleted (the
         // fabric-primary, heard in another mesh, is not it), the election names its own mesh's next admin,
         // at the next revision over that record.
         let digest_view = DigestView::default();
@@ -2854,7 +2854,7 @@ mod tests {
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         let said = seat_announcements(&t, "mesh1", me_birth, &decided);
         let revisions: Vec<_> = said.iter().map(|(s, h)| (*s, h.node_id.clone(), h.revision)).collect();
-        assert_eq!(revisions, vec![(MeshPrimary, me.node.node_id.clone(), 6)], "the successor of a departed mesh-primary is its mesh's primary at the next revision (decided against {:?})", decided.meshes);
+        assert_eq!(revisions, vec![(MeshPrimary, me.node.node_id.clone(), 6)], "the successor of a deleted mesh-primary is its mesh's primary at the next revision (decided against {:?})", decided.meshes);
     }
 
     /// CONTRACT (lifecycles/node-primary-update.md "Writer": "for every other type the mesh-primary
@@ -3325,7 +3325,7 @@ mod tests {
 
         let within = listed(t0 + gossip_interval() + Duration::from_millis(1)).expect("a Leaving member one interval after its heartbeat is a member of the view");
         assert_eq!((within.status, within.declared.as_deref(), within.routable, within.stopped), (NodeStatus::Leaving, Some("Stopped"), false, false));
-        let silent = listed(t0 + digest_view.staleness_floor() + Duration::from_millis(1)).expect("silent past the floor it is listed, not departed");
+        let silent = listed(t0 + digest_view.staleness_floor() + Duration::from_millis(1)).expect("silent past the floor it is listed, not deleted");
         assert_eq!((silent.status, silent.declared.as_deref()), (NodeStatus::PendingReconnect, Some("Stopped")), "silent past the staleness floor it is the silent member any silent member is");
     }
 
@@ -3630,7 +3630,7 @@ mod tests {
             event_at_rafka_ms: 1,
         });
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &launched);
-        assert!(t.node(&gone.node.name).is_none(), "a departed birth's launch record is not a node: {:?}", t.node(&gone.node.name));
+        assert!(t.node(&gone.node.name).is_none(), "a deleted birth's launch record is not a node: {:?}", t.node(&gone.node.name));
     }
 
     #[test]

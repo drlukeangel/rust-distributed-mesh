@@ -208,7 +208,7 @@ pub struct HeldView {
     /// The open lifecycle overlays (stop, delete) the node holds.
     pub in_flight: Vec<rdm_core::LifecycleOp>,
     /// The departures the node retains.
-    pub departed: Vec<rdm_core::LifecycleOp>,
+    pub deleted: Vec<rdm_core::LifecycleOp>,
 }
 
 impl HeldView {
@@ -466,10 +466,10 @@ impl<'a> NodeRpc<'a> {
         let mut view = HeldView::default();
         for f in frames {
             match f {
-                TopologyReply::Snapshot { digests, in_flight, departed, .. } => {
+                TopologyReply::Snapshot { digests, in_flight, deleted, .. } => {
                     view.members.extend(digests.into_iter().map(rdm_core::MeshDigest::from));
                     view.in_flight.extend(in_flight);
-                    view.departed.extend(departed);
+                    view.deleted.extend(deleted);
                 }
                 TopologyReply::Started | TopologyReply::End { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Primaries { .. } | TopologyReply::RafkaTime { .. } => {}
                 other => return Err(CallEnd::Indeterminate { code: <Topology as rdm_core::protocol::NodeProtocol>::classify_reply(&other).code(), reason: format!("{} answered {other:?} to the topology read", target_name(target)) }),

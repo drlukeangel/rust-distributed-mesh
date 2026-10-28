@@ -2782,7 +2782,7 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready() {
 }
 
 /// CONTRACT (build.md §1: fabric.delete "may interrupt the Build in progress"; the teardown opens once every
-/// open attempt of the Builds it interrupts has ended; an attempt "whose executor departed ends on that
+/// open attempt of the Builds it interrupts has ended; an attempt "whose executor deleted ends on that
 /// departure's exact proof"): an interrupted Build whose attempt is claimed by this fabric-primary itself,
 /// with no run of it in this process, is ended by this fabric-primary at once: its attempt `Failed` naming
 /// the delete, no departure proof asked of its own runtime, which cannot exit while it runs the delete.

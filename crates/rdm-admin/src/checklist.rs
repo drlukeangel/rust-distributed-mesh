@@ -40,7 +40,7 @@ pub fn planned(topology: &FabricTopology, mesh: &str) -> Vec<PathName> {
 /// `known` every digest held (to tell a birth never heard from one heard before the checklist). A path
 /// `stopped` names is at rest by command and holds no checklist (states.md:16, Q240): it sends no
 /// digest and is never missing.
-pub(crate) fn missing_members(planned: &[PathName], me: &PathName, me_ready: bool, heard: &[MeshDigest], known: &[MeshDigest], departed: &dyn Fn(&str) -> bool, stopped: &dyn Fn(&PathName) -> bool) -> Vec<Missing> {
+pub(crate) fn missing_members(planned: &[PathName], me: &PathName, me_ready: bool, heard: &[MeshDigest], known: &[MeshDigest], deleted: &dyn Fn(&str) -> bool, stopped: &dyn Fn(&PathName) -> bool) -> Vec<Missing> {
     let mut out = Vec::new();
     for path in planned {
         if stopped(path) {
@@ -53,7 +53,7 @@ pub(crate) fn missing_members(planned: &[PathName], me: &PathName, me_ready: boo
             }
             continue;
         }
-        let live = |d: &&MeshDigest| &d.node.name == path && !departed(d.node.node_id.as_str());
+        let live = |d: &&MeshDigest| &d.node.name == path && !deleted(d.node.node_id.as_str());
         let here: Vec<&MeshDigest> = heard.iter().filter(live).collect();
         if here.iter().any(|d| d.status == MemberStatus::Ready) {
             continue;
@@ -63,8 +63,8 @@ pub(crate) fn missing_members(planned: &[PathName], me: &PathName, me_ready: boo
             "not-ready"
         } else if held.is_empty() {
             "no-birth-heard"
-        } else if held.iter().all(|d| departed(d.node.node_id.as_str())) {
-            "departed"
+        } else if held.iter().all(|d| deleted(d.node.node_id.as_str())) {
+            "deleted"
         } else {
             "not-heard-since-opening"
         };
@@ -165,10 +165,10 @@ mod tests {
         // A planned birth never heard at all is named as such, and the primary itself counts only when ready.
         let m = missing_members(&planned, &a1, false, &[ready.clone()], &[ready.clone()], &none, &no_stop);
         assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.admin.1(not-ready)", "mesh1.rpc.2(no-birth-heard)", "mesh1.rpc.3(no-birth-heard)"]);
-        // A departed birth does not check in.
+        // A deleted birth does not check in.
         let gone = |id: &str| id == ready.node.node_id.as_str();
         let m = missing_members(&[r1.clone()], &a1, true, &[ready.clone()], &[ready.clone()], &gone, &no_stop);
-        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.rpc.1(departed)"]);
+        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.rpc.1(deleted)"]);
         // Every planned birth checked in: nothing is missing.
         let all: Vec<MeshDigest> = [&r1, &r2, &r3].iter().map(|p| digest(p, MemberStatus::Ready)).collect();
         assert!(missing_members(&planned, &a1, true, &all, &all, &none, &no_stop).is_empty());

@@ -1172,7 +1172,7 @@ pub enum TopologyReply {
         chunk_count: u32,
         digests: Vec<WireDigest>,
         in_flight: Vec<LifecycleOp>,
-        departed: Vec<LifecycleOp>,
+        deleted: Vec<LifecycleOp>,
     },
     Unchanged { mesh: String, publisher: PublisherId, topology_version: u64 },
     End { meshes: u32 },

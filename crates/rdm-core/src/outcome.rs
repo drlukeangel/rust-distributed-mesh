@@ -242,7 +242,7 @@ impl NotSentReason {
 pub enum ResolveFailure {
     /// No node by that target was ever known.
     Unknown,
-    /// The node departed and does not return.
+    /// The node deleted and does not return.
     Gone,
     /// The node is known and cannot be reached now.
     Unavailable,

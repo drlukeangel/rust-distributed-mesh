@@ -642,7 +642,7 @@ impl AdminRunner {
     /// The exact exited birth `from` at `node` a node recovery acts for (node-recovery.md), and its
     /// exact runtime: the view's record while it holds that birth, else a record of the exact birth
     /// resolved from the topology view or the durable runtime row this admin wrote when it first
-    /// held the birth (a departed birth has left the view). `op` names the operation in a refusal.
+    /// held the birth (a deleted birth has left the view). `op` names the operation in a refusal.
     pub(crate) async fn exited_birth(&self, op: &str, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(Node, DeploymentHandle), String> {
         let seen = self.topology.read().await.node(node).cloned().filter(|n| n.node_id == from.node_id && n.incarnation_id.as_ref() == Some(&from.incarnation));
         let exact = seen.unwrap_or_else(|| {

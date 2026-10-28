@@ -1,16 +1,16 @@
 //! The live resolver: one per process, fed by that process's topology view.
 //!
 //! Location and identity only. It answers where an exact node is now
-//! (`Found`), that it departed (`Gone`) or that this process does not know it
+//! (`Found`), that it deleted (`Gone`) or that this process does not know it
 //! (`Unknown`); it owns no topology, Build, election, lifecycle or death
 //! policy. A `ConnectionsDeleting` or `Leaving` birth still resolves `Found`, and
 //! silence, a failed dial or a partition never makes a node `Gone`.
 //!
 //! `Gone` comes only from a departure the process was told of: the exact
 //! birth's removal or replacement, proven by whoever executed it and carried
-//! by the topology view. A departed node is held `Gone` for the departed retention
+//! by the topology view. A deleted node is held `Gone` for the deleted retention
 //! (local age since this process accepted it, never another machine's clock),
-//! then forgotten: it resolves `Unknown`. A departed node never returns; a
+//! then forgotten: it resolves `Unknown`. A deleted node never returns; a
 //! replacement is a new logical node at the same path.
 //!
 //! The process composition (node-admin's running state, the rpc node's) feeds
@@ -45,16 +45,16 @@ pub enum Applied {
     /// Not taken; the held answer stands.
     Refused(Refusal),
     /// A departure recorded: the node is `Gone`.
-    Departed,
+    Deleted,
 }
 
 /// Why a fact was not taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
-    /// The logical node departed; a departed node never returns.
-    /// The logical node departed and a departed node never returns.
-    Departed {
-        /// The departed node.
+    /// The logical node deleted; a deleted node never returns.
+    /// The logical node deleted and a deleted node never returns.
+    Deleted {
+        /// The deleted node.
         node_id: NodeId,
     },
     /// A birth this process already saw superseded.
@@ -89,7 +89,7 @@ struct Live {
     /// The path's holder: the first live node heard at it, until it departs.
     by_path: HashMap<PathName, NodeId>,
     retired: HashMap<NodeId, HashSet<IncarnationId>>,
-    departed: HashMap<NodeId, Instant>,
+    deleted: HashMap<NodeId, Instant>,
     /// Births known to have exited (an executor's proof): the node resolves nothing until a
     /// successor birth is applied, so nothing dials or installs the dead birth's address.
     exited: HashSet<(NodeId, IncarnationId)>,
@@ -105,7 +105,7 @@ impl Live {
     }
 
     fn expire(&mut self, retention: Duration, now: Instant) {
-        self.departed.retain(|_, at| now.duration_since(*at) < retention);
+        self.deleted.retain(|_, at| now.duration_since(*at) < retention);
     }
 
     /// The path's holder after `gone` left it: another live node heard at the
@@ -138,9 +138,9 @@ impl Default for LiveNodeResolver {
 }
 
 impl LiveNodeResolver {
-    /// A resolver that keeps a departed node's answer `Gone` for `departed_retention`.
-    pub fn new(departed_retention: Duration) -> Self {
-        Self { live: RwLock::default(), retention: departed_retention, changed: tokio::sync::watch::Sender::new(0) }
+    /// A resolver that keeps a deleted node's answer `Gone` for `deleted_retention`.
+    pub fn new(deleted_retention: Duration) -> Self {
+        Self { live: RwLock::default(), retention: deleted_retention, changed: tokio::sync::watch::Sender::new(0) }
     }
 
     fn tick(&self) {
@@ -153,8 +153,8 @@ impl LiveNodeResolver {
         let mut live = self.live.write().unwrap();
         live.expire(self.retention, Instant::now());
         let id = birth.node_id.clone();
-        if live.departed.contains_key(&id) {
-            return Applied::Refused(Refusal::Departed { node_id: id });
+        if live.deleted.contains_key(&id) {
+            return Applied::Refused(Refusal::Deleted { node_id: id });
         }
         if live.retired.get(&id).is_some_and(|r| r.contains(&birth.incarnation)) {
             return Applied::Refused(Refusal::StaleIncarnation { node_id: id, incarnation: birth.incarnation });
@@ -195,9 +195,9 @@ impl LiveNodeResolver {
         applied
     }
 
-    /// The exact birth `incarnation` of `node_id` at `path` departed: its
+    /// The exact birth `incarnation` of `node_id` at `path` deleted: its
     /// removal or replacement was proven. The logical node is `Gone` for the
-    /// departed retention, and the path passes to another live node heard at
+    /// deleted retention, and the path passes to another live node heard at
     /// it, if any.
     pub fn depart(&self, node_id: &NodeId, incarnation: &IncarnationId, path: &PathName) -> Applied {
         self.depart_at(node_id, incarnation, path, Instant::now())
@@ -207,10 +207,10 @@ impl LiveNodeResolver {
     pub fn depart_at(&self, node_id: &NodeId, incarnation: &IncarnationId, path: &PathName, now: Instant) -> Applied {
         let mut live = self.live.write().unwrap();
         live.expire(self.retention, now);
-        if live.departed.contains_key(node_id) {
+        if live.deleted.contains_key(node_id) {
             return Applied::Unchanged;
         }
-        live.departed.insert(node_id.clone(), now);
+        live.deleted.insert(node_id.clone(), now);
         live.stopped.retain(|(n, _)| n != node_id);
         live.retired.entry(node_id.clone()).or_default().insert(incarnation.clone());
         let held_path = live.nodes.remove(node_id).map(|n| n.name);
@@ -222,7 +222,7 @@ impl LiveNodeResolver {
         }
         drop(live);
         self.tick();
-        Applied::Departed
+        Applied::Deleted
     }
 }
 
@@ -261,12 +261,12 @@ impl LiveNodeResolver {
     }
 
     /// The live node whose Iroh key is `endpoint`: the peer of an accepted connection. A key
-    /// this process holds no live node for (a probe's ephemeral key, a departed birth) is `None`.
+    /// this process holds no live node for (a probe's ephemeral key, a deleted birth) is `None`.
     pub(crate) fn by_endpoint(&self, endpoint: &iroh::PublicKey) -> Option<ResolvedNode> {
         self.live.read().unwrap().nodes.values().find(|n| &n.endpoint_id == endpoint).cloned()
     }
 
-    /// Resolve `target` as of `now`: the exact live answer, `Gone` for a node that departed within
+    /// Resolve `target` as of `now`: the exact live answer, `Gone` for a node that exited within
     /// the retention, otherwise `Unknown` or `Unavailable`.
     pub fn resolve_at(&self, target: &NodeTarget, now: Instant) -> Result<ResolvedNode, ResolveFailure> {
         let live = self.live.read().unwrap();
@@ -274,7 +274,7 @@ impl LiveNodeResolver {
         match target {
             NodeTarget::ExactNode(id) => match live.nodes.get(id) {
                 Some(n) => current(n),
-                None => Err(match live.departed.get(id) {
+                None => Err(match live.deleted.get(id) {
                     Some(at) if now.saturating_duration_since(*at) < self.retention => ResolveFailure::Gone,
                     _ => ResolveFailure::Unknown,
                 }),
@@ -366,10 +366,10 @@ mod tests {
         let a = birth("mesh1.rpc.1", 7000);
         r.apply(a.clone(), None);
         assert!(exact(&r, &a).is_ok(), "the resolver holds no lifecycle: nothing but a departure removes a node");
-        assert_eq!(r.depart(&a.node_id, &a.incarnation, &a.name), Applied::Departed);
+        assert_eq!(r.depart(&a.node_id, &a.incarnation, &a.name), Applied::Deleted);
         assert_eq!(exact(&r, &a), Err(ResolveFailure::Gone));
         assert_eq!(r.resolve(&NodeTarget::CurrentPath(a.name.clone())), Err(ResolveFailure::Unknown));
-        assert!(matches!(r.apply(restart(&a, 7001), Some(&a.incarnation)), Applied::Refused(Refusal::Departed { .. })), "a departed node never returns");
+        assert!(matches!(r.apply(restart(&a, 7001), Some(&a.incarnation)), Applied::Refused(Refusal::Deleted { .. })), "a deleted node never returns");
         assert_eq!(exact(&r, &birth("mesh1.rpc.9", 7003)), Err(ResolveFailure::Unknown), "never seen");
     }
 
@@ -385,11 +385,11 @@ mod tests {
         r.apply(b.clone(), Some(&a.incarnation));
         assert_eq!(r.birth(&a.node_id, &a.name), Birth::Current(b.incarnation.clone()), "a restart is the next birth of the same node");
         r.depart(&a.node_id, &b.incarnation, &a.name);
-        assert_eq!(r.birth(&a.node_id, &a.name), Birth::Departed);
+        assert_eq!(r.birth(&a.node_id, &a.name), Birth::Deleted);
         let other = birth("mesh1.rpc.2", 7002);
         let replacement = birth("mesh1.rpc.2", 7003);
         r.apply(replacement.clone(), None);
-        assert_eq!(r.birth(&other.node_id, &other.name), Birth::Departed, "another node holds the path");
+        assert_eq!(r.birth(&other.node_id, &other.name), Birth::Deleted, "another node holds the path");
     }
 
     #[test]
@@ -436,7 +436,7 @@ mod tests {
         let r = LiveNodeResolver::default();
         let old = birth("mesh1.rpc.1", 7000);
         r.depart(&old.node_id, &old.incarnation, &old.name);
-        assert!(matches!(r.apply(old.clone(), None), Applied::Refused(Refusal::Departed { .. })));
+        assert!(matches!(r.apply(old.clone(), None), Applied::Refused(Refusal::Deleted { .. })));
         assert_eq!(exact(&r, &old), Err(ResolveFailure::Gone));
     }
 
@@ -496,16 +496,16 @@ mod tests {
 }
 
 /// The topology view as the connections holder reads it: the birth each node holds now. A node this
-/// process has not heard of is `Unknown` and nothing is judged; a node that departed, or whose path
-/// another node holds, is `Departed`.
+/// process has not heard of is `Unknown` and nothing is judged; a node that deleted, or whose path
+/// another node holds, is `Deleted`.
 impl rdm_core::connections::CurrentIncarnations for LiveNodeResolver {
     fn birth(&self, node_id: &NodeId, path: &PathName) -> rdm_core::connections::Birth {
         use rdm_core::connections::Birth;
         match self.resolve(&NodeTarget::ExactNode(node_id.clone())) {
             Ok(n) => Birth::Current(n.incarnation),
-            Err(ResolveFailure::Gone) => Birth::Departed,
+            Err(ResolveFailure::Gone) => Birth::Deleted,
             Err(_) => match self.resolve(&NodeTarget::CurrentPath(path.clone())) {
-                Ok(holder) if &holder.node_id != node_id => Birth::Departed,
+                Ok(holder) if &holder.node_id != node_id => Birth::Deleted,
                 _ => Birth::Unknown,
             },
         }

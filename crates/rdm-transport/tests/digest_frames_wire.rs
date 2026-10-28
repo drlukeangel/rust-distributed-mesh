@@ -172,8 +172,8 @@ fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
     assert_eq!(state.len(), rdm_core::context::MAX_TRACESTATE_BYTES);
     let mut d = digest("ready"); d.admin_api_base = Some("x".repeat(1600));
     let mut other = d.clone(); other.node.node_id = rdm_core::NodeId::mint(); other.node.name = "mesh1.rpc.2".parse().unwrap();
-    let shape = |digests, in_flight, departed, chunk_index, chunk_count| {
-        let mut f = Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted: departed }.authored(&author, 0, 1);
+    let shape = |digests, in_flight, deleted, chunk_index, chunk_count| {
+        let mut f = Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted: deleted }.authored(&author, 0, 1);
         let Frame::Authored { context, .. } = &mut f else { unreachable!() };
         context.traceparent = Some("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".into());
         context.tracestate = Some(state.clone()); f

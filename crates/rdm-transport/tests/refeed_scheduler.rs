@@ -22,7 +22,7 @@ fn target(name: &str, silent_ms: u64) -> RepairTarget {
 /// CONTRACT (#2902, gossip.md §6): a held member whose coverage has been stale for the repair
 /// window is scheduled once per window per peer, whether or not the channel has neighbours; a
 /// member heard within the window is never scheduled; a member no longer held (retired or
-/// departed) leaves the schedule and is never attempted again. What must NOT happen: a hot loop on
+/// deleted) leaves the schedule and is never attempted again. What must NOT happen: a hot loop on
 /// one peer, a healthy member re-fed, or a retired member re-fed.
 #[test]
 fn refeed_scheduler_bounds_stale_held_peer_attempts() {

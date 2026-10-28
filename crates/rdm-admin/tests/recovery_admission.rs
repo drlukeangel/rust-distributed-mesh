@@ -651,16 +651,16 @@ fn two_meshes_two_mesh2_admins(mesh2_primary: &str) -> Topology {
 /// recorded), every recovery the new primary opens is refused build-in-progress naming mesh2 and the
 /// lost claimant: silence is never departure. Once its exit is proven and recorded (the new primary's
 /// own proof, before it submits the lost primary's recovery), the new primary's recovery of the lost
-/// primary ends attempt 1 Failed naming the departed claimant, releases mesh2's in-flight row, and
+/// primary ends attempt 1 Failed naming the deleted claimant, releases mesh2's in-flight row, and
 /// opens and claims attempt 2 of mesh2's lane for itself; `mesh2.rpc.1`'s exited birth is owed a
 /// submit again from attempt 1's Failed verdict (node-recovery.md "Failure and receipts"). Must NOT
-/// happen: the lane held for good by the departed claimant (every later recovery and topology
+/// happen: the lane held for good by the deleted claimant (every later recovery and topology
 /// operation on mesh2 refused naming it), a take-over on silence alone, or the member's recovery lost.
 #[tokio::test]
 async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_primary_once_its_exit_is_recorded() {
     use rdm_admin::build_state::BuildState;
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-departed-claimant", exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-deleted-claimant", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     let capture = Capture { exporter, pipeline };
 
@@ -683,14 +683,14 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
         other => panic!("mesh2's primary opens its member's recovery: {other:?}"),
     };
     assert_eq!((first.mesh.as_deref(), first.attempt), (Some("mesh2"), 1), "attempt 1 of mesh2's lane");
-    let departed: PathName = "mesh2.admin.1".parse().unwrap();
-    let departed_birth = before.node(&departed).unwrap().clone();
+    let deleted: PathName = "mesh2.admin.1".parse().unwrap();
+    let deleted_birth = before.node(&deleted).unwrap().clone();
 
     // mesh2.admin.2 holds mesh2's seat; in its view the lost primary is silent.
     let mut after = two_meshes_two_mesh2_admins("mesh2.admin.2");
-    after.nodes.iter_mut().filter(|n| n.name == departed).for_each(|n| {
-        n.node_id = departed_birth.node_id.clone();
-        n.incarnation_id = departed_birth.incarnation_id.clone();
+    after.nodes.iter_mut().filter(|n| n.name == deleted).for_each(|n| {
+        n.node_id = deleted_birth.node_id.clone();
+        n.incarnation_id = deleted_birth.incarnation_id.clone();
         n.status = NodeStatus::Dead;
     });
     after.nodes.iter_mut().filter(|n| n.name == member).for_each(|n| {
@@ -703,10 +703,10 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
     );
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());
-    let incarnation = departed_birth.incarnation_id.clone().unwrap();
+    let incarnation = deleted_birth.incarnation_id.clone().unwrap();
 
     // Silence is never departure: the lost primary's departure is not proven.
-    let silent = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), incarnation.clone()).await {
+    let silent = match heir.open_recovery("node-recovery", deleted.clone(), deleted_birth.node_id.clone(), incarnation.clone()).await {
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("while the lost primary is only silent, mesh2 stays held by its attempt: {other:?}"),
     };
@@ -715,7 +715,7 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
     // The lost primary's departure is proven (its exact runtime reads exited), then the new primary
     // submits its recovery.
     departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
-    let second = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), incarnation.clone()).await {
+    let second = match heir.open_recovery("node-recovery", deleted.clone(), deleted_birth.node_id.clone(), incarnation.clone()).await {
         Ok(Recovery::Opened(o)) => o,
         other => panic!("on the lost claimant's recorded exit, the new primary takes mesh2's lane over: {other:?}"),
     };
@@ -728,7 +728,7 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
         _ => None,
     });
     match ended {
-        Some(AttemptOutcome::Failed { reason , .. }) => assert!(reason.contains("mesh2.admin.1") && reason.contains(incarnation.as_str()), "attempt 1's verdict names the departed claimant's exact birth: {reason}"),
+        Some(AttemptOutcome::Failed { reason , .. }) => assert!(reason.contains("mesh2.admin.1") && reason.contains(incarnation.as_str()), "attempt 1's verdict names the deleted claimant's exact birth: {reason}"),
         other => panic!("attempt 1 of mesh2's lane ends Failed on its claimant's departure: {other:?}"),
     }
     let held = claims.in_flight("mesh2").await.unwrap().expect("mesh2's in-flight row");
@@ -753,7 +753,7 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
 /// its Converged verdict and is lost before it releases mesh2's in-flight row. `mesh2.admin.2`
 /// takes the seat: in its fold the lane holds nothing, but the row still names attempt 1 by the lost
 /// primary. While the lost primary is only silent its recovery is refused build-in-progress naming
-/// it; once its exit is recorded, the new primary's recovery of it releases the row the departed
+/// it; once its exit is recorded, the new primary's recovery of it releases the row the deleted
 /// claimant left and opens and claims attempt 2 of mesh2's lane. Must NOT happen: mesh2 held for good
 /// by a row whose attempt ended, or the row released on silence alone.
 #[tokio::test]
@@ -775,12 +775,12 @@ async fn an_in_flight_row_a_lost_mesh_primary_left_after_its_verdict_is_released
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: first.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
     assert_eq!(claims.in_flight("mesh2").await.unwrap().map(|r| (r.attempt, r.claimant)), Some((1, "mesh2.admin.1".to_string())), "the row the lost primary never released");
 
-    let departed: PathName = "mesh2.admin.1".parse().unwrap();
-    let departed_birth = before.node(&departed).unwrap().clone();
+    let deleted: PathName = "mesh2.admin.1".parse().unwrap();
+    let deleted_birth = before.node(&deleted).unwrap().clone();
     let mut after = two_meshes_two_mesh2_admins("mesh2.admin.2");
-    after.nodes.iter_mut().filter(|n| n.name == departed).for_each(|n| {
-        n.node_id = departed_birth.node_id.clone();
-        n.incarnation_id = departed_birth.incarnation_id.clone();
+    after.nodes.iter_mut().filter(|n| n.name == deleted).for_each(|n| {
+        n.node_id = deleted_birth.node_id.clone();
+        n.incarnation_id = deleted_birth.incarnation_id.clone();
         n.status = NodeStatus::Dead;
     });
     let heir = Arc::new(
@@ -789,15 +789,15 @@ async fn an_in_flight_row_a_lost_mesh_primary_left_after_its_verdict_is_released
     );
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());
-    let incarnation = departed_birth.incarnation_id.clone().unwrap();
-    let silent = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), incarnation.clone()).await {
+    let incarnation = deleted_birth.incarnation_id.clone().unwrap();
+    let silent = match heir.open_recovery("node-recovery", deleted.clone(), deleted_birth.node_id.clone(), incarnation.clone()).await {
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("while the lost primary is only silent, its row holds mesh2: {other:?}"),
     };
     assert_eq!((silent["mesh"].as_str(), silent["held_by"].as_str()), (Some("mesh2"), Some("mesh2.admin.1")), "{silent}");
 
     departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
-    let second = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), incarnation).await {
+    let second = match heir.open_recovery("node-recovery", deleted.clone(), deleted_birth.node_id.clone(), incarnation).await {
         Ok(Recovery::Opened(o)) => o,
         other => panic!("on the lost claimant's recorded exit, the row it left is released and mesh2 admits the next attempt: {other:?}"),
     };
@@ -855,12 +855,12 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     let lane = builds.read_build(&b0).await.unwrap().lanes.get("mesh2").cloned().expect("mesh2's lane");
     assert_eq!((lane.state, lane.attempt, lane.opened, lane.claimant.as_deref()), (BuildState::Pending, 0, 1, None), "attempt 1 is open and unclaimed: {lane:?}");
 
-    let departed: PathName = "mesh2.admin.1".parse().unwrap();
-    let departed_birth = before.node(&departed).unwrap().clone();
+    let deleted: PathName = "mesh2.admin.1".parse().unwrap();
+    let deleted_birth = before.node(&deleted).unwrap().clone();
     let mut after = two_meshes_two_mesh2_admins("mesh2.admin.2");
-    after.nodes.iter_mut().filter(|n| n.name == departed).for_each(|n| {
-        n.node_id = departed_birth.node_id.clone();
-        n.incarnation_id = departed_birth.incarnation_id.clone();
+    after.nodes.iter_mut().filter(|n| n.name == deleted).for_each(|n| {
+        n.node_id = deleted_birth.node_id.clone();
+        n.incarnation_id = deleted_birth.incarnation_id.clone();
         n.status = NodeStatus::Dead;
     });
     after.nodes.iter_mut().filter(|n| n.name == member).for_each(|n| {
@@ -873,10 +873,10 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     );
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());
-    let departed_incarnation = departed_birth.incarnation_id.clone().unwrap();
+    let deleted_incarnation = deleted_birth.incarnation_id.clone().unwrap();
 
     // Another birth's recovery waits for the open attempt: one attempt in flight per mesh.
-    let other_before = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), departed_incarnation.clone()).await {
+    let other_before = match heir.open_recovery("node-recovery", deleted.clone(), deleted_birth.node_id.clone(), deleted_incarnation.clone()).await {
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("while attempt 1 is open for the member, mesh2 refuses another birth's recovery: {other:?}"),
     };
@@ -888,12 +888,12 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
         Err(Refusal::BuildInProgress(..)) => {}
         other => panic!("while the lost opener's claim of attempt 1 stands, the member's recovery is held: {other:?}"),
     }
-    // Its departure proven, the departed claimant's row is released and the member's recovery claims the
+    // Its departure proven, the deleted claimant's row is released and the member's recovery claims the
     // open attempt: it is not reopened.
     departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
     let taken = match heir.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await {
         Ok(Recovery::Opened(o)) => o,
-        other => panic!("the new mesh-primary claims the attempt its departed opener left: {other:?}"),
+        other => panic!("the new mesh-primary claims the attempt its deleted opener left: {other:?}"),
     };
     assert_eq!((taken.build_id.clone(), taken.mesh.as_deref(), taken.attempt), (b0.clone(), Some("mesh2"), 1), "attempt 1 of mesh2's lane, the one open");
     let p = builds.read_build(&b0).await.unwrap();
@@ -912,7 +912,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     assert_eq!((held.build_id.clone(), held.lane.as_deref(), held.attempt), (b0.clone(), Some("mesh2"), 1), "the row names attempt 1");
 
     // Once claimed, the attempt holds mesh2 under its claimant.
-    let other_after = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), departed_incarnation).await {
+    let other_after = match heir.open_recovery("node-recovery", deleted.clone(), deleted_birth.node_id.clone(), deleted_incarnation).await {
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("while attempt 1 runs, mesh2 refuses another birth's recovery: {other:?}"),
     };
@@ -927,7 +927,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     assert_eq!(decided.len(), 1, "one claim decided: {decided:?}");
     let (_, d) = &decided[0];
     assert_eq!((d["lane"].as_str(), d["attempt"].as_str(), d["node"].as_str(), d["outcome"].as_str()), ("mesh2", "1", "mesh2.admin.2", "won"), "{d:?}");
-    assert!(!capture.spans("rdm.node_admin.build.update.via-claimant-departure").is_empty(), "the departed opener's row is released on its departure (Q142: the row is its claim)");
+    assert!(!capture.spans("rdm.node_admin.build.update.via-claimant-departure").is_empty(), "the deleted opener's row is released on its departure (Q142: the row is its claim)");
     let recovery = capture.spans("rdm.node_admin.build.update.via-recovery").into_iter().find(|(_, a)| a["node"] == member.to_string() && a["outcome"] == "admitted").expect("the member's admitted recovery span");
     assert_eq!((recovery.1["attempt"].as_str(), recovery.1["outcome"].as_str(), recovery.1["open_attempt"].as_str()), ("1", "admitted", "held-open"), "{recovery:?}");
     // The refusal before the claim named the opener the row names: an open attempt's holder.
@@ -998,15 +998,15 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     let lane = builds.read_build(&b0).await.unwrap().lanes.get("mesh2").cloned().expect("mesh2's lane");
     assert_eq!((lane.state, lane.attempt, lane.opened, lane.claimant.as_deref()), (BuildState::Pending, 1, 2, None), "attempt 2 is open and unclaimed: {lane:?}");
 
-    // mesh2.admin.2 holds the seat; the member departed its view; the lost primary is Dead in it.
-    let departed: PathName = "mesh2.admin.1".parse().unwrap();
-    let departed_birth = before.node(&departed).unwrap().clone();
-    let departed_incarnation = departed_birth.incarnation_id.clone().unwrap();
+    // mesh2.admin.2 holds the seat; the member deleted its view; the lost primary is Dead in it.
+    let deleted: PathName = "mesh2.admin.1".parse().unwrap();
+    let deleted_birth = before.node(&deleted).unwrap().clone();
+    let deleted_incarnation = deleted_birth.incarnation_id.clone().unwrap();
     let mut after = two_meshes_two_mesh2_admins("mesh2.admin.2");
     after.nodes.retain(|n| n.name != member);
-    after.nodes.iter_mut().filter(|n| n.name == departed).for_each(|n| {
-        n.node_id = departed_birth.node_id.clone();
-        n.incarnation_id = departed_birth.incarnation_id.clone();
+    after.nodes.iter_mut().filter(|n| n.name == deleted).for_each(|n| {
+        n.node_id = deleted_birth.node_id.clone();
+        n.incarnation_id = deleted_birth.incarnation_id.clone();
         n.status = NodeStatus::Dead;
     });
     let heir = Arc::new(
@@ -1018,7 +1018,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
 
     // The lost primary's own recovery waits for the open attempt: one attempt in flight per mesh.
-    let refused = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), departed_incarnation.clone()).await {
+    let refused = match heir.open_recovery("node-recovery", deleted.clone(), deleted_birth.node_id.clone(), deleted_incarnation.clone()).await {
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("while attempt 2 is open for the member, mesh2 refuses another birth's recovery: {other:?}"),
     };
@@ -1057,7 +1057,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     }
     let recovery = capture.spans("rdm.node_admin.build.update.via-recovery").into_iter().find(|(_, a)| a["node"] == member.to_string() && a["attempt"] == "2").expect("the owed submit's recovery span");
     assert_eq!((recovery.1["outcome"].as_str(), recovery.1["open_attempt"].as_str()), ("admitted", "held-open"), "{recovery:?}");
-    assert!(!capture.spans("rdm.node_admin.build.update.via-claimant-departure").is_empty(), "the departed opener's row, its claim on the store (Q142), is released on its departure before the owed submit claims attempt 2");
+    assert!(!capture.spans("rdm.node_admin.build.update.via-claimant-departure").is_empty(), "the deleted opener's row, its claim on the store (Q142), is released on its departure before the owed submit claims attempt 2");
 }
 
 /// CONTRACT (node-investigation.md: "A node that comes back after it was re-created is a deleted birth

@@ -260,7 +260,7 @@ impl RecoverySubmitter {
     /// node.delete of the exited birth (`node.delete:<path>`) is such a workflow too: its overlay
     /// closes when its attempt's verdict is terminal (`DigestView::deletions_from_facts`), and a
     /// recovery whose Build ended Failed is submitted again by the next tick: from the view while it
-    /// holds the birth, else from the Failed attempt the accepted Build holds once its delete departed
+    /// holds the birth, else from the Failed attempt the accepted Build holds once its delete deleted
     /// the birth ([`Self::owed_submits`]).
     pub(crate) async fn removal_announced(&self, n: &Node) -> Option<Announced> {
         let incarnation = n.incarnation_id.as_ref()?;
@@ -574,12 +574,12 @@ pub(crate) fn runtime_rows_read(reader: &PathName, mesh: Option<&str>, read: Res
 
 /// The births the durable runtime rows name at a path `view` holds nothing at: a birth this admin
 /// never heard and never launched, at a path the accepted Build names (`planned`), whose departure
-/// is not held (a departed birth's row is history). Each stands in the map as `PendingReconnect`,
+/// is not held (a deleted birth's row is history). Each stands in the map as `PendingReconnect`,
 /// to be inspected like any unheard birth: only an exited runtime counts. One birth per path.
-pub fn durable_births(view: &Topology, durable: &[crate::storage::RuntimeRow], planned: &dyn Fn(&PathName) -> bool, departed: &dyn Fn(&str) -> bool) -> Vec<Node> {
+pub fn durable_births(view: &Topology, durable: &[crate::storage::RuntimeRow], planned: &dyn Fn(&PathName) -> bool, deleted: &dyn Fn(&str) -> bool) -> Vec<Node> {
     let mut births: Vec<Node> = Vec::new();
     for row in durable {
-        if view.node(&row.name).is_none() && !births.iter().any(|n| n.name == row.name) && planned(&row.name) && !departed(row.node_id.as_str()) {
+        if view.node(&row.name).is_none() && !births.iter().any(|n| n.name == row.name) && planned(&row.name) && !deleted(row.node_id.as_str()) {
             let mut n = Node::allocated(row.name.clone());
             n.node_id = row.node_id.clone();
             n.incarnation_id = Some(row.incarnation_id.clone());

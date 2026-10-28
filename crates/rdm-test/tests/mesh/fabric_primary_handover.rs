@@ -80,7 +80,7 @@ fn alive(pid: u64) -> bool {
 /// primary, which stays alive, publishing mesh1's topology with itself the only member and
 /// MeshStatus Dead, while every peer holds mesh1 with that one member. Its end is a separate
 /// node.delete the fabric-primary executes: node.stop, exact exit proof, its row Deleted,
-/// NodeDeleted in `departed`, then the fabric-primary's own mesh topology for mesh1; only then, with
+/// NodeDeleted in `deleted`, then the fabric-primary's own mesh topology for mesh1; only then, with
 /// every birth proven exited, mesh-left. No MeshLeft is published between the handoff and the final
 /// birth's exit proof.
 ///
@@ -223,12 +223,12 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     }
 
     // Deleted is final and its members resolve Gone: an ordinary node of each surviving mesh answers
-    // `gone` from its own live resolver for every departed mesh1 birth, never `unknown`.
+    // `gone` from its own live resolver for every deleted mesh1 birth, never `unknown`.
     for rx in ["mesh2.rpc.1", "mesh3.rpc.1"] {
         for (name, id) in mesh1_ids.iter() {
             let query = format!("exact:{id}");
             let target = format!("path:{rx}");
-            wait_for(&format!("{rx}'s resolver answers Gone for departed {name}"), Duration::from_secs(30), || async {
+            wait_for(&format!("{rx}'s resolver answers Gone for deleted {name}"), Duration::from_secs(30), || async {
                 let r = estate.probe(&["resolve", "--target", &target, "--query", &query]);
                 (r["reply"]["resolution"] == "gone").then_some(())
             })
@@ -238,7 +238,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // R-MN1 (mesh-delete.md "Rows", steps 3 and 7): every birth of mesh1 is deleted and no row is
     // removed. Each mesh1 birth's Node record stays on the fabric's store root at its node id
     // (its lines in `nodes.jsonl` at its node id, R-SR1; storage-whole-records.md), written Deleted: the members' by
-    // mesh1's primary, the final primary's by the fabric-primary in its node.delete. A departed birth
+    // mesh1's primary, the final primary's by the fabric-primary in its node.delete. A deleted birth
     // never answers, so mesh-left takes the address of every birth its proof set names off its record.
     assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/self.json")).exists(), "mesh1.admin.1's own Node row remains in {mesh1_dir}");
     for (name, id) in mesh1_ids.iter() {

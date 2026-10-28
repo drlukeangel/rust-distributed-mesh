@@ -346,7 +346,7 @@ impl Estate {
         all
     }
 
-    /// The node at `name` if the admin lists it now. A departed birth leaves the view before its
+    /// The node at `name` if the admin lists it now. A deleted birth leaves the view before its
     /// replacement's record appears, so a wait on a path uses this, never [`Self::node_view`].
     pub async fn node_view_opt(&self, name: &str) -> Option<NodeView> {
         let path: PathName = name.parse().unwrap_or_else(|e| panic!("{name} is not a path.name: {e:?}"));
@@ -474,7 +474,7 @@ impl Estate {
     /// from a reply stream it holds, so the witness reports it and one that never does is named.
     pub async fn holds_departure(&self, witness: &str, mesh: &str, node_id: &str) {
         let witness_view = self.node_view(witness).await;
-        self.peers().await.fact(&witness_view, mesh, &format!("{witness} retains the departure of {node_id}"), |v| v.departed.iter().any(|d| d.node_id.as_str() == node_id)).await;
+        self.peers().await.fact(&witness_view, mesh, &format!("{witness} retains the departure of {node_id}"), |v| v.deleted.iter().any(|d| d.node_id.as_str() == node_id)).await;
     }
 
     /// Wait for the answering admin's node view to hold a state no stream announces: `check` reads the

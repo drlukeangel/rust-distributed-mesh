@@ -340,11 +340,11 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
 }
 
 /// CONTRACT (node-start.md step 2: the stopped node "holds no record of the commander and never
-/// refuses for lacking one"; R-UC1a): the node's resolver holds the commander departed (a record
+/// refuses for lacking one"; R-UC1a): the node's resolver holds the commander deleted (a record
 /// that says it never returns), yet the commander's call reached the node. The start is answered
 /// `Started`: the join went back over the call's endpoint and path, and no record of the commander,
 /// the resolver's included, was read. Must NOT happen: the start refused at `node.join` naming the
-/// resolver's record (`commander-refused`, `Departed`).
+/// resolver's record (`commander-refused`, `Deleted`).
 #[test]
 fn a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call() {
     let cell = "a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call";
@@ -353,7 +353,7 @@ fn a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call() {
         if crate::own_process::delegated(module_path!(), cell) {
             return;
         }
-        let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_id, .. } = rig("departed-commander").await;
+        let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_id, .. } = rig("deleted-commander").await;
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "848haseghsta".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() };
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "848haseghsta".into(), attempt: 2, operation: "node.start:mesh1.rpc.1".into() };
         let left = call(&commander, &target, &stop).await;
