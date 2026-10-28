@@ -151,6 +151,17 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
     let fp_name = fp.name.to_string();
     let first = hold_until_recovered(&estate, &mp.name.to_string()).await;
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
+    // The second hold begins once the first recovery's attempt has its terminal at the fabric-primary
+    // (its build.attempt.run to mesh2.admin.2 answered complete): the cell holds an admin between
+    // recoveries, never the executor of one still reporting its receipts.
+    let fp_view = fp_name.clone();
+    let first_id = first.node_id.clone();
+    wait_for("the first recovery's attempt complete at the fabric-primary", crate::node_recovery_due(), || async {
+        let spans = estate.spans();
+        let attempt = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| attr(sp, "node_id") == first_id && attr(sp, "route") == "node-recovery" && attr(sp, "outcome") == "admitted").map(|sp| attr(sp, "attempt"))?;
+        named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().any(|sp| attr(sp, "node") == fp_view && attr(sp, "attempt") == attempt && attr(sp, "outcome") == "complete").then_some(())
+    })
+    .await;
     let second = hold_until_recovered(&estate, &other.name.to_string()).await;
 
     estate.stop().await;
