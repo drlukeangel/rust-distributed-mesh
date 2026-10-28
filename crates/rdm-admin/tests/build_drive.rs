@@ -319,10 +319,11 @@ async fn the_callers_streams_name_the_successor_a_primary_update_installed_while
 }
 
 /// CONTRACT: an executor that cannot be reached is replaced only on proof of its departure. The
-/// attempt claimed for it stays its own, the drive blocks with a frame naming why (once, however
-/// many passes find the same reason), and no other admin is claimed for it and nothing runs.
+/// attempt claimed for it stays its own, the drive stalls naming why on its span, and no other admin
+/// is claimed for it and nothing runs. The wait frames nothing to the caller (node-rpc-envelope.md:
+/// Blocked's "only source is the subject's Status `Blocked` reply to the executor's ProbeNodeState").
 #[tokio::test]
-async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once() {
+async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_frames_nothing() {
     let r = rig().await;
     r.dispatch.lose("mesh1.admin.2");
     let drive = Drive::detached(r.build.clone());
@@ -336,14 +337,8 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "attempt 1 is still the unreachable admin's");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran on silence");
-    match next_within(&mut reader).await {
-        Some(Read::Frame(BuildReply::Blocked { attempt: 1, step, reason, .. })) => {
-            assert_eq!(step, "departure-proof");
-            assert!(reason.contains("mesh1.admin.2") && reason.contains("not proven"), "{reason}");
-        }
-        other => panic!("the drive says why it waits: {other:?}"),
-    }
-    assert!(next_within(&mut reader).await.is_none(), "the same blocker is framed once, not on every pass");
+    let waiting = frames_now(&mut reader).await;
+    assert_eq!(blocked_of(&waiting), Vec::<BuildReply>::new(), "the wait for the departure proof frames no Blocked to the caller: no subject's Status Blocked reply made one");
     // The proof arrives: the next attempt is claimed for the admin the view now names, and the
     // caller's reader carries its frames to the terminal.
     r.proofs.exited.lock().unwrap().insert("mesh1.admin.2".into());
@@ -373,7 +368,8 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
 /// "Executor departure proof, never silence, is required before claiming the next attempt for its
 /// successor"): mesh2's seated admin, the claimed executor, is lost and proven exited; mesh2's other
 /// admin is held but silent, not yet seated. The fabric-primary of mesh1 does not take mesh2's
-/// work: the drive stalls naming the held admin, every re-run uses the departure already recorded
+/// work: the drive stalls naming the held admin on its span, never on the caller's stream
+/// (node-rpc-envelope.md: Blocked's only source is the subject's Status `Blocked`), every re-run uses the departure already recorded
 /// (no second call to the lost executor, no second proof), and once mesh2.admin.2 holds the seat
 /// the next attempt is claimed for it.
 #[tokio::test]
@@ -403,12 +399,14 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
         }
     }
     let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
     for pass in 0..3 {
         match r.env.run(&drive).await {
             DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "pass {pass}: {why}"),
             other => panic!("pass {pass}: the fabric-primary never takes mesh2's work while mesh2.admin.2 is held: {other:?}"),
         }
     }
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the wait for mesh2's election frames no Blocked to the caller: no subject's Status Blocked reply made one");
     assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 3, "each pass proves the departure itself: nothing holds it between passes");
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh2.admin.1")), "nothing is claimed while mesh2's seat is held");
@@ -450,7 +448,8 @@ impl OperationRunner for Recovered {
 /// node-admin is proven exited, so the fabric-primary of mesh1 is the executor of mesh2's work in
 /// its view, and the investigation holds mesh2 unheard. While no recovery is decided the drive claims
 /// nothing and dispatches nothing for mesh2, and says so on its own span naming the mesh, the
-/// operation and how long the mesh is unheard. Once the investigation decides the recovery, the
+/// operation and how long the mesh is unheard, never on the caller's stream (node-rpc-envelope.md:
+/// Blocked's only source is the subject's Status `Blocked`). Once the investigation decides the recovery, the
 /// mesh's first recovering node-admin, and only it, is claimed and run on the fabric-primary; the
 /// mesh's second admin and its ordinary node wait until the mesh is heard again, and are then run by
 /// mesh2's own primary.
@@ -468,6 +467,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_th
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-unheard-mesh-drive");
     let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
     let before = r.builds.read_build(&r.build).await.unwrap();
 
     // Held unheard, no recovery decided: nothing is claimed or dispatched for mesh2.
@@ -483,6 +483,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_th
     let a = &targeted[0].1;
     assert_eq!((a.get("mesh").map(String::as_str), a.get("target").map(String::as_str), a.get("unheard_ms").map(String::as_str), a.get("recovery_decided").map(String::as_str)), (Some("mesh2"), Some("mesh2.admin.1"), Some("31000"), Some("false")), "{a:?}");
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {a:?}", targeted[0].0);
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the target on the unheard mesh is named on its span and frames no Blocked to the caller");
 
     // The investigation decided the recovery: the first recovering node-admin, and only it, runs, on
     // the fabric-primary.
@@ -498,6 +499,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_th
     assert_eq!(second.len(), 2, "{second:?}");
     assert_eq!((second[1].1.get("target").map(String::as_str), second[1].1.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{:?}", second[1].1);
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", second[1].0, second[1].1);
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the second admin's wait for the mesh frames no Blocked to the caller");
 
     // Heard again: mesh2's own primary runs the rest of the mesh.
     r.switch.peer.lock().unwrap().remove("mesh2");
@@ -1702,7 +1704,8 @@ async fn a_successor_whose_view_already_names_it_primary_acknowledges_the_rows_u
 
 /// CONTRACT (as above; C1 step 8: "Only then does the commanding Build continue"): an update the row
 /// records that this admin cannot acknowledge (the successor's call fails, the row cannot be read)
-/// leaves the Build where it is: the drive blocks once, naming why, stalls, and dispatches nothing.
+/// leaves the Build where it is: the drive stalls naming why on its span, frames nothing to the caller
+/// (node-rpc-envelope.md: Blocked's only source is the subject's Status `Blocked`), and dispatches nothing.
 /// Must NOT happen: the operation on the old holder dispatched past an update not acknowledged.
 #[tokio::test]
 async fn an_update_the_drive_cannot_acknowledge_stalls_the_drive_by_name_and_dispatches_nothing() {
@@ -1716,10 +1719,8 @@ async fn an_update_the_drive_cannot_acknowledge_stalls_the_drive_by_name_and_dis
     assert_eq!(gate.asked.lock().unwrap().len(), 1, "asked once: {:?}", gate.asked.lock().unwrap());
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing was dispatched: {:?}", r.dispatch.dispatched.lock().unwrap());
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
-    match next_within(&mut reader).await {
-        Some(Read::Frame(BuildReply::Blocked { step, reason, .. })) => assert!(step == "primary-update" && reason.contains(&row.operation), "the blocker names the update: {step} {reason}"),
-        other => panic!("the caller reads the blocker naming the update, got {other:?}"),
-    }
+    let waiting = frames_now(&mut reader).await;
+    assert_eq!(blocked_of(&waiting), Vec::<BuildReply>::new(), "the update not acknowledged frames no Blocked to the caller: the stall names it on its span");
 }
 
 /// The view before the holder's row: the fabric-primary `mesh1.admin.1` holds both seats, and
@@ -2830,8 +2831,9 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready() {
 /// with no run of it in this process, is ended by this fabric-primary at once: its attempt `Failed` naming
 /// the delete, no departure proof asked of its own runtime, which cannot exit while it runs the delete.
 /// While a run of that attempt is live in this process, the attempt is not ended under it: the run stops
-/// at its next operation and hands back. Must NOT happen: the delete waiting on the exit of the process
-/// that runs it.
+/// at its next operation and hands back, and the delete's own drive waits for it, framing nothing to its
+/// caller. Must NOT happen: the delete waiting on the exit of the process that runs it, or a Blocked frame
+/// on the delete's stream that no subject's Status `Blocked` reply made.
 #[tokio::test]
 async fn a_fabric_delete_ends_an_attempt_this_fabric_primary_holds_without_waiting_on_its_own_exit() {
     let r = rig().await;
@@ -2850,6 +2852,15 @@ async fn a_fabric_delete_ends_an_attempt_this_fabric_primary_holds_without_waiti
         other => panic!("an attempt whose run is live here ends with that run: {other:?}"),
     }
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().state, rdm_admin::build_state::BuildState::Running, "nothing is written under the live run");
+    // The delete's own drive waits for the interrupted attempt to end: named on its span, never framed
+    // to the caller (node-rpc-envelope.md: Blocked's only source is the subject's Status `Blocked`).
+    let teardown = Drive::detached(delete.build_id.clone());
+    let mut teardown_reader = teardown.reader(1);
+    match tokio::time::timeout(Duration::from_secs(10), r.env.run(&teardown)).await {
+        Ok(DriveEnd::Stalled(why)) => assert!(why.contains("runs in this process"), "the delete's drive names the live run it waits for: {why}"),
+        other => panic!("the delete's teardown opens only once the interrupted attempt ended: {other:?}"),
+    }
+    assert_eq!(blocked_of(&frames_now(&mut teardown_reader).await), Vec::<BuildReply>::new(), "the delete's wait for the interrupted Build frames no Blocked to the caller");
     drop(live);
     // No run is live: this fabric-primary ends its own attempt at once.
     let mut reader = drive.reader(1);
@@ -2946,7 +2957,9 @@ async fn a_decided_recovery_admits_no_delete_of_a_node_admin_of_the_held_mesh() 
 /// an unheard mesh-primary's recovery attempt, opened in the fabric lane and claimed by no one, follows
 /// the election's result as the claim at its open does. While the fabric-primary's view still names the
 /// unheard `mesh2.admin.1` mesh2's primary and mesh2 holds another node-admin (`mesh2.admin.2`, unheard
-/// in that view as all of mesh2 is), the drive claims nothing and stalls naming the mesh and that admin;
+/// in that view as all of mesh2 is), the drive claims nothing and stalls naming the mesh and that admin
+/// on its span, framing nothing to the caller (node-rpc-envelope.md: Blocked's only source is the
+/// subject's Status `Blocked`);
 /// once the view names `mesh2.admin.2` mesh2's primary, the attempt is claimed for it. Must NOT happen:
 /// the attempt claimed for the fabric-primary itself while mesh2 holds another node-admin.
 #[tokio::test]
@@ -2977,9 +2990,11 @@ async fn the_drive_claims_an_unheard_mesh_primarys_recovery_for_the_mesh_primary
         .await
         .unwrap();
     let unnamed = Drive::detached(r.build.clone());
+    let mut reader = unnamed.reader(attempt);
     let end = tokio::time::timeout(Duration::from_secs(5), r.env.run(&unnamed)).await.expect("the drive ends");
     let claimed = r.builds.read_build(&r.build).await.unwrap().attempt_executors;
     assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("mesh2") && why.contains("mesh2.admin.2")), "the drive stalls naming the mesh and the node-admin the election names here: {end:?}; claims: {claimed:?}");
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the wait for the election's mesh-primary frames no Blocked to the caller");
     assert_eq!(claimed.get(&attempt), None, "nothing is claimed before the view names mesh2's primary: {claimed:?}");
 
     // The election named mesh2.admin.2: the view names it mesh2's primary, still unheard here.
@@ -3321,4 +3336,246 @@ fn a_member_create_that_fails_on_the_next_attempt_too_ends_the_build_failed_nami
     let healed: Vec<String> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-create-failed" && s["attributes"]["operation"] == "node.create:mesh1.rpc.3").map(|s| s["attributes"]["attempt"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(healed, ["1"], "one heal attempt: only attempt 1's failure hands back");
     assert!(spans.iter().all(|s| s["name"] != "rdm.node_admin.build.update.via-stalled"), "nothing stalls");
+}
+
+/// mesh1's in-flight row taken by an attempt of another Build, claimed by `mesh1.admin.2` (R-BI7
+/// caveat 3): every claim of an attempt that acts in mesh1 is refused build-in-progress naming it.
+async fn mesh1_held_by_another_build(r: &Rig) -> BuildId {
+    use rdm_admin::storage::MeshStorage as _;
+    let other = BuildId::mint();
+    let row = rdm_admin::mesh_claims::InFlight { build_id: other.clone(), lane: None, attempt: 1, claimant: "mesh1.admin.2".into(), claimant_node: None };
+    assert_eq!(r.env.door.claims.take_in_flight("mesh1", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won, "the other Build's attempt holds mesh1");
+    other
+}
+
+/// CONTRACT (R-BI7 caveat 3: one attempt in flight per mesh; node-rpc-envelope.md: Blocked is a
+/// "nonterminal hook blocker ... Its only source is the subject's Status `Blocked` reply to the
+/// executor's ProbeNodeState"): mesh1 is held by another Build's attempt, so the claim of this Build's
+/// next attempt in mesh1 is refused build-in-progress. The drive claims and dispatches nothing and
+/// stalls naming the mesh and the attempt that holds it on its span. Must NOT happen: a Blocked frame on
+/// the caller's stream for the claim's refusal, which no subject's Status `Blocked` reply made.
+#[tokio::test]
+async fn a_claim_refused_build_in_progress_on_its_mesh_stalls_the_drive_and_frames_nothing() {
+    let r = rig().await;
+    let other = mesh1_held_by_another_build(&r).await;
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    match r.env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("mesh mesh1") && why.contains(other.as_str()) && why.contains("one attempt in flight per mesh"), "the stall names mesh1 and the attempt holding it: {why}"),
+        other => panic!("nothing is claimed in a mesh another attempt holds: {other:?}"),
+    }
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing is dispatched");
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the claim's refusal frames no Blocked to the caller");
+}
+
+/// Refuses every `build.attempt.run` by name, as an executor refuses a call whose claim names another
+/// recipient (`NotExecutor`, node-rpc-envelope.md "Refusals, fencing and bounds").
+struct Refuses;
+
+#[async_trait::async_trait]
+impl rdm_admin::build_drive::Dispatcher for Refuses {
+    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, _build_id: &BuildId, _attempt: u32, _context: rdm_core::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
+        rdm_admin::build_drive::Dispatched::Refused(BuildReply::NotExecutor { named: executor.to_string(), recipient: "mesh1.admin.9".into() })
+    }
+}
+
+/// CONTRACT (node-rpc-envelope.md "Refusals, fencing and bounds": build.attempt.run "refuses by name when
+/// the recipient is not the executor named in the claim (NotExecutor { named, recipient })"; Blocked's
+/// "only source is the subject's Status `Blocked` reply to the executor's ProbeNodeState"): the executor
+/// refuses the dispatch of the claimed attempt by name. The drive records the refusal on its dispatch
+/// span and stalls naming it; nothing runs. Must NOT happen: a Blocked frame on the caller's stream for
+/// the executor's refusal.
+#[tokio::test]
+async fn an_executor_that_refuses_the_dispatch_stalls_the_drive_and_frames_nothing() {
+    let r = rig().await;
+    let e = &r.env;
+    let env = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: Arc::new(Refuses),
+        gate: e.gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        turns: e.turns.clone(),
+    });
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    match env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("refused attempt 1") && why.contains("mesh1.admin.9"), "the stall names the refusal: {why}"),
+        other => panic!("a refused dispatch stalls the drive: {other:?}"),
+    }
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the executor's refusal frames no Blocked to the caller");
+}
+
+/// CONTRACT (Q250; node-rpc-envelope.md: Blocked's "only source is the subject's Status `Blocked` reply
+/// to the executor's ProbeNodeState"): a Build grows mesh2 and mesh3, each its own mesh-primary's, and
+/// mesh3's mesh-primary cannot be reached, its departure not proven. mesh2's section completes; mesh3's
+/// holds its mesh, and the drive stalls naming it on its span. Must NOT happen: a Blocked frame on the
+/// caller's stream for the held section.
+#[tokio::test]
+async fn a_section_whose_mesh_primary_is_unreached_stalls_the_drive_and_frames_nothing() {
+    let fabric = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1)]), MeshDesired::of("mesh2", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 3)]), MeshDesired::of("mesh3", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 3)])] };
+    let r = rig_for(three_meshes(), TopologyChange::ReconcileFabric { desired: fabric }, move |ran, _| -> Arc<dyn OperationRunner> { Arc::new(AtOnce::new(ran, None)) }).await;
+    r.dispatch.lose("mesh3.admin.1");
+    let drive = Drive::detached(r.build.clone());
+    // Every frame of the drive: no attempt of the fabric's own numbering is open while sections run.
+    let mut reader = drive.reader(0);
+    match tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s") {
+        DriveEnd::Stalled(why) => assert!(why.contains("mesh mesh3") && why.contains("not reached") && why.contains("not proven"), "the stall names mesh3's held section: {why}"),
+        other => panic!("a section whose mesh-primary is unreached holds the Build: {other:?}"),
+    }
+    let ran = r.ran.0.lock().unwrap().clone();
+    assert!(["node.create:mesh2.rpc.2", "node.create:mesh2.rpc.3"].iter().all(|k| ran.iter().any(|r| r == k)), "mesh2's section completed: {ran:?}");
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the held section frames no Blocked to the caller");
+}
+
+/// Accepts a fabric.delete after the Build while the operation runs (build.md §1: it "may interrupt the
+/// Build in progress"), and the operation, admitted before it, fails within its bound.
+struct DeleteDuring(Arc<Creates>, Mutex<Option<BuildId>>);
+
+#[async_trait::async_trait]
+impl OperationRunner for DeleteDuring {
+    async fn run(&self, build: &BuildId, _lane: Option<&str>, _attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
+        let builds = &self.0.1;
+        let grow = builds.read_build(build).await.unwrap();
+        let at = builds.newest_accepted_at_ms().await.unwrap().unwrap_or(0) + 1;
+        let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: grow.topology.clone(), submitted_change: Some(TopologyChange::DeleteFabric), submitted_at_ms: at };
+        rdm_admin::build_state::accept(&**builds, &delete, Some(build), "mesh1.admin.1", "accepted").await.unwrap();
+        *self.1.lock().unwrap() = Some(delete.build_id);
+        self.0.0.lock().unwrap().push(op.key());
+        Err(rdm_admin::executor::RunEnd::failed(format!("{} did not end within its bound", op.key())))
+    }
+}
+
+/// CONTRACT (build.md §1: "When every open attempt of the interrupted Build has ended, its run receives
+/// `Failed { step, reason }` naming the delete"; node-rpc-envelope.md: Blocked's "only source is the
+/// subject's Status `Blocked` reply to the executor's ProbeNodeState"): a fabric.delete is accepted
+/// while the executor `mesh1.admin.2` runs the Build's create, which fails within its bound. The run
+/// hands back to the fabric-primary, named on its span, and the caller's stream ends `Failed` naming
+/// the delete. Must NOT happen: a Blocked frame on the caller's stream for the interruption, which no
+/// subject's Status `Blocked` reply made.
+#[tokio::test]
+async fn a_run_a_fabric_delete_interrupts_frames_nothing_before_the_failed_naming_the_delete() {
+    let deleted: Arc<Mutex<Option<Arc<DeleteDuring>>>> = Arc::default();
+    let held = deleted.clone();
+    let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) }, move |ran, _| -> Arc<dyn OperationRunner> {
+        let d = Arc::new(DeleteDuring(ran, Mutex::new(None)));
+        *held.lock().unwrap() = Some(d.clone());
+        d
+    })
+    .await;
+    // The executor frames its run's progress on the call's stream, as an admin's Build state does.
+    r.dispatch.frames("mesh1.admin.2");
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    let mut ends = Vec::new();
+    for _ in 0..3 {
+        let end = tokio::time::timeout(Duration::from_secs(10), r.env.run(&drive)).await.expect("the drive ends within 10 s");
+        ends.push(end.clone());
+        if end == DriveEnd::Terminal {
+            break;
+        }
+    }
+    assert_eq!(ends.last(), Some(&DriveEnd::Terminal), "the interrupted Build ends: {ends:?}");
+    let delete = deleted.lock().unwrap().clone().unwrap().1.lock().unwrap().clone().expect("the delete was accepted during the run");
+    let frames = frames_now(&mut reader).await;
+    assert!(matches!(frames.last(), Some(Read::Terminal(BuildReply::Failed { step, reason, .. })) if step == "fabric.delete" && reason.contains(delete.as_str())), "the stream ends Failed naming the delete: {frames:?}");
+    assert_eq!(blocked_of(&frames), Vec::<BuildReply>::new(), "the interruption frames no Blocked to the caller");
+}
+
+/// CONTRACT (node-primary-update.md failure contract: "The workflow continues only after the result is
+/// installed and acknowledged"; node-rpc-envelope.md: Blocked's "only source is the subject's Status
+/// `Blocked` reply to the executor's ProbeNodeState"): the fabric-primary `mesh1.admin.1` holds both
+/// primaries and its Build deletes it, so its drive updates them first; the update answers and this view
+/// still names it the primary of both. The drive stalls naming it on its span and dispatches nothing.
+/// Must NOT happen: a Blocked frame on the caller's stream for the update the view does not show.
+#[tokio::test(start_paused = true)]
+async fn a_primary_update_the_view_does_not_show_stalls_the_drive_and_frames_nothing() {
+    let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    match tokio::time::timeout(Duration::from_secs(60), r.env.run(&drive)).await.expect("the drive ends") {
+        DriveEnd::Stalled(why) => assert!(why.contains("still names it") && why.contains("node.delete:mesh1.admin.1"), "the stall names the update the view does not show: {why}"),
+        other => panic!("an update the view does not show stalls the drive: {other:?}"),
+    }
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the update's wait frames no Blocked to the caller");
+}
+
+/// The holder's own node.primary.update that moves both primaries to `mesh1.admin.2` and the fabric
+/// record with them, then ends without node.primary.updated (`Incomplete`).
+struct MovedUnanswered {
+    inner: Arc<Switch>,
+    topology: Arc<RwLock<Topology>>,
+}
+
+#[async_trait::async_trait]
+impl Gate for MovedUnanswered {
+    async fn target(&self) -> Result<Option<String>, BuildStateError> {
+        self.inner.target().await
+    }
+    async fn target_set(&self) {
+        self.inner.target_set().await
+    }
+    async fn update_primaries(&self, _: &rdm_admin::executor::SeatMove, _: &BuildId, _: u32, _: u32, _: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
+        for n in self.topology.write().await.nodes.iter_mut() {
+            let successor = n.name.to_string() == "mesh1.admin.2";
+            (n.is_primary, n.is_fabric_primary) = (successor, successor);
+        }
+        self.inner.target_to(Some("mesh1.admin.2"));
+        Err(rdm_admin::build_drive::SeatMoveEnd::Incomplete("the successor's answer was not read".into()))
+    }
+}
+
+/// CONTRACT (node-primary-update.md failure contract: "After the successor installed itself, it is
+/// primary whatever the call returns"; node-rpc-envelope.md: Blocked's "only source is the subject's
+/// Status `Blocked` reply to the executor's ProbeNodeState"): the fabric-primary's own update moves both
+/// primaries to `mesh1.admin.2` and ends without its answer. The drive records why on its dispatch span
+/// and ends at the fabric record naming the successor. Must NOT happen: a Blocked frame on the caller's
+/// stream for the unanswered update.
+#[tokio::test(start_paused = true)]
+async fn a_primary_update_that_moved_the_primaries_without_its_answer_frames_nothing() {
+    let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+    let e = &r.env;
+    let env = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: Arc::new(MovedUnanswered { inner: r.switch.clone(), topology: e.topology.clone() }),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        turns: e.turns.clone(),
+    });
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    let end = tokio::time::timeout(Duration::from_secs(60), env.run(&drive)).await.expect("the drive ends");
+    assert!(matches!(&end, DriveEnd::SeatLost(_)), "the drive ends at the record naming the successor: {end:?}");
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the unanswered update frames no Blocked to the caller");
+}
+
+/// CONTRACT (node-primary-update.md failure contract: "The fabric-primary claims the attempt at the claim
+/// door before it commands"; R-BI7 caveat 3; node-rpc-envelope.md: Blocked's "only source is the
+/// subject's Status `Blocked` reply to the executor's ProbeNodeState"): the fabric-primary's Build deletes
+/// it, so its drive claims the attempt for its own update first, and mesh1 is held by another Build's
+/// attempt: the claim is refused build-in-progress. The drive commands nothing and stalls naming the
+/// refusal on its span. Must NOT happen: the update commanded, or a Blocked frame on the caller's stream
+/// for the claim's refusal.
+#[tokio::test(start_paused = true)]
+async fn a_primary_update_whose_attempt_is_not_claimed_stalls_the_drive_and_frames_nothing() {
+    let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+    let other = mesh1_held_by_another_build(&r).await;
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    match tokio::time::timeout(Duration::from_secs(60), r.env.run(&drive)).await.expect("the drive ends") {
+        DriveEnd::Stalled(why) => assert!(why.contains("was not claimed for") && why.contains(other.as_str()), "the stall names the claim's refusal: {why}"),
+        other => panic!("an update whose attempt is not claimed stalls the drive: {other:?}"),
+    }
+    assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing ran or was dispatched");
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the claim's refusal frames no Blocked to the caller");
 }
