@@ -2034,4 +2034,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(ran_at < hashed_at, "the woken task ran {:?} after the hash returned: it waited for the hash", ran_at.saturating_duration_since(hashed_at));
     }
+
+    /// An executable file `name` in `dir`, padded (sparse) to `len` bytes, bound as `kind`.
+    fn padded(dir: &std::path::Path, name: &str, kind: NodeKind, len: u64) -> Binding {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n# {name}\n")).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_len(len).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Binding { launch_id: kind.name().into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
+    }
+
+    /// The `rdm.node_admin.deployment.resolve.via-executable-hash` spans of `capture` on `file`, by outcome.
+    fn hash_outcomes(capture: &crate::span_capture::Capture, file: &std::path::Path) -> std::collections::BTreeMap<String, usize> {
+        let mut by = std::collections::BTreeMap::new();
+        for s in capture.named("rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|s| s.attributes.get("executable").map(String::as_str) == Some(&*file.display().to_string())) {
+            *by.entry(s.attributes.get("outcome").cloned().unwrap_or_default()).or_insert(0) += 1;
+        }
+        by
+    }
+
+    /// CONTRACT (rdm#151; node-rpc-envelope.md "verified at launch"): concurrent launches of one
+    /// (file, sha) share one in-flight hash: eight launches of one file at once read it once (one
+    /// `via-executable-hash` span with outcome `hashed`, seven `hashed-shared`), every one answers
+    /// Ok, and two launches of another file at once hash that file once on their own. Once they end
+    /// nothing is remembered: a launch after them hashes the file again. Must NOT happen: the one
+    /// file read once per launch; a later launch answered without reading the file.
+    #[tokio::test]
+    async fn concurrent_launches_of_one_file_and_sha_share_one_hash() {
+        let dir = crate::test_support::tempdir("shared-hash-one-file");
+        let one = padded(&dir, "rdm-rpc-node", NodeKind::RpcNode, 64 << 20);
+        let other = padded(&dir, "rdm-rpc-node-other", NodeKind::RpcNode, 64 << 20);
+        let capture = crate::span_capture::Capture::new("rdm151-shared-hash");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let launches = (0..8).map(|_| &one).chain((0..2).map(|_| &other)).map(|b| verify_binding(b, NodeKind::RpcNode, ProviderKind::Process, "build"));
+        let answers = futures_util::future::join_all(launches).await;
+        assert!(answers.iter().all(|a| a.is_ok()), "{answers:?}");
+        let want = |hashed, shared| std::collections::BTreeMap::from([("hashed".to_string(), hashed), ("hashed-shared".to_string(), shared)]);
+        assert_eq!(hash_outcomes(&capture, &one.executable), want(1, 7), "one read of the file the eight launches share");
+        assert_eq!(hash_outcomes(&capture, &other.executable), want(1, 1), "another file: its own hash");
+        assert_eq!(verify_binding(&one, NodeKind::RpcNode, ProviderKind::Process, "build").await, Ok(()));
+        assert_eq!(hash_outcomes(&capture, &one.executable), want(2, 7), "a launch after the shared hash ended reads the file again");
+        let s = capture.named("rdm.node_admin.deployment.resolve.via-executable-hash");
+        eprintln!("span rdm.node_admin.deployment.resolve.via-executable-hash trace_id={} {:?}", s[0].trace_id, s.iter().map(|s| (s.attributes.get("outcome"), s.attributes.get("elapsed_ms"))).collect::<Vec<_>>());
+    }
+
+    /// CONTRACT (rdm#151): a refusal is shared by the launches that awaited it, each refused by
+    /// name: four launches at once (a broker, a gateway, a compute node and an rpc node) of one file
+    /// under one sha its bytes do not hash to are each refused naming the file, the bound sha, the
+    /// file's sha and its own launch id; the file is read once (one `refused`, three
+    /// `refused-shared`). Must NOT happen: a launch answered Ok, or refused naming another launch's id.
+    #[tokio::test]
+    async fn a_wrong_sha_refuses_every_launch_that_shared_its_hash_by_name() {
+        let dir = crate::test_support::tempdir("shared-hash-wrong-sha");
+        let file = padded(&dir, "rdm-node", NodeKind::RpcNode, 64 << 20);
+        let actual = file.sha256.clone();
+        let wrong = "0".repeat(64);
+        let kinds = [NodeKind::Broker, NodeKind::Gateway, NodeKind::Compute, NodeKind::RpcNode];
+        let bindings: Vec<Binding> = kinds.iter().map(|k| Binding { launch_id: k.name().into(), sha256: wrong.clone(), ..file.clone() }).collect();
+        let capture = crate::span_capture::Capture::new("rdm151-shared-refusal");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let answers = futures_util::future::join_all(bindings.iter().zip(kinds).map(|(b, k)| verify_binding(b, k, ProviderKind::Process, "build"))).await;
+        for (answer, kind) in answers.iter().zip(kinds) {
+            let e = answer.as_ref().expect_err("a wrong sha is refused");
+            assert!(e.contains(&file.executable.display().to_string()) && e.contains(&wrong) && e.contains(&actual) && e.contains(&format!("`{}`", kind.name())), "{kind:?}: {e}");
+        }
+        assert_eq!(hash_outcomes(&capture, &file.executable), std::collections::BTreeMap::from([("refused".to_string(), 1), ("refused-shared".to_string(), 3)]));
+        let s = capture.named("rdm.node_admin.deployment.resolve.via-executable-hash");
+        eprintln!("span rdm.node_admin.deployment.resolve.via-executable-hash trace_id={} {:?}", s[0].trace_id, s.iter().map(|s| (s.attributes.get("launch_id"), s.attributes.get("outcome"))).collect::<Vec<_>>());
+    }
 }
