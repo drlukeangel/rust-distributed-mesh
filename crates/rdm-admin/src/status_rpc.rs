@@ -1664,9 +1664,9 @@ impl StatusAuthority {
                         if let Some(digest_view) = &self.digest_view { let _ = set_member_status(digest_view, MemberStatusReceipt::StopAdmitted(&op)); }
                         tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation).in_scope(|| tracing::info!("CommandAccepted reports the stop's admission; this mesh-primary sets stopping"));
                     }
-                    // The admission sets the node's status on its row (states.md "Who sets each state":
-                    // stopping from the stop's CommandAccepted; starting from the accepted node.start
-                    // execution), durable before the admission is acknowledged.
+                    // The node's acknowledgement sets its status on its row (states.md "Who sets each
+                    // state", Q233: stopping from the stop's CommandAccepted, starting from a stopped
+                    // node's CommandAccepted on StartNode), durable before the frame is acknowledged.
                     let status = if start { Some(crate::model::NodeStatus::Starting) } else if !completed { Some(crate::model::NodeStatus::Stopping) } else { None };
                     if let Some(status) = status {
                         if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.name, status)).await {

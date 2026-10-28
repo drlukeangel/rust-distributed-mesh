@@ -792,11 +792,15 @@ impl NodeRow {
     /// each state" names for the birth `birth`: whether the status moved. A `Deleted` or `Withdrawn`
     /// record stands; a birth that is not the record's newest moves nothing. A start of a stopped node
     /// (`Starting`) and a new join (`Pending`, from any status but `Deleting`) begin its next cycle (a
-    /// create's claim writes `Starting` as the record's first status); every other status
-    /// only moves forward along node.stop's frames (node-stop.md steps 1-4, Q205: starting, pending,
-    /// ready-for-traffic, stopping, connections-deleting, connections-deleted, leaving, left, stopped,
-    /// deleting), so inside node.stop each primitive's frame moves the row on from stopping, a stop of a
-    /// node already left moves it only to stopped, and a delete's stop leaves it deleting.
+    /// create's claim writes `Starting` as the record's first status). `Deleting` is the mesh-primary's,
+    /// from node.delete's claim, over any status (states.md, the paragraph after "Who sets each state",
+    /// Q233). A stop's acknowledgement (`Stopping`) sets stopping over any status but `Stopped`, a node
+    /// already connections-deleted or left included: the node's `Stopped` declaration may reach the
+    /// mesh-primary before the stop's own frames (node-stop.md step 5), and a stopped row stands. Every
+    /// other status only moves forward along node.stop's frames (node-stop.md steps 1-4, Q205: starting,
+    /// pending, ready-for-traffic, deleting, stopping, connections-deleting, connections-deleted,
+    /// leaving, left, stopped), so each primitive's frame moves the row on from stopping, and the stop a
+    /// delete composes moves it on from deleting to stopped before the delete writes it deleted.
     pub fn set_status(&mut self, birth: &IncarnationId, to: crate::model::NodeStatus) -> bool {
         use crate::model::NodeStatus as S;
         fn order(s: S) -> u8 {
@@ -804,13 +808,13 @@ impl NodeRow {
                 S::Starting => 0,
                 S::Pending => 1,
                 S::ReadyForTraffic | S::PendingReconnect | S::Dead | S::Reserved5 => 2,
-                S::Stopping => 3,
-                S::ConnectionsDeleting => 4,
-                S::ConnectionsDeleted => 5,
-                S::Leaving => 6,
-                S::Left => 7,
-                S::Stopped => 8,
-                S::Deleting => 9,
+                S::Deleting => 3,
+                S::Stopping => 4,
+                S::ConnectionsDeleting => 5,
+                S::ConnectionsDeleted => 6,
+                S::Leaving => 7,
+                S::Left => 8,
+                S::Stopped => 9,
                 S::Deleted | S::Withdrawn => 10,
             }
         }
@@ -820,6 +824,8 @@ impl NodeRow {
             _ if matches!(current, S::Deleted | S::Withdrawn) || !newest => false,
             S::Starting => matches!(current, S::Stopped | S::Leaving),
             S::Pending => current != S::Deleting,
+            S::Deleting => true,
+            S::Stopping => current != S::Stopped,
             _ => order(to) > order(current),
         };
         if moves {

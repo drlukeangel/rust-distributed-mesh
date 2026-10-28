@@ -34,17 +34,17 @@ pub enum NodeStatus {
     /// Observer inferred only; never sent, never itself the reason to act: the verdict is.
     Dead,
     /// Deleted: the node's identity and name are released. Only the node's row carries it, written
-    /// by the fabric-primary from the exit proof; the record and its config stay for the next node
-    /// created at the same `path.name`.
+    /// by the node's mesh-primary (the fabric-primary for a mesh with no primary) from node.delete's
+    /// step receipt; the record and its config stay for the next node created at the same `path.name`.
     Deleted,
     /// Withdrawn: the create that claimed the name was withdrawn before its node ran (R-SR2). Only the
     /// node's record carries it, appended where the record was once removed, and a name claim wins
     /// over it as over a `Deleted` one. Appended last: no variant before it moves.
     Withdrawn,
-    /// Starting: the node's row from the accepted node.start execution (inside node.create, or on a
-    /// stopped node) until its join is accepted (states.md "Who sets each state"). A row status the
-    /// node's mesh-primary writes; appended after `Withdrawn`, as are the four below: no variant
-    /// before them moves.
+    /// Starting: the node's row from a stopped node's `CommandAccepted` on its start's `StartNode`
+    /// stream (a create's from its launch, where no process can acknowledge) until its join is
+    /// accepted (states.md "Who sets each state", Q233). A row status the node's mesh-primary writes;
+    /// appended after `Withdrawn`, as are the four below: no variant before them moves.
     Starting,
     /// Connections-deleted: the node's row once its node.connections.delete { All } completed
     /// `Established`.
@@ -53,7 +53,8 @@ pub enum NodeStatus {
     Stopping,
     /// Stopped: the node's row once the matching stopped frame arrived: a live, stopped process.
     Stopped,
-    /// Deleting: the node's row once node.delete's claim was adopted (published as NodeDeleting).
+    /// Deleting: the node's row once node.delete's claim was adopted (published as NodeDeleting); the
+    /// frames of the stop the delete composes move the row on from it (Q233).
     Deleting,
     /// Left: the node's row once its node.mesh.leave's completion arrived (`MeshLeft`, or `StopMeshLeft`
     /// on its stop's stream; Q205), the node off its mesh with its endpoint bound. Appended after

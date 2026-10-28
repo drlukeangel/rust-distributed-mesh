@@ -480,7 +480,7 @@ impl NodeRows {
                 span.record("node", me.to_string().as_str());
                 span.record("awaited", "writer-check");
                 // A create's claim is the record's first write, and the node is starting (states.md "Who
-                // sets each state": starting from the accepted node.start execution inside node.create).
+                // sets each state": a create's starting from its launch, where no process can acknowledge).
                 self.put_seeded(&me, name, node_id, NodeStatus::Starting, config, allocated, executable, tags, placed, of, &span, "writer-check").await
             },
             span.clone(),

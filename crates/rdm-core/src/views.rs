@@ -32,8 +32,9 @@ pub enum NodeStatus {
     Dead,
     /// Deleted: identity and name released; only the node's row carries it.
     Deleted,
-    /// Starting: from the accepted node.start execution until its join is accepted (states.md "Who
-    /// sets each state"). Appended after `Deleted`, as are the four below: no variant before them moves.
+    /// Starting: from a stopped node's acknowledgement of its start (a create's from its launch) until
+    /// its join is accepted (states.md "Who sets each state", Q233). Appended after `Deleted`, as are
+    /// the four below: no variant before them moves.
     Starting,
     /// Connections-deleted: its node.connections.delete { All } completed `Established`.
     ConnectionsDeleted,
