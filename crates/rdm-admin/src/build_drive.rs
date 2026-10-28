@@ -1908,7 +1908,7 @@ impl DriveEnv {
     }
 
     /// Send every section of what is left of `p` to its mesh-primary at once, when two meshes or more
-    /// are owed one, and wait for each to end (Q250). A section that fails stops none of the others; its mesh's operations are planned again
+    /// are owed one or a mesh's section failed before, and wait for each to end (Q250). A section that fails stops none of the others; its mesh's operations are planned again
     /// on the next pass, and the same failure twice running stalls the drive naming it.
     async fn run_sections(self: &Arc<Self>, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection, crashed: &HashSet<String>) -> Sections {
         let sections = {
@@ -1916,8 +1916,10 @@ impl DriveEnv {
             self.sections(me, drive, p, &t, crashed)
         };
         // One mesh's section gains nothing over the fabric lane's own attempt at its mesh-primary: sections
-        // are sent when two meshes or more are owed one.
-        if sections.len() < 2 {
+        // are sent when two meshes or more are owed one, or to a mesh whose section failed, which is claimed
+        // again for that mesh alone (Q250).
+        let retried = sections.iter().any(|(executor, _)| drive.section_failed.lock().unwrap().contains_key(&executor.mesh));
+        if sections.len() < 2 && !retried {
             return Sections::None;
         }
         let intent = self.intent_of(&p.build_id).await;

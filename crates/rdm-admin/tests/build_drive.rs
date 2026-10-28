@@ -3118,3 +3118,24 @@ async fn each_meshs_section_is_sent_to_its_mesh_primary_at_once() {
     assert_eq!(lanes, vec![("mesh2.admin.1".to_string(), "mesh2".to_string()), ("mesh3.admin.1".to_string(), "mesh3".to_string())], "each mesh-primary was sent its mesh's section, in its mesh's lane");
     assert_eq!(at.most.load(Ordering::SeqCst), 4, "the two sections' creates ran together");
 }
+
+/// CONTRACT (Q250, Q245): mesh3's section fails at mesh3.rpc.2's create every time. mesh2's section completes
+/// all the same: a failed section stops none of the others. mesh3's operations are planned again and its
+/// section sent again on the next pass, a new attempt of its lane; failing the same way twice running, the
+/// drive stalls naming it rather than sending it again and again. Must NOT happen: mesh2's creates held by
+/// mesh3's failure, or mesh3's section sent without end.
+#[tokio::test]
+async fn a_section_that_fails_stops_no_other_and_the_same_failure_twice_stalls_the_drive() {
+    let fabric = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1)]), MeshDesired::of("mesh2", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 3)]), MeshDesired::of("mesh3", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 3)])] };
+    let r = rig_for(three_meshes(), TopologyChange::ReconcileFabric { desired: fabric }, move |ran, _| -> Arc<dyn OperationRunner> { Arc::new(AtOnce { ran, running: Default::default(), most: Default::default(), fails: Some("mesh3.rpc.2") }) }).await;
+    let drive = Drive::detached(r.build.clone());
+    let ended = tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s");
+    match ended {
+        DriveEnd::Stalled(why) => assert!(why.contains("mesh mesh3's section failed the same way twice running") && why.contains("node.create:mesh3.rpc.2"), "{why}"),
+        other => panic!("the same section failure twice running stalls the drive naming it: {other:?}"),
+    }
+    let ran = r.ran.0.lock().unwrap().clone();
+    assert!(["node.create:mesh2.rpc.2", "node.create:mesh2.rpc.3"].iter().all(|k| ran.iter().any(|r| r == k)), "mesh2's section completed: {ran:?}");
+    let sent: Vec<(String, u32)> = r.dispatch.sections.lock().unwrap().iter().map(|(_, l, a)| (l.clone(), *a)).collect();
+    assert_eq!(sent.iter().filter(|(l, _)| l == "mesh3").map(|(_, a)| *a).collect::<Vec<_>>(), vec![1, 2], "mesh3's section was sent again, as its lane's next attempt, once: {sent:?}");
+}
