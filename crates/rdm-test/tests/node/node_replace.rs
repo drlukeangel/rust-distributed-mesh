@@ -1844,7 +1844,11 @@ async fn a_mesh_primary_that_is_not_the_fabric_primary_recovers_its_member_with_
     let nodes = estate.node_values().await;
     let (member, mesh_primary, primary) = placement(&nodes);
     assert_eq!(member.split('.').next(), Some("mesh2"), "the member is mesh2's: {member}");
-    let fp_pid = estate.pid_of(&s(&primary["name"])).await;
+    // The Day-0 admin is the estate's own child: its pid is the bootstrap's.
+    let fp_pid = match estate.bootstrap_pid() {
+        Some(p) if primary["name"] == "mesh1.admin.1" => u64::from(p),
+        _ => estate.pid_of(&s(&primary["name"])).await,
+    };
     let before = estate.node_value(&member).await;
     estate.kill_node(&member).await;
     let after = until_node_where(&estate, &member, &format!("{member} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;

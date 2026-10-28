@@ -2063,6 +2063,14 @@ pub trait LocalBuildLog: BuildStateAdapter {
     /// answers; any other admin answers every read from what reached it (its pulls, 0x1F, an attempt's
     /// intent) and reads nothing. A log that reads no store has nothing to switch.
     async fn read_records_while(&self, _reader: RecordsReader) {}
+    /// Read the Build records now, for `op`, as admin `node`, whatever [`Self::read_records_while`]
+    /// says: the re-born fabric-primary's start over an inherited root with nobody to pull from (Q227:
+    /// "re-born, it reads the latest Build records to learn what is in flight"; fabric-recovery.md
+    /// "Nothing alive"), before any record names it fabric-primary. Made under the writer's turn and
+    /// named as the take is. A log that reads no store has nothing to read.
+    async fn read_records_now(&self, _op: &'static str, _node: &str) -> Result<(), BuildStateError> {
+        Ok(())
+    }
 }
 
 /// Whether this admin reads the Build records now ([`LocalBuildLog::read_records_while`]): its
@@ -2151,6 +2159,21 @@ impl LocalBuildLog for FileJournal {
 
     async fn read_records_while(&self, reader: RecordsReader) {
         let _ = self.reader.set(reader);
+    }
+
+    async fn read_records_now(&self, op: &'static str, node: &str) -> Result<(), BuildStateError> {
+        let w = self.turn(op).await;
+        let read = match self.store_call(self.read_new(op)).await {
+            Ok(read) => read,
+            Err(e) => {
+                self.name_take(op, node, Err(&e));
+                return Err(e);
+            }
+        };
+        let records = read.len();
+        self.take_read(&w, read);
+        self.name_take(op, node, Ok(records));
+        Ok(())
     }
 
     async fn put_attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), crate::storage_error::StorageError> {

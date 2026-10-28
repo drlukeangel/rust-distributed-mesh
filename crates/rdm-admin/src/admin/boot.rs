@@ -1258,6 +1258,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // where it came from; a launched admin's comes from node.start's topology step, after its hook.
                 let mut entry_map: Option<(&'static str, Vec<crate::reenter::MapNode>)> = None;
                 let channel = topology_view.clone();
+                let seam_journal = journal.clone();
                 let joined_seam: crate::workflows::node_start::JoinedSeam<String> = Box::new(
                     move |_: Option<crate::workflows::node_start::JoinThrough>| -> crate::workflows::node_start::BoxFut<Result<(crate::workflows::node_start::HookParts, Option<crate::workflows::node_start::HookStarted<String>>), String>> {
                         Box::pin(async move {
@@ -1281,6 +1282,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
                                     // own mesh with one node-admin; it is the current Build once written.
                                     if sole_node_root && inherited.is_some() {
+                                        // The re-born fabric-primary with nobody to pull from reads the Build records
+                                        // itself (Q227), before any record names it fabric-primary.
+                                        seam_journal.read_records_now("inherited_root", &name.to_string()).await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?;
                                         let build_id = builds.current_build().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.into_build_id().map(|b| b.log().to_string()).unwrap_or_default();
                                         tracing::info_span!(parent: &boot, "rdm.node_admin.fabric.update.via-inherited-root", node = %name, build_id = %build_id)
                                             .in_scope(|| tracing::info!("the current Build reloaded from the inherited data dir's builds store"));

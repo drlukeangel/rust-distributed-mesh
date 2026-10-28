@@ -752,6 +752,9 @@ impl LocalBuildLog for Through {
     async fn held_current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.held_current_build().await
     }
+    async fn read_records_now(&self, op: &'static str, node: &str) -> Result<(), crate::build_state::BuildStateError> {
+        self.read().stores().boundaries.builds.read_records_now(op, node).await
+    }
     async fn read_records_while(&self, reader: crate::build_state::RecordsReader) {
         let _one = self.0.replacing.lock().await;
         *self.0.records_reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader.clone());
