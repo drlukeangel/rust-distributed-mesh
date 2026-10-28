@@ -3961,3 +3961,63 @@ fn a_submit_during_a_reconcile_pass_runs_the_next_pass() {
     assert_eq!(passes, vec![Woken::First, Woken::Submitted], "the submit during the first pass runs the second, and nothing else runs: {passes:?}");
     assert_eq!(drive_passes(&spans, &trace_id), 2);
 }
+
+/// An executor's run of a mesh's leave that waits for the cell, then ends incomplete with nothing moved.
+struct HeldThenIncomplete {
+    began: tokio::sync::watch::Sender<bool>,
+    let_go: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for HeldThenIncomplete {
+    async fn run(&self, _build: &BuildId, _lane: Option<&str>, _attempt: u32, _op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
+        self.began.send_replace(true);
+        self.let_go.acquire().await.expect("the cell never closes its semaphore").forget();
+        Err(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))
+    }
+}
+
+/// CONTRACT (Q253 amended: "a change during the hand-back is read at the next event, never missed"):
+/// an event whose pass finds the Build's drive still running (it read the world before the event and
+/// ends waiting) runs that drive again once its run ends. The leave's executor is held while the event
+/// (a submit) runs its pass; let go, the attempt ends incomplete with nothing moved and the drive
+/// waits, and the drive runs once more for the event its pass could not hand it.
+/// Must NOT happen: the event spent on a running drive, so a drive that read the world before it waits
+/// for the next event (rdm#164's gate: a Day-0 Build left waiting for the fabric's ready state that was
+/// set while its drive ran).
+#[test]
+fn an_event_whose_pass_finds_the_drive_running_runs_the_drive_again_once_it_ends() {
+    use rdm_admin::admin::Woken;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, passes, attempt) = cap.run(async {
+        let root = tracing::info_span!("cell.reconcile-event-during-drive");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let mut t = view();
+        t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
+        t.nodes.push(node("mesh2.admin.1", true, false));
+        t.nodes.push(node("mesh2.rpc.1", false, false));
+        let (began, mut running) = tokio::sync::watch::channel(false);
+        let let_go = Arc::new(tokio::sync::Semaphore::new(0));
+        let held = let_go.clone();
+        let r = rig_for(t, TopologyChange::RemoveMesh { mesh: "mesh2".into() }, move |_, _| -> Arc<dyn OperationRunner> { Arc::new(HeldThenIncomplete { began, let_go: held }) }).await;
+        let wakes = Wakes::new();
+        let (passes, task) = reconciler(&r.env, &wakes, None);
+        tokio::time::timeout(Duration::from_secs(5), running.wait_for(|b| *b)).await.expect("attempt 1 never reached its executor").unwrap();
+        wakes.submitted.notify_waiters();
+        while passes.lock().unwrap().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let_go.add_permits(8);
+        tokio::time::sleep(SETTLE).await;
+        task.abort();
+        let passes = passes.lock().unwrap().clone();
+        (trace_id, passes, r.builds.read_build(&r.build).await.unwrap().attempt)
+    });
+    let spans = cap.spans();
+    println!("trace_id={trace_id}");
+    assert_eq!(passes, vec![Woken::First, Woken::Submitted], "{passes:?}");
+    assert_eq!(attempt, 1, "attempt 1 was handed back with nothing moved: no other is claimed");
+    assert_eq!(drive_passes(&spans, &trace_id), 2, "the drive runs again for the submit its pass found it running for");
+}
