@@ -643,7 +643,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } => {
+        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::NodeConfigUpdated { .. } => {
             (crate::node_self::request_not_handled(&me_name.to_string(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -799,22 +799,69 @@ impl StatusAuthority {
         self.apply_from(peer, sender, req).await
     }
 
-    /// This admin's own `node.config.update` (node-config-update.md step 1), born as `incarnation`: put
-    /// its whole config `config` and answer once the command completed. A caller's command in process: at
-    /// the fabric-primary it is decided here; at any other admin it is carried up to the fabric-primary
-    /// its records name and the fabric-primary's answer is handed back
-    /// ([`crate::node_config::NodeConfigs::forward_up`]); the fabric-primary sends it down to this
-    /// admin's mesh-primary, which writes its row and tells this admin. The caller never names the
-    /// fabric-primary.
+    /// This admin's own `node.config.update` (node-config-update.md, a node's own update; Q235), born as
+    /// `incarnation`: put its whole config `config`, held at once (P2), and answer once its mesh-primary
+    /// answered. It goes to the mesh-primary its view names, owed until it answers and retargeted on a
+    /// primary change, in process when that mesh-primary is this admin (P4); the mesh-primary writes the
+    /// row and its atlas and owes the row up to the fabric-primary. The answer's row (the row as written,
+    /// or as it stands on a refusal) is installed over an older revision.
     pub async fn own_config_update(&self, incarnation: crate::model::IncarnationId, config: std::collections::BTreeMap<String, String>) -> StatusReply {
-        let req = StatusRequest::UpdateNodeConfig { node_id: self.node_id.clone(), incarnation, config };
+        let req = StatusRequest::UpdateNodeConfig { node_id: self.node_id.clone(), incarnation, config: config.clone() };
         self.commands.admitted().await;
         let view = self.topology.read().await.clone();
         let me = self.held_name_in(&view);
-        match self.configs.get() {
-            Some(configs) => configs.serve(&me, &self.node_id, &view, &self.topology, &*self.nodes_storage, self.atlas.get().map(|a| &**a), crate::node_config::SentBy::Caller, &req).await,
-            None => rdm_core::reply::status::not_ready(format!("{me} has no node-RPC client yet; {} is refused", req.op())),
+        let Some(configs) = self.configs.get() else {
+            return rdm_core::reply::status::not_ready(format!("{me} has no node-RPC client yet; {} is refused", req.op()));
+        };
+        let held = self.configure.get().cloned();
+        if let Some(hold) = &held {
+            hold(ConfigHeld::Sent(config)).await;
         }
+        let reply = configs.serve(&me, &self.node_id, &view, &self.topology, &*self.nodes_storage, self.atlas.get().map(|a| &**a), crate::node_config::SentBy::Own, &req).await;
+        if let Some(hold) = &held {
+            let row = match &reply {
+                StatusReply::ConfigUpdated { config, revision, .. } | StatusReply::ConfigRowRefused { config, revision, .. } => Some((config.clone(), *revision)),
+                _ => None,
+            };
+            hold(ConfigHeld::Answered(row)).await;
+        }
+        reply
+    }
+
+    /// A `NodeConfigUpdated` at this admin `me` (node-config-update.md, a node's own update, step 3;
+    /// Q235 P3): at the fabric-primary, the row's `config` at `revision` written into its atlas over an
+    /// older revision, answered `Applied`, or `AlreadyApplied` when the atlas holds that revision or a
+    /// newer one (or no record of the node, whose record it reads later is the row's); at any other admin
+    /// refused `ReceiverNotPrimary` naming the fabric-primary. One span,
+    /// `rdm.node_admin.node.update.via-config-pushed`.
+    fn take_config_push(&self, me: &crate::model::PathName, view: &Topology, sender: Option<&crate::model::Node>, node_id: &NodeId, config: &BTreeMap<String, String>, revision: u64) -> StatusReply {
+        let subject = view.own(node_id).map(|n| n.name.to_string()).unwrap_or_default();
+        let from = sender.map(|n| n.name.to_string()).unwrap_or_default();
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-config-pushed", node = %me, sender = %from, subject = %subject, node_id = %node_id, revision, keys = config.len(), atlas = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let reply = if !view.is_fabric_primary(&self.node_id) {
+            let held_by = view.fabric_primary().map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
+            let needed = format!("the fabric-primary, whose atlas a node's row is pushed up to ({held_by}; {me} does not hold it)");
+            span.record("detail", needed.as_str());
+            rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed })
+        } else {
+            match self.atlas.get().map(|a| a.install_config(node_id, config, revision)) {
+                Some(crate::atlas::ConfigInstall::Installed) => {
+                    span.record("atlas", "installed");
+                    rdm_core::reply::applied()
+                }
+                Some(held) => {
+                    span.record("atlas", held.name().as_str());
+                    rdm_core::reply::already_applied()
+                }
+                None => {
+                    span.record("detail", format!("{me} holds no fabric atlas yet").as_str());
+                    rdm_core::reply::status::not_ready(format!("{me} holds no fabric atlas yet; the row of {subject} pushed up is not taken"))
+                }
+            }
+        };
+        span.record("outcome", reply.name());
+        span.in_scope(|| tracing::info!("a node's row pushed up to the fabric-primary decided"));
+        reply
     }
 
     /// `node.name.update` (`UpdateName`) at this admin, a caller's or a replace's step
@@ -1087,13 +1134,19 @@ impl StatusAuthority {
                 self.commands.admitted().await;
                 return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await;
             }
-            StatusRequest::UpdateNodeConfig { .. } => {
+            StatusRequest::UpdateNodeConfig { node_id, .. } => {
                 self.commands.admitted().await;
                 let view = self.topology.read().await.clone();
                 return match self.configs.get() {
-                    Some(configs) => configs.serve(&me_name, &self.node_id, &view, &self.topology, &*self.nodes_storage, self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of(sender.as_ref()), req).await,
+                    Some(configs) => configs.serve(&me_name, &self.node_id, &view, &self.topology, &*self.nodes_storage, self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of(sender.as_ref(), node_id), req).await,
                     None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet; {} is refused", req.op())),
                 };
+            }
+            // A mesh-primary's push of a node's row (node-config-update.md, a node's own update, step 3;
+            // Q235): the fabric-primary writes it into its atlas over an older revision.
+            StatusRequest::NodeConfigUpdated { node_id, config, revision } => {
+                let view = self.topology.read().await.clone();
+                return self.take_config_push(&me_name, &view, sender.as_ref(), node_id, config, *revision);
             }
             // The reads (Q167): answered from what this admin holds, changing nothing.
             StatusRequest::Get { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
@@ -2080,8 +2133,25 @@ pub type PreNodeReadyCell = Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHand
 
 /// A node's re-publish of its presence (its digest published on the channel it is on), filled once it has joined its mesh.
 pub type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
-/// This node holding the config it is told (`ApplyNodeConfig`; no digest carries it, Q203).
-pub type Configure = Arc<OnceLock<Arc<dyn Fn(BTreeMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
+/// What a node-admin's own config is handed (node-config-update.md; Q203, Q235 P1, P2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigHeld {
+    /// `ApplyNodeConfig`: the row's map at its revision, installed over an older revision.
+    Told {
+        /// The row's config.
+        config: BTreeMap<String, String>,
+        /// The row's revision.
+        revision: u64,
+    },
+    /// Its own update, just sent to its mesh-primary: held at once.
+    Sent(BTreeMap<String, String>),
+    /// Its own update answered: the row the answer carried (its config at its revision), installed over
+    /// an older revision; `None` when the answer carried none.
+    Answered(Option<(BTreeMap<String, String>, u64)>),
+}
+
+/// This node holding its config (`ApplyNodeConfig`, its own update; no digest carries it, Q203).
+pub type Configure = Arc<OnceLock<Arc<dyn Fn(ConfigHeld) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
 /// This node deciding a name its mesh-primary's row gives it (`ApplyNodeName`): the name it held
 /// and the decision, the name taken and published only on `Applied`.
@@ -2197,14 +2267,15 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                 .in_scope(|| tracing::info!("apply-node-state refused"));
             Some(rdm_core::reply::status::rejected_invalid_node_transition(current))
         }
-        StatusRequest::ApplyNodeConfig { config, .. } => {
-            // node-config-update.md step 3: the node applies the map (no digest carries it, Q203).
+        StatusRequest::ApplyNodeConfig { config, revision, .. } => {
+            // node-config-update.md, a caller's update, step 3: the node installs the map over an older
+            // revision (P1; no digest carries it, Q203).
             let Some(configure) = configure.get() else {
                 return Some(rdm_core::reply::status::not_ready(format!("{}: its digest does not exist yet; the config is not held", me.name)));
             };
-            configure(config.clone()).await;
-            tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.name, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the config its mesh-primary wrote is held"));
+            configure(ConfigHeld::Told { config: config.clone(), revision: *revision }).await;
+            tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.name, sender = %sender_name, keys = config.len(), revision = *revision, outcome = "applied", "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the config its mesh-primary wrote is held over an older revision"));
             Some(rdm_core::reply::applied())
         }
         StatusRequest::ApplyNodeName { name, .. } => {

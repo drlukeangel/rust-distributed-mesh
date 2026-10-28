@@ -216,6 +216,8 @@ pub enum TopologyReply {
     OwnRow {
         /// The reader's row.
         node: crate::views::NodeView,
+        /// The row's revision (P1): the reader installs the row over an older revision.
+        revision: u64,
     },
 }
 

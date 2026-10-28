@@ -115,6 +115,13 @@ pub enum OriginateRequest {
         /// Block when true, release when false.
         blocked: bool,
     },
+    /// Put this node's own config, the whole map, through its own `node.config.update`
+    /// (`RunningNode::config_update`; node-config-update.md, a node's own update): answered with its
+    /// mesh-primary's reply. Appended last.
+    UpdateOwnConfig {
+        /// The whole map.
+        config: std::collections::BTreeMap<String, String>,
+    },
 }
 
 /// Who answered.
@@ -281,6 +288,18 @@ pub enum OriginateReply {
         /// Whether Direct dials toward it are now blocked.
         blocked: bool,
     },
+    /// The node's own config update answered by its mesh-primary: the reply by name, and the row as
+    /// written it carries (its config and revision) where it carries one. Appended last.
+    OwnConfigUpdated {
+        /// The node that put it.
+        by: AnsweredBy,
+        /// The mesh-primary's reply by name, or how the call ended.
+        outcome: String,
+        /// The row's config the reply carries.
+        config: std::collections::BTreeMap<String, String>,
+        /// The row's revision the reply carries; 0 when it carries none.
+        revision: u64,
+    },
 }
 
 impl NodeProtocol for Originate {
@@ -289,8 +308,8 @@ impl NodeProtocol for Originate {
     const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 65536;
     const FORWARDABLE: bool = false;
-    const REQUEST_VARIANTS: u32 = 9;
-    const REPLY_VARIANTS: u32 = 17;
+    const REQUEST_VARIANTS: u32 = 10;
+    const REPLY_VARIANTS: u32 = 18;
     type Request = OriginateRequest;
     type Reply = OriginateReply;
 
@@ -313,6 +332,7 @@ impl NodeProtocol for Originate {
             OriginateReply::StreamFailed { .. } => "stream-failed",
             OriginateReply::TransportStopMarked { .. } => "transport-stop-marked",
             OriginateReply::DirectBlocked { .. } => "direct-blocked",
+            OriginateReply::OwnConfigUpdated { .. } => "own-config-updated",
         }
     }
     fn classify_reply(reply: &OriginateReply) -> ReplyKind {
@@ -334,6 +354,7 @@ impl NodeProtocol for Originate {
             OriginateReply::StreamFailed { .. } => ReplyKind::Success,
             OriginateReply::TransportStopMarked { .. } => ReplyKind::Success,
             OriginateReply::DirectBlocked { .. } => ReplyKind::Success,
+            OriginateReply::OwnConfigUpdated { .. } => ReplyKind::Success,
         }
     }
 
@@ -376,6 +397,8 @@ pub struct Seams {
     /// This node's data-plane connections registry and the name of its one data-plane ALPN, set
     /// with [`Self::data_plane`]: the testkit's Direct dial block acts on it (`BlockDirect`).
     pub data_plane_registry: Arc<std::sync::OnceLock<(rdm_transport::connections::ConnectionsRegistry, Vec<u8>)>>,
+    /// This node's own config door, set once the node runs; unset, `UpdateOwnConfig` is refused by name.
+    pub own_config: Arc<std::sync::OnceLock<rdm_node::node::OwnConfig>>,
 }
 
 /// Serve the door on this node's own seams, with the testkit's default carrier policy ([`POLICY`]).
@@ -406,6 +429,20 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                 OriginateRequest::Dial { destination } => dial(&by, &seams, &destination).await,
                 OriginateRequest::Stream { destination, payload } => stream(&by, &seams, &destination, payload).await,
                 OriginateRequest::BlockDirect { destination, blocked } => block_direct(&by, &seams, &destination, blocked),
+                OriginateRequest::UpdateOwnConfig { config } => match seams.own_config.get().cloned() {
+                    None => OriginateReply::NotReady { reason: format!("{own}: the node does not run yet; its own config has no door") },
+                    Some(door) => {
+                        use rdm_core::status::StatusReply as R;
+                        let (outcome, config, revision) = match door.update(config).await {
+                            Ok(reply) => match &reply {
+                                R::ConfigUpdated { config, revision, .. } | R::ConfigRowRefused { config, revision, .. } => (reply.name().to_string(), config.clone(), *revision),
+                                other => (format!("{other:?}"), Default::default(), 0),
+                            },
+                            Err(end) => (format!("{end:?}"), Default::default(), 0),
+                        };
+                        OriginateReply::OwnConfigUpdated { by, outcome, config, revision }
+                    }
+                },
                 OriginateRequest::StopTransport { reason } => {
                     // The mark runs after this reply is on its way: the exit it causes is the real one.
                     let marked = reason.clone();

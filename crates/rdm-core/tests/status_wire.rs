@@ -30,7 +30,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_thirty_four_variant_wire_schema() {
+fn requests_match_the_frozen_thirty_five_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Stopped, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
@@ -63,7 +63,8 @@ fn requests_match_the_frozen_thirty_four_variant_wire_schema() {
         (Reserved15 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "open-traffic:fabric1".into() }, "0f0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201146f70656e2d747261666669633a66616272696331"),
         (StartNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() }, "100c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011673746172742d6e6f64653a6d657368312e7270632e31"),
         (UpdateNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "110c3031323334353637383961620c39776370726667777674687901016b0176"),
-        (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c3031323334353637383961620c39776370726667777674687901016b0176"),
+        // node_id | incarnation | config (len 1: "k" "v") | revision 3 (P1)
+        (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into(), revision: 3 }, "120c3031323334353637383961620c39776370726667777674687901016b017603"),
         (ApplyNodeName { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "130c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31"),
         // node_id | incarnation | name "1.old" (the name only, never its path)
         (UpdateName { node_id: node(), incarnation: birth(), name: "1.old".into() }, "140c3031323334353637383961620c39776370726667777674687905312e6f6c64"),
@@ -88,6 +89,8 @@ fn requests_match_the_frozen_thirty_four_variant_wire_schema() {
         (GetAtlas, "20"),
         // The reads (Q167), appended last: entity Nodes (2) | node None | pairs (len 1: "mesh", values (len 1: "mesh1"))
         (Get { entity: rdm_core::filter::Entity::Nodes, node: None, filter: rdm_core::filter::Filter::new().eq("mesh", ["mesh1"]) }, "21020001046d65736801056d65736831"),
+        // A node's own config pushed up (Q235), appended last: node_id | config (len 1: "k" "v") | revision 3
+        (NodeConfigUpdated { node_id: node(), config: [("k".to_string(), "v".to_string())].into(), revision: 3 }, "220c30313233343536373839616201016b017603"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -123,9 +126,11 @@ fn replies_match_the_frozen_fifty_eight_variant_wire_schema() {
         (Started, "12"),
         (StartFailed { step: "node.join".into(), reason: "refused".into() }, "13096e6f64652e6a6f696e0772656675736564"),
         (CurrentStopped { node_id: node(), incarnation: birth() }, "140c3031323334353637383961620c397763707266677776746879"),
-        (ConfigUpdated { node_id: node(), incarnation: birth() }, "150c3031323334353637383961620c397763707266677776746879"),
+        // node_id | incarnation | the row as written: config (len 1: "k" "v") | revision 3 (P1)
+        (ConfigUpdated { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into(), revision: 3 }, "150c3031323334353637383961620c39776370726667777674687901016b017603"),
         (Reserved22 { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 }, "16210a208010"),
-        (ConfigRowRefused { node: "n".into(), reason: "r".into() }, "17016e0172"),
+        // node | reason | the row as it stands: config (len 0) | revision 0 (P2)
+        (ConfigRowRefused { node: "n".into(), reason: "r".into(), config: Default::default(), revision: 0 }, "17016e01720000"),
         (ConfigNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "18016e01610172"),
         (Blocked { node_id: node(), incarnation: birth(), reason: "r".into(), retry_on: RetryOn::TargetReachable { node_id: node() } }, "190c3031323334353637383961620c3977637072666777767468790172010c303132333435363738396162"),
         (NameUpdated { node_id: node(), incarnation: birth() }, "1a0c3031323334353637383961620c397763707266677776746879"),

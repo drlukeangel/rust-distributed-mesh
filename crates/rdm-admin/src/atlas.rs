@@ -190,6 +190,37 @@ pub(crate) struct AtlasRow {
     pub(crate) birth_source: &'static str,
 }
 
+/// How [`Atlas::install_config`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigInstall {
+    /// The atlas holds the map at its revision now.
+    Installed,
+    /// The atlas holds the node's config at this revision, the one given or a newer one: nothing changed.
+    Held(u64),
+    /// The atlas holds no record of the node: nothing is written; the record it reads later is the row's.
+    NoRecord,
+}
+
+impl ConfigInstall {
+    /// The name a span carries.
+    pub fn name(&self) -> String {
+        match self {
+            Self::Installed => "installed".into(),
+            Self::Held(r) => format!("held:{r}"),
+            Self::NoRecord => "no-record".into(),
+        }
+    }
+}
+
+/// `row` with the config `held` holds kept where `held`'s revision is newer (Q235 P1): a record read
+/// back never takes the atlas's config back past a revision it installed.
+fn keep_newer_config(held: Option<&NodeRow>, row: &mut NodeRow) {
+    if let Some(h) = held.filter(|h| h.node_id == row.node_id && h.revision > row.revision) {
+        row.config = h.config.clone();
+        row.revision = h.revision;
+    }
+}
+
 /// A node-admin's atlas (Q224): one per node-admin, over the meshes it is primary for.
 #[derive(Debug, Default)]
 pub struct Atlas {
@@ -308,11 +339,16 @@ impl Atlas {
         self.callers.get()
     }
 
-    /// Hold `row` as its node's record: a write an op made (a writer's record, an op's result).
+    /// Hold `row` as its node's record: a write an op made (a writer's record, an op's result). A config
+    /// the atlas holds at a newer revision than `row`'s stays (Q235 P1: every install over an older
+    /// revision only); the row's writer steps the revision on every write, so its own records always
+    /// replace.
     pub fn write_record(&self, row: &NodeRow) {
         let mut held = self.held.lock().unwrap();
         held.births_read.extend(row.births.iter().map(|b| (row.node_id.clone(), b.incarnation_id.as_str().to_string())));
-        held.records.insert(row.node_id.clone(), row.clone());
+        let mut row = row.clone();
+        keep_newer_config(held.records.get(&row.node_id), &mut row);
+        held.records.insert(row.node_id.clone(), row);
     }
 
     /// The record of each birth of `births` the atlas has not read since the birth was first heard
@@ -330,6 +366,8 @@ impl Atlas {
                 let mut held = self.held.lock().unwrap();
                 held.births_read.insert((node_id.clone(), incarnation.as_str().to_string()));
                 held.births_read.extend(r.births.iter().map(|b| (node_id.clone(), b.incarnation_id.as_str().to_string())));
+                let mut r = r;
+                keep_newer_config(held.records.get(&node_id), &mut r);
                 held.records.insert(node_id, r);
                 read += 1;
             }
@@ -354,22 +392,19 @@ impl Atlas {
         self.held.lock().unwrap().records.remove(node_id);
     }
 
-    /// `node.config.update` at the fabric-primary (node-config-update.md step 1): the map written to
-    /// the node in the atlas before the command goes down. The config it held before, to put back when
-    /// the command is refused; `None` when the atlas holds no record of the node.
-    pub(crate) fn write_config(&self, node_id: &NodeId, config: &BTreeMap<String, String>) -> Option<BTreeMap<String, String>> {
+    /// The row of `node_id` as its mesh-primary wrote it, its `config` at `revision`, written into the
+    /// atlas over an older revision only (node-config-update.md; Q235 P1): a caller's command's
+    /// completion, or a mesh-primary's push up of a node's own update. The atlas never takes a map the
+    /// row has not committed, and never ahead of the row.
+    pub fn install_config(&self, node_id: &NodeId, config: &BTreeMap<String, String>, revision: u64) -> ConfigInstall {
         let mut held = self.held.lock().unwrap();
-        let r = held.records.get_mut(node_id)?;
-        Some(std::mem::replace(&mut r.config, config.clone()))
-    }
-
-    /// Put `config` back on the node `node_id` where the atlas still holds `put` (a refused command).
-    pub(crate) fn restore_config(&self, node_id: &NodeId, put: &BTreeMap<String, String>, config: BTreeMap<String, String>) {
-        if let Some(r) = self.held.lock().unwrap().records.get_mut(node_id) {
-            if r.config == *put {
-                r.config = config;
-            }
+        let Some(r) = held.records.get_mut(node_id) else { return ConfigInstall::NoRecord };
+        if revision <= r.revision {
+            return ConfigInstall::Held(r.revision);
         }
+        r.config = config.clone();
+        r.revision = revision;
+        ConfigInstall::Installed
     }
 
     /// The record the atlas holds for `node_id`.
@@ -442,10 +477,12 @@ impl Atlas {
         }
         let mut held = self.held.lock().unwrap();
         for (mesh, listed) in read {
+            let before: BTreeMap<NodeId, NodeRow> = held.records.iter().filter(|(_, r)| r.name.mesh == mesh).map(|(k, r)| (k.clone(), r.clone())).collect();
             held.records.retain(|_, r| r.name.mesh != mesh);
-            for r in listed {
+            for mut r in listed {
                 let births: Vec<(NodeId, String)> = r.births.iter().map(|b| (r.node_id.clone(), b.incarnation_id.as_str().to_string())).collect();
                 held.births_read.extend(births);
+                keep_newer_config(before.get(&r.node_id), &mut r);
                 held.records.insert(r.node_id.clone(), r);
             }
         }
@@ -607,15 +644,18 @@ impl Atlas {
                     _ => Taken::Nothing,
                 }
             }
-            "node.config.update" | "node.tags.create" | "node.tags.delete" => {
+            // A Build's config reaches the atlas as the row its mesh-primary wrote, at the row's revision
+            // (Q235 P1: the mesh-primary's push up, or its own writer's record): never from the spec, which
+            // carries no revision and would put an older map over a newer one.
+            "node.config.update" => Taken::Nothing,
+            "node.tags.create" | "node.tags.delete" => {
                 // In place, to the create spec the accepted Build names for the path (build.md §1, "The
-                // Build applies the diff"): its config; its tags added (create) or the ones it does not
-                // name removed (delete).
+                // Build applies the diff"): its tags added (create) or the ones it does not name removed
+                // (delete).
                 let Some(spec) = p.topology.mesh(&path.mesh).and_then(|m| m.spec(&path)).cloned() else { return Taken::Nothing };
                 let Some(node_id) = node_of(&held) else { return Taken::Nothing };
                 let Some(r) = held.records.get_mut(&node_id) else { return Taken::Nothing };
                 match op {
-                    "node.config.update" => r.config = spec.config,
                     "node.tags.create" => r.tags.extend(spec.tags),
                     _ => r.tags = r.tags.intersection(&spec.tags).cloned().collect(),
                 }

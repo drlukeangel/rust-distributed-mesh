@@ -117,9 +117,9 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         (RafkaTime { ms: 1_000, kind: None }, "0d e807 00"),
         (RafkaTime { ms: 300, kind: Some(PrimaryKind::FabricPrimary) }, "0d ac02 01 01"),
         (RafkaTime { ms: 7, kind: Some(PrimaryKind::MeshPrimary) }, "0d 07 01 00"),
-        // Q234: the reader's own whole row, a `NodeView` in its field order.
-        (OwnRow { node: own_row() }, "0e 07 6d2e7270632e31 01 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 00 00 \
-            0000000000000000000000000000000000000000000000000000000000000000 00 00 00 00"),
+        // Q234: the reader's own whole row, a `NodeView` in its field order, then the row's revision (P1).
+        (OwnRow { node: own_row(), revision: 3 }, "0e 07 6d2e7270632e31 01 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 00 00 \
+            0000000000000000000000000000000000000000000000000000000000000000 00 00 00 00 03"),
     ];
     for (r, hex) in fixtures {
         variants.insert(Topology::encode_reply(&r).unwrap()[0]);

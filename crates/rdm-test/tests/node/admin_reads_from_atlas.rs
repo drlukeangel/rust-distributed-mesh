@@ -144,7 +144,8 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
             assert!(read.installed.iter().any(|m| m.mesh == "mesh1"), "mesh1 is served whole ({mesh:?}): {:?}", read.installed.iter().map(|m| &m.mesh).collect::<Vec<_>>());
             assert!(read.rafka_time.is_some() && !read.seats.is_empty(), "the rafka-time and the primaries are served ({mesh:?})");
             let own = read.own_row.as_ref().unwrap_or_else(|| panic!("its mesh-primary answers the reader its own row ({mesh:?})"));
-            assert_eq!(own.node_id, launch.node_id, "the own row is the reader's ({mesh:?}): {own:?}");
+            assert_eq!(own.0.node_id, launch.node_id, "the own row is the reader's ({mesh:?}): {own:?}");
+            assert!(own.1 > 0, "the own row carries the row's revision ({mesh:?}): {own:?}");
         }
         let served: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.topology.serve.via-read" && f.get("node").map(String::as_str) == Some("mesh1.admin.1")).map(|(_, _, f)| f.clone()).collect();
         assert!(served.iter().all(|f| f.get("outcome").map(String::as_str) == Some("served")), "every read the primary served was served: {served:?}");

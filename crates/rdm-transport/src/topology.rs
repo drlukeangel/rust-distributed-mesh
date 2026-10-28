@@ -2500,9 +2500,10 @@ pub struct TopologyView {
     load: Arc<crate::load::LoadSampler>,
     /// What the forwarder decides and where it goes: this mesh's channel.
     forward_path: ForwardPath,
-    /// The config this birth's mesh-primary last told it (`ApplyNodeConfig`, node-config-update.md):
-    /// the map the application reads ([`Self::config`]); never gossiped (Q203). `None` until it is told.
-    config: Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>,
+    /// This birth's own config (node-config-update.md; Q203, Q235): the row's map at its revision and
+    /// the map of an own update still unanswered, from which the map the application reads
+    /// ([`Self::config`]) is decided; never gossiped (Q203).
+    config: Arc<Mutex<OwnConfig>>,
     /// This birth's own whole row as its mesh-primary's atlas held it at its last hydration sync
     /// (Q234, `node.topology.get`'s `OwnRow`), kept current by `ApplyNodeConfig` and `ApplyNodeName`:
     /// what the node reads its own properties from. `None` until a sync carried it.
@@ -2510,6 +2511,97 @@ pub struct TopologyView {
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12): carried in every
     /// digest this topology view publishes from then on. `None` while the birth holds its launch name.
     name: Arc<Mutex<Option<rdm_core::PathName>>>,
+}
+
+/// A birth's own config as its topology view holds it (Q235 P1, P2).
+#[derive(Debug, Default)]
+struct OwnConfig {
+    /// The newest row map installed, at its revision.
+    row: Option<(std::collections::BTreeMap<String, String>, u64)>,
+    /// Own updates sent and not yet answered.
+    sent: u32,
+    /// The map of the last own update sent.
+    last_sent: Option<std::collections::BTreeMap<String, String>>,
+}
+
+impl OwnConfig {
+    /// The map shown: the last one sent while an own update is unanswered, else the row's.
+    fn shown(&self) -> Option<&std::collections::BTreeMap<String, String>> {
+        if self.sent > 0 {
+            self.last_sent.as_ref()
+        } else {
+            self.row.as_ref().map(|(c, _)| c)
+        }
+    }
+
+    /// The row's `config` at `revision`, taken over an older revision only; whether it was.
+    fn install(&mut self, config: std::collections::BTreeMap<String, String>, revision: u64) -> bool {
+        let newer = self.row.as_ref().is_none_or(|(_, r)| revision > *r);
+        if newer {
+            self.row = Some((config, revision));
+        }
+        newer
+    }
+
+    /// An own update sent: its map shown until every one sent is answered.
+    fn sent(&mut self, config: std::collections::BTreeMap<String, String>) {
+        self.sent += 1;
+        self.last_sent = Some(config);
+    }
+
+    /// An own update answered, carrying `row` (or none): the row installed over an older revision, or at
+    /// the same revision once nothing sent is unanswered (a refusal's row as it stands replaces the map
+    /// this birth showed).
+    fn answered(&mut self, row: Option<(std::collections::BTreeMap<String, String>, u64)>) {
+        self.sent = self.sent.saturating_sub(1);
+        if let Some((config, revision)) = row {
+            if self.row.as_ref().is_none_or(|(_, r)| revision > *r || (revision == *r && self.sent == 0)) {
+                self.row = Some((config, revision));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod own_config_tests {
+    use super::OwnConfig;
+    use std::collections::BTreeMap;
+
+    fn map(v: &str) -> BTreeMap<String, String> {
+        [("k".to_string(), v.to_string())].into()
+    }
+
+    /// CONTRACT (node-config-update.md; Q235 P1, P2): a birth holds the map it sent at once; the answer
+    /// and an apply delivered out of order leave the newer revision installed; a map at an older or the
+    /// same revision is dropped. Must NOT happen: a delayed reply or apply overwriting a newer map.
+    #[test]
+    fn a_reply_and_an_apply_out_of_order_leave_the_newer_revision_installed() {
+        let mut held = OwnConfig::default();
+        assert!(held.install(map("joined"), 1));
+        held.sent(map("mine"));
+        assert_eq!(held.shown(), Some(&map("mine")), "the map sent is held at once");
+        // A caller's apply at revision 3 lands before the answer to the own update (revision 2).
+        assert!(held.install(map("caller"), 3), "a newer revision installs");
+        assert_eq!(held.shown(), Some(&map("mine")), "the own update is still unanswered: its map is shown");
+        held.answered(Some((map("mine"), 2)));
+        assert_eq!(held.shown(), Some(&map("caller")), "the answer at revision 2 arrives late: revision 3's map stands");
+        assert!(!held.install(map("caller"), 3) && !held.install(map("old"), 2), "the same or an older revision installs nothing");
+        assert_eq!(held.row, Some((map("caller"), 3)));
+    }
+
+    /// CONTRACT (Q235 P2): a refusal carries the row as it stands; the birth installs it in place of the
+    /// map it sent, never puts its own map back. Must NOT happen: the refused map kept shown.
+    #[test]
+    fn a_refused_own_update_shows_the_row_as_it_stands() {
+        let mut held = OwnConfig::default();
+        assert!(held.install(map("row"), 4));
+        held.sent(map("refused"));
+        held.answered(Some((map("row"), 4)));
+        assert_eq!(held.shown(), Some(&map("row")));
+        held.sent(map("abandoned"));
+        held.answered(None);
+        assert_eq!(held.shown(), Some(&map("row")), "an abandoned update shows the row's map again");
+    }
 }
 
 impl TopologyView {
@@ -2868,20 +2960,66 @@ impl TopologyView {
         self.mesh.broadcast(&Frame::Digest { digest: d }).await
     }
 
-    /// Hold `config` as this birth's config (node-config-update.md step 3: "it applies the map"): the
-    /// map the application reads from now on ([`Self::config`]). No digest carries it (Q203).
+    /// Hold `config`, the map a join answer handed (node-start.md step 2), as the row's map at the
+    /// revision this birth holds: the map the application reads from now on ([`Self::config`]) unless
+    /// an own update is unanswered. No digest carries it (Q203).
     pub fn set_config(&self, config: std::collections::BTreeMap<String, String>) {
-        if let Some(row) = self.own_row.lock().unwrap().as_mut() {
-            row.config = config.clone();
-        }
-        *self.config.lock().unwrap() = Some(config);
+        let mut held = self.config.lock().unwrap();
+        let revision = held.row.as_ref().map_or(0, |(_, r)| *r);
+        held.row = Some((config, revision));
+        self.show_config(&held);
     }
 
-    /// Hold `row` as this birth's own whole row, the one its mesh-primary's hydration sync carried
-    /// (Q234): its config is the map the application reads from now on ([`Self::config`]).
-    pub fn set_own_row(&self, row: rdm_core::views::NodeView) {
-        *self.config.lock().unwrap() = Some(row.config.clone());
+    /// Install `config`, the row's map at `revision` (node-config-update.md; Q235 P1: `ApplyNodeConfig`,
+    /// the answer to an own update, the hydration sync), over an older revision only: a map at the
+    /// revision held or an older one is dropped, so a delayed reply or apply never overwrites a newer
+    /// map. Whether it was installed.
+    pub fn install_config(&self, config: std::collections::BTreeMap<String, String>, revision: u64) -> bool {
+        let mut held = self.config.lock().unwrap();
+        let newer = held.install(config, revision);
+        self.show_config(&held);
+        newer
+    }
+
+    /// Hold `config`, the map of this birth's own update just sent to its mesh-primary (Q235 P2: the
+    /// node holds the map it sent at once): the map the application reads, and its own entry's, until
+    /// every own update it sent is answered.
+    pub fn hold_sent_config(&self, config: std::collections::BTreeMap<String, String>) {
+        let mut held = self.config.lock().unwrap();
+        held.sent(config);
+        self.show_config(&held);
+    }
+
+    /// One own update was answered: `row` is the row its answer carried (the row as written, or as it
+    /// stands on a refusal), installed over an older revision; `None` when the answer carried none.
+    /// Once no own update is unanswered, the map shown is the row's.
+    pub fn own_config_answered(&self, row: Option<(std::collections::BTreeMap<String, String>, u64)>) {
+        let mut held = self.config.lock().unwrap();
+        held.answered(row);
+        self.show_config(&held);
+    }
+
+    /// The revision of the row's map this birth holds; 0 before any was installed.
+    pub fn config_revision(&self) -> u64 {
+        self.config.lock().unwrap().row.as_ref().map_or(0, |(_, r)| *r)
+    }
+
+    /// The map shown: the last one sent while an own update is unanswered, else the row's; written to
+    /// the own entry too.
+    fn show_config(&self, held: &OwnConfig) {
+        if let (Some(row), Some(shown)) = (self.own_row.lock().unwrap().as_mut(), held.shown()) {
+            row.config = shown.clone();
+        }
+    }
+
+    /// Hold `row` as this birth's own whole row at `revision`, the one its mesh-primary's hydration
+    /// sync carried (Q234): its config installed over an older revision ([`Self::install_config`]).
+    pub fn set_own_row(&self, row: rdm_core::views::NodeView, revision: u64) {
+        let config = row.config.clone();
         *self.own_row.lock().unwrap() = Some(row);
+        let mut held = self.config.lock().unwrap();
+        held.install(config, revision);
+        self.show_config(&held);
     }
 
     /// This birth's own whole row as its last hydration sync carried it and the commands since kept it
@@ -2890,9 +3028,11 @@ impl TopologyView {
         self.own_row.lock().unwrap().clone()
     }
 
-    /// The config this birth was last told (its join answer or `ApplyNodeConfig`); `None` until told.
+    /// The config this birth holds: the map of its own update while one is unanswered, else the row's
+    /// as last installed (its join answer, `ApplyNodeConfig`, an own update's answer, its hydration
+    /// sync); `None` until either.
     pub fn config(&self) -> Option<std::collections::BTreeMap<String, String>> {
-        self.config.lock().unwrap().clone()
+        self.config.lock().unwrap().shown().cloned()
     }
 
     /// Hold `name` as this birth's name: every digest this topology view publishes from now on carries

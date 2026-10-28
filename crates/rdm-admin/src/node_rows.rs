@@ -211,12 +211,16 @@ impl WrittenRows {
         self.update(storage, &node.node_id, Some(base), |r| change(r.birth_mut(incarnation, &node.name))).await
     }
 
-    /// The one write of `row`, its node's lock held by the caller: the whole record written, the copy
-    /// replaced once storage answers, then the index moves of this write over the copy it replaced,
-    /// with any a write before it still owes. An index write that fails keeps every move owed for the
-    /// node's next write and is named; the record stands.
+    /// The one write of `row`, its node's lock held by the caller: the whole record written at the next
+    /// revision (Q235 P1: this writer, the mesh-primary, steps it on every write of the row, past the
+    /// copy's and the row's own), the copy replaced once storage answers, then the index moves of this
+    /// write over the copy it replaced, with any a write before it still owes. An index write that fails
+    /// keeps every move owed for the node's next write and is named; the record stands.
     pub async fn put(&self, storage: &dyn NodesStorage, row: &NodeRow) -> Result<(), crate::storage_error::StorageError> {
         let previous = self.row_of(&row.node_id);
+        let mut row = row.clone();
+        row.revision = previous.as_ref().map_or(0, |p| p.revision).max(row.revision) + 1;
+        let row = &row;
         storage.put_node(row).await?;
         self.hold(row);
         let owed = self.owed.lock().unwrap().remove(&row.node_id).unwrap_or_default();
@@ -805,8 +809,13 @@ impl NodeRows {
         let taken: Vec<String> = std::mem::take(&mut *self.to_fill.lock().unwrap());
         for mesh in taken {
             let filled = self.written.fill(&*self.storage, &mesh).await;
+            let pushed = filled.is_ok();
             tracing::info_span!("rdm.node_admin.node.update.via-records-filled", node = %me, mesh = %mesh, records = filled.as_ref().map(|n| *n as u64).unwrap_or(0), outcome = if filled.is_ok() { "filled" } else { "fill-refused" }, detail = %filled.err().map(|e| e.to_string()).unwrap_or_default(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the writing of a mesh's records was taken: its records are read whole"));
+            // A successor owes every row's push up to the fabric-primary again, from the row (Q235 P3).
+            if let (true, Some(door)) = (pushed, self.configs.as_ref().and_then(|slot| slot.get())) {
+                door.owe_pushes(&me, &self.me_id, now, &mesh);
+            }
         }
         for birth in arrivals {
             let span = tracing::info_span!(
@@ -1005,6 +1014,7 @@ pub async fn release_record(storage: &dyn NodesStorage, written: &WrittenRows, n
     if held.as_ref().map_or(true, |r| r.name == *name) {
         let mut row = held.unwrap_or_else(|| NodeRow::new(name.clone(), node_id.clone(), NodeStatus::Withdrawn));
         row.status = NodeStatus::Withdrawn;
+        row.revision += 1;
         storage.put_node(&row).await?;
         written.forget(node_id);
     }

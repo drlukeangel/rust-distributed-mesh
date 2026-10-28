@@ -352,7 +352,7 @@ impl Prepared {
                 predecessor: None,
                 mesh_id: Some(mesh_id.clone()),
                 storage_persistence: None,
-                placement: None,
+                placement: None, revision: 0,
             };
             nodes.write_record(&row).await.unwrap();
             let mut launched = Vec::new();
@@ -374,7 +374,7 @@ impl Prepared {
                     predecessor: None,
                     mesh_id: Some(mesh_id.clone()),
                     storage_persistence: None,
-                    placement: None,
+                    placement: None, revision: 0,
                 };
                 nodes.write_record(&row).await.unwrap();
                 launched.push((name.to_string(), node_id));

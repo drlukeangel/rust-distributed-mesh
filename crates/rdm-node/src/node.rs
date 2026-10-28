@@ -80,15 +80,7 @@ pub struct RunningNode {
     data_connections: rdm_transport::connections::ConnectionsRegistry,
     /// The listeners this birth bound from its launch (`RDM_LISTENERS`, Q151), held open for its life.
     listeners: Arc<Vec<(String, std::net::TcpListener)>>,
-    /// The node-admin this birth joined through, at its first start (its launcher) and at each start
-    /// after a stop (the admin whose call commanded it): where its own `node.config.update` goes
-    /// ([`RunningNode::config_update`]).
-    joined_admin: JoinedAdmin,
 }
-
-/// The node-admin a birth joined through last ([`crate::workflows::node_start::JoinThrough`]), set at
-/// each join: never one a digest names.
-pub type JoinedAdmin = Arc<Mutex<Option<crate::workflows::node_start::JoinThrough>>>;
 
 /// Bind each listener `assigned` names at its assigned address (port 0: the operating system selects
 /// the port), non-blocking, in order. Nothing is probed and released: each bind is the one the
@@ -108,28 +100,24 @@ fn bind_listeners(assigned: &[(String, std::net::SocketAddr)]) -> Result<Vec<(St
 pub type Node = RunningNode;
 
 impl RunningNode {
-    /// Put this node's own config, the whole map (`node.config.update` of its own birth,
-    /// node-config-update.md): what an application calls to put its own config (its listener ports).
-    /// Sent to the node-admin this birth joined through, owed until it answers (`Budget::Owed`); that
-    /// admin carries it up to the fabric-primary when it is not it and hands the answer back, so the node
-    /// never names the fabric-primary and reads no digest for it. It answers once the command completed:
-    /// `ConfigUpdated` once its mesh-primary wrote the row and this node applied the map
-    /// (`ApplyNodeConfig`), or the refusal by name; `Err` when the call ended with no reply (the admin it
-    /// joined through proven gone).
+    /// Put this node's own config, the whole map (`node.config.update` of its own birth;
+    /// node-config-update.md, a node's own update; Q235): what an application calls to put its own config
+    /// (its listener ports). The node holds the map at once (P2: [`TopologyView::config`] and its own
+    /// entry answer it from now on) and sends it to the mesh-primary its topology view names, owed in
+    /// the order owed behind its declarations (Q210) and retargeted when the mesh's primary changes (P4);
+    /// a refusal that the receiver is not the mesh-primary keeps it owed, sent again with backoff. The
+    /// mesh-primary writes the row and its atlas and owes the row up to the fabric-primary; no
+    /// `ApplyNodeConfig` comes back. It answers with the mesh-primary's reply: `ConfigUpdated` carrying
+    /// the row as written, or the refusal by name, whose row (where it carries one) is installed over an
+    /// older revision; `Err` when this birth's cycle or life ended before an answer (P3: unsent is
+    /// abandoned, and the row's map comes back at the next hydration sync).
     pub async fn config_update(&self, config: std::collections::BTreeMap<String, String>) -> std::result::Result<rdm_core::status::StatusReply, rdm_client::CallEnd> {
-        let through = self.joined_admin.lock().unwrap().clone();
-        let Some(through) = through else {
-            return Err(rdm_client::CallEnd::Rejected { reason: "not-joined".into(), detail: format!("{} has joined no node-admin: its node.config.update has nowhere to go", self.topology_view.node_name()) });
-        };
-        let me = &self.digest.node;
-        let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(me.node_id.clone()), node_id: me.node_id.clone(), incarnation: me.incarnation.clone() };
-        let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, ..Default::default() };
-        rdm_client::NodeRpc::new(&self.node_rpc.client).own_config_update(&through.target, &birth, config, &opts).await
+        self.own_config().update(config).await
     }
 
-    /// The node-admin this birth joined through last: where [`Self::config_update`] goes.
-    pub fn joined_admin(&self) -> Option<crate::workflows::node_start::JoinThrough> {
-        self.joined_admin.lock().unwrap().clone()
+    /// [`Self::config_update`] as a handle that outlives the borrow: what an application task holds.
+    pub fn own_config(&self) -> OwnConfig {
+        OwnConfig { owed: self.owed_state.clone(), topology_view: self.topology_view.clone() }
     }
 
     /// The listeners this birth bound from its launch (`RDM_LISTENERS`), by name, held open for its
@@ -652,13 +640,12 @@ async fn start_booted(
     };
     // What the start brought up, once it did: handed to the caller, or ended if the hook fails.
     let out: Arc<Mutex<Option<RunningNode>>> = Arc::default();
-    let joined_admin: JoinedAdmin = Arc::default();
     let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.clone(), path: launch.name.clone(), node_id: launch.node_id.clone(), client: client.clone(), rafka_time: rafka_time.clone() };
     let joining = crate::workflows::node_start::Joining::Authority { label: launcher.name.to_string() };
     let join_digest = digest.clone();
     let join_types = app_types.clone();
     let enter: crate::workflows::node_start::EnterSeam<anyhow::Error> = {
-        let (launch, boot, out, name, data_connections, bound_listeners, listener_addrs, joined_admin) = (launch.clone(), boot.clone(), out.clone(), name.clone(), data_connections.clone(), bound_listeners.clone(), listener_addrs.clone(), joined_admin.clone());
+        let (launch, boot, out, name, data_connections, bound_listeners, listener_addrs) = (launch.clone(), boot.clone(), out.clone(), name.clone(), data_connections.clone(), bound_listeners.clone(), listener_addrs.clone());
         Box::new(move |step: tracing::Span, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(TopologyView, crate::workflows::node_start::JoinedSeam<anyhow::Error>), anyhow::Error>> {
             Box::pin(async move {
                 let joined = joined.expect("a first start through its launcher enters its channel with the join answer");
@@ -713,10 +700,8 @@ async fn start_booted(
             }
                 let channel = topology_view.clone();
                 let joined_seam: crate::workflows::node_start::JoinedSeam<anyhow::Error> = Box::new(
-                    move |through: Option<crate::workflows::node_start::JoinThrough>| -> crate::workflows::node_start::BoxFut<Result<(crate::workflows::node_start::HookParts, Option<crate::workflows::node_start::HookStarted<anyhow::Error>>), anyhow::Error>> {
+                    move |_through: Option<crate::workflows::node_start::JoinThrough>| -> crate::workflows::node_start::BoxFut<Result<(crate::workflows::node_start::HookParts, Option<crate::workflows::node_start::HookStarted<anyhow::Error>>), anyhow::Error>> {
                         Box::pin(async move {
-                            // The admin this birth joined through (its launcher): where its own node.config.update goes.
-                            *joined_admin.lock().unwrap() = through;
                             // A delta that does not follow what this node holds desynchronizes that source; the node tops
                             // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
                             topology_view.spawn_top_up(crate::topology_read::top_up_fetch(client.clone()));
@@ -788,7 +773,6 @@ async fn start_booted(
                                 pre_node_ready_cell: pre_node_ready_cell.clone(),
                                 pre_node_ready_task: pre_node_ready_task_cell.clone(),
                                 listeners: listener_addrs.clone(),
-                                joined_admin: joined_admin.clone(),
                             }));
                             let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
                             let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats() }));
@@ -810,7 +794,11 @@ async fn start_booted(
                                 tokio::spawn(async move {
                                     let mut primaries = topology_view.primaries().subscribe();
                                     let mut told: Option<(NodeId, IncarnationId)> = None;
+                                    // An own config update a receiver refused (not the mesh-primary yet): sent again after
+                                    // the backoff's next delay, or sooner when the mesh's primary changes (Q235 P4).
+                                    let mut refused: u32 = 0;
                                     loop {
+                                        let mut again = None;
                                         primaries.borrow_and_update();
                                         let mut primary = topology_view.primaries().mesh(&node.name.mesh);
                                         if mesh_primary_moved(told.as_ref(), primary.as_ref()) && owed.is_empty() {
@@ -833,17 +821,33 @@ async fn start_booted(
                                                     owed.unanswered();
                                                     break;
                                                 }
+                                                Declared::Refused => {
+                                                    refused += 1;
+                                                    again = Some(client.delivery().pacing().after(refused));
+                                                    break;
+                                                }
+                                            }
+                                            if !matches!(owed.first(), Some((_, Owing::Config(_)))) {
+                                                refused = 0;
                                             }
                                         }
                                         if owed.is_empty() {
                                             told = primary.map(|h| (h.node_id, h.incarnation));
                                         }
-                                        // Woken by the mesh-primary changing, or by a declaration owed.
+                                        // Woken by the mesh-primary changing, by a declaration owed, or by a refused
+                                        // config update's next delay.
+                                        let backoff = async {
+                                            match again {
+                                                Some(d) => tokio::time::sleep(d).await,
+                                                None => std::future::pending().await,
+                                            }
+                                        };
                                         tokio::select! {
                                             changed = primaries.changed() => if changed.is_err() {
                                                 return;
                                             },
                                             () = owed.wake.notified() => {}
+                                            () = backoff => {}
                                         }
                                     }
                                 })
@@ -889,7 +893,7 @@ async fn start_booted(
                                     leave: None,
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, pre_node_ready_task: pre_node_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections, listeners: bound_listeners.clone(), joined_admin: joined_admin.clone() });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, pre_node_ready_task: pre_node_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections, listeners: bound_listeners.clone() });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },
@@ -963,8 +967,6 @@ struct NodeSession {
     /// The listeners this birth bound from its launch, each with its selected port: every join of
     /// the birth reports them (Q151).
     listeners: Vec<(String, std::net::SocketAddr)>,
-    /// The node-admin this birth joined through last: each start after a stop sets it.
-    joined_admin: JoinedAdmin,
 }
 
 #[async_trait::async_trait]
@@ -1096,14 +1098,10 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
     async fn joined(
         &mut self,
         topology_view: &TopologyView,
-        through: Option<&crate::workflows::node_start::JoinThrough>,
+        _through: Option<&crate::workflows::node_start::JoinThrough>,
         _: Option<&crate::wire::JoinAnswer>,
     ) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
         let s = self.session;
-        // The admin whose call commanded this start answered its join: its own node.config.update goes there now.
-        if let Some(through) = through {
-            *s.joined_admin.lock().unwrap() = Some(through.clone());
-        }
         // From here on it is named by the name it installed from its join answer (`enter_channel`).
         let me = s.topology_view.held_name(&s.name);
         // Back on its channel, this node reports NodeJoined: the start finishes on its direct calls and
@@ -1306,9 +1304,73 @@ fn mesh_primary_moved(told: Option<&(NodeId, IncarnationId)>, holder: Option<&rd
 /// A declaration: the state and the operation that produced it, when one did (i146 Q36).
 pub(crate) type Declaration = (rdm_core::status::NodeState, Option<rdm_core::status::DeclaredOperation>);
 
-/// What this birth owes its mesh-primary (Q210): its declarations still to be answered by name, in the
-/// order they were owed, the first the one in flight; and the last one it made, owed again with its
-/// operation when the mesh-primary changes.
+/// A running node's own config door ([`RunningNode::config_update`]): cloneable, held by whatever task
+/// puts the node's own config.
+#[derive(Clone)]
+pub struct OwnConfig {
+    owed: Arc<OwedDeclarations>,
+    topology_view: TopologyView,
+}
+
+impl OwnConfig {
+    /// [`RunningNode::config_update`].
+    pub async fn update(&self, config: std::collections::BTreeMap<String, String>) -> std::result::Result<rdm_core::status::StatusReply, rdm_client::CallEnd> {
+        let answered = self.owed.owe_config(&self.topology_view, config);
+        answered.await.map_err(|_| rdm_client::CallEnd::Rejected { reason: "abandoned".into(), detail: format!("{}: its own node.config.update was owed no more before its mesh-primary answered (a new cycle, or the node's end)", self.topology_view.node_name()) })
+    }
+}
+
+/// One thing this birth owes its mesh-primary, in the order owed (Q210): a declaration of its state, or
+/// its own config update (node-config-update.md, a node's own update; Q235 P4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Owing {
+    /// A declaration of its state.
+    State(Declaration),
+    /// Its own config, the whole map.
+    Config(std::collections::BTreeMap<String, String>),
+}
+
+/// An own config update owed: who waits for its answer, and the topology view that held its map at
+/// once (P2). Answered, the answer's row is installed over an older revision; dropped unanswered (a
+/// start's new cycle, the node's end), the view stops holding it (P3: unsent is abandoned).
+struct ConfigOwed {
+    topology_view: TopologyView,
+    reply: Option<tokio::sync::oneshot::Sender<rdm_core::status::StatusReply>>,
+}
+
+impl std::fmt::Debug for ConfigOwed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConfigOwed")
+    }
+}
+
+impl ConfigOwed {
+    /// The mesh-primary's answer: the row it carries (the row as written, or as it stands on a refusal)
+    /// installed over an older revision, and handed to whoever waits.
+    fn answer(mut self, reply: &rdm_core::status::StatusReply) {
+        use rdm_core::status::StatusReply as R;
+        let row = match reply {
+            R::ConfigUpdated { config, revision, .. } | R::ConfigRowRefused { config, revision, .. } => Some((config.clone(), *revision)),
+            _ => None,
+        };
+        self.topology_view.own_config_answered(row);
+        if let Some(tx) = self.reply.take() {
+            let _ = tx.send(reply.clone());
+        }
+    }
+}
+
+impl Drop for ConfigOwed {
+    fn drop(&mut self) {
+        if self.reply.is_some() {
+            self.topology_view.own_config_answered(None);
+        }
+    }
+}
+
+/// What this birth owes its mesh-primary (Q210): its declarations and its own config updates still to
+/// be answered by name, in the order they were owed, the first the one in flight; and the last
+/// declaration it made, owed again with its operation when the mesh-primary changes.
 #[derive(Debug, Default)]
 pub struct OwedDeclarations {
     queue: Mutex<Queued>,
@@ -1324,12 +1386,14 @@ struct Queued {
     next: u64,
 }
 
-/// One declaration owed: its position in the order owed, and who waits for its call to end.
+/// One thing owed: its position in the order owed, and who waits for its call to end (a declaration)
+/// or for its answer (an own config update).
 #[derive(Debug)]
 struct OwedOne {
     at: u64,
-    declaration: Declaration,
+    owing: Owing,
     ended: Option<tokio::sync::oneshot::Sender<()>>,
+    config: Option<ConfigOwed>,
 }
 
 impl OwedDeclarations {
@@ -1343,10 +1407,38 @@ impl OwedDeclarations {
             q.last = Some(declaration.clone());
             let at = q.next;
             q.next += 1;
-            q.owed.push_back(OwedOne { at, declaration, ended: Some(tx) });
+            q.owed.push_back(OwedOne { at, owing: Owing::State(declaration), ended: Some(tx), config: None });
         }
         self.wake.notify_one();
         rx
+    }
+
+    /// Owe this birth's own config update `config` after everything owed before it (Q235 P4), its map
+    /// held by `topology_view` at once (P2). The receiver resolves with the mesh-primary's answer, or
+    /// errs once the update is owed no more without one (a start's new cycle, the node's end).
+    pub(crate) fn owe_config(&self, topology_view: &TopologyView, config: std::collections::BTreeMap<String, String>) -> tokio::sync::oneshot::Receiver<rdm_core::status::StatusReply> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        topology_view.hold_sent_config(config.clone());
+        {
+            let mut q = self.queue.lock().unwrap();
+            let at = q.next;
+            q.next += 1;
+            q.owed.push_back(OwedOne { at, owing: Owing::Config(config), ended: None, config: Some(ConfigOwed { topology_view: topology_view.clone(), reply: Some(tx) }) });
+        }
+        self.wake.notify_one();
+        rx
+    }
+
+    /// The own config update at `at` was answered `reply` by name: owed no more, its row installed and
+    /// its answer handed back, and the next owed is sent.
+    fn config_answered(&self, at: u64, reply: &rdm_core::status::StatusReply) {
+        let one = {
+            let mut q = self.queue.lock().unwrap();
+            if q.owed.front().is_some_and(|o| o.at == at) { q.owed.pop_front() } else { None }
+        };
+        if let Some(c) = one.and_then(|o| o.config) {
+            c.answer(reply);
+        }
     }
 
     /// Keep `declaration` as the last one made without owing it (a start's stream reported it).
@@ -1371,8 +1463,8 @@ impl OwedDeclarations {
     }
 
     /// The first declaration still owed, the one sent next.
-    fn first(&self) -> Option<(u64, Declaration)> {
-        self.queue.lock().unwrap().owed.front().map(|o| (o.at, o.declaration.clone()))
+    fn first(&self) -> Option<(u64, Owing)> {
+        self.queue.lock().unwrap().owed.front().map(|o| (o.at, o.owing.clone()))
     }
 
     /// The declaration at `at` was answered by name: it is owed no more, and the next is sent.
@@ -1412,6 +1504,10 @@ enum Declared {
     Answered,
     /// The call ended without an answer by name: the declaration stays owed.
     Unanswered,
+    /// An own config update was refused by a receiver that is not the mesh-primary yet (or not ready):
+    /// it stays owed, first, and is sent again after the backoff's next delay or when the mesh's primary
+    /// changes (Q235 P4).
+    Refused,
     /// The mesh's primary moved while the call was in flight: its call was cancelled.
     MeshPrimaryMoved,
 }
@@ -1420,7 +1516,7 @@ enum Declared {
 /// mesh-primary changing is the one retargeting, so a call still in flight to the old one is
 /// cancelled, and the declaration stays owed, first in the queue, to the one the topology names next.
 /// A primary record of another mesh changes nothing here.
-async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &OwedDeclarations, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, at: u64, declaration: &Declaration) -> Declared {
+async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &OwedDeclarations, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, at: u64, owing: &Owing) -> Declared {
     let birth = |h: Option<rdm_core::Primary>| h.map(|h| (h.node_id, h.incarnation));
     let mut seats = topology_view.primaries().subscribe();
     seats.borrow_and_update();
@@ -1436,7 +1532,12 @@ async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &Topolog
         }
     };
     tokio::select! {
-        answered = declare_once(me, topology_view, client, owed, held, at, declaration) => if answered { Declared::Answered } else { Declared::Unanswered },
+        declared = async {
+            match owing {
+                Owing::State(declaration) => if declare_once(me, topology_view, client, owed, held, at, declaration).await { Declared::Answered } else { Declared::Unanswered },
+                Owing::Config(config) => config_once(me, topology_view, client, owed, held, at, config).await,
+            }
+        } => declared,
         () = moved => {
             tracing::info_span!("rdm.node_rpc.status.remove.via-primary-changed", node = %topology_view.held_name(&me.name), from = %from.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default())
                 .in_scope(|| tracing::info!("the mesh's primary seat moved while the declaration was in flight: its call to the old holder is cancelled"));
@@ -1520,6 +1621,33 @@ async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_
     definitive
 }
 
+
+/// One owed own config update (node-config-update.md, a node's own update, step 1; Q235): one
+/// `Budget::Owed` call of `UpdateNodeConfig` naming this birth to the mesh-primary its topology view
+/// names, routed as a declaration ([`declaration_route`]). An answer by name ends its debt: its row
+/// installed and handed back ([`OwedDeclarations::config_answered`]); a refusal that the receiver is not
+/// the mesh-primary, or not ready, keeps it owed (`Refused`); a call that ended without an answer keeps
+/// it owed (`Unanswered`). With no mesh-primary held nothing is sent.
+async fn config_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &OwedDeclarations, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, at: u64, config: &std::collections::BTreeMap<String, String>) -> Declared {
+    use rdm_core::status::{NotPrimary, StatusReply};
+    let Some(primary) = topology_view.primaries().mesh(&me.name.mesh) else {
+        return Declared::Unanswered;
+    };
+    let policy = {
+        let (held, topology_view, me_id, primary_id, mesh) = (held.clone(), topology_view.clone(), me.node_id.clone(), primary.node_id.clone(), me.name.mesh.clone());
+        rdm_transport::RoutePolicy(Arc::new(move |attempt| declaration_route(&held, &topology_view, &me_id, &primary_id, &mesh, attempt)))
+    };
+    let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, route: Some(policy), ..rdm_transport::CallOptions::default() };
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(me.node_id.clone()), node_id: me.node_id.clone(), incarnation: me.incarnation.clone() };
+    match rdm_client::NodeRpc::new(client).own_config_update(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &birth, config.clone(), &opts).await {
+        Ok(StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } | NotPrimary::SubjectUnknown } | StatusReply::NotReady { .. }) => Declared::Refused,
+        Ok(reply) => {
+            owed.config_answered(at, &reply);
+            Declared::Answered
+        }
+        Err(_) => Declared::Unanswered,
+    }
+}
 
 /// What this node needs to answer a node-admin's status kick about itself.
 pub(crate) struct Kicked {
@@ -1693,12 +1821,14 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         .in_scope(|| tracing::info!("apply-node-state refused"));
                     Ok(rdm_core::reply::status::rejected_invalid_node_transition(current))
                 }
-                StatusRequest::ApplyNodeConfig { config, .. } => {
-                    // node-config-update.md step 3: the node applies the map, held for the application
-                    // (`TopologyView::config`); no digest carries it (Q203).
-                    me.topology_view.set_config(config.clone());
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.topology_view.held_name(&me.digest.node.name), sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the config its mesh-primary wrote is held"));
+                StatusRequest::ApplyNodeConfig { config, revision, .. } => {
+                    // node-config-update.md, a caller's update, step 3: the node installs the map over an
+                    // older revision (P1), held for the application (`TopologyView::config`); no digest
+                    // carries it (Q203). A map at the revision held or an older one is dropped and still
+                    // answered `Applied`: the newer map stands.
+                    let installed = me.topology_view.install_config(config.clone(), revision);
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.topology_view.held_name(&me.digest.node.name), sender = %sender_name, keys = config.len(), revision, held_revision = me.topology_view.config_revision(), installed, outcome = "applied", "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the config its mesh-primary wrote is held over an older revision"));
                     Ok(rdm_core::reply::applied())
                 }
                 StatusRequest::ApplyNodeName { name, .. } => {
@@ -1785,7 +1915,7 @@ mod authority_tests {
         let (at, _) = owed.first().expect("ConnectionsDeleting is owed first");
         let refused = StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh1 mesh-primary".into() } };
         assert!(owed.replied(at, &refused), "a refusal by name answers the declaration");
-        assert_eq!(owed.first().map(|(_, (state, _))| state), Some(NodeState::Stopped), "the next one owed is sent on the refusal");
+        assert_eq!(owed.first().map(|(_, o)| o), Some(Owing::State((NodeState::Stopped, None))), "the next one owed is sent on the refusal");
         assert_eq!(deleting.try_recv(), Ok(()), "the refused declaration's call has ended");
         let (at, _) = owed.first().expect("Stopped is owed");
         assert!(owed.replied(at, &StatusReply::Applied), "an applied reply answers it");

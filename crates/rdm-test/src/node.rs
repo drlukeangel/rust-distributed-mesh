@@ -230,7 +230,9 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
     let fault = Arc::new(crate::faults::StorageFault::default());
     let fault_for_storage = fault.clone();
     let knob_fn: RafkaTimeKnobFn = Box::new(|launch, rt, boot| rafka_time_knob(launch, rt, boot));
-    rdm_node::node::start_on(
+    let own_config: Arc<std::sync::OnceLock<rdm_node::node::OwnConfig>> = Arc::new(std::sync::OnceLock::new());
+    let door = own_config.clone();
+    let running = rdm_node::node::start_on(
         launch,
         node_backend(launch),
         rafka_time,
@@ -246,13 +248,16 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
                 name: ns.name,
                 data_plane,
                 data_plane_registry,
+                own_config: door,
             };
             register(b, seams).carry::<crate::proof_store::ProofStore>()
         },
         &[],
         alpns,
     )
-    .await
+    .await?;
+    let _ = own_config.set(running.own_config());
+    Ok(running)
 }
 
 #[cfg(feature = "testkit-skew")]

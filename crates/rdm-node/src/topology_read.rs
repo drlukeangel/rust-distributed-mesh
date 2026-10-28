@@ -45,10 +45,10 @@ pub struct TopologyDoor {
 /// Whether the node holds a recorded seat holder's exact birth as proven gone.
 pub type GoneSource = Arc<dyn Fn(&rdm_core::Primary) -> bool + Send + Sync>;
 
-/// The whole row of the caller whose endpoint key is given, answered by its own mesh-primary from its
-/// atlas (Q234), never the store: `None` from any other node, or for a caller that is not a node of the
+/// The whole row of the caller whose endpoint key is given, with the row's revision (P1), answered by its
+/// own mesh-primary from its atlas (Q234), never the store: `None` from any other node, or for a caller that is not a node of the
 /// answering mesh-primary's mesh.
-pub type OwnRowSource = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<rdm_core::views::NodeView>> + Send>> + Send + Sync>;
+pub type OwnRowSource = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(rdm_core::views::NodeView, u64)>> + Send>> + Send + Sync>;
 
 /// What a node stores of the meshes it does not hold a snapshot of: the births it knows, and the id
 /// it stored for each mesh.
@@ -234,9 +234,9 @@ impl TopologyDoor {
             // The caller's own whole row, when this node is its mesh-primary (Q234).
             if let Some(source) = &self.own_row {
                 let row = source(caller).await;
-                span.record("own_row", row.as_ref().map_or(String::new(), |r| r.name.to_string()).as_str());
-                if let Some(node) = row {
-                    let r = TopologyReply::OwnRow { node };
+                span.record("own_row", row.as_ref().map_or(String::new(), |(r, revision)| format!("{}@{revision}", r.name)).as_str());
+                if let Some((node, revision)) = row {
+                    let r = TopologyReply::OwnRow { node, revision };
                     let len = rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
                     match sink.data(r).await {
                         Ok(()) => bytes += len,
@@ -300,8 +300,8 @@ pub struct TopologyRead {
     /// The rafka-time the target served and the seat it held when it served it. Every accepted
     /// read carries it.
     pub rafka_time: Option<ServedTime>,
-    /// The reader's own whole row, when the target is its mesh-primary (Q234).
-    pub own_row: Option<rdm_core::views::NodeView>,
+    /// The reader's own whole row and the row's revision, when the target is its mesh-primary (Q234).
+    pub own_row: Option<(rdm_core::views::NodeView, u64)>,
 }
 
 /// The rafka-time a topology read was served with.
@@ -418,8 +418,8 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
     // computes no seat before it has them.
     topology_view.learn_primaries(&read.seats, "entry");
     // The reader's own whole row its mesh-primary's atlas holds: held on its own entry (Q234).
-    if let Some(row) = &read.own_row {
-        topology_view.set_own_row(row.clone());
+    if let Some((row, revision)) = &read.own_row {
+        topology_view.set_own_row(row.clone(), *revision);
     }
     Ok(read)
 }
@@ -529,7 +529,7 @@ async fn read_with(
                 rdm_core::topology::PrimaryKind::FabricPrimary => rdm_core::Seat::FabricPrimary,
             }, primary, gone)),
             StreamItem::Frame(_, TopologyReply::RafkaTime { ms, kind }) => read.rafka_time = Some(ServedTime { ms, kind }),
-            StreamItem::Frame(_, TopologyReply::OwnRow { node }) => read.own_row = Some(node),
+            StreamItem::Frame(_, TopologyReply::OwnRow { node, revision }) => read.own_row = Some((node, revision)),
             StreamItem::Frame(_, TopologyReply::End { meshes }) => served_meshes = Some(meshes),
             StreamItem::Frame(_, other) => return Err(TopologyFailure::Refused(format!("an unexpected frame in the stream: {}", other.name()))),
             StreamItem::Failed(f) => return Err(TopologyFailure::Unreached(format!("the stream failed before its end: {f:?}"))),

@@ -306,7 +306,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
     let carrier = estate.carrier().await;
     let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default()).await.expect("node.config.update answered");
-    assert_eq!(reply, rdm_core::status::StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() }, "the fabric-primary sent it down and the node applied it");
+    assert!(matches!(&reply, rdm_core::status::StatusReply::ConfigUpdated { node_id: n, incarnation: i, config, revision } if *n == node_id && *i == incarnation && *config == told && *revision > 0), "the fabric-primary sent it down and the node applied it, the row as written carried back: {reply:?}");
     let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.name.to_string() == subject_name).unwrap_or_else(|| panic!("{subject_name} is answered"));
     let at_once = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("nodes.get [mesh] at the fabric-primary"));
     assert_eq!(at_once.config, told, "the fabric-primary answers the config at once, from its atlas");

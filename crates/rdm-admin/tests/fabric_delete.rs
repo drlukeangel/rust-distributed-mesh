@@ -168,7 +168,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 predecessor: None,
                 mesh_id: None,
                 storage_persistence: None,
-                placement: None,
+                placement: None, revision: 0,
             };
         if let Some(incarnation) = &n.incarnation_id {
             row.birth_mut(incarnation, &n.name);

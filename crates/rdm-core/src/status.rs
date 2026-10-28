@@ -336,8 +336,9 @@ pub enum StatusRequest {
         /// The whole config: a put replaces, it never merges.
         config: BTreeMap<String, String>,
     },
-    /// Downward: the birth's mesh-primary tells the exact birth its config; the birth holds it and carries
-    /// it in its next digest. Answered `Applied`.
+    /// Downward: the birth's mesh-primary tells the exact birth its config, the row's as written, and
+    /// the row's revision; the birth installs it over an older revision (P1) and holds it on its own
+    /// entry. Answered `Applied`.
     ApplyNodeConfig {
         /// The birth told.
         node_id: NodeId,
@@ -345,6 +346,8 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The whole config.
         config: BTreeMap<String, String>,
+        /// The row's revision the config was written at.
+        revision: u64,
     },
     /// Downward: the node's mesh-primary, having written the renamed row, tells the exact birth
     /// its name (proposal node-properties-own-commands.md §2.2 step 6; R12: the node owns its name and
@@ -532,6 +535,20 @@ pub enum StatusRequest {
         node: Option<(NodeId, IncarnationId)>,
         /// The pairs every answered row matches.
         filter: crate::filter::Filter,
+    },
+    /// Upward (node-config-update.md, a node's own update, step 3; Q235): a mesh-primary that is not
+    /// the fabric-primary owes the node's row as written, its config and the row's revision, to the
+    /// fabric-primary, which writes it into its atlas over an older revision. Owed until answered:
+    /// `Applied` when the atlas took it, `AlreadyApplied` when the atlas holds that revision or a newer
+    /// one; at an admin that is not the fabric-primary, `RejectedNotPrimary` naming it. Appended last:
+    /// no variant before it moves.
+    NodeConfigUpdated {
+        /// The node whose row was written.
+        node_id: NodeId,
+        /// The row's config as written.
+        config: BTreeMap<String, String>,
+        /// The row's revision as written (P1: every install is ordered by it).
+        revision: u64,
     },
 }
 
@@ -891,6 +908,7 @@ impl StatusRequest {
             Self::GetAtlas => "fabrics.atlas.get",
             Self::GetConnections { .. } => "connections.get",
             Self::Get { entity, .. } => entity.read(),
+            Self::NodeConfigUpdated { .. } => "node-config-updated",
             Self::CreateTags { .. } => "node.tags.create",
             Self::DeleteTags { .. } => "node.tags.delete",
             Self::JoinMesh { .. } => "node.mesh.join",
@@ -1103,12 +1121,18 @@ pub enum StatusReply {
         incarnation: IncarnationId,
     },
     /// The reply of an `UpdateNodeConfig`: the birth's mesh-primary wrote the node's row and the exact
-    /// birth holds the config (`node.config.updated`).
+    /// birth holds the config (`node.config.updated`). It carries the row as written, its config and
+    /// revision: a node's own update installs it over an older revision, and the fabric-primary writes
+    /// it into its atlas over an older revision (P1, P2).
     ConfigUpdated {
         /// The birth whose config was put.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
+        /// The row's config as written.
+        config: BTreeMap<String, String>,
+        /// The row's revision as written.
+        revision: u64,
     },
     /// Reserved position (Q203): never sent.
     Reserved22 {
@@ -1128,6 +1152,11 @@ pub enum StatusReply {
         node: String,
         /// The store's refusal.
         reason: String,
+        /// The row's config as it stands (the write refused, it is what it was): a node's own update
+        /// installs it over an older revision (P2); empty when the writer holds no row.
+        config: BTreeMap<String, String>,
+        /// The row's revision as it stands; 0 when the writer holds no row.
+        revision: u64,
     },
     /// The mesh-primary wrote the node's row, and the exact birth did not apply the config: the
     /// record holds the new config, the birth does not.
@@ -1522,7 +1551,12 @@ impl StatusReply {
     /// `ConfigRowRefused` for `node`, the store's refusal `reason`, each within its budget so the
     /// reply always fits the Status reply bound.
     pub fn config_row_refused(node: &str, reason: &str) -> Self {
-        Self::ConfigRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
+        Self::config_row_refused_at(node, reason, BTreeMap::new(), 0)
+    }
+
+    /// [`Self::config_row_refused`] carrying the row as it stands, its `config` at `revision` (P2).
+    pub fn config_row_refused_at(node: &str, reason: &str, config: BTreeMap<String, String>, revision: u64) -> Self {
+        Self::ConfigRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES), config, revision }
     }
 
     /// `ConfigNotApplied` for `node`: the birth `answered` (a reply or call-end name), and why, each
@@ -1704,7 +1738,7 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 34;
+    const REQUEST_VARIANTS: u32 = 35;
     const REPLY_VARIANTS: u32 = 58;
 
     type Request = StatusRequest;
@@ -1937,9 +1971,9 @@ mod tests {
             (StatusReply::Started, ReplyKind::Success),
             (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::CurrentStopped { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
-            (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
+            (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default(), revision: 1 }, ReplyKind::Success),
             (StatusReply::Reserved22 { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into(), config: Default::default(), revision: 0 }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
             (StatusReply::NameUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
@@ -2009,7 +2043,8 @@ mod tests {
             StatusRequest::Reserved15 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
             StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.start:mesh1.rpc.1".into() },
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
-            StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
+            StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default(), revision: 1 },
+            StatusRequest::NodeConfigUpdated { node_id: NodeId::mint(), config: Default::default(), revision: 1 },
             StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
             StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "1.old".into() },
             StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(vec![ConnectionId::mint()]) },

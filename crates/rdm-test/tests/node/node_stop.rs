@@ -467,7 +467,7 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
         .config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
         .await
         .expect("node.config.update answered");
-    assert_eq!(reply, StatusReply::ConfigUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() }, "a stopped node's config update completes on its row");
+    assert!(matches!(&reply, StatusReply::ConfigUpdated { node_id, incarnation, config, .. } if *node_id == before.node_id && Some(incarnation) == before.incarnation_id.as_ref() && *config == told), "a stopped node's config update completes on its row: {reply:?}");
 
     let started = frames(nodes.start(&path).await.expect("the start was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");

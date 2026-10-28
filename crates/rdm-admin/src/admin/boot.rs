@@ -1483,6 +1483,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone(), written.clone());
                                 // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).
                                 configs.watch_views(records.subscribe_view());
+                                // An owed push of a node's row up to the fabric-primary reads the view again on each send (Q235 P3).
+                                configs.reads(control.topology.clone());
                                 let _ = configs_slot.set(Arc::new(configs));
                                 {
                                     let records_for_ids = records.clone();
@@ -1971,7 +1973,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                             let held = view.births().find(|n| n.endpoint_id.as_ref().is_some_and(|e| e.0 == caller)).and_then(|n| atlas.record(&n.node_id));
                                             let row = held.or_else(|| atlas.record_of_endpoint(&caller)).filter(|r| r.name.mesh == mesh && r.node_id != me)?;
-                                            Some(crate::views::own_row_view(&view, &atlas, &row))
+                                            Some((crate::views::own_row_view(&view, &atlas, &row), row.revision))
                                         })
                                     })
                                 };
@@ -2311,10 +2313,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
                                     {
                                         let topology_view = topology_view.clone();
-                                        let _ = configure.set(Arc::new(move |config: BTreeMap<String, String>| {
+                                        let _ = configure.set(Arc::new(move |held: crate::status_rpc::ConfigHeld| {
                                             let topology_view = topology_view.clone();
                                             Box::pin(async move {
-                                                topology_view.set_config(config);
+                                                // Every install over an older revision (Q235 P1); its own update held at once (P2).
+                                                match held {
+                                                    crate::status_rpc::ConfigHeld::Told { config, revision } => {
+                                                        topology_view.install_config(config, revision);
+                                                    }
+                                                    crate::status_rpc::ConfigHeld::Sent(config) => topology_view.hold_sent_config(config),
+                                                    crate::status_rpc::ConfigHeld::Answered(row) => topology_view.own_config_answered(row),
+                                                }
                                             })
                                         }));
                                     }

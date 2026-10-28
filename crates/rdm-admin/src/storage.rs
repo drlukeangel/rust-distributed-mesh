@@ -754,6 +754,12 @@ pub struct NodeRow {
     /// The node's placement as its create spec names it, beside `storage_persistence` and written as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<rdm_core::meta::PlacementMeta>,
+    /// The row's revision (node-config-update.md; Q235 P1): stepped by its one writer, the node's
+    /// mesh-primary, on every write of the row ([`crate::node_rows::WrittenRows::put`]). Every carrier of
+    /// the row's config names it, and every install, at the node and in each atlas, is made only over
+    /// an older revision. A row written before the field reads 0.
+    #[serde(default)]
+    pub revision: u64,
 }
 
 /// The application's declaration held beside its node row.
@@ -785,7 +791,7 @@ pub struct Allocation {
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
     pub fn new(name: PathName, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None }
+        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None, revision: 0 }
     }
 
     /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets
