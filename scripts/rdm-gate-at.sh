@@ -45,7 +45,17 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://192.168.68.99:5318
 # writes stalled up to 18.4 s and 16 reds; 12 jobs: 1,169 up to 531 ms and 11, the timing reds gone).
 # The fast gate's jobs are light: one per core. The release suite's chaos jobs each run whole fabrics,
 # and twenty at once loaded the box ~2x (release 119663355): it keeps twelve.
-if [ "$GATE" = release ]; then JOBS="${GATE_JOBS:-12}"; else JOBS="${GATE_JOBS:-20}"; fi
+# Fair share, not a lock: the gates running on this box (this one included) split its cores, so
+# parallel gates slow down together instead of starving each other's timing cells. On 2026-10-28
+# three gates at once (load average 110-198) reddened a different timing cell each run.
+# Each running gate holds one marker (its pid) in /dev/shm/rdm-gates, removed when it exits; a marker
+# whose pid is gone is stale and is cleared before counting.
+GATES_DIR=/dev/shm/rdm-gates; mkdir -p "$GATES_DIR"; echo "$$" > "$GATES_DIR/$$"; trap 'rm -f "$GATES_DIR/$$"' EXIT
+for m in "$GATES_DIR"/*; do [ -e "$m" ] && ! kill -0 "$(basename "$m")" 2>/dev/null && rm -f "$m"; done
+GATES_NOW=$(ls "$GATES_DIR" | wc -l); [ "$GATES_NOW" -ge 1 ] || GATES_NOW=1
+SHARE=$(( $(nproc) / GATES_NOW )); [ "$SHARE" -ge 2 ] || SHARE=2
+if [ "$GATE" = release ]; then JOBS="${GATE_JOBS:-$(( SHARE < 12 ? SHARE : 12 ))}"; else JOBS="${GATE_JOBS:-$SHARE}"; fi
+echo "[gate] $GATES_NOW gate(s) on the box: $JOBS jobs"
 # The estate binaries come from the one build below: no job builds or relinks a binary while other
 # stems are starting.
 export I143_ACCEPTANCE_SKIP_BUILD=1
@@ -265,7 +275,7 @@ export TMPDIR=/dev/shm/rdm-lane-$(basename "$(pwd)")/gate
 # root under TMPDIR (the fabric_id whose containers it removes): TMPDIR goes once every reaper of this
 # gate has ended, waited for at most 60 s.
 rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
-trap 'for _ in $(seq 300); do pgrep -f "estate-reaper [0-9]+ $TMPDIR/" > /dev/null || break; sleep 0.2; done; rm -rf "$TMPDIR"' EXIT
+trap 'rm -f "$GATES_DIR/$$"; for _ in $(seq 300); do pgrep -f "estate-reaper [0-9]+ $TMPDIR/" > /dev/null || break; sleep 0.2; done; rm -rf "$TMPDIR"' EXIT
 
 # 2. Every check and every scenario, in parallel, each a prebuilt test binary.
 exe(){ python3 - "$D/artifacts.json" "$@" <<'PY'
