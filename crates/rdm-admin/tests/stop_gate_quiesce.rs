@@ -95,8 +95,9 @@ impl Capture {
 /// the stop waits at the gate. Must NOT happen: a turn that was in progress at the stop running on
 /// past the cut, so a stopped admin plans, publishes or calls out after it was cut.
 ///
-/// The executor is the turn held because its idle wait (`select!` on a submitted Build or its
-/// 300 ms poll, admin.rs) touches no lock: it always reaches its turn and holds there, at the
+/// The executor is the turn held because its idle wait (`ReconcileWake::next`: a submitted Build, a
+/// view installed, a fabric state change, the peer-mesh investigation's move, a drive's end) touches no
+/// lock: woken by the cell's submit notification, it always reaches its turn and holds there, at the
 /// cell's writer. The hierarchy's idle wait reads the view on a view change (admin.rs, its
 /// `view_changed` branch), so a hierarchy woken by the install the cell's writer queued behind
 /// would hold at the writer outside its turn. The writer takes the view lock only while no
@@ -129,7 +130,8 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
         .await
         .expect("the Day-0 admin never became its mesh's publisher with its hierarchy idle");
 
-        // The view lock is taken while no executor turn is in progress; the executor's next poll
+        // The view lock is taken while no executor turn is in progress; the executor's next pass,
+        // woken by a submit's notification (Q253 amended: each pass runs on an event, never a tick),
         // begins its turn after it and holds where it takes the lock.
         let topology = running.control.topology.clone();
         let holder = tokio::time::timeout(NEVER, async {
@@ -144,7 +146,8 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
         .await
         .expect("the executor was never between turns");
         let own = running.digest.lock().unwrap().clone();
-        tokio::time::timeout(NEVER, state.wait_for(|s| s.turns.contains_key("executor"))).await.expect("the executor began no turn within its poll").unwrap();
+        running.control.build_submitted.notify_waiters();
+        tokio::time::timeout(NEVER, state.wait_for(|s| s.turns.contains_key("executor"))).await.expect("the executor began no turn on the submit's notification").unwrap();
 
         // Its mesh-admin's stop reaches it while that turn is in progress.
         let root = tracing::info_span!("cell.stop-gate-quiesce", node = %own.node.name);
