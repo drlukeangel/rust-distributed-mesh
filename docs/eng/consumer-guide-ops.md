@@ -246,6 +246,18 @@ result. That id survives a new RPC invocation; the transport's delivery id does 
    another mutation merely because the reply was lost. Resubmission of the same operation is safe
    only when the application contract explicitly supports it.
 
+RDM's recovery helpers, `rdm_node::operation`, make steps 1, 2 and 4 and the read of step 5 explicit
+over persistence the application provides. Implement `OperationStore` (`get`, `put_accepted`,
+`put_completed`, `pending`) on Rafka's record: persistence only, each put durable when it returns,
+deciding nothing. Hold one `Operations` over it in the application service.
+`Operations::accept(&peer.acceptance, id, input)` looks the id up, records a new operation and then
+accepts the request, and answers `Recorded` (start the work), `InFlight`, `Completed(output)` (the
+recorded result) or `Conflict` (answer your named refusal); `complete` records a result once; `read`
+answers a read by id; `pending` names what a start finishes in `pre_node_ready`. Each is a span naming
+the `operation` (`rdm.node_rpc.operation.create.via-accept`, `.update.via-complete`,
+`.serve.via-read`, `.update.via-resume`). The work itself, and an effect recorded atomically with its
+completion (step 3), stay Rafka's.
+
 `record_durably` in the sketch is an application seam, not an RDM API. Its error must be mapped to
 an appropriate named reply or `HandlerFault`; an expected domain refusal is not an internal fault.
 Retain call evidence and record the operation id in application spans so a consumer can connect
@@ -331,13 +343,13 @@ their own cells. The compiled consumer example is available:
 [`demo/src/consumer_example.rs`](../../demo/src/consumer_example.rs) holds an application service in an
 `Arc`, registration through `run_with` (its ledger rows, a unary op and a streaming op), target
 selection from the topology, calls through the process's client with all five outcomes handled, a
-mutating handler that records then accepts, and a restart that resumes the pending work; its ops run
-the harness as their cells ([`demo/tests/consumer_example.rs`](../../demo/tests/consumer_example.rs),
-in the release gate), and `scripts/demo-estate.sh example` runs it on the demo estate. This is a
-proposed RDM improvement, not an available API or a prerequisite for using Node RPC:
-
-- Recovery integration helpers with application-provided persistence, making acceptance and
-  response recovery explicit without moving domain transactions into the transport.
+mutating handler that records then accepts and a restart that resumes the pending work, both on the
+recovery helpers; its ops run the harness as their cells ([`demo/tests/consumer_example.rs`](../../demo/tests/consumer_example.rs),
+in the release gate), and `scripts/demo-estate.sh example` runs it on the demo estate. The recovery
+integration helpers are available: `rdm_node::operation` (§5) makes acceptance and response recovery
+explicit over persistence the application provides, without moving domain transactions into the
+transport; the example's handler and restart are written on them, and its reply lost after acceptance
+passes the harness through them.
 
 The consumer acceptance test is a Rafka developer adding, calling, diagnosing and recovering one
 real operation without reading transport internals. The examples and helpers should be built to

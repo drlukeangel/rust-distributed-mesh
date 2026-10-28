@@ -10,16 +10,19 @@
 //!   caller's own operation id (mutating) or reads its state by id (read-only); and
 //!   [`ExampleRecords`], a server-streaming op that reads the serving node's operations record from
 //!   an index, the stream's terminal naming where the next read starts.
-//! - **An application service held in an `Arc`** ([`ExampleService`]): its durable record is a
+//! - **An application service held in an `Arc`** ([`ExampleService`]): its durable record ([`ExampleRecord`]) is a
 //!   JSON-lines file in the node's data dir; every handler clones the `Arc` (§4).
 //! - **Registration** (§3): [`ledger_rows`] and [`register`], the `serve_app` handed to
 //!   `rdm_node::run_with` by [`run`]. The unary op is served behind the `pre_node_ready` gate
 //!   (`ServerBuilder::serve_gated`); the streaming handler reads the same gate itself.
-//! - **A mutating handler that records, then accepts** (§3, §5): `Submit` appends the accepted
-//!   operation to the record and syncs it, then calls `peer.acceptance.accepted()`, then answers.
+//! - **A mutating handler that records, then accepts** (§3, §5), on RDM's recovery helpers
+//!   (`rdm_node::operation`): the record is the application's [`OperationStore`] ([`ExampleRecord`]),
+//!   and `Submit` is decided by `Operations::accept`, which records a new operation and syncs it,
+//!   then calls `peer.acceptance.accepted()`; a repeat answers the recorded state or result, and its
+//!   id with another input is refused `Conflict`. `Get` is `Operations::read`.
 //! - **A restart that recovers the pending work** (§5 step 4): [`Resume`], the node's
-//!   `pre_node_ready`, finishes every operation the record holds accepted and not completed before
-//!   the node is Ready.
+//!   `pre_node_ready`, starts the work of every operation `Operations::pending` names (accepted and
+//!   not completed) before the node is Ready; each work's end is `Operations::complete`.
 //! - **Target selection from the topology and calls through the process's client, every outcome
 //!   handled** (§4, §5 step 5, §6): [`Caller`], the node's `on_node_ready` on the calling kind. It
 //!   picks a serving node with `TopologyView::nodes_get`, finds an operation's node again with
@@ -31,7 +34,8 @@
 //! Telemetry: the guide's checklist (§7 item 4) names a product's spans
 //! `<owner>.<domain>.<entity>.<action>.via-<reason>`. This file is in RDM's tree, where every span is
 //! `rdm.*` (the `RdmSpansAreRdmPrefixed` ratchet); so what the application does is a log line
-//! (target `rshape`) under RDM's own call, serve and `pre_node_ready` spans. A product's copy names
+//! (target `rshape`) under RDM's own call, serve and `pre_node_ready` spans, and under the recovery
+//! helpers' spans (`rdm.node_rpc.operation.*`, each naming the `operation`). A product's copy names
 //! its own spans there.
 //!
 //! On the demo estate (`scripts/demo-estate.sh example`) the `rshape-example` executable runs this
@@ -47,6 +51,7 @@ use rdm_core::protocol::NodeProtocol;
 use rdm_core::streaming::{FrameKind, StreamingProtocol};
 use rdm_core::{NodeId, NodeKind, PathName};
 use rdm_node::node_hooks::{HookOutcome, NodeHooks, NodeReadyCtx, OnNodeReady, PreNodeReady};
+use rdm_node::operation::{Decision, OperationStore, Operations, Recorded, State};
 use rdm_node::Role;
 use rdm_transport::stream::{ReplyStream, SinkError, StreamFailure, StreamItem};
 use rdm_transport::{Budget, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, PreNodeReadyGate, ServerBuilder};
@@ -216,44 +221,25 @@ fn work(input: &str) -> String {
 /// The record's file, under the directory [`ExampleService::open`] is given.
 const RECORD_FILE: &str = "operations.jsonl";
 
-/// What [`ExampleService::submit`] decided.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Submitted {
-    /// Newly recorded: the caller accepts it, then starts its work.
-    Recorded,
-    /// Recorded before, its work not completed.
-    Held,
-    /// Completed before, with this output.
-    Completed(String),
-    /// Recorded before with another input.
-    Conflict,
-}
-
-struct Operation {
-    input: String,
-    output: Option<String>,
-}
-
 struct Held {
     file: std::fs::File,
     entries: Vec<Entry>,
-    operations: BTreeMap<String, Operation>,
-    /// Operations whose work runs in this process now.
-    running: BTreeSet<String>,
+    operations: BTreeMap<String, Recorded<String, String>>,
 }
 
-/// The application service: its operations, kept in a durable record, and the work it runs.
-pub struct ExampleService {
-    work_time: Duration,
-    held: Mutex<Held>,
+/// The application's durable record of its operations: a JSON-lines file of [`Entry`], folded in
+/// memory. It is the [`OperationStore`] RDM's recovery helpers decide over: it persists what it is
+/// handed and decides nothing.
+#[derive(Clone)]
+pub struct ExampleRecord {
+    held: Arc<Mutex<Held>>,
 }
 
-impl ExampleService {
+impl ExampleRecord {
     /// Open the record under `dir` (created when absent) and fold it. A last line cut short by a
     /// crash was never synced, so never accepted: it is cut from the file. Any other line that does
-    /// not decode refuses the open, naming its line. `work_time` is how long one operation's work
-    /// takes.
-    pub fn open(dir: &Path, work_time: Duration) -> std::io::Result<Arc<Self>> {
+    /// not decode refuses the open, naming its line.
+    pub fn open(dir: &Path) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(RECORD_FILE);
         let text = match std::fs::read_to_string(&path) {
@@ -281,32 +267,7 @@ impl ExampleService {
         for entry in &entries {
             fold(&mut operations, entry);
         }
-        Ok(Arc::new(Self { work_time, held: Mutex::new(Held { file, entries, operations, running: BTreeSet::new() }) }))
-    }
-
-    /// Record `operation` on `input` unless the record holds it; a new one is synced before this
-    /// returns. Blocking: call it off the async threads.
-    pub fn submit(&self, operation: &str, input: &str) -> std::io::Result<Submitted> {
-        let mut held = self.held.lock().unwrap();
-        Ok(match held.operations.get(operation) {
-            Some(op) if op.input != input => Submitted::Conflict,
-            Some(Operation { output: Some(output), .. }) => Submitted::Completed(output.clone()),
-            Some(_) => Submitted::Held,
-            None => {
-                append(&mut held, Entry::Accepted { operation: operation.into(), input: input.into() })?;
-                Submitted::Recorded
-            }
-        })
-    }
-
-    /// The state of `operation`, as [`ExampleWork`] answers `Get`.
-    pub fn get(&self, operation: &str) -> WorkReply {
-        let operation = operation.to_string();
-        match self.held.lock().unwrap().operations.get(&operation) {
-            None => WorkReply::Unknown { operation },
-            Some(Operation { output: Some(output), .. }) => WorkReply::Done { operation, output: output.clone() },
-            Some(_) => WorkReply::Pending { operation },
-        }
+        Ok(Self { held: Arc::new(Mutex::new(Held { file, entries, operations })) })
     }
 
     /// The record's length and its entries from `from`, at most `max`; `Err(end)` when `from` is past
@@ -321,51 +282,52 @@ impl ExampleService {
         Ok((end, (from..to).map(|i| (i, held.entries[i as usize].clone())).collect()))
     }
 
-    /// Start the work of every operation the record holds accepted and not completed, and not already
-    /// running here: what a start does before the node is Ready. Returns how many it started.
-    pub fn resume(self: &Arc<Self>) -> usize {
-        let pending: Vec<String> = self.held.lock().unwrap().operations.iter().filter(|(_, op)| op.output.is_none()).map(|(id, _)| id.clone()).collect();
-        pending.into_iter().filter(|id| self.start(id.clone())).count()
-    }
-
-    /// Start `operation`'s work unless it runs already; `true` when this started it. The work ends
-    /// by recording the completion; a completion that cannot be recorded leaves the operation
-    /// pending, for the next start to finish.
-    pub fn start(self: &Arc<Self>, operation: String) -> bool {
-        let input = {
-            let mut held = self.held.lock().unwrap();
-            let Some(input) = held.operations.get(&operation).filter(|op| op.output.is_none()).map(|op| op.input.clone()) else { return false };
-            if !held.running.insert(operation.clone()) {
-                return false;
-            }
-            input
-        };
-        let svc = self.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(svc.work_time).await;
-            let output = work(&input);
-            let done = svc.clone();
-            let id = operation.clone();
-            let recorded = tokio::task::spawn_blocking(move || {
-                let mut held = done.held.lock().unwrap();
-                held.running.remove(&id);
-                append(&mut held, Entry::Completed { operation: id, output })
-            })
-            .await;
-            match recorded {
-                Ok(Ok(())) => tracing::info!(target: "rshape", %operation, "an operation's work completed and its completion is recorded"),
-                Ok(Err(e)) => tracing::error!(target: "rshape", %operation, error = %e, "an operation's completion could not be recorded: it stays pending until the next start"),
-                Err(e) => tracing::error!(target: "rshape", %operation, error = %e, "an operation's completion task ended before recording it"),
-            }
-        });
-        true
+    /// Append `entry` and sync it, off the async threads; it is held in memory once durable.
+    async fn append(&self, entry: Entry) -> std::io::Result<()> {
+        let held = self.held.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut held = held.lock().unwrap();
+            let mut line = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
+            line.push('\n');
+            held.file.write_all(line.as_bytes())?;
+            held.file.sync_data()?;
+            fold(&mut held.operations, &entry);
+            held.entries.push(entry);
+            Ok(())
+        })
+        .await
+        .map_err(|e| std::io::Error::other(format!("the record's write task ended: {e}")))?
     }
 }
 
-fn fold(operations: &mut BTreeMap<String, Operation>, entry: &Entry) {
+#[async_trait::async_trait]
+impl OperationStore for ExampleRecord {
+    type Input = String;
+    type Output = String;
+    type Error = std::io::Error;
+
+    async fn get(&self, operation: &str) -> std::io::Result<Option<Recorded<String, String>>> {
+        Ok(self.held.lock().unwrap().operations.get(operation).cloned())
+    }
+
+    async fn put_accepted(&self, operation: &str, input: &String) -> std::io::Result<()> {
+        self.append(Entry::Accepted { operation: operation.into(), input: input.clone() }).await
+    }
+
+    async fn put_completed(&self, operation: &str, output: &String) -> std::io::Result<()> {
+        self.append(Entry::Completed { operation: operation.into(), output: output.clone() }).await
+    }
+
+    async fn pending(&self) -> std::io::Result<Vec<(String, String)>> {
+        let held = self.held.lock().unwrap();
+        Ok(held.operations.iter().filter(|(_, op)| op.output.is_none()).map(|(id, op)| (id.clone(), op.input.clone())).collect())
+    }
+}
+
+fn fold(operations: &mut BTreeMap<String, Recorded<String, String>>, entry: &Entry) {
     match entry {
         Entry::Accepted { operation, input } => {
-            operations.entry(operation.clone()).or_insert(Operation { input: input.clone(), output: None });
+            operations.entry(operation.clone()).or_insert(Recorded { input: input.clone(), output: None });
         }
         Entry::Completed { operation, output } => {
             if let Some(op) = operations.get_mut(operation) {
@@ -375,16 +337,57 @@ fn fold(operations: &mut BTreeMap<String, Operation>, entry: &Entry) {
     }
 }
 
-/// Append `entry` to the record and sync it, then hold it in memory: an entry the service holds is
-/// durable.
-fn append(held: &mut Held, entry: Entry) -> std::io::Result<()> {
-    let mut line = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
-    line.push('\n');
-    held.file.write_all(line.as_bytes())?;
-    held.file.sync_data()?;
-    fold(&mut held.operations, &entry);
-    held.entries.push(entry);
-    Ok(())
+/// The application service: RDM's recovery helpers over its record, and the work it runs.
+pub struct ExampleService {
+    work_time: Duration,
+    operations: Operations<ExampleRecord>,
+    /// Operations whose work runs in this process now.
+    running: Mutex<BTreeSet<String>>,
+}
+
+impl ExampleService {
+    /// Open the record under `dir` ([`ExampleRecord::open`]). `work_time` is how long one operation's
+    /// work takes.
+    pub fn open(dir: &Path, work_time: Duration) -> std::io::Result<Arc<Self>> {
+        Ok(Arc::new(Self { work_time, operations: Operations::new(ExampleRecord::open(dir)?), running: Mutex::default() }))
+    }
+
+    /// The recovery helpers' decisions over the record.
+    pub fn operations(&self) -> &Operations<ExampleRecord> {
+        &self.operations
+    }
+
+    /// Start the work of every operation the record holds accepted and not completed, and not already
+    /// running here: what a start does before the node is Ready. Returns how many it started.
+    pub async fn resume(self: &Arc<Self>) -> std::io::Result<usize> {
+        let pending = self.operations.pending().await?;
+        Ok(pending.into_iter().filter(|(id, input)| self.start(id.clone(), input.clone())).count())
+    }
+
+    /// Start `operation`'s work on `input` unless it runs already; `true` when this started it. The
+    /// work ends by recording the completion; a completion that cannot be recorded leaves the
+    /// operation pending, for the next start to finish.
+    pub fn start(self: &Arc<Self>, operation: String, input: String) -> bool {
+        if !self.running.lock().unwrap().insert(operation.clone()) {
+            return false;
+        }
+        let svc = self.clone();
+        tokio::spawn(
+            async move {
+                tokio::time::sleep(svc.work_time).await;
+                let recorded = svc.operations.complete(&operation, &work(&input)).await;
+                svc.running.lock().unwrap().remove(&operation);
+                match recorded {
+                    Ok(_) => tracing::info!(target: "rshape", %operation, "an operation's work completed and its completion is recorded"),
+                    Err(e) => tracing::error!(target: "rshape", %operation, error = %e, "an operation's completion could not be recorded: it stays pending until the next start"),
+                }
+            }
+            // The completion is in the trace of what started the work: the request that recorded it,
+            // or the start that resumed it.
+            .in_current_span(),
+        );
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -409,32 +412,28 @@ pub fn register(b: ServerBuilder, service: Arc<ExampleService>, gate: PreNodeRea
         .serve_gated::<ExampleWork, _, _>(OpOwner::Product(OWNER.to_string()), gate, move |peer, request| {
             let svc = work.clone();
             async move {
+                let faulted = |e: std::io::Error| HandlerFault::invariant_broken(format!("the operations record: {e}"));
                 match request {
                     WorkRequest::Submit { operation, input } => {
-                        let (s, id) = (svc.clone(), operation.clone());
-                        let submitted = tokio::task::spawn_blocking(move || s.submit(&id, &input))
-                            .await
-                            .map_err(|e| HandlerFault::invariant_broken(format!("the record's write task ended: {e}")))?
-                            .map_err(|e| HandlerFault::invariant_broken(format!("the operations record could not be written: {e}")))?;
-                        Ok(match submitted {
-                            Submitted::Recorded => {
-                                // Recorded and synced: the work is recoverable, so the request is
-                                // acknowledged now, then the work starts.
-                                peer.acceptance.accepted();
-                                svc.start(operation.clone());
+                        // Recorded and synced before it is accepted: the runtime acks the request
+                        // only once its work is recoverable. A repeat answers what the record holds.
+                        let decision = svc.operations().accept(&peer.acceptance, &operation, &input).await.map_err(faulted)?;
+                        Ok(match decision {
+                            Decision::Recorded => {
+                                svc.start(operation.clone(), input);
                                 tracing::info!(target: "rshape", %operation, "an operation recorded, then accepted; its work started");
                                 WorkReply::Accepted { operation }
                             }
-                            Submitted::Held => WorkReply::Accepted { operation },
-                            Submitted::Completed(output) => WorkReply::Done { operation, output },
-                            Submitted::Conflict => WorkReply::Conflict { operation },
+                            Decision::InFlight => WorkReply::Accepted { operation },
+                            Decision::Completed(output) => WorkReply::Done { operation, output },
+                            Decision::Conflict => WorkReply::Conflict { operation },
                         })
                     }
-                    WorkRequest::Get { operation } => {
-                        let reply = svc.get(&operation);
-                        tracing::info!(target: "rshape", %operation, state = ExampleWork::reply_detail(&reply), "an operation's state read by its id");
-                        Ok(reply)
-                    }
+                    WorkRequest::Get { operation } => Ok(match svc.operations().read(&operation).await.map_err(faulted)? {
+                        State::Unknown => WorkReply::Unknown { operation },
+                        State::InFlight => WorkReply::Pending { operation },
+                        State::Completed(output) => WorkReply::Done { operation, output },
+                    }),
                 }
             }
         })
@@ -445,7 +444,7 @@ pub fn register(b: ServerBuilder, service: Arc<ExampleService>, gate: PreNodeRea
                     return Ok(ExampleRecords::not_ready(reason));
                 }
                 let RecordsRequest::Read { from, max } = request;
-                let (end, entries) = match svc.entries(from, max) {
+                let (end, entries) = match svc.operations().store().entries(from, max) {
                     Ok(read) => read,
                     Err(end) => return Ok(RecordsFrame::OutOfRange { end }),
                 };
@@ -527,9 +526,13 @@ pub struct Resume(pub Arc<ExampleService>);
 #[async_trait::async_trait]
 impl PreNodeReady for Resume {
     async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
-        let resumed = self.0.resume();
-        tracing::info!(target: "rshape", node = %ctx.birth.name, start_kind = ?ctx.start_kind, inherited = ctx.inherited, resumed, "the operations record is read; its pending operations' work is resumed");
-        HookOutcome::Ok
+        match self.0.resume().await {
+            Ok(resumed) => {
+                tracing::info!(target: "rshape", node = %ctx.birth.name, start_kind = ?ctx.start_kind, inherited = ctx.inherited, resumed, "the operations record is read; its pending operations' work is resumed");
+                HookOutcome::Ok
+            }
+            Err(e) => HookOutcome::Failed { reason: format!("the operations record could not be read: {e}") },
+        }
     }
 }
 

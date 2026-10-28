@@ -1,15 +1,15 @@
 //! The consumer example's cells (`rshape_consumer::consumer_example`; consumer-guide-ops.md §7 item 6):
-//! each op through the conformance harness by naming its type, and the mutating op's accepted work
-//! still done after its service is opened again over the same record.
+//! each op through the conformance harness by naming its type, the mutating op deciding through RDM's
+//! recovery helpers (`rdm_node::operation`), and its accepted work still done after its service is
+//! opened again over the same record.
 
 use rdm_core::catalog::OpOwner;
+use rdm_node::operation::{Decision, State};
 use rdm_transport::stream::ReplyStream;
-use rdm_transport::PreNodeReadyGate;
-use rshape_consumer::consumer_example::{
-    read_records, register, ExampleRecords, ExampleService, ExampleWork, RecordsRequest, Submitted, WorkReply, WorkRequest, OWNER,
-};
+use rdm_transport::{Acceptance, PreNodeReadyGate};
+use rshape_consumer::consumer_example::{read_records, register, Entry, ExampleRecords, ExampleService, ExampleWork, RecordsRequest, WorkRequest, OWNER};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// A directory of its own for one cell's record.
@@ -37,16 +37,31 @@ fn passed_gate() -> PreNodeReadyGate {
 /// the conformance harness: answered, the reserved refusals and the runtime's not-ready, busy and
 /// connections-deleting, its own named refusals (`unknown`, `conflict`), the request over its
 /// ceiling refused `Malformed(TooLarge)`, a duplicate delivery suppressed, and a reply lost after
-/// acceptance delivered once. One trace per check, under `rdm.test.conformance.serve.via-check`.
+/// acceptance delivered once. Each check serves a record of its own holding `seeded`, so the
+/// reply-lost check's `Submit` is new: `Operations::accept` records it, then accepts it, its reply is
+/// lost and resent, and its record holds it once. One trace per check, under
+/// `rdm.test.conformance.serve.via-check`, the accept's `rdm.node_rpc.operation.create.via-accept`
+/// in it.
 #[test]
 fn the_example_work_op_passes_the_conformance_harness() {
     let capture = rdm_transport::EvidenceCapture::start(&evidence_dir(), "consumer-example-work").expect("the cell's evidence file can be created");
+    let record = record_dir("work");
+    let records = Arc::new(Mutex::new(Vec::new()));
     let report = capture.run(4, async {
-        let service = ExampleService::open(&record_dir("work"), Duration::from_millis(50)).expect("the record opens");
-        assert_eq!(service.submit("seeded", "a").unwrap(), Submitted::Recorded);
         let gate = passed_gate();
+        let (root, opened) = (record.clone(), records.clone());
         let fixture = rdm_test::conformance::Unary::<ExampleWork> {
-            serve: Arc::new(move |b| register(b, service.clone(), gate.clone())),
+            // A record of its own per check (the harness registers once per check), holding `seeded`
+            // accepted on `a`, as an earlier Submit left it.
+            serve: Arc::new(move |b| {
+                let mut opened = opened.lock().unwrap();
+                let dir = root.join(format!("check-{}", opened.len()));
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("operations.jsonl"), "{\"Accepted\":{\"operation\":\"seeded\",\"input\":\"a\"}}\n").unwrap();
+                let service = ExampleService::open(&dir, Duration::from_millis(50)).expect("the record opens");
+                opened.push(service.clone());
+                register(b, service, gate.clone())
+            }),
             answered: WorkRequest::Submit { operation: "conformance".into(), input: "x".into() },
             refusals: vec![
                 (WorkRequest::Get { operation: "never-submitted".into() }, "unknown"),
@@ -57,6 +72,21 @@ fn the_example_work_op_passes_the_conformance_harness() {
     });
     println!("{}", report.summary());
     assert!(report.failed().is_empty(), "{}", report.summary());
+    // The reply lost after acceptance went through the helper: its trace holds the one accept, which
+    // recorded the operation, and no check's record holds an operation twice.
+    let lost = report.outcome(rdm_test::conformance::Check::ReplyLostAfterAcceptance).and_then(|o| o.trace.clone()).expect("the check's trace");
+    let spans = capture.spans().expect("the cell's spans");
+    let accepts: Vec<_> = spans.iter().filter(|s| s["trace_id"] == lost.as_str() && s["name"] == "rdm.node_rpc.operation.create.via-accept").collect();
+    assert_eq!(accepts.len(), 1, "one accept in the reply-lost check's trace: {accepts:?}");
+    assert_eq!((accepts[0]["attributes"]["operation"].as_str(), accepts[0]["attributes"]["decision"].as_str()), (Some("conformance"), Some("recorded")));
+    for service in records.lock().unwrap().iter() {
+        let (_, entries) = service.operations().store().entries(0, 100).unwrap();
+        let accepted: Vec<_> = entries.iter().filter_map(|(_, e)| match e { Entry::Accepted { operation, .. } => Some(operation.clone()), _ => None }).collect();
+        let mut once = accepted.clone();
+        once.sort();
+        once.dedup();
+        assert_eq!(once.len(), accepted.len(), "each operation recorded once: {entries:?}");
+    }
 }
 
 /// CONTRACT: `ExampleRecords`, registered as the example's node registers it and read by the
@@ -72,7 +102,7 @@ fn the_example_records_op_passes_the_conformance_harness() {
         // A record of 100 accepted operations: the long read hands over more than 64 frames.
         let service = ExampleService::open(&record_dir("records"), Duration::from_secs(3600)).expect("the record opens");
         for i in 0..100 {
-            assert_eq!(service.submit(&format!("op-{i}"), "x").unwrap(), Submitted::Recorded);
+            assert_eq!(service.operations().accept(&Acceptance::detached(), &format!("op-{i}"), &"x".into()).await.unwrap(), Decision::Recorded);
         }
         let gate = passed_gate();
         let fixture = rdm_test::conformance::Streaming::<ExampleRecords> {
@@ -96,9 +126,17 @@ fn the_example_records_op_passes_the_conformance_harness() {
     assert!(report.failed().is_empty(), "{}", report.summary());
 }
 
+/// `Submit` of `op-1` on `hello` as the example's handler decides it: what was decided, and whether
+/// the request was accepted.
+async fn submit(svc: &ExampleService) -> (Decision<String>, bool) {
+    let acceptance = Acceptance::detached();
+    (svc.operations().accept(&acceptance, "op-1", &"hello".into()).await.unwrap(), acceptance.is_accepted())
+}
+
 /// CONTRACT: an operation accepted and not completed when its service ends is completed by the next
 /// service opened over the same record, once it resumes, and completed once: the record holds one
 /// acceptance and one completion, and a second submit of the same id answers the recorded result.
+/// Every decision is RDM's recovery helpers' (`Operations`) over the example's record.
 /// Must NOT happen: the pending operation lost, or its work recorded twice.
 #[test]
 fn an_operation_accepted_before_a_restart_is_done_after_it() {
@@ -108,22 +146,22 @@ fn an_operation_accepted_before_a_restart_is_done_after_it() {
         // The first process: accepts, and ends before its work completes.
         {
             let before = ExampleService::open(&dir, Duration::from_secs(3600)).unwrap();
-            assert_eq!(before.submit("op-1", "hello").unwrap(), Submitted::Recorded);
-            assert!(before.start("op-1".into()), "its work starts");
-            assert_eq!(before.get("op-1"), WorkReply::Pending { operation: "op-1".into() });
+            assert_eq!(submit(&before).await, (Decision::Recorded, true), "recorded, then accepted");
+            assert!(before.start("op-1".into(), "hello".into()), "its work starts");
+            assert_eq!(submit(&before).await, (Decision::InFlight, true), "a repeat while it runs");
         }
         // The process after the restart: its record names the pending operation, and its start resumes it.
         let after = ExampleService::open(&dir, Duration::from_millis(10)).unwrap();
-        assert_eq!(after.get("op-1"), WorkReply::Pending { operation: "op-1".into() }, "the accepted work is in the record");
-        assert_eq!(after.resume(), 1, "the one pending operation is resumed");
+        assert_eq!(after.operations().read("op-1").await.unwrap(), State::InFlight, "the accepted work is in the record");
+        assert_eq!(after.resume().await.unwrap(), 1, "the one pending operation is resumed");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while after.get("op-1") != (WorkReply::Done { operation: "op-1".into(), output: "HELLO".into() }) {
-            assert!(tokio::time::Instant::now() < deadline, "the resumed operation completes: {:?}", after.get("op-1"));
+        while after.operations().read("op-1").await.unwrap() != State::Completed("HELLO".into()) {
+            assert!(tokio::time::Instant::now() < deadline, "the resumed operation completes: {:?}", after.operations().read("op-1").await);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(after.resume(), 0, "nothing is pending once it completed");
-        assert_eq!(after.submit("op-1", "hello").unwrap(), Submitted::Completed("HELLO".into()), "a second submit answers the recorded result");
-        let (end, entries) = after.entries(0, 10).unwrap();
+        assert_eq!(after.resume().await.unwrap(), 0, "nothing is pending once it completed");
+        assert_eq!(submit(&after).await, (Decision::Completed("HELLO".into()), true), "a second submit answers the recorded result");
+        let (end, entries) = after.operations().store().entries(0, 10).unwrap();
         assert_eq!(end, 2, "one acceptance and one completion: {entries:?}");
     });
 }
@@ -138,7 +176,7 @@ fn a_record_cut_short_by_a_crash_opens_without_its_last_line() {
     let file = dir.join("operations.jsonl");
     std::fs::write(&file, "{\"Accepted\":{\"operation\":\"a\",\"input\":\"x\"}}\n{\"Accepted\":{\"opera").unwrap();
     let service = ExampleService::open(&dir, Duration::from_secs(1)).unwrap();
-    assert_eq!(service.entries(0, 10).unwrap().0, 1);
+    assert_eq!(service.operations().store().entries(0, 10).unwrap().0, 1);
     drop(service);
     assert!(std::fs::read_to_string(&file).unwrap().ends_with("}}\n"), "the cut line is removed from the file");
     std::fs::write(&file, "not json\n{\"Accepted\":{\"operation\":\"a\",\"input\":\"x\"}}\n").unwrap();
