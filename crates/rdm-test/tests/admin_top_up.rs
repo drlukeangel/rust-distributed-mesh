@@ -173,7 +173,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
         let admin = start_with(admin_cfg, Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
         until_ready("mesh1.admin.2", || admin.digest.lock().unwrap().clone()).await;
-        until("mesh1.admin.2 to hold mesh1's projection under the primary's epoch", WRONG, || admin.topology_view.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
+        until("mesh1.admin.2 to hold mesh1's projection under the primary's revision", WRONG, || admin.topology_view.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         assert!(!admin.publishes_its_mesh(), "mesh1.admin.2 is not its mesh's primary");
         // The top-up pulls from the birth the node's seat record names, through that birth's own
         // Digest (gossip.md §3.1, §3.3): a gap signalled before the node holds it is one refused
@@ -210,7 +210,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         })
         .await;
 
-        // A delta of mesh1 under the primary's epoch whose base is not what mesh1.admin.2 holds.
+        // A delta of mesh1 under the primary's revision whose base is not what mesh1.admin.2 holds.
         let (_, held) = admin.topology_view.held_source_version("mesh1").expect("mesh1.admin.2 holds mesh1");
         let (gap_base, gap_version) = (held + 5, held + 6);
         let delta = Frame::MeshTopologyDelta {
@@ -244,7 +244,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         assert!(admin.topology_view.desynced_sources().is_empty(), "no source stays desynchronized: {:?}", admin.topology_view.desynced_sources());
         let own = admin.digest.lock().unwrap().clone();
         let served = admin.topology_view.held_topology(&own);
-        assert!(served.iter().any(|s| s.mesh == "mesh1" && s.publisher == root_publisher), "mesh1.admin.2 serves mesh1 again under the primary's epoch: {:?}", served.iter().map(|s| (&s.mesh, &s.publisher, s.topology_version)).collect::<Vec<_>>());
+        assert!(served.iter().any(|s| s.mesh == "mesh1" && s.publisher == root_publisher), "mesh1.admin.2 serves mesh1 again under the primary's revision: {:?}", served.iter().map(|s| (&s.mesh, &s.publisher, s.topology_version)).collect::<Vec<_>>());
 
         // The primary heard the same delta with no baseline of its own mesh on its channel: it is the
         // Mesh's primary, so it names that and dials nobody.

@@ -33,7 +33,7 @@ const SEAT_MOVE_ATTEMPTS: u32 = 12;
 const SEAT_MOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// A mesh primary pulls rafka-time once from the new fabric-primary each time the fabric seat moves
-/// to another holder (a record of a later epoch naming another node). The fabric-primary itself
+/// to another holder (a record of a later revision naming another node). The fabric-primary itself
 /// keeps the rafka-time it holds: a handover changes the server, not the clock, so the fabric stays
 /// on one lineage. A replica holds no mesh seat and adopted its time at its join.
 ///

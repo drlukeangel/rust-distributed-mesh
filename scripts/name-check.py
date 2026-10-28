@@ -201,5 +201,6 @@ for label, pattern, scope in TREE_BANNED:
                           ":!scripts/name-check.py", ":!scripts/test_name_check.py"],
                          capture_output=True, text=True).stdout
     for l in out.splitlines():
-        hits.append(f"tree {label}: {l.split(':', 1)[1][:160]}")
+        m = re.match(r'^[^:]*:([^:]+:\d+:.*)$', l)  # <head>:<path>:<line>:<text>
+        if m: hits.append(f"tree {label}: {m.group(1)[:160]}")
 print("\n".join(hits))

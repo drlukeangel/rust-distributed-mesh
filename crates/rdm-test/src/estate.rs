@@ -1580,9 +1580,9 @@ mod tests {
         let src = dir.join("lib one.rs");
         std::fs::write(&src, "fn main() {}").unwrap();
         let exe = dir.join("rdm-rpc-probe");
-        let set = |path: &Path, secs_from_epoch: u64| {
+        let set = |path: &Path, secs_from_unix_epoch: u64| {
             let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
-            f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(secs_from_epoch)).unwrap();
+            f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(secs_from_unix_epoch)).unwrap();
         };
         std::fs::write(&exe, "bin").unwrap();
         assert_eq!(binary_is_fresh("rdm-rpc-probe", &exe), Ok(()), "no dep-info beside the binary: not judged");

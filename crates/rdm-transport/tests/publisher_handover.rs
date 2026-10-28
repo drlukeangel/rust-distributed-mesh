@@ -8,7 +8,7 @@
 //! on the wire, so no new field: MeshTopology and MeshTopologyDelta: `published_at_rafka_ms` then
 //! `topology_version`, per mesh; Digest: `digest_seq`, per birth; lifecycle facts:
 //! `topology_version`." R-RX2: "One mesh has one publisher on the backbone: its mesh-primary ... No
-//! cross-publisher ordering rule and no seat-epoch field are added." R-RX1: no receiver refuses an
+//! cross-publisher ordering rule and no seat-revision field are added." R-RX1: no receiver refuses an
 //! input because of who sent it.
 
 use iroh::protocol::Router;
@@ -111,7 +111,7 @@ fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
 /// the channel, the frame, its source, the key held and the key offered. The member keeps the
 /// successor's projection at its version, holds no stop of mesh1.rpc.4, holds mesh1.rpc.2 at the
 /// newer heartbeat, and marks no source desynchronized. Must NOT happen: a frame refused for who
-/// published it (`via-predecessor-publisher`, `via-unseated-publisher`), an unknown-epoch repair, the
+/// published it (`via-predecessor-publisher`, `via-unseated-publisher`), an unknown-revision repair, the
 /// member switched back to the predecessor's projection, a late stop held.
 #[test]
 fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_the_receive_path() {

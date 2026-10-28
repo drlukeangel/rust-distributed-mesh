@@ -963,7 +963,7 @@ fn end_ns(sp: &Value) -> u64 {
 }
 
 fn unix_nanos() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("after the epoch").as_nanos() as u64
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("after the Unix epoch").as_nanos() as u64
 }
 
 /// mesh1 {1 node-admin, 1 rpc node} and mesh2 {`admins` node-admins, 1 rpc node}, settled and

@@ -63,11 +63,11 @@ pub struct StoredNode {
     pub transport_addr: std::net::SocketAddr,
 }
 
-/// The source version a caller already holds for a mesh: the publisher is the epoch, so
+/// The source version a caller already holds for a mesh: the publisher is the revision, so
 /// `topology_version` is compared only inside one publisher.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceVersion {
-    /// The source mesh's primary birth that published the version, the epoch of `topology_version`.
+    /// The source mesh's primary birth that published the version, the revision of `topology_version`.
     pub publisher: PublisherId,
     /// The version held.
     pub topology_version: u64,

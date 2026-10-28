@@ -89,7 +89,7 @@ pub enum SeatRecord {
         /// when the record names none or a birth proven gone.
         holder: Option<String>,
     },
-    /// The record names another live birth: this birth's authority ended at that record's epoch.
+    /// The record names another live birth: this birth's authority ended at that record's revision.
     Moved {
         /// The record, in words.
         by: String,

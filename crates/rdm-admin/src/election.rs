@@ -287,7 +287,7 @@ pub enum Moving {
     /// node.primary.update of the holder's mesh-primary seat.
     MeshSeat,
     /// The holder holds both seats and both move in one row to its same-mesh successor (Q1: "the one
-    /// row of C1 commits both seats to NA2 at their next epochs").
+    /// row of C1 commits both seats to NA2 at their next revisions").
     BothSeats,
     /// node.fabric-primary.update with the holder's own mesh excluded (C2 search step 2, mesh.delete):
     /// the mesh seat does not move.

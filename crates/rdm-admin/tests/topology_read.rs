@@ -409,26 +409,26 @@ fn a_request_naming_a_mesh_the_node_never_heard_is_unknown_mesh_and_streams_noth
 
 // @feature: node-lifecycle
 /// CONTRACT: `since` is the source version the caller holds, scoped by the publisher's exact
-/// birth. The same topology_version from another publisher epoch is not held: the node streams the
+/// birth. The same topology_version from another publisher revision is not held: the node streams the
 /// snapshot (never Unchanged), and the serve span counts one snapshot and no unchanged. A `since`
 /// with no mesh named is ignored: every mesh is streamed.
 #[test]
 fn a_since_from_another_publisher_revision_is_answered_with_the_snapshot_not_unchanged() {
-    let cap = capture("since-epoch");
+    let cap = capture("since-revision");
     cap.run(async {
         let fabric = FabricId::mint();
         let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
         open(&server, &fabric);
-        let epoch1 = publisher("mesh2.admin.1");
-        hold(&server.topology_view, &snap("mesh2", &epoch1, 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
+        let publisher1 = publisher("mesh2.admin.1");
+        hold(&server.topology_view, &snap("mesh2", &publisher1, 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
         let t = target_of(&caller, &server);
-        let epoch2 = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth-2")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
-        let other_epoch = SourceVersion { publisher: epoch2, topology_version: 7 };
-        let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh2"), Some(other_epoch.clone())).await.unwrap();
+        let publisher2 = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth-2")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
+        let other_publisher = SourceVersion { publisher: publisher2, topology_version: 7 };
+        let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh2"), Some(other_publisher.clone())).await.unwrap();
         assert!(read.unchanged.is_empty() && read.installed.len() == 1, "{read:?}");
-        assert_eq!(caller.topology_view.held_source_version("mesh2"), Some((epoch1.clone(), 7)), "installed at the publisher it was held from");
+        assert_eq!(caller.topology_view.held_source_version("mesh2"), Some((publisher1.clone(), 7)), "installed at the publisher it was held from");
         // The same version from the held publisher is Unchanged; a `since` with no mesh named is ignored.
-        let held = SourceVersion { publisher: epoch1, topology_version: 7 };
+        let held = SourceVersion { publisher: publisher1, topology_version: 7 };
         let unchanged = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh2"), Some(held.clone())).await.unwrap();
         assert_eq!(unchanged.unchanged, vec![("mesh2".to_string(), 7)]);
         let all = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, Some(held)).await.unwrap();

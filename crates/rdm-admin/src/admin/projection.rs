@@ -61,7 +61,7 @@ pub(crate) fn mesh_seat_source(digest_view: &DigestView, records: &Arc<Records>,
 
 /// The seats this admin announces from one decision of its hierarchy loop: each seat the projection
 /// `t` gives it whose record names another birth, at the
-/// next epoch over that record; and, while it is its mesh's primary, each other cohort's seat of its
+/// next revision over that record; and, while it is its mesh's primary, each other cohort's seat of its
 /// mesh that `t` fills with a birth the cohort's record does not name. The record is the one `t` was decided against (`decided`): a seat
 /// record held after the decision (a committed handover landing while the loop awaits) is the next
 /// decision's input, and is never superseded by this one (fabric-node-lifecycle-elections.md §4.4).

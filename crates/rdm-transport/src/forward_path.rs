@@ -33,15 +33,15 @@ use tokio::sync::mpsc;
 pub(crate) type Sink = Arc<dyn Fn(Frame) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
 /// One entry of the queue, in the order it was made.
-/// `epoch` is the term of the forwarder role the entry was decided in.
+/// `revision` is the term of the forwarder role the entry was decided in.
 enum Job {
     /// What the forwarder decided; `source` names the single source of a `source` decision.
-    Forwarded { me: String, epoch: u64, source: Option<(String, PublisherId, u64)>, out: Forward },
+    Forwarded { me: String, revision: u64, source: Option<(String, PublisherId, u64)>, out: Forward },
     /// A lifecycle frame this primary carries into its mesh.
-    Carried { me: String, epoch: u64, frame: Frame },
+    Carried { me: String, revision: u64, frame: Frame },
     /// A neighbour-up replay (statuses, seats, and the forwarder's published fulls), decided and
     /// queued under the forwarder's lock so no delta decided after it can pass it on the channel.
-    Replayed { me: String, epoch: Option<u64>, frames: Vec<Frame> },
+    Replayed { me: String, revision: Option<u64>, frames: Vec<Frame> },
 }
 
 /// The receiver half of a [`ForwardPath::pair`], handed to [`ForwardPath::spawn_sender`].
@@ -91,12 +91,12 @@ impl ForwardPath {
     pub(crate) fn source_with_clock(&self, me: &str, source_mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: impl FnOnce() -> u64) -> u64 {
         let mut forwarder = self.forwarder.lock().unwrap();
         let now_ms = now_ms();
-        let Some(epoch) = forwarder.role() else { return now_ms };
+        let Some(revision) = forwarder.role() else { return now_ms };
         let out = forwarder.source(me, source_mesh, publisher, version, full, now_ms);
         if matches!(out, Forward::Nothing(_)) {
             return now_ms;
         }
-        self.enqueue(Job::Forwarded { me: me.to_string(), epoch, source: Some((source_mesh.to_string(), publisher.clone(), version)), out });
+        self.enqueue(Job::Forwarded { me: me.to_string(), revision, source: Some((source_mesh.to_string(), publisher.clone(), version)), out });
         now_ms
     }
 
@@ -111,12 +111,12 @@ impl ForwardPath {
     pub(crate) fn fulls_with_clock(&self, me: &str, node_mesh: &str, reason: &'static str, held: &[(String, PublisherId, u64, Full)], now_ms: impl FnOnce() -> u64) -> u64 {
         let mut forwarder = self.forwarder.lock().unwrap();
         let now_ms = now_ms();
-        let Some(epoch) = forwarder.role() else { return now_ms };
+        let Some(revision) = forwarder.role() else { return now_ms };
         let frames = forwarder.fulls(me, held, now_ms);
         let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
         tracing::info_span!("rdm.mesh.topology.update.via-forwarded-full", node = %me, mesh = %node_mesh, reason, sources = held.len(), chunks = frames.len(), bytes)
             .in_scope(|| tracing::info!("the full of every source put into this mesh, loads omitted"));
-        self.enqueue(Job::Forwarded { me: me.to_string(), epoch, source: None, out: Forward::Full(frames) });
+        self.enqueue(Job::Forwarded { me: me.to_string(), revision, source: None, out: Forward::Full(frames) });
         now_ms
     }
 
@@ -141,8 +141,8 @@ impl ForwardPath {
     /// Carry a lifecycle frame into the mesh, behind every frame queued before it.
     pub(crate) fn carry(&self, me: &str, frame: Frame) {
         let forwarder = self.forwarder.lock().unwrap();
-        let Some(epoch) = forwarder.role() else { return };
-        self.enqueue(Job::Carried { me: me.to_string(), epoch, frame });
+        let Some(revision) = forwarder.role() else { return };
+        self.enqueue(Job::Carried { me: me.to_string(), revision, frame });
     }
 
     /// Queue a neighbour-up replay (statuses, seats, and the forwarder's published fulls) under
@@ -151,8 +151,8 @@ impl ForwardPath {
     pub(crate) fn replay(&self, me: &str, mut frames: Vec<Frame>, now_ms: impl FnOnce() -> u64) -> (usize, usize, usize) {
         let mut forwarder = self.forwarder.lock().unwrap();
         let now_ms = now_ms();
-        let epoch = forwarder.role();
-        if epoch.is_some() {
+        let revision = forwarder.role();
+        if revision.is_some() {
             frames.extend(forwarder.replay(me, now_ms));
         }
         if frames.is_empty() {
@@ -162,7 +162,7 @@ impl ForwardPath {
         let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
         let fulls = frames.iter().filter(|f| matches!(f.data(), Frame::MeshTopology { .. })).count();
         let len = frames.len();
-        self.enqueue(Job::Replayed { me: me.to_string(), epoch, frames });
+        self.enqueue(Job::Replayed { me: me.to_string(), revision, frames });
         (len, fulls, bytes)
     }
 
@@ -222,14 +222,14 @@ fn refused(owes_full: &AtomicBool, me: &str, frame: &Frame, cause: &anyhow::Erro
 /// the node lost the role (or lost and retook it, owing a full) after deciding it.
 async fn send_in_order(mut rx: mpsc::UnboundedReceiver<Job>, sink: Sink, owes_full: Arc<AtomicBool>, forwarder: Arc<Mutex<Forwarder>>) {
     while let Some(job) = rx.recv().await {
-        let epoch = match &job {
-            Job::Carried { epoch, .. } | Job::Forwarded { epoch, .. } => Some(*epoch),
-            Job::Replayed { epoch, .. } => *epoch,
+        let revision = match &job {
+            Job::Carried { revision, .. } | Job::Forwarded { revision, .. } => Some(*revision),
+            Job::Replayed { revision, .. } => *revision,
         };
-        if let Some(epoch) = epoch {
+        if let Some(revision) = revision {
             let current = forwarder.lock().unwrap().role();
-            if current != Some(epoch) {
-                role_dropped(job, epoch, current);
+            if current != Some(revision) {
+                role_dropped(job, revision, current);
                 continue;
             }
         }

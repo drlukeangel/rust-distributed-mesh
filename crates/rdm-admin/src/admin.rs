@@ -2566,7 +2566,7 @@ mod tests {
     }
 
     /// The fabric-primary `mesh1.admin.1` (both seats of mesh1) and `mesh2`'s births `mesh2`, the
-    /// first seated as mesh2's primary at epoch 1: the fabric-primary's view, its records holding
+    /// first seated as mesh2's primary at revision 1: the fabric-primary's view, its records holding
     /// its node-rows writer over `storage`, and its view projected from both.
     async fn fabric_primary_over(mesh2: &[MeshDigest], storage: Arc<crate::storage::MemoryNodesStorage>) -> (MeshDigest, DigestView, Arc<Records>, Arc<RwLock<Topology>>, Arc<crate::node_rows::NodeRows>) {
         use rdm_core::Seat::{FabricPrimary, MeshPrimary};
