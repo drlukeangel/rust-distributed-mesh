@@ -36,7 +36,10 @@ if ! git -C "$d" merge-base --is-ancestor origin/main HEAD; then
     || { echo "REFUSED: main moved past lane $L's tip and no longer holds the main it was proven on ($BASE); $again"; exit 8; }
   GEN='^docs/reference/rdm/[^/]+\.md$'
   both=$(comm -12 <(git -C "$d" diff --no-renames --name-only "$BASE" origin/main | grep -vE "$GEN" | sort) <(git -C "$d" diff --no-renames --name-only "$BASE" HEAD | grep -vE "$GEN" | sort) | tr '\n' ' ')
-  [ -z "$both" ] || { echo "REFUSED: main moved past lane $L's tip in the branch's own files (${both% }); $again"; exit 8; }
+  # Main moved in the branch's own files: the GREEN still stands when the branch rebases onto main with
+  # no conflict and its patch is unchanged (checked below) (Luke, 2026-10-28: "you don't run tests
+  # again"). A conflict, or a changed patch, is proved again.
+  [ -z "$both" ] || echo "main moved in the branch's own files (${both% }): a clean rebase of the same patch keeps the GREEN"
   [ "$(lane_dirty "$L")" -eq 0 ] || { echo "REFUSED: lane $L has uncommitted changes"; exit 6; }
   orig=$(git -C "$d" rev-parse HEAD); docgen="$d/target/debug/rdm-docgen"
   if ! git -C "$d" rebase -q origin/main; then
