@@ -136,6 +136,7 @@ mod tests {
         let subscriber = tracing_subscriber::registry()
             .with(tracing_opentelemetry::OpenTelemetryLayer::new(tracer_provider.tracer("t")))
             .with(LogAdapter::new(log_provider.logger("t")));
+        crate::enable_callsites();
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("rdm.test.span.update.via-cell");
             span.in_scope(|| tracing::info!(node = "mesh1.admin.1", "inside the span"));
@@ -167,6 +168,7 @@ mod tests {
         let log_provider = opentelemetry_sdk::logs::SdkLoggerProvider::builder().with_simple_exporter(logs.clone()).build();
         let level = tracing_subscriber::filter::LevelFilter::from_level(crate::otlp_log_export_level());
         let subscriber = tracing_subscriber::registry().with(LogAdapter::new(log_provider.logger("t")).with_filter(level));
+        crate::enable_callsites();
         tracing::subscriber::with_default(subscriber, || {
             tracing::debug!(target: "rg3", "rg3 send_neighbor");
             tracing::info!(target: "rafka_node_admin_core::admin", "rdm info");
@@ -184,6 +186,7 @@ mod tests {
         let spans = opentelemetry_sdk::trace::InMemorySpanExporter::default();
         let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().with_simple_exporter(spans.clone()).build();
         let subscriber = tracing_subscriber::registry().with(tracing_opentelemetry::OpenTelemetryLayer::new(tracer_provider.tracer("t")).with_filter(crate::span_export_filter()));
+        crate::enable_callsites();
         tracing::subscriber::with_default(subscriber, || {
             drop(tracing::info_span!(target: "rdm_transport::client", "rdm.node_rpc.request.update.via-call").entered());
             drop(tracing::info_span!(target: "iroh::socket", "iroh_actor").entered());

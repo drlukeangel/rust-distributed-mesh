@@ -45,6 +45,7 @@ impl<S: tracing::Subscriber> Layer<S> for GossipEvents {
 
 impl GossipEvents {
     fn install(&self) -> tracing::subscriber::DefaultGuard {
+        rdm_transport::enable_callsites();
         let only_gossip = tracing_subscriber::filter::filter_fn(|m| m.target().starts_with("iroh_gossip"));
         tracing::subscriber::set_default(tracing_subscriber::registry().with(self.clone().with_filter(only_gossip)))
     }

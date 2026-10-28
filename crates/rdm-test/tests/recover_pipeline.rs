@@ -148,6 +148,7 @@ const CREATE_ORDER: [&str; 13] = [
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over_its_data_dir() {
     let spans = Spans::default();
+    rdm_transport::enable_callsites();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let rig = rig().await;
     let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
@@ -243,6 +244,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
 async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_and_mints_none() {
     // Its own capture, set before any span of this run: the refusal's trace is this cell's evidence.
     let spans = Spans::default();
+    rdm_transport::enable_callsites();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let rig = rig().await;
     let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
@@ -297,6 +299,7 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
 async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_one_and_recovers_each_by_its_rule() {
     use rdm_admin::deployment::pipeline::{inspect_transport_key, InheritedDirError};
     let spans = Spans::default();
+    rdm_transport::enable_callsites();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let rig = rig().await;
     let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };

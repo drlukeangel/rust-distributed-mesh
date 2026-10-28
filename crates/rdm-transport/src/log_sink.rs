@@ -137,6 +137,7 @@ mod tests {
         let sink = LogSink::start(HeldDisk { lines: lines.clone(), writers: writers.clone(), released: released.clone() });
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).build().unwrap();
         rt.block_on(async {
+            crate::enable_callsites();
             let subscriber = tracing_subscriber::fmt().with_writer(sink.clone()).finish();
             tokio::spawn(tracing::instrument::WithSubscriber::with_subscriber(async {
                 for i in 0..5 {
