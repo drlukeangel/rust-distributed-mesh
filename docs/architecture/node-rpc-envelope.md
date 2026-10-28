@@ -752,10 +752,10 @@ pub struct DeclaredOperation { build_id: String, attempt: u32, operation: String
 
 pub enum StatusRequest {
     DeclareNodeState { node_id: NodeId, incarnation: IncarnationId, state: NodeState, operation: Option<DeclaredOperation> },
-    DeclareMeshState { mesh_id: MeshId, state: MeshState },
+    DeclareMeshState { mesh_id: MeshId, state: MeshState, changed_at_rafka_ms: u64 },
     ApplyNodeState { node_id: NodeId, incarnation: IncarnationId, state: NodeState },
     ProbeNodeState { node_id: NodeId, incarnation: IncarnationId },
-    ApplyMeshState { mesh_id: MeshId, mesh_name: String, state: MeshState },
+    ApplyMeshState { mesh_id: MeshId, mesh_name: String, state: MeshState, changed_at_rafka_ms: u64 },
     ApplyFabricEvent { fabric_id: FabricId, event: FabricEvent },
     Reserved6 { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 6, reserved: never sent
     Reserved7 { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 7, reserved: never sent

@@ -1533,7 +1533,7 @@ pub async fn admit_delete_mesh(runs: &MeshDeleteRuns, storage: &dyn crate::stora
     if runs.holds(&key.mesh_id) {
         return DeleteMeshAdmission { leaving_row: None, admission: runs.admit(key, sender) };
     }
-    let committed = crate::status_rpc::commit_mesh_state(storage, caches, declared, mesh, &key.mesh_id, rdm_core::status::MeshState::Leaving).await;
+    let committed = crate::status_rpc::commit_mesh_state(storage, caches, declared, mesh, &key.mesh_id, rdm_core::status::MeshState::Leaving, 0).await;
     let admission = match &committed {
         StatusReply::Applied | StatusReply::AlreadyApplied => runs.admit(key, sender),
         refused => MeshDeleteAdmission::Refused(refused.clone()),

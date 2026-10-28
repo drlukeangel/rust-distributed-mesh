@@ -28,6 +28,19 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
 /// here is held whether or not the mesh's MeshStatus frame arrived before its node-admin was lost.
 /// `Pending` for a mesh it holds no state for (a new mesh, e4.s11). A held word that is no Mesh
 /// lifecycle state is no state held.
+/// The Rafka-time this admin holds for `mesh` entering `state`: the held MeshStatus's changed_at when it
+/// names `state`, else the declaration's applied here by the mesh's MeshId; 0 when it holds neither
+/// (mesh-investigation.md step 7: the successor republishes the held MeshStatus, preserving changed_at).
+pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, mesh: &str, state: rdm_core::status::MeshState) -> u64 {
+    let heard = digest_view.statuses.mesh(mesh).filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state)).map(|h| h.changed_at_rafka_ms);
+    let declared = || {
+        let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned()?;
+        let declared = records.declared.lock().unwrap();
+        (declared.meshes.get(&mesh_id) == Some(&state)).then(|| declared.mesh_changed_at.get(&mesh_id).copied()).flatten()
+    };
+    heard.or_else(declared).unwrap_or(0)
+}
+
 pub(crate) fn held_mesh_state(digest_view: &DigestView, records: &Records, mesh: &str) -> rdm_core::status::MeshState {
     let heard = digest_view.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok());
     let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned();
@@ -640,7 +653,8 @@ impl AdminRunner {
                     Ok(None) => return Err(format!("{}: neither this admin's records, its view nor mesh.storage hold a mesh id for {mesh}, so no {state:?} can be applied", target.name)),
                     Err(e) => return Err(format!("{}: {e}, so no {state:?} can be applied", target.name)),
                 };
-                apply_mesh_state(&client, &resolver, &me, &me_id, &topology, &mesh, &mesh_id, state, &target).await.map(|()| state)
+                let changed_at = held_mesh_changed_at(&digest_view, &records, &mesh, state);
+                apply_mesh_state(&client, &resolver, &me, &me_id, &topology, &mesh, &mesh_id, state, changed_at, &target).await.map(|()| state)
             })
         }))
     }
@@ -1682,7 +1696,8 @@ pub(crate) async fn rebuild_absent_birth(store: Option<&dyn crate::storage::Node
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &rdm_transport::LiveNodeResolver, me: &PathName, me_id: &NodeId, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, state: rdm_core::status::MeshState, target: &Node) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &rdm_transport::LiveNodeResolver, me: &PathName, me_id: &NodeId, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, state: rdm_core::status::MeshState, changed_at_rafka_ms: u64, target: &Node) -> Result<(), String> {
     use rdm_core::ping::{Ping, PingReply, PingRequest};
     use rdm_core::status::{MeshState, Status, StatusReply, StatusRequest};
     // The target is not heard yet (a peer mesh's admin reaches the backbone only as its mesh's
@@ -1702,6 +1717,7 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
         mesh_id: crate::model::MeshId::parse(mesh_id).map_err(|e| format!("{mesh}: its mesh id {mesh_id:?} is not a MeshId: {e}"))?,
         mesh_name: mesh.to_string(),
         state,
+        changed_at_rafka_ms,
     };
     let key = format!("mesh:{mesh_id}:{state:?}");
     // A bounded reachability wait on the exact launched birth, a Ping and no Status: the target
@@ -1772,6 +1788,7 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
             mesh_id = %mesh_id,
             key = %key,
             state = ?state,
+            changed_at_rafka_ms,
             attempt = 1u32,
             outcome = %outcome,
         )
@@ -1788,6 +1805,7 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
             mesh_id = %mesh_id,
             key = %key,
             state = ?state,
+            changed_at_rafka_ms,
             attempt = 1u32,
             outcome = %outcome,
         )

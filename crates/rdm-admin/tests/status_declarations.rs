@@ -311,11 +311,11 @@ async fn a_declaration_from_an_endpoint_the_mesh_primary_never_heard_of_is_decid
     // A node-admin's declaration reaches the fabric seat this admin holds.
     assert_eq!(reply(&call(&rig, &stranger, &declare(admin2, NodeState::Ready)).await), StatusReply::Applied);
     // A mesh's declaration reaches the fabric-primary for a mesh it holds.
-    let m2 = StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: MeshState::Ready };
+    let m2 = StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: MeshState::Ready, changed_at_rafka_ms: 0 };
     assert_eq!(reply(&call(&rig, &stranger, &m2).await), StatusReply::Applied);
     // The direction refusals stay.
     assert_eq!(reply(&call(&rig, &stranger, &declare(&stranger, NodeState::Ready)).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a subject the view does not hold");
-    let unknown_mesh = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready };
+    let unknown_mesh = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 };
     assert_eq!(reply(&call(&rig, &stranger, &unknown_mesh).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a mesh the fabric-primary does not hold");
     let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: None };
     assert_eq!(reply(&call(&rig, &stranger, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
@@ -329,7 +329,7 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     let (rig, b) = rig().await;
     let (m2admin, rpc1, admin2) = (&b["m2admin"], &b["rpc1"], &b["admin2"]);
     // mesh2's primary declares mesh2's state to the fabric-primary.
-    let m2 = |s| StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: s };
+    let m2 = |s| StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: s, changed_at_rafka_ms: 0 };
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::Ready)).await), StatusReply::Applied);
     // Q144: a repeated declaration is answered `Applied` again, so a mesh-primary that lost its record
     // write before it landed records it on the answer to its next declaration.
@@ -341,7 +341,7 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     // `SubjectUnknown`.
     assert_eq!(reply(&call(&rig, rpc1, &m2(MeshState::Leaving)).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, admin2, &m2(MeshState::Leaving)).await), StatusReply::Applied, "a repeated declaration is answered Applied again (Q144)");
-    let unknown = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready };
+    let unknown = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 };
     assert_eq!(reply(&call(&rig, m2admin, &unknown).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
     // A fabric event is applied at a mesh primary (this admin is mesh1's), whoever sends it, once.
     let ev = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: FabricEvent::Ready };
@@ -351,7 +351,7 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     assert_eq!(reply(&call(&rig, m2admin, &wrong).await), StatusReply::RejectedStaleFabric { held: rig.authority.fabric_id.clone() });
     // ApplyMeshState(Pending) from the fabric-primary at an admin of that mesh: this admin is
     // mesh1's; mesh2's Pending is not its to apply, mesh1's is, and a foreign mesh id is refused.
-    let pend = |id: &MeshId, name: &str| StatusRequest::ApplyMeshState { mesh_id: id.clone(), mesh_name: name.into(), state: MeshState::Pending };
+    let pend = |id: &MeshId, name: &str| StatusRequest::ApplyMeshState { mesh_id: id.clone(), mesh_name: name.into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
     let (m1id, m2id, other) = (rig.mesh_id("mesh1"), rig.mesh_id("mesh2"), MeshId::mint());
     assert!(matches!(reply(&call(&rig, m2admin, &pend(&m2id, "mesh2")).await), StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }));
     assert_eq!(reply(&call(&rig, m2admin, &pend(&other, "mesh1")).await), StatusReply::RejectedStaleMesh { held: m1id.clone() }, "never a replacement mesh id");

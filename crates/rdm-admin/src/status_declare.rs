@@ -442,7 +442,7 @@ impl Declarer {
     /// this admin's own Mesh record before its declaration is finished (Q144): a write that does not
     /// land leaves the declaration owed, and the next answer writes it again.
     async fn recorded(&self, p: &Pending, reply: &StatusReply, (outcome, finished): (String, bool)) -> (String, bool) {
-        let (StatusRequest::DeclareMeshState { mesh_id, state: state @ MeshState::Ready }, StatusReply::Applied | StatusReply::AlreadyApplied) = (&p.request, reply) else {
+        let (StatusRequest::DeclareMeshState { mesh_id, state: state @ MeshState::Ready, .. }, StatusReply::Applied | StatusReply::AlreadyApplied) = (&p.request, reply) else {
             return (outcome, finished);
         };
         let Some(record) = self.record_mesh.get() else { return (outcome, finished) };
@@ -554,7 +554,11 @@ fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
 /// admin holds of its own birth. `own_mesh_held` is the state this admin's own committed Mesh status
 /// row holds for its mesh, when it holds one.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &crate::model::IncarnationId, own: rdm_core::MemberStatus, mesh_checklist_done: bool, own_mesh_held: Option<MeshState>, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
+/// `own_mesh_changed_at`: the Rafka-time of each state this admin's own MeshStatus holds for its mesh
+/// (its publisher's fact, 0 when it holds none), declared with the state so the fabric-primary holds it
+/// for a successor to republish unchanged (mesh-investigation.md step 7).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &crate::model::IncarnationId, own: rdm_core::MemberStatus, mesh_checklist_done: bool, own_mesh_held: Option<MeshState>, own_mesh_changed_at: impl Fn(MeshState) -> u64, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
     // This admin's own birth, to its own mesh's primary, which sets its status from the report
     // (node-status.md "Status report"): its node.started once it is ready, and its ConnectionsDeleting once it
     // deletes its connections (a connections delete command, or the fabric shutdown freezing it): its heartbeat says neither.
@@ -582,7 +586,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
     if i_am_mesh_primary && mesh_checklist_done && !past_ready {
         if let (Some(mesh), Some(id)) = (view.meshes.iter().find(|m| m.name == me.mesh), mesh_ids.get(&me.mesh)) {
             if mesh.status == crate::model::ScopeStatus::Ready {
-                d.owe(Key::Mesh(id.clone(), MeshState::Ready), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::Ready });
+                d.owe(Key::Mesh(id.clone(), MeshState::Ready), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::Ready, changed_at_rafka_ms: own_mesh_changed_at(MeshState::Ready) });
             }
         }
     }
@@ -593,7 +597,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
     if i_am_mesh_primary && own_mesh_held == Some(MeshState::Leaving) {
         if let Some(Ok(mesh_id)) = mesh_ids.get(&me.mesh).map(|id| crate::model::MeshId::parse(id).map(|m| (id.clone(), m))) {
             let (key, mesh_id) = mesh_id;
-            d.owe(Key::Mesh(key, MeshState::Leaving), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id, state: MeshState::Leaving });
+            d.owe(Key::Mesh(key, MeshState::Leaving), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id, state: MeshState::Leaving, changed_at_rafka_ms: own_mesh_changed_at(MeshState::Leaving) });
         }
     }
 }
@@ -639,7 +643,7 @@ mod tests {
 
     fn owe_all(d: &Declarer) {
         d.owe(Key::OwnState(INC.into(), NodeState::Ready), Authority::MeshPrimaryOf("mesh1".into()), StatusRequest::DeclareNodeState { node_id: crate::model::NodeId::mint(), incarnation: IncarnationId::parse(INC).unwrap(), state: NodeState::Ready, operation: None });
-        d.owe(Key::Mesh("m1".into(), MeshState::Ready), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: crate::model::MeshId::mint(), state: MeshState::Ready });
+        d.owe(Key::Mesh("m1".into(), MeshState::Ready), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: crate::model::MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 });
     }
 
     #[test]
@@ -881,7 +885,7 @@ mod tests {
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let none = BTreeSet::new();
         let d = Declarer::new();
-        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, |_| 0, &v, &ids);
         let due: Vec<(Key, String)> = d.due(&id_of(&me.to_string()), &v, &none).into_iter().map(|(p, to)| (p.key, to.name.to_string())).collect();
         assert_eq!(due, vec![(Key::OwnState(INC.into(), NodeState::Ready), "mesh1.admin.1".to_string())], "owed to mesh1's primary");
         let mesh1_primary = v.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").unwrap().clone();
@@ -913,7 +917,7 @@ mod tests {
             other => panic!("no own {state:?} declaration: {other:?}"),
         };
         let d = Declarer::new();
-        owed_from_view(&d, &me, &me_id, &inc, M::Ready, false, None, &v, &ids);
+        owed_from_view(&d, &me, &me_id, &inc, M::Ready, false, None, |_| 0, &v, &ids);
         assert_eq!(operation_of(&d, NodeState::Ready), None, "its birth's node.started is a state it measured");
 
         let stop = op("node.stop:mesh1.admin.2", 1);
@@ -927,11 +931,11 @@ mod tests {
 
         let start = op("node.start:mesh1.admin.2", 2);
         d.begin_own_cycle(&me, INC, &start);
-        owed_from_view(&d, &me, &me_id, &inc, M::Ready, false, None, &v, &ids);
+        owed_from_view(&d, &me, &me_id, &inc, M::Ready, false, None, |_| 0, &v, &ids);
         assert_eq!(operation_of(&d, NodeState::Ready), Some(start), "the start's node.started names the start");
         assert!(!d.requests.lock().unwrap().contains_key(&Key::OwnState(INC.into(), NodeState::Stopped)), "the stop's Stopped belongs to the stopped cycle");
 
-        owed_from_view(&d, &me, &me_id, &inc, M::ConnectionsDeleting, false, None, &v, &ids);
+        owed_from_view(&d, &me, &me_id, &inc, M::ConnectionsDeleting, false, None, |_| 0, &v, &ids);
         assert_eq!(operation_of(&d, NodeState::ConnectionsDeleting), None, "a ConnectionsDeleting it measured names none");
     }
 
@@ -946,7 +950,7 @@ mod tests {
         let v = view("mesh1.admin.1", "mesh2.admin.1");
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
-        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ConnectionsDeleting, false, None, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ConnectionsDeleting, false, None, |_| 0, &v, &ids);
         let due = |d: &Declarer| -> Vec<(Pending, Node)> { d.due(&id_of(&me.to_string()), &v, &BTreeSet::new()) };
         let named = |due: &[(Pending, Node)]| -> Vec<(Key, String)> { due.iter().map(|(p, to)| (p.key.clone(), to.name.to_string())).collect() };
         let first = due(&d);
@@ -973,7 +977,7 @@ mod tests {
         let deleting = Key::OwnState(INC.into(), NodeState::ConnectionsDeleting);
         let mesh_primary = v.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").unwrap().clone();
         let d = Declarer::new();
-        owed_from_view(&d, &me, &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ConnectionsDeleting, false, None, &v, &ids);
+        owed_from_view(&d, &me, &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ConnectionsDeleting, false, None, |_| 0, &v, &ids);
         let due = |d: &Declarer| -> Vec<Key> { d.due(&me_id, &v, &none).into_iter().map(|(p, _)| p.key).collect() };
         assert_eq!(due(&d), vec![ready.clone()], "its node.started first, alone");
 
@@ -1001,7 +1005,7 @@ mod tests {
 
         let reowed = Declarer::new();
         reowed.owe_own(&me, &me_id, &IncarnationId::parse(INC).unwrap(), NodeState::Stopped, None);
-        owed_from_view(&reowed, &me, &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ConnectionsDeleting, false, None, &v, &ids);
+        owed_from_view(&reowed, &me, &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ConnectionsDeleting, false, None, |_| 0, &v, &ids);
         assert_eq!(due(&reowed), vec![Key::OwnState(INC.into(), NodeState::Stopped)], "the one owed first is sent first, whatever the state's order");
     }
 
@@ -1022,7 +1026,7 @@ mod tests {
         assert!(own.name.old, "the row's name is {}", own.name);
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
-        owed_from_view(&d, &me.renamed(), &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, &v, &ids);
+        owed_from_view(&d, &me.renamed(), &me_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, |_| 0, &v, &ids);
         let due: Vec<(Key, String)> = d.due(&me_id, &v, &BTreeSet::new()).into_iter().map(|(p, to)| (p.key, to.name.to_string())).collect();
         assert_eq!(due, vec![(Key::OwnState(INC.into(), NodeState::Ready), "mesh1.admin.1".to_string())], "its node.started, owed to mesh1's primary by its exact birth");
     }
@@ -1036,12 +1040,12 @@ mod tests {
         let d = Declarer::new();
         let ids: BTreeMap<String, String> = [("mesh1".to_string(), MeshId::mint().to_string())].into();
         let none = BTreeSet::new();
-        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, None, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, None, |_| 0, &v, &ids);
         assert!(d.due(&NodeId::mint(), &v, &none).is_empty(), "not ready, gate closed: nothing is owed");
-        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, |_| 0, &v, &ids);
         let own: Vec<Key> = d.due(&NodeId::mint(), &v, &none).into_iter().map(|(p, _)| p.key).collect();
         assert_eq!(own, vec![Key::OwnState(INC.into(), NodeState::Ready)], "own readiness owes its birth");
-        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, true, None, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, true, None, |_| 0, &v, &ids);
         let both = d.due(&NodeId::mint(), &v, &none).len();
         assert_eq!(both, 2, "the gate opening owes the Mesh declaration");
     }
@@ -1070,7 +1074,7 @@ mod tests {
             })
         })));
         let mesh_id = crate::model::MeshId::mint();
-        let request = StatusRequest::DeclareMeshState { mesh_id: mesh_id.clone(), state: MeshState::Ready };
+        let request = StatusRequest::DeclareMeshState { mesh_id: mesh_id.clone(), state: MeshState::Ready, changed_at_rafka_ms: 0 };
         let p = Pending { key: Key::Mesh(mesh_id.to_string(), MeshState::Ready), to: Authority::FabricPrimary, request, attempts: 0, last: None, sent: None, trace: None, at: 0 };
         let applied = StatusReply::Applied;
         let (outcome, finished) = d.recorded(&p, &applied, classify(&applied)).await;
@@ -1096,23 +1100,23 @@ mod tests {
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let none = BTreeSet::new();
         let d = Declarer::new();
-        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, Some(MeshState::Leaving), &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, Some(MeshState::Leaving), |_| 0, &v, &ids);
         let due: Vec<(Key, StatusRequest)> = d.due(&id_of(&me.to_string()), &v, &none).into_iter().map(|(p, _)| (p.key, p.request)).collect();
         assert_eq!(
             due,
-            vec![(Key::Mesh(mesh2.to_string(), MeshState::Leaving), StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Leaving })],
+            vec![(Key::Mesh(mesh2.to_string(), MeshState::Leaving), StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Leaving, changed_at_rafka_ms: 0 })],
             "the leaving mesh's primary owes its committed Leaving to the fabric-primary"
         );
         // A primary holding its mesh's Leaving whose checklist is done (the admin created for a leaving
         // mesh, handed Leaving) reports the state it holds, never ready: a backward
         // declaration the fabric-primary can only refuse.
         let d = Declarer::new();
-        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, Some(MeshState::Leaving), &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, Some(MeshState::Leaving), |_| 0, &v, &ids);
         let keys: Vec<Key> = d.due(&id_of(&me.to_string()), &v, &none).into_iter().map(|(p, _)| p.key).collect();
         assert_eq!(keys, vec![Key::Mesh(mesh2.to_string(), MeshState::Leaving)], "a primary holding Leaving owes no ready declaration");
         let other: PathName = "mesh1.admin.2".parse().unwrap();
         let d = Declarer::new();
-        owed_from_view(&d, &other, &id_of(&other.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, Some(MeshState::Leaving), &v, &ids);
+        owed_from_view(&d, &other, &id_of(&other.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, Some(MeshState::Leaving), |_| 0, &v, &ids);
         assert_eq!(d.owed(), 0, "an admin that is not its mesh's primary owes no Mesh declaration");
     }
 
@@ -1136,9 +1140,9 @@ mod tests {
         assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds the fabric seat in this view");
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
-        owed_from_view(&d, &me, &re_born.node_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, None, &v, &ids);
+        owed_from_view(&d, &me, &re_born.node_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, None, |_| 0, &v, &ids);
         assert_eq!(d.owed(), 0, "the deleted birth's seats owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
-        d.owe(mesh_key(), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready });
+        d.owe(mesh_key(), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 });
         d.withdraw_unowned(&me, &re_born.node_id, &v);
         assert_eq!(d.owed(), 0, "the mesh seat is the deleted birth's, not this admin's: the Mesh key is withdrawn");
     }

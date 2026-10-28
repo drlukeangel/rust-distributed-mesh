@@ -278,7 +278,7 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     // The receiver: mesh2's bootstrap admin, not yet any seat's holder.
     let me = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
     let rig = rig(me, &[&fabric_primary, &not_primary, &member, &other], mesh_ids).await;
-    let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending };
+    let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
 
     // Applied, its reply lost: Indeterminate at the caller, and the state is held once.
     rig.authority.hold_next_reply.store(true, Ordering::SeqCst);
@@ -292,12 +292,12 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     assert_eq!(rig.authority.declared.lock().unwrap().meshes, held_after_lost, "no second write");
 
     // Refusals, each by its name.
-    let stale = StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending };
+    let stale = StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
     let stale_reply = reply(&call(&rig, &fabric_primary, &stale, &CallOptions::default()).await);
     assert_eq!(stale_reply, StatusReply::RejectedStaleMesh { held: mesh2.clone() });
     let wrong_sender = reply(&call(&rig, &not_primary, &pending, &CallOptions::default()).await);
     assert_eq!(wrong_sender, StatusReply::AlreadyApplied, "decided for the mesh it names, whoever sends it");
-    let forward = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Ready };
+    let forward = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Ready, changed_at_rafka_ms: 0 };
     assert_eq!(reply(&call(&rig, &fabric_primary, &forward, &CallOptions::default()).await), StatusReply::Applied);
     let backward = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
     assert!(matches!(backward, StatusReply::RejectedInvalidMeshTransition { current: MeshState::Ready }), "{backward:?}");
@@ -662,7 +662,7 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
         let store = Refusing::refusing();
         let me = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let rig = rig_with(me, &[&fabric_primary], ids.clone(), store.clone(), Declared::default(), Some(fabric.clone())).await;
-        let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending };
+        let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
 
         let refused = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
         assert!(matches!(&refused, StatusReply::NotReady { reason } if reason.contains("mesh.storage refused the record") && reason.contains("the disk refused the put")), "{refused:?}");
@@ -749,7 +749,7 @@ fn mesh_primary_refuses_every_backward_move_by_name() {
         }
         for start in meshes {
             let id = MeshId::mint();
-            let apply = |st: MeshState| StatusRequest::ApplyMeshState { mesh_id: id.clone(), mesh_name: "mesh2".into(), state: st };
+            let apply = |st: MeshState| StatusRequest::ApplyMeshState { mesh_id: id.clone(), mesh_name: "mesh2".into(), state: st, changed_at_rafka_ms: 0 };
             assert_eq!(reply(&call(&mesh_rig, &fp, &apply(start), &CallOptions::default()).await), StatusReply::Applied, "{start:?}");
             for lower in meshes.iter().filter(|l| **l < start) {
                 let r = reply(&call(&mesh_rig, &fp, &apply(*lower), &CallOptions::default()).await);
@@ -762,7 +762,7 @@ fn mesh_primary_refuses_every_backward_move_by_name() {
         }
         // A skip forward is a forward move.
         let skip = MeshId::mint();
-        let to_dead = StatusRequest::ApplyMeshState { mesh_id: skip.clone(), mesh_name: "mesh2".into(), state: MeshState::Dead };
+        let to_dead = StatusRequest::ApplyMeshState { mesh_id: skip.clone(), mesh_name: "mesh2".into(), state: MeshState::Dead, changed_at_rafka_ms: 0 };
         assert_eq!(reply(&call(&mesh_rig, &fp, &to_dead, &CallOptions::default()).await), StatusReply::Applied, "an unseen Mesh may be told Dead: a skip is forward");
         // A birth speaks from its one endpoint: each sender's calls rode one connection, never a fresh
         // endpoint of the same key per call.
@@ -813,20 +813,20 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh2"), "{r:?}");
         // A Mesh primary declares its Mesh to a non-fabric-primary.
         let mesh2 = MeshId::mint();
-        let r = reply(&call(&rig, &other_admin, &StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Ready }, &CallOptions::default()).await);
+        let r = reply(&call(&rig, &other_admin, &StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Ready, changed_at_rafka_ms: 0 }, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "fabric-primary"), "{r:?}");
         // The fabric-primary applies an event at an admin that is not a mesh primary.
         let event = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: rdm_core::status::FabricEvent::Ready };
         let r = reply(&call(&rig, &fp, &event, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
         // The fabric-primary applies a Mesh state at an admin of another mesh.
-        let r = reply(&call(&rig, &fp, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending }, &CallOptions::default()).await);
+        let r = reply(&call(&rig, &fp, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 }, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "an admin of mesh2"), "{r:?}");
         // The same applies from a sender that is not the fabric-primary are refused for the
         // receiver, never the caller (node-rpc.md §14).
         let r = reply(&call(&rig, &other_admin, &event, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
-        let r = reply(&call(&rig, &rpc, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh1".into(), state: MeshState::Pending }, &CallOptions::default()).await);
+        let r = reply(&call(&rig, &rpc, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh1".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 }, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed.starts_with("the mesh-primary of mesh1")), "{r:?}");
         // A subject the view does not hold, from a stranger the view does not hold either: the
         // receiver, no primary, says so before it looks for the subject.
@@ -840,7 +840,7 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
         let wrong_fabric = rdm_core::FabricId::mint();
         let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyFabricEvent { fabric_id: wrong_fabric, event: rdm_core::status::FabricEvent::Ready }, &CallOptions::default()).await);
         assert_eq!(r, StatusReply::RejectedStaleFabric { held: rig2.authority.fabric_id.clone() });
-        let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh1".into(), state: MeshState::Pending }, &CallOptions::default()).await);
+        let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh1".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 }, &CallOptions::default()).await);
         assert_eq!(r, StatusReply::RejectedStaleMesh { held });
         assert!(rig.authority.declared.lock().unwrap().nodes.is_empty() && rig.authority.declared.lock().unwrap().meshes.is_empty() && rig.authority.declared.lock().unwrap().fabric.is_empty(), "nothing applied by any refusal");
 
@@ -1015,7 +1015,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
                 let ep = fp.endpoint().await;
                 let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
                 let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
-                rdm_admin::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rdm_core::status::MeshState::Pending, &target).await
+                rdm_admin::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rdm_core::status::MeshState::Pending, 0, &target).await
             }
         };
         let target_of = |rig: &Rig| {
@@ -1037,7 +1037,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let mesh_id = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id.clone())].into_iter().collect();
         let r2 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids).await;
-        let ahead = StatusRequest::ApplyMeshState { mesh_id: mesh_id.clone(), mesh_name: "mesh2".into(), state: MeshState::Ready };
+        let ahead = StatusRequest::ApplyMeshState { mesh_id: mesh_id.clone(), mesh_name: "mesh2".into(), state: MeshState::Ready, changed_at_rafka_ms: 0 };
         assert_eq!(reply(&call(&r2, &fp, &ahead, &CallOptions::default()).await), StatusReply::Applied);
         let e2 = handoff(&r2, mesh_id.clone(), target_of(&r2)).await.expect_err("Pending after Ready is backward");
         assert!(e2.contains("Pending is a backward move") && e2.contains("Ready"), "{e2}");
@@ -1114,7 +1114,7 @@ fn pending_handoff_waits_for_an_elected_mesh_primary_before_its_one_call() {
             gate.store(true, Ordering::SeqCst);
         });
         let started = std::time::Instant::now();
-        rdm_admin::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rdm_core::status::MeshState::Pending, &target).await.expect("Pending applies once the authority is filled");
+        rdm_admin::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rdm_core::status::MeshState::Pending, 0, &target).await.expect("Pending applies once the authority is filled");
         let waited = started.elapsed();
         opener.await.unwrap();
         assert!(waited >= Duration::from_millis(1000), "the hand-off did not pass while the gate was closed: {waited:?}");
@@ -1158,7 +1158,7 @@ fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
                 Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ];
         }
-        let declare = |id: &MeshId| StatusRequest::DeclareMeshState { mesh_id: id.clone(), state: MeshState::Ready };
+        let declare = |id: &MeshId| StatusRequest::DeclareMeshState { mesh_id: id.clone(), state: MeshState::Ready, changed_at_rafka_ms: 0 };
         let applied = reply(&call(&rig, &mesh1_primary, &declare(&id1), &CallOptions::default()).await);
         assert_eq!(applied, StatusReply::Applied, "mesh1's primary, a Mesh this holder only heard of");
         let not_primary = reply(&call(&rig, &mesh1_other, &declare(&id1), &CallOptions::default()).await);

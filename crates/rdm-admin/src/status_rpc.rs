@@ -87,6 +87,9 @@ pub struct Declared {
     pub names: std::collections::HashMap<(NodeId, IncarnationId), crate::model::PathName>,
     /// Per mesh id.
     pub meshes: std::collections::HashMap<MeshId, MeshState>,
+    /// Per mesh id held in `meshes`: the Rafka-time its state changed, as the declaration or the
+    /// hand-off carried it (mesh-investigation.md step 7: a successor republishes it unchanged).
+    pub mesh_changed_at: std::collections::HashMap<MeshId, u64>,
     /// Per fabric id: the events applied, in order, each once.
     pub fabric: std::collections::HashMap<FabricId, Vec<String>>,
     /// Per mesh name, per reporter: when this admin, as the fabric-primary, last received a
@@ -192,6 +195,14 @@ impl Declared {
         if self.meshes.insert(mesh_id, state) != Some(state) {
             self.moved.moved();
         }
+    }
+
+    /// [`Self::hold_mesh`], with the Rafka-time the state changed (`at`, 0 when none is known).
+    pub fn hold_mesh_at(&mut self, mesh_id: MeshId, state: MeshState, at: u64) {
+        if at > 0 {
+            self.mesh_changed_at.insert(mesh_id.clone(), at);
+        }
+        self.hold_mesh(mesh_id, state);
     }
 
     /// The watch [`Self::moved`] moves on.
@@ -603,8 +614,9 @@ pub enum Effect {
     /// A node's declared-state row: the state its exact birth declared, and the operation that
     /// produced it when one did (i146 Q36).
     Node(crate::status_rpc::Declaration, NodeState, Option<DeclaredOperation>),
-    /// A mesh and the state applied to it, with the mesh's name when the request carried it.
-    Mesh(MeshId, MeshState, Option<String>),
+    /// A mesh and the state applied to it, with the mesh's name when the request carried it, and
+    /// the Rafka-time of the change (0 when none was carried).
+    Mesh(MeshId, MeshState, Option<String>, u64),
     /// A fabric event applied.
     Fabric(FabricId, String),
 }
@@ -675,7 +687,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
                 }
             }
         }
-        StatusRequest::DeclareMeshState { mesh_id, state } => {
+        StatusRequest::DeclareMeshState { mesh_id, state, changed_at_rafka_ms } => {
             if !me.is_fabric_primary {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "fabric-primary".into() }), None);
             }
@@ -689,7 +701,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             // The fabric-primary decides; the mesh-primary records the state on its own Mesh record once
             // it is answered, and owes the declaration until that write lands (Q144): a repeated
             // declaration is answered `Applied` again, so a successor that declares again writes it.
-            match apply_mesh(declared, mesh_id, *state) {
+            match apply_mesh(declared, mesh_id, *state, *changed_at_rafka_ms) {
                 (StatusReply::AlreadyApplied, _) => (rdm_core::reply::applied(), None),
                 decided => decided,
             }
@@ -704,7 +716,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::NodeConfigUpdated { .. } => {
             (crate::node_self::request_not_handled(&me_name.to_string(), req), None)
         }
-        StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
+        StatusRequest::ApplyMeshState { mesh_id, mesh_name, state, changed_at_rafka_ms } => {
             if me.mesh != *mesh_name {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("an admin of {mesh_name}") }), None);
             }
@@ -720,9 +732,9 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
                     return (rdm_core::reply::status::rejected_stale_mesh(held.clone()), None);
                 }
             }
-            let (decided, effect) = apply_mesh(declared, mesh_id, *state);
+            let (decided, effect) = apply_mesh(declared, mesh_id, *state, *changed_at_rafka_ms);
             (decided, effect.map(|e| match e {
-                Effect::Mesh(id, state, _) => Effect::Mesh(id, state, Some(mesh_name.clone())),
+                Effect::Mesh(id, state, _, at) => Effect::Mesh(id, state, Some(mesh_name.clone()), at),
                 other => other,
             }))
         }
@@ -797,8 +809,8 @@ fn hold_fabric_event(declared: &Mutex<Declared>, fabric_id: &FabricId, event: &s
 /// and acknowledged, then held as applied and answered. A refused write answers `NotReady` naming the
 /// store and holds nothing, so the same commit again is decided afresh; the commit decides again over
 /// what is held after the write, so two commits of one state racing answer `Applied` once.
-pub(crate) async fn commit_mesh_state(storage: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, declared: &Mutex<Declared>, mesh: &str, mesh_id: &MeshId, state: MeshState) -> StatusReply {
-    let (decided, effect) = apply_mesh(&declared.lock().unwrap(), mesh_id, state);
+pub(crate) async fn commit_mesh_state(storage: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, declared: &Mutex<Declared>, mesh: &str, mesh_id: &MeshId, state: MeshState, at: u64) -> StatusReply {
+    let (decided, effect) = apply_mesh(&declared.lock().unwrap(), mesh_id, state, at);
     if effect.is_none() {
         return decided;
     }
@@ -807,20 +819,31 @@ pub(crate) async fn commit_mesh_state(storage: &dyn crate::storage::MeshStorage,
         return rdm_core::reply::status::not_ready(format!("{e} (the Mesh status {state:?} of {mesh})"));
     }
     let mut declared = declared.lock().unwrap();
-    match apply_mesh(&declared, mesh_id, state) {
+    match apply_mesh(&declared, mesh_id, state, at) {
         (StatusReply::Applied, _) => {
-            declared.hold_mesh(mesh_id.clone(), state);
+            declared.hold_mesh_at(mesh_id.clone(), state, at);
             rdm_core::reply::applied()
         }
         (other, _) => other,
     }
 }
 
-fn apply_mesh(declared: &Declared, mesh_id: &MeshId, state: MeshState) -> (StatusReply, Option<Effect>) {
+/// The held Mesh status word of the Mesh lifecycle state `state` (states.md: pending -> ready ->
+/// leaving -> dead).
+fn mesh_status_name(state: MeshState) -> &'static str {
+    match state {
+        MeshState::Pending => "pending",
+        MeshState::Ready => "ready",
+        MeshState::Leaving => "leaving",
+        MeshState::Dead => "dead",
+    }
+}
+
+fn apply_mesh(declared: &Declared, mesh_id: &MeshId, state: MeshState, at: u64) -> (StatusReply, Option<Effect>) {
     match transition(declared.meshes.get(mesh_id).copied(), state) {
         Transition::AlreadyApplied => (rdm_core::reply::already_applied(), None),
         Transition::Backward { current } => (rdm_core::reply::status::rejected_invalid_mesh_transition(current), None),
-        Transition::Apply => (rdm_core::reply::applied(), Some(Effect::Mesh(mesh_id.clone(), state, None))),
+        Transition::Apply => (rdm_core::reply::applied(), Some(Effect::Mesh(mesh_id.clone(), state, None, at))),
     }
 }
 
@@ -1280,7 +1303,7 @@ impl StatusAuthority {
         // complete. Whichever it was, the report is what this admin received now from that exact birth.
         // It is kept for the mesh the declaration names, from the birth that sent it (or its endpoint
         // while this admin's view holds no birth for it), never under the caller's own mesh.
-        if let (StatusRequest::DeclareMeshState { mesh_id, state: MeshState::Ready }, StatusReply::Applied | StatusReply::AlreadyApplied) = (req, &reply) {
+        if let (StatusRequest::DeclareMeshState { mesh_id, state: MeshState::Ready, .. }, StatusReply::Applied | StatusReply::AlreadyApplied) = (req, &reply) {
             let mesh = (self.mesh_ids)().into_iter().find(|(_, id)| id == mesh_id).map(|(name, _)| name).or_else(|| view.meshes.iter().find(|m| m.id.as_ref() == Some(mesh_id)).map(|m| m.name.clone()));
             let reporter = sender.as_ref().and_then(|from| from.incarnation_id.clone()).map(Reporter::Birth).or_else(|| peer.map(|k| Reporter::Endpoint(k.to_string())));
             if let (Some(mesh), Some(reporter)) = (mesh, reporter) {
@@ -2152,14 +2175,26 @@ impl StatusAuthority {
                 return rdm_core::reply::status::rejected_invalid_node_transition(current);
             }
         }
-        if let Effect::Mesh(mesh_id, state, named) = &effect {
+        if let Effect::Mesh(mesh_id, state, named, at) = &effect {
             let Some(mesh) = named else {
                 // A mesh-primary's declaration at the fabric-primary: decided and held here, written by
-                // the mesh's own primary on its record (one writer per object; Q144).
-                self.declared.lock().unwrap().hold_mesh(mesh_id.clone(), *state);
+                // the mesh's own primary on its record (one writer per object; Q144), with the instant
+                // its MeshStatus carries for the change.
+                self.declared.lock().unwrap().hold_mesh_at(mesh_id.clone(), *state, *at);
                 return rdm_core::reply::applied();
             };
-            return commit_mesh_state(&*self.meshes_storage, &self.caches, &self.declared, mesh, mesh_id, *state).await;
+            let reply = commit_mesh_state(&*self.meshes_storage, &self.caches, &self.declared, mesh, mesh_id, *state, *at).await;
+            // The hand-off's state is this admin's held MeshStatus at the instant it carries, so its
+            // publisher republishes it with that changed_at once its checklist completes
+            // (mesh-investigation.md step 7: "republishes its held MeshStatus, preserving changed_at").
+            if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) && *at > 0 {
+                if let Some(digest_view) = &self.digest_view {
+                    let held = rdm_transport::topology::Frame::MeshStatus { mesh: mesh.clone(), status: mesh_status_name(*state).to_string(), publisher: self.held_name().await.to_string(), forwarded_by: None, changed_at_rafka_ms: *at };
+                    let taken = digest_view.statuses.take(&held, &self.fabric_id);
+                    tracing::info_span!("rdm.node_admin.mesh.update.via-held-mesh-status", mesh = %mesh, state = ?state, changed_at_rafka_ms = *at, taken).in_scope(|| tracing::info!("the hand-off's state is held as this admin's MeshStatus at the instant it carries"));
+                }
+            }
+            return reply;
         }
         if let Effect::Fabric(fabric_id, event) = &effect {
             let writes = self.topology.read().await.fabric_primary().is_some_and(|f| f.node_id == self.node_id);
@@ -2244,7 +2279,7 @@ impl StatusAuthority {
     pub(crate) async fn self_apply_mesh_pending(&self, mesh_id: &MeshId) -> StatusReply {
         let me_name = self.held_name().await;
         let receiver_is_primary = self.topology.read().await.own(&self.node_id).is_some_and(|n| n.is_primary);
-        let (decided, effect) = apply_mesh(&self.declared.lock().unwrap(), mesh_id, MeshState::Pending);
+        let (decided, effect) = apply_mesh(&self.declared.lock().unwrap(), mesh_id, MeshState::Pending, 0);
         let reply = match effect {
             Some(effect) => self.persist_then_commit(effect).await,
             None => decided,
@@ -3530,7 +3565,7 @@ mod tests {
             nodes,
         };
         let seated = view(vec![fp.clone(), first.clone(), second.clone()]);
-        let pending = StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending };
+        let pending = StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
 
         let (reply, effect) = decide(&mesh_primary_of(&second, seated.clone()), &seated, &Declared::default(), &pending);
         assert!(
@@ -3658,7 +3693,7 @@ mod tests {
         };
         view.meshes.push(crate::model::Mesh { id: Some(m2_id.clone()), name: "mesh2".into(), status: crate::model::ScopeStatus::Ready });
         let auth = mesh_primary_of(&fp, view);
-        let ready = StatusRequest::DeclareMeshState { mesh_id: m2_id.clone(), state: MeshState::Ready };
+        let ready = StatusRequest::DeclareMeshState { mesh_id: m2_id.clone(), state: MeshState::Ready, changed_at_rafka_ms: 0 };
         assert_eq!(auth.apply(Some(m2_primary.clone()), &ready).await, R::Applied);
         assert_eq!(auth.apply(Some(m2_member.clone()), &ready).await, R::Applied, "decided for mesh2, whoever sends it, and answered Applied again (Q144)");
         assert_eq!(auth.apply(Some(m1_member.clone()), &ready).await, R::Applied);
@@ -3673,7 +3708,7 @@ mod tests {
         let key = iroh::SecretKey::generate().public();
         let mut m3_primary = m3_primary;
         m3_primary.endpoint_id = Some(EndpointId(key.to_string()));
-        let ready3 = StatusRequest::DeclareMeshState { mesh_id: m3_id, state: MeshState::Ready };
+        let ready3 = StatusRequest::DeclareMeshState { mesh_id: m3_id, state: MeshState::Ready, changed_at_rafka_ms: 0 };
         assert_eq!(auth.apply_from(Some(key), None, &ready3).await, R::Applied, "decided for mesh3 from an endpoint the view holds no birth for");
         let held = auth.declared.lock().unwrap().clone();
         assert_eq!(held.report_of("mesh3", Some(&m3_primary)).map(|r| r.incarnation), m3_primary.incarnation_id.clone(), "the endpoint's report counts for the birth the view holds at it: {:?}", held.reports);

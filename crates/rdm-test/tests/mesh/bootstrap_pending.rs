@@ -351,11 +351,24 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         .map(|sp| (s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])))
         .max_by_key(|(_, at)| at.parse::<u64>().expect("a changed_at_rafka_ms"))
         .expect("the lost mesh published its MeshStatus before the fault");
+    // What the successor was handed: the fabric-primary's held state for the mesh with its changed_at,
+    // the declaration it applied or the MeshStatus it heard, whichever is further (mesh-investigation.md
+    // step 7). It is never behind what the lost admin published before the fault.
+    let rank = |st: &str| ["pending", "ready", "leaving", "dead"].iter().position(|x| *x == st).unwrap_or(0);
+    let handed = named(&spans, "rdm.node_admin.mesh.update.via-state-handoff")
+        .into_iter()
+        .chain(named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff"))
+        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && start(sp) >= start(&decision))
+        .map(|sp| (s(&sp["attributes"]["state"]).to_lowercase(), s(&sp["attributes"]["changed_at_rafka_ms"])))
+        .last()
+        .expect("the successor is handed the mesh's held state after the decision");
+    assert!(rank(&handed.0) >= rank(&held.0), "the hand-off is never behind the held MeshStatus {held:?}: {handed:?}");
+    let expected = if handed.1 != "0" { handed.clone() } else { held.clone() };
     let republished: Vec<&&Value> = sends.iter().filter(|sp| sp["attributes"]["scope"] == scope.as_str() && start(sp) >= start(&decision)).collect();
     assert!(!republished.is_empty(), "the successor primary republishes the held MeshStatus (a via-status-send for {scope} after the decision): none");
     for sp in &republished {
         assert_eq!(s(&sp["attributes"]["node"]), lost_admin, "the mesh's status is its own primary's: {sp}");
-        assert_eq!((s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])), held, "the republish is the held MeshStatus, changed_at preserved: {sp}");
+        assert_eq!((s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])), expected, "the republish is the held MeshStatus it was handed, changed_at preserved: {sp}");
     }
     let checklist_complete = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete")
         .into_iter()

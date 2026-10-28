@@ -2449,7 +2449,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
                                                 let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
                                                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
-                                                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
+                                                // The instant this admin's own MeshStatus holds for each state: what its publisher sent.
+                                                let own_mesh_changed_at = |state| super::runner::held_mesh_changed_at(&digest_view, &records, &me.mesh, state);
+                                                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, own_mesh_changed_at, &view, &mesh_ids);
                                                 rdm_node::node_rpc::feed_once(&digest_view, &resolver, &me.to_string());
                                                 declarer.sweep(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed, &records.wake).await;
                                                 drop(turn);

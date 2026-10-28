@@ -124,6 +124,10 @@ pub enum StatusRequest {
         mesh_id: MeshId,
         /// The mesh's state.
         state: MeshState,
+        /// The Rafka-time of the change, as the declaring primary's `MeshStatus` carries it: the
+        /// instant the mesh entered `state`, which every later primary republishes unchanged
+        /// (mesh-investigation.md step 7); 0 when the declarer holds none.
+        changed_at_rafka_ms: u64,
     },
     /// Downward: an authority tells the exact birth to enter `state`.
     ApplyNodeState {
@@ -150,6 +154,10 @@ pub enum StatusRequest {
         mesh_name: String,
         /// The state applied.
         state: MeshState,
+        /// The Rafka-time of the change the fabric-primary holds for `state`: the receiving admin
+        /// holds its MeshStatus at that instant and republishes it unchanged (mesh-investigation.md
+        /// step 7); 0 when the fabric-primary holds none.
+        changed_at_rafka_ms: u64,
     },
     /// Downward: the fabric-primary applies a Fabric event at a mesh primary.
     ApplyFabricEvent {
@@ -2019,8 +2027,8 @@ mod tests {
             StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Ready, operation: None },
             StatusRequest::ApplyNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ConnectionsDeleting },
             StatusRequest::ProbeNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
-            StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready },
-            StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending },
+            StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 },
+            StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 },
             StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } },
             StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.1".into() },
             StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "reserved-7:mesh1.rpc.1".into() },
