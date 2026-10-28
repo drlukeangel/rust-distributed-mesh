@@ -748,7 +748,8 @@ async fn start_booted(
                                 };
                                 Arc::new(
                                     crate::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), topology_view.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
-                                        .with_cancel(cancel.clone()),
+                                        .with_cancel(cancel.clone())
+                                        .with_owed(owed_state.clone()),
                                 )
                             };
                             own.set_connections(connections.clone());
@@ -1503,6 +1504,11 @@ impl OwedDeclarations {
     /// The stopped cycle's declarations end with it: a start begins the next cycle.
     fn clear(&self) {
         self.queue.lock().unwrap().owed.clear();
+    }
+
+    /// What is still owed, in the order owed, by name: a declaration by its state, an own config update.
+    pub(crate) fn names(&self) -> Vec<String> {
+        self.queue.lock().unwrap().owed.iter().map(|o| match &o.owing { Owing::State((s, _)) => format!("{s:?}"), Owing::Config(_) => "ConfigUpdate".to_string() }).collect()
     }
 
     fn is_empty(&self) -> bool {

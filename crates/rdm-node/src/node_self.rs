@@ -288,6 +288,8 @@ pub struct NodeSelf {
     /// Cancelled when `node.connections.delete { All }` or `stop-node` is admitted: the birth is
     /// retired, so its `pre_node_ready` hook and any pull it has in flight end.
     pub retire: Option<rdm_transport::Retirement>,
+    /// What this birth owes its mesh-primary, for a signal stop's outcome span to name what it left.
+    pub owed: Option<Arc<crate::node::OwedDeclarations>>,
     /// The backbone, for a node-admin: its state hooks go out on its mesh channel and the backbone.
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
     /// them onto the backbone.
@@ -336,7 +338,7 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         topology_view.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
+        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -349,6 +351,12 @@ impl NodeSelf {
     /// This surface, publishing its state hooks on `backbone` as well as its mesh channel.
     pub fn with_backbone(mut self, backbone: rdm_transport::topology::Backbone) -> Self {
         self.backbone = Some(backbone);
+        self
+    }
+
+    /// This surface, naming `owed` on a signal stop's outcome span.
+    pub fn with_owed(mut self, owed: Arc<crate::node::OwedDeclarations>) -> Self {
+        self.owed = Some(owed);
         self
     }
 
@@ -1078,7 +1086,7 @@ impl NodeSelf {
     /// each owed declaration back for its process end to wait on (Q206); a failed start's
     /// stop declares `Stopped` naming the start's operation and puts nothing on the start's stream. The
     /// receipt is the All's.
-    async fn stop_steps(&self, by: StopBy<'_>) -> (ConnectionsReceipt, Vec<tokio::task::JoinHandle<()>>) {
+    async fn stop_steps(&self, by: StopBy<'_>) -> (ConnectionsReceipt, Vec<(String, tokio::task::JoinHandle<()>)>) {
         use tracing::Instrument;
         // Who commanded it, the calls to spare, the operation, the stream, how many calls in flight are
         // the asker's own (not eligible work), and whether a command's own delete runs (step 4's view).
@@ -1139,7 +1147,7 @@ impl NodeSelf {
         };
         closure.in_scope(|| tracing::info!("the stop's node.connections.delete All is complete"));
         drop(closure);
-        let mut owed: Vec<tokio::task::JoinHandle<()>> = deleting.into_inner().unwrap().into_iter().collect();
+        let mut owed: Vec<(String, tokio::task::JoinHandle<()>)> = deleting.into_inner().unwrap().into_iter().collect();
         if let Some(progress) = &progress {
             let _ = progress.lock().await.progress(NodeCommandReply::StopConnectionsDeleted { receipt: receipt.clone() }).await;
         }
@@ -1236,7 +1244,7 @@ impl NodeSelf {
     /// once each of those is answered (Q210). What is handed back ends once its call ended, for a
     /// signal's process end to wait on (Q206). A command's stop names its operation; a signal's names
     /// none (i146 Q55).
-    fn owe(&self, state: NodeState, operation: Option<rdm_core::status::DeclaredOperation>) -> Option<tokio::task::JoinHandle<()>> {
+    fn owe(&self, state: NodeState, operation: Option<rdm_core::status::DeclaredOperation>) -> Option<(String, tokio::task::JoinHandle<()>)> {
         let declare = self.declare.clone()?;
         match &operation {
             Some(op) => tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-stop", node = %self.held_name(), state = ?state, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt)
@@ -1244,7 +1252,7 @@ impl NodeSelf {
             None => tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-signal", node = %self.held_name(), state = ?state)
                 .in_scope(|| tracing::info!("the state is owed to the mesh-primary; the stop does not wait for its answer")),
         }
-        Some(tokio::spawn(declare(state, operation)))
+        Some((format!("{state:?}"), tokio::spawn(declare(state, operation))))
     }
 
     /// The stop this process's own signal runs: node.stop's steps with the node its own subject
@@ -1259,27 +1267,40 @@ impl NodeSelf {
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-stop-declarations",
             node = %self.held_name(), operation = SIGNAL_STOP, declarations = declarations.len(),
-            deadline_ms = self.connections_delete_deadline.as_millis() as u64, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty
+            deadline_ms = self.connections_delete_deadline.as_millis() as u64, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty, delivered = tracing::field::Empty, left = tracing::field::Empty
         );
         let began = std::time::Instant::now();
         let ended = {
             let each = async {
-                for d in declarations.iter_mut() {
+                for (_, d) in declarations.iter_mut() {
                     let _ = d.await;
                 }
             };
             tokio::time::timeout(self.connections_delete_deadline, each).await.is_ok()
         };
-        for d in &declarations {
+        // What was delivered and what was left: the stop's own declarations by their state, then
+        // whatever else the birth still owed its mesh-primary ahead of them (a config update).
+        let delivered: Vec<&str> = declarations.iter().filter(|(_, d)| d.is_finished()).map(|(n, _)| n.as_str()).collect();
+        let mut left: Vec<String> = declarations.iter().filter(|(_, d)| !d.is_finished()).map(|(n, _)| n.clone()).collect();
+        if let Some(owed) = &self.owed {
+            for name in owed.names() {
+                if !left.contains(&name) {
+                    left.push(name);
+                }
+            }
+        }
+        for (_, d) in &declarations {
             d.abort();
         }
         span.record("elapsed_ms", began.elapsed().as_millis() as u64);
         span.record("outcome", if ended { "ended" } else { "deadline" });
+        span.record("delivered", delivered.join(",").as_str());
+        span.record("left", left.join(",").as_str());
         span.in_scope(|| {
             if ended {
                 tracing::info!("each owed declaration's call ended: answered, or its receiver proven gone");
             } else {
-                tracing::info!("a declaration's call was still open at the birth's bound: it ends with the process");
+                tracing::info!("a declaration's call was still open at the birth's bound: it ends with the process, undelivered");
             }
         });
         SignalStopped { receipt }

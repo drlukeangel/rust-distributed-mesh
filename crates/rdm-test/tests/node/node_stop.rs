@@ -1462,3 +1462,73 @@ fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps()
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
+
+/// A real estate whose mesh-primary (the Day-0 admin, `mesh1.admin.1`) is held (SIGSTOP, alive and silent) when
+/// `mesh1.rpc.1` receives SIGTERM, so the two declarations the stop owes its mesh-primary
+/// (`ConnectionsDeleting`, then `Stopped`) are owed and unanswered at the signal. `release_after` is how
+/// long the mesh-primary stays held before it is continued (`None`: held until the estate ends). Returns the
+/// stopped node's `via-stop-declarations` span and the estate's spans.
+async fn signal_stop_with_primary_held(test: &str, bound_ms: &str, release_after: Option<Duration>) -> (Value, Vec<Value>, String) {
+    let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[("RDM_CONNECTIONS_DELETE_DEADLINE_MS", bound_ms)]).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await;
+    estate.settled_views(&[("mesh1", 2, 1)]).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let primary_pid = estate.bootstrap_pid().expect("the Day-0 admin is mesh1's primary and the estate holds its pid");
+    let pid = estate.pid_of(NODE).await;
+    assert!(alive(pid));
+    let send = |sig: &str, pid: u64| assert!(std::process::Command::new("kill").args([sig, &pid.to_string()]).status().unwrap().success(), "kill {sig} {pid}");
+    send("-STOP", primary_pid as u64);
+    let signalled = std::time::Instant::now();
+    send("-TERM", pid);
+    let ended = |pid: u64| std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |st| st.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')));
+    if let Some(after) = release_after {
+        tokio::time::sleep(after).await;
+        assert!(!ended(pid), "the node's stop is still waiting on its owed declarations {after:?} after the signal: the mesh-primary has not answered");
+        send("-CONT", primary_pid as u64);
+    }
+    // The held mesh-primary is the node's parent and cannot reap it: an ended process stays a zombie (`Z`).
+    wait_for(&format!("{NODE} ends by its own stop"), Duration::from_secs(60), || async { ended(pid).then_some(()) }).await;
+    let ended_in = signalled.elapsed();
+    send("-KILL", primary_pid as u64);
+    estate.stop().await;
+    let spans = estate.spans();
+    let outcome = named(&spans, "rdm.node_admin.node.update.via-stop-declarations").into_iter().find(|sp| attr(sp, "node") == NODE).cloned().unwrap_or_else(|| panic!("{NODE}'s signal stop ended on no outcome span"));
+    estate.record_trace_url(outcome["trace_id"].as_str().unwrap_or(""));
+    let trace = s(&outcome["trace_id"]);
+    println!("{NODE} ended {ended_in:?} after its signal; outcome span: {outcome}");
+    (outcome, spans, trace)
+}
+
+/// CONTRACT (Q210, node-rpc.md section 43: "a signal stop waits for the queue within Q206's bound and its
+/// outcome span"; node-connections-delete.md): an rpc node holds owed declarations to its mesh-primary (its
+/// mesh-primary is held, answering nothing) when it receives SIGTERM. Its stop waits for them: its process is
+/// still alive after the signal and for as long as the mesh-primary stays silent, inside
+/// `RDM_CONNECTIONS_DELETE_DEADLINE_MS`. The mesh-primary continued, the queue drains in the order owed and the
+/// stop ends on its outcome span `rdm.node_admin.node.update.via-stop-declarations`, outcome `ended`, naming what
+/// was delivered (`ConnectionsDeleting,Stopped`) and leaving nothing. Must NOT happen: the process ending
+/// before its declarations are answered, or an outcome span that names neither what was delivered nor
+/// what was left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_signal_stop_waits_for_its_owed_declarations_to_drain_within_the_bound_and_names_them_delivered() {
+    let (outcome, _, _) = signal_stop_with_primary_held("a_signal_stop_waits_for_its_owed_declarations_to_drain_within_the_bound_and_names_them_delivered", "30000", Some(Duration::from_secs(3))).await;
+    assert_eq!(attr(&outcome, "outcome"), "ended", "the queue drained inside the bound: {outcome}");
+    assert_eq!(attr(&outcome, "delivered"), "ConnectionsDeleting,Stopped", "the outcome span names what was delivered, in the order owed: {outcome}");
+    assert_eq!(attr(&outcome, "left"), "", "nothing was left: {outcome}");
+    let elapsed: u64 = attr(&outcome, "elapsed_ms").parse().unwrap_or(0);
+    assert!(elapsed >= 1_500, "the stop waited for the held mesh-primary's answers ({elapsed} ms): {outcome}");
+}
+
+/// CONTRACT (Q210, Q206): the same node, its mesh-primary held and never continued within the bound
+/// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS` 3000). The stop waits the bound and no longer, then the process
+/// leaves; its outcome span says `deadline`, delivered nothing, and names the undelivered declarations
+/// (`ConnectionsDeleting,Stopped`) it left. Must NOT happen: the process waiting past the bound, or leaving
+/// without naming what it left undelivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_signal_stop_past_the_bound_leaves_naming_its_undelivered_declarations() {
+    let (outcome, _, _) = signal_stop_with_primary_held("a_signal_stop_past_the_bound_leaves_naming_its_undelivered_declarations", "3000", None).await;
+    assert_eq!(attr(&outcome, "outcome"), "deadline", "the bound passed with the mesh-primary silent: {outcome}");
+    assert_eq!(attr(&outcome, "delivered"), "", "nothing was delivered: {outcome}");
+    assert_eq!(attr(&outcome, "left"), "ConnectionsDeleting,Stopped", "the outcome span names the undelivered declarations in the order owed: {outcome}");
+    let elapsed: u64 = attr(&outcome, "elapsed_ms").parse().unwrap_or(0);
+    assert!((3_000..8_000).contains(&elapsed), "the stop waited the bound and left ({elapsed} ms): {outcome}");
+}
