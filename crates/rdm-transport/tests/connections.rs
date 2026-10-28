@@ -468,7 +468,7 @@ async fn a_refusal_is_a_refused_fact_on_the_acceptor_and_a_failed_row_on_the_dia
     assert_eq!(rows[0].recovery.map(|r| r.attempt_ordinal), Some(1));
     assert_eq!(rows[0].destination.incarnation.as_ref(), Some(&acceptor.birth.incarnation));
 
-    assert_eq!(opener.open(&acceptor.birth).await.unwrap_err(), ConnectError::NoActiveRoute, "the series owns the retry; a new call dials nothing over it");
+    assert_eq!(opener.open(&acceptor.birth).await.unwrap_err(), ConnectError::NoActiveRoute { direct: None }, "the series owns the retry; a new call dials nothing over it");
     assert_eq!(admitter.calls.load(Ordering::SeqCst), 1);
 
     assert_eq!(dialer.registry.probe_direct(&acceptor.birth, ALPN_A).await.unwrap_err(), refused, "the series' next attempt is refused again");
@@ -1552,7 +1552,7 @@ async fn every_carrier_refusing_ends_the_open_with_no_active_route() {
     let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
     let (_, _acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
     let ended = dialer_s.open(&dest.birth).await;
-    assert!(matches!(ended, Err(ConnectError::NoActiveRoute)), "every carrier refused: {:?}", ended.map(|c| c.kind()));
+    assert!(matches!(&ended, Err(ConnectError::NoActiveRoute { direct: Some(_) })), "every carrier refused: {:?}", ended.map(|c| c.kind()));
     assert!(!source.sink.history().iter().any(|r| r.kind == CoreConnectionKind::Proxy), "no Proxy is recorded: {:?}", source.sink.history());
     source.shutdown().await;
     let [g1, g2] = gw;
@@ -1841,7 +1841,7 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
         .open(&dead_dest)
         .await
         .expect_err("tunnel whose destination leg cannot be opened by carrier must fail");
-    assert_eq!(err3, ConnectError::NoActiveRoute, "every carrier refused by name: no active route");
+    assert!(matches!(&err3, ConnectError::NoActiveRoute { direct: Some(_) }), "every carrier refused by name, the Direct dial named: {err3:?}");
     assert!(
         !fresh_source2
             .sink
@@ -2290,7 +2290,7 @@ async fn a_protocol_with_proxy_false_never_consumes_a_proxy_even_when_one_is_hel
         .open(&dest.birth)
         .await
         .expect_err("a protocol with proxy false must refuse with NoActiveRoute when Direct is Failed");
-    assert_eq!(err, ConnectError::NoActiveRoute, "the held Proxy is not a route for a protocol with proxy false");
+    assert_eq!(err, ConnectError::NoActiveRoute { direct: None }, "the held Proxy is not a route for a protocol with proxy false");
 
     // A source holding nothing, whose direct dial sends nothing (it does not know the destination):
     // the dial's NotSent is the answer, and no carrier is asked.

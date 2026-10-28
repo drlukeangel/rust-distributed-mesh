@@ -192,8 +192,14 @@ pub enum ConnectError {
         alpn: Vec<u8>,
     },
     /// No active Direct or valid Proxy route exists to the destination on this ALPN.
-    #[error("no active route")]
-    NoActiveRoute,
+    ///
+    /// `direct` is `Some(reason)` when a Direct dial was made and ended not sent (`NotSent`'s
+    /// reason) before every carrier refused, and `None` when nothing was dialled.
+    #[error("no active route{}", direct.as_ref().map(|r| format!(" (direct dial not sent: {r})")).unwrap_or_default())]
+    NoActiveRoute {
+        /// The Direct dial's `NotSent` reason; `None` when no dial was made.
+        direct: Option<String>,
+    },
     /// The dial ended before anything was sent to the destination.
     #[error("not sent: {reason}")]
     NotSent {
@@ -1417,21 +1423,21 @@ impl Dialer {
                 .record_drops(&[invalid_proxy], reason);
         }
         match res.route {
-            EffectiveRoute::NoActiveRoute => return Err(ConnectError::NoActiveRoute),
+            EffectiveRoute::NoActiveRoute => return Err(ConnectError::NoActiveRoute { direct: None }),
             EffectiveRoute::ViaPeer { proxy, .. } => {
                 let Some(carrier_end) = proxy.carrier.as_ref() else {
                     self.registry
                         .inner
                         .sink
                         .record_drops(std::slice::from_ref(&proxy), INVALID_CARRIER_EDGE_LOST);
-                    return Err(ConnectError::NoActiveRoute);
+                    return Err(ConnectError::NoActiveRoute { direct: None });
                 };
                 let Some(carrier_inc) = carrier_end.incarnation.clone() else {
                     self.registry
                         .inner
                         .sink
                         .record_drops(std::slice::from_ref(&proxy), INVALID_CARRIER_EDGE_LOST);
-                    return Err(ConnectError::NoActiveRoute);
+                    return Err(ConnectError::NoActiveRoute { direct: None });
                 };
                 let carrier_birth = Birth {
                     name: carrier_end.name.clone(),
@@ -1480,7 +1486,8 @@ impl Dialer {
                         Err(e) => return Err(e),
                     }
                 }
-                Err(ConnectError::NoActiveRoute)
+                caller_span.in_scope(|| tracing::info!(direct = %reason, "rdm.node.connections.open.no-active-route: the Direct dial was not sent and every carrier refused"));
+                Err(ConnectError::NoActiveRoute { direct: Some(reason) })
             }
             Err(e) => Err(e),
         }
