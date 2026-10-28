@@ -2999,12 +2999,24 @@ async fn a_remote_executors_reported_receipts_are_written_by_the_claim_record_an
     eprintln!("span rdm.node_admin.build.reject.via-stale-claim trace_id={} {:?}", refused[0].0, attrs);
 }
 
-/// Creates that take a while, counting how many run at once; the create of `fails` ends failed.
+/// Creates that take a while, counting how many run at once; the create of `fails` ends failed, its
+/// first `failing` runs (every run unless a cell sets fewer).
 struct AtOnce {
     ran: Arc<Creates>,
     running: std::sync::atomic::AtomicUsize,
     most: std::sync::atomic::AtomicUsize,
     fails: Option<&'static str>,
+    failing: std::sync::atomic::AtomicUsize,
+}
+
+impl AtOnce {
+    fn new(ran: Arc<Creates>, fails: Option<&'static str>) -> Self {
+        Self::failing(ran, fails, usize::MAX)
+    }
+
+    fn failing(ran: Arc<Creates>, fails: Option<&'static str>, times: usize) -> Self {
+        Self { ran, running: Default::default(), most: Default::default(), fails, failing: std::sync::atomic::AtomicUsize::new(times) }
+    }
 }
 
 #[async_trait::async_trait]
@@ -3014,7 +3026,7 @@ impl OperationRunner for AtOnce {
         self.most.fetch_max(now, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(50)).await;
         self.running.fetch_sub(1, Ordering::SeqCst);
-        if self.fails.is_some_and(|f| op.key() == format!("node.create:{f}")) {
+        if self.fails.is_some_and(|f| op.key() == format!("node.create:{f}")) && self.failing.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
             self.ran.0.lock().unwrap().push(op.key());
             return Err(rdm_admin::executor::RunEnd::failed(format!("{}: the launch was refused", op.key())));
         }
@@ -3028,11 +3040,16 @@ async fn at_once(fails: Option<&'static str>) -> (Rig, Arc<AtOnce>) {
 
 /// [`at_once`], mesh1 grown to `admins` node-admins and `rpcs` rpc nodes.
 async fn at_once_to(fails: Option<&'static str>, admins: u32, rpcs: u32) -> (Rig, Arc<AtOnce>) {
+    at_once_failing(fails, usize::MAX, admins, rpcs).await
+}
+
+/// [`at_once_to`], the create of `fails` failing its first `times` runs only.
+async fn at_once_failing(fails: Option<&'static str>, times: usize, admins: u32, rpcs: u32) -> (Rig, Arc<AtOnce>) {
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, admins), (rdm_core::NodeKind::RpcNode, rpcs)]) };
     let runner: Arc<Mutex<Option<Arc<AtOnce>>>> = Arc::default();
     let held = runner.clone();
     let r = rig_for(view(), change, move |ran, _| -> Arc<dyn OperationRunner> {
-        let at = Arc::new(AtOnce { ran, running: Default::default(), most: Default::default(), fails });
+        let at = Arc::new(AtOnce::failing(ran, fails, times));
         *held.lock().unwrap() = Some(at.clone());
         at
     })
@@ -3101,7 +3118,7 @@ async fn each_meshs_section_is_sent_to_its_mesh_primary_at_once() {
     let runner: Arc<Mutex<Option<Arc<AtOnce>>>> = Arc::default();
     let held = runner.clone();
     let r = rig_for(three_meshes(), TopologyChange::ReconcileFabric { desired: fabric }, move |ran, _| -> Arc<dyn OperationRunner> {
-        let at = Arc::new(AtOnce { ran, running: Default::default(), most: Default::default(), fails: None });
+        let at = Arc::new(AtOnce::new(ran, None));
         *held.lock().unwrap() = Some(at.clone());
         at
     })
@@ -3127,7 +3144,7 @@ async fn each_meshs_section_is_sent_to_its_mesh_primary_at_once() {
 #[tokio::test]
 async fn a_section_that_fails_stops_no_other_and_the_same_failure_twice_stalls_the_drive() {
     let fabric = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1)]), MeshDesired::of("mesh2", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 3)]), MeshDesired::of("mesh3", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 3)])] };
-    let r = rig_for(three_meshes(), TopologyChange::ReconcileFabric { desired: fabric }, move |ran, _| -> Arc<dyn OperationRunner> { Arc::new(AtOnce { ran, running: Default::default(), most: Default::default(), fails: Some("mesh3.rpc.2") }) }).await;
+    let r = rig_for(three_meshes(), TopologyChange::ReconcileFabric { desired: fabric }, move |ran, _| -> Arc<dyn OperationRunner> { Arc::new(AtOnce::new(ran, Some("mesh3.rpc.2"))) }).await;
     let drive = Drive::detached(r.build.clone());
     let ended = tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s");
     match ended {
@@ -3138,4 +3155,80 @@ async fn a_section_that_fails_stops_no_other_and_the_same_failure_twice_stalls_t
     assert!(["node.create:mesh2.rpc.2", "node.create:mesh2.rpc.3"].iter().all(|k| ran.iter().any(|r| r == k)), "mesh2's section completed: {ran:?}");
     let sent: Vec<(String, u32)> = r.dispatch.sections.lock().unwrap().iter().map(|(_, l, a)| (l.clone(), *a)).collect();
     assert_eq!(sent.iter().filter(|(l, _)| l == "mesh3").map(|(_, a)| *a).collect::<Vec<_>>(), vec![1, 2], "mesh3's section was sent again, as its lane's next attempt, once: {sent:?}");
+}
+
+/// The reconcile spans of `spans` under the cell root `trace_id`, as `(attempt, outcome, operations, incomplete)`.
+fn reconciles(spans: &[serde_json::Value], trace_id: &str) -> Vec<(String, String, String, String)> {
+    let at = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or("").to_string();
+    spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile" && s["trace_id"] == trace_id).map(|s| (at(s, "attempt"), at(s, "outcome"), at(s, "operations"), at(s, "incomplete"))).collect()
+}
+
+/// CONTRACT (Q245: "a failed node does not stop it, it just self-heals like it already does"): in the
+/// fabric lane a member create that ends failed hands its attempt back to the fabric-primary, as an
+/// incomplete operation does: the creates that completed stand, the Build stays in progress, and the
+/// next attempt the fabric-primary claims plans the failed create again, creates it, and the Build
+/// completes. Must NOT happen: the Build failed by one failed create, or a completed create run again.
+#[test]
+fn a_member_create_that_fails_once_is_created_by_the_next_attempt_and_the_build_completes() {
+    use rdm_admin::build_state::BuildState;
+    let cap = crate::mesh_delete_resume::capture();
+    let (end, p, ran, trace_id) = cap.run(async {
+        let root = tracing::info_span!("cell.member-create-fails-once");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _at) = at_once_failing(Some("mesh1.rpc.3"), 1, 2, 5).await;
+        let end = tokio::time::timeout(Duration::from_secs(20), r.env.run(&Drive::detached(r.build.clone()))).await.expect("the drive ends within 20 s");
+        let ran = r.ran.0.lock().unwrap().clone();
+        (end, r.builds.read_build(&r.build).await.unwrap(), ran, trace_id)
+    });
+    assert_eq!(end, DriveEnd::Terminal, "the Build completes");
+    assert_eq!(p.state, BuildState::Complete, "one failed create does not fail the Build");
+    let mut ran = ran;
+    ran.sort();
+    assert_eq!(ran, ["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].map(String::from).to_vec(), "the failed create ran again and no completed create did");
+    let spans = cap.spans();
+    let runs = reconciles(&spans, &trace_id);
+    eprintln!("cell trace_id={trace_id} reconcile spans {runs:?}");
+    assert!(runs.iter().any(|(a, o, _, inc)| a == "1" && o == "handed-off" && inc.contains("node.create:mesh1.rpc.3")), "attempt 1 is handed back naming the failed create: {runs:?}");
+    assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "converged" && ops == "node.create:mesh1.rpc.3"), "attempt 2 runs the failed create alone and converges: {runs:?}");
+}
+
+/// CONTRACT (Q245): in the fabric lane a member create that fails every time is planned again by the
+/// next attempt, which moves nothing: the drive stalls Blocked `incomplete` naming the create, and the
+/// Build stays in progress, never failed. Must NOT happen: the Build failed, the completed creates run
+/// again, or the create sent again without end.
+#[test]
+fn a_member_create_that_fails_every_time_stalls_the_drive_blocked_naming_it() {
+    use rdm_admin::build_state::{BuildState, CurrentBuild};
+    let cap = crate::mesh_delete_resume::capture();
+    let (end, p, current, ran, frames, trace_id) = cap.run(async {
+        let root = tracing::info_span!("cell.member-create-fails-every-time");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _at) = at_once(Some("mesh1.rpc.3")).await;
+        let drive = Drive::detached(r.build.clone());
+        let mut reader = drive.reader(1);
+        let end = tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s");
+        let mut frames = Vec::new();
+        while let Some(read) = next_within(&mut reader).await {
+            frames.push(read);
+        }
+        let ran = r.ran.0.lock().unwrap().clone();
+        (end, r.builds.read_build(&r.build).await.unwrap(), r.builds.current_build().await.unwrap(), ran, frames, trace_id)
+    });
+    match &end {
+        DriveEnd::Stalled(why) => assert!(why.contains("ended incomplete") && why.contains("node.create:mesh1.rpc.3"), "the stall names the create: {why}"),
+        other => panic!("a create that fails every time stalls the drive: {other:?}"),
+    }
+    assert_ne!(p.state, BuildState::Failed, "the Build is not failed");
+    assert!(matches!(current, CurrentBuild::InProgress(_)), "the Build stays in progress: {current:?}");
+    assert!(frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, reason, .. }) if step == "incomplete" && reason.contains("node.create:mesh1.rpc.3"))), "the Build reports Blocked incomplete naming the create: {frames:?}");
+    assert!(!frames.iter().any(|f| matches!(f, Read::Terminal(_) | Read::Frame(BuildReply::Failed { .. }))), "no terminal: {frames:?}");
+    let count = |k: &str| ran.iter().filter(|r| *r == k).count();
+    assert_eq!(count("node.create:mesh1.rpc.3"), 2, "the failed create is run by attempt 1 and once more by attempt 2: {ran:?}");
+    assert!(["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].iter().all(|k| count(k) == 1), "the completed creates ran once: {ran:?}");
+    let spans = cap.spans();
+    eprintln!("cell trace_id={trace_id} reconcile spans {:?}", reconciles(&spans, &trace_id));
+    let stalls: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-stalled" && s["trace_id"] == trace_id.as_str()).collect();
+    assert_eq!(stalls.len(), 1, "the stall is named once: {stalls:?}");
 }
