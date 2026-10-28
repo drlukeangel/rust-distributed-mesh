@@ -579,6 +579,9 @@ if [ -n "$fabric" ]; then
   done
   docker network rm "rafka-$fabric" >/dev/null 2>&1
 fi
+if [ -n "$evidence" ] && [ -d "$evidence" ]; then
+  mkdir -p "$kept" && cp -a "$evidence/." "$kept/"
+fi
 rm -rf "$root"
 "#;
 
@@ -616,6 +619,9 @@ impl Drop for EstateScope {
         if let Some(mut r) = self.reaper.take() {
             let _ = r.kill();
             let _ = r.wait();
+        }
+        if let Some((evidence, kept)) = &self.keep {
+            keep_evidence(evidence, kept);
         }
         let _ = std::fs::remove_dir_all(&self.root);
     }
@@ -724,8 +730,9 @@ impl Estate {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(estate_store_dir(&root)).unwrap();
-        let evidence = kept.clone();
-        let scope = EstateScope::begin(&root);
+        let evidence = estate_evidence_dir(&root);
+        std::fs::create_dir_all(&evidence).unwrap();
+        let scope = EstateScope::keeping(&root, &evidence, &kept);
         let container = owner.provider == "container";
         let external = external.map(|(validated, candidate)| {
             let file = root.join("executable-bindings.json");
