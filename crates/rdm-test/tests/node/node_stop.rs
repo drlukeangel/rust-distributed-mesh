@@ -1509,9 +1509,9 @@ async fn signal_stop_with_primary_held(test: &str, bound_ms: &str, release_after
 /// before its declarations are answered, or an outcome span that names neither what was delivered nor
 /// what was left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_signal_stop_waits_for_its_owed_declarations_to_drain_within_the_bound_and_names_them_delivered() {
-    let (outcome, _, _) = signal_stop_with_primary_held("a_signal_stop_waits_for_its_owed_declarations_to_drain_within_the_bound_and_names_them_delivered", "30000", Some(Duration::from_secs(3))).await;
-    assert_eq!(attr(&outcome, "outcome"), "ended", "the queue drained inside the bound: {outcome}");
+async fn a_signal_stop_waits_for_its_owed_declarations_delivered_within_the_bound_and_names_them() {
+    let (outcome, _, _) = signal_stop_with_primary_held("a_signal_stop_waits_for_its_owed_declarations_delivered_within_the_bound_and_names_them", "30000", Some(Duration::from_secs(3))).await;
+    assert_eq!(attr(&outcome, "outcome"), "ended", "the queue was delivered inside the bound: {outcome}");
     assert_eq!(attr(&outcome, "delivered"), "ConnectionsDeleting,Stopped", "the outcome span names what was delivered, in the order owed: {outcome}");
     assert_eq!(attr(&outcome, "left"), "", "nothing was left: {outcome}");
     let elapsed: u64 = attr(&outcome, "elapsed_ms").parse().unwrap_or(0);
