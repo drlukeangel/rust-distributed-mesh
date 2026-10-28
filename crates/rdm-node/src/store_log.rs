@@ -58,9 +58,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// The span every open of a store file records: the file, its provider when the opener names it, its
-/// bytes and lines, the latest `op` of each writer and the fold's `duration` in milliseconds; a refused
-/// fold its `invalid_offset` and cause (i149 plan, "OTLP span-assertion bar").
+/// The span the first fold of a store file from byte 0 records: at its open for a store opened to
+/// fold ([`StoreLog::open`]), at its first read or first append for one opened on its first read
+/// ([`StoreLog::open_on_first_read`], rdm#89, Q227), under the span that read or append runs in. It
+/// names the file, its provider when the opener names it, the caller's span and the reader, the
+/// file's bytes and lines, the latest `op` of each writer and the fold's `duration` in milliseconds; a
+/// refused fold its `invalid_offset` and cause (i149 plan, "OTLP span-assertion bar").
 pub const OPEN_SPAN: &str = "rdm.node.store.resolve.via-fold";
 
 /// The span a tail read records, under its caller's span, when it meets an unended object that does
@@ -519,9 +522,15 @@ struct Inner {
     /// Opened to append ([`StoreLog::open_append`]): its open read nothing, and an append's
     /// reconciliation reads from the file's end as it stood before the append, never from a fold.
     appends: bool,
+    /// The fold has read the file from byte 0 whole once: at the open of a store opened to fold, at the
+    /// first read or append of one opened on its first read. The fold that sets it records
+    /// [`OPEN_SPAN`].
+    folded: std::sync::atomic::AtomicBool,
+    /// The topology storage provider the opener names, recorded on [`OPEN_SPAN`].
+    provider: Option<String>,
 }
 
-/// What a store folds from each line it reads beside the latest line per key ([`StoreLog::open_observed`]).
+/// What a store folds from each line it reads beside the latest line per key ([`StoreLog::open_observed_on_first_read`]).
 pub type Observer = Arc<dyn Fn(&Line) + Send + Sync>;
 
 impl std::fmt::Debug for StoreLog {
@@ -544,18 +553,32 @@ impl StoreLog {
         Self::opened(path, formats, Arc::new(DiskIo), None, Some(provider)).await
     }
 
-    /// [`Self::open`], showing `observer` every line the fold reads, once each, in file order.
-    pub async fn open_observed(path: &Path, formats: Formats, observer: Observer) -> Result<Self, StorageError> {
-        Self::opened(path, formats, Arc::new(DiskIo), Some(observer), None).await
-    }
-
     /// Open (creating) the store file at `path` to append to it, reading `formats` when it is read
     /// later: the open reads no line of it, so a line another writer is still writing, or one this
     /// build cannot read, never refuses it (Q227: a node reads nothing from the store on create, start
     /// or rejoin). The first read ([`Self::latest_of`] and the reads above it) folds the file then.
     pub async fn open_append(path: &Path, formats: Formats) -> Result<Self, StorageError> {
         let file = Arc::new(Self::file(path).await?);
-        Ok(Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io: Arc::new(DiskIo), fold: Mutex::new(Fold::default()), reading: Mutex::new(()), reading_by: Mutex::new(None), append: Arc::new(tokio::sync::Mutex::new(None)), observer: None, appends: true })))
+        Ok(Self(Inner::unread(path, formats, file, None, true)))
+    }
+
+    /// Open (creating) the store file at `path`, reading `formats`, folded on its first read and never
+    /// at its open (rdm#89; Q227: a node-admin reads nothing from the store on create, start or
+    /// rejoin): the open reads no line of it, so a line another writer is still writing, or one this
+    /// build cannot read, never refuses it. The first read, or the first append, folds the file from
+    /// byte 0 as a tail read, on the [`OPEN_SPAN`] span under the span it runs in: a writer's first
+    /// append resumes its sequence from the file's own lines (R-SR3) and reconciles from the offset
+    /// that fold consumed.
+    pub async fn open_on_first_read(path: &Path, formats: Formats) -> Result<Self, StorageError> {
+        let file = Arc::new(Self::file(path).await?);
+        Ok(Self(Inner::unread(path, formats, file, None, false)))
+    }
+
+    /// [`Self::open_on_first_read`], showing `observer` every line the fold reads, once each, in file
+    /// order, from the first fold on.
+    pub async fn open_observed_on_first_read(path: &Path, formats: Formats, observer: Observer) -> Result<Self, StorageError> {
+        let file = Arc::new(Self::file(path).await?);
+        Ok(Self(Inner::unread(path, formats, file, Some(observer), false)))
     }
 
     /// The store file at `path`, opened to read and append, created (and its directory entry
@@ -576,38 +599,22 @@ impl StoreLog {
     }
 
     async fn opened(path: &Path, formats: Formats, io: Arc<dyn AppendIo>, observer: Option<Observer>, provider: Option<&str>) -> Result<Self, StorageError> {
-        let span = tracing::info_span!("rdm.node.store.resolve.via-fold", file = %path.display(), provider = tracing::field::Empty, bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, duration = tracing::field::Empty, outcome = tracing::field::Empty, invalid_offset = tracing::field::Empty, cause = tracing::field::Empty);
-        if let Some(provider) = provider {
-            span.record("provider", provider);
-        }
-        let began = std::time::Instant::now();
         let file = match Self::file(path).await {
             Ok(f) => Arc::new(f),
             Err(e) => {
-                span.record("outcome", "refused").record("cause", e.to_string());
+                let span = tracing::info_span!("rdm.node.store.resolve.via-fold", file = %path.display(), provider = tracing::field::Empty, caller = caller_span(), reader = "open", outcome = "refused", cause = %e);
+                if let Some(provider) = provider {
+                    span.record("provider", provider);
+                }
                 return Err(e);
             }
         };
-        let log = Self(Arc::new(Inner { path: path.to_path_buf(), formats, file, io, fold: Mutex::new(Fold::default()), reading: Mutex::new(()), reading_by: Mutex::new(None), append: Arc::new(tokio::sync::Mutex::new(None)), observer, appends: false }));
-        match log.read(ReadKind::Open, "").await {
-            Ok(()) => {
-                let f = log.0.fold.lock().unwrap_or_else(|e| e.into_inner());
-                let writers: Vec<String> = f.ops.iter().map(|((n, i), seq)| format!("{n}/{i}:{seq}")).collect();
-                span.record("bytes", f.consumed).record("lines", f.lines).record("writers", writers.join(",")).record("duration", began.elapsed().as_millis() as u64).record("outcome", "folded");
-                Ok(log.clone())
-            }
-            Err(e) => {
-                let offset = match &e {
-                    StorageError::Unrecognised { reason, .. } => reason.split("byte offset ").nth(1).and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next()).map(str::to_string),
-                    _ => None,
-                };
-                span.record("outcome", "refused").record("cause", e.to_string()).record("duration", began.elapsed().as_millis() as u64);
-                if let Some(o) = offset {
-                    span.record("invalid_offset", o);
-                }
-                Err(e)
-            }
-        }
+        let mut inner = Inner::unread(path, formats, file, observer, false);
+        Arc::get_mut(&mut inner).expect("a store just made is held once").io = io;
+        Arc::get_mut(&mut inner).expect("a store just made is held once").provider = provider.map(str::to_string);
+        let log = Self(inner);
+        log.read(ReadKind::Open, "open").await?;
+        Ok(log)
     }
 
     /// The file.
@@ -655,7 +662,9 @@ impl StoreLog {
         #[cfg(feature = "testkit-store")]
         let door = read_door::take(&self.0.path, caller);
         let inner = self.0.clone();
-        let unended = blocking_io(move || {
+        // The caller's dispatcher, so the spans this read records on the blocking pool are its caller's.
+        let dispatch = tracing::dispatcher::get_default(|d| d.clone());
+        let unended = blocking_io(move || tracing::dispatcher::with_default(&dispatch, || {
             #[cfg(feature = "testkit-store")]
             if let Some(door) = &door {
                 door.admit_wait();
@@ -673,8 +682,8 @@ impl StoreLog {
             if let Some(door) = door {
                 door.hold();
             }
-            inner.read_tail(kind)
-        })
+            inner.read_held(kind, caller, reader, &parent)
+        }))
         .await?;
         if let Some((offset, held)) = unended {
             tracing::info_span!("rdm.node.store.update.via-tail-read-unended", file = %self.0.path.display(), caller, reader, offset, held)
@@ -715,11 +724,14 @@ impl StoreLog {
         let bytes = serde_json::to_vec(record).map_err(|e| StorageError::Io { file: self.0.path.display().to_string(), reason: format!("the {format} record at {key:?} does not encode: {e}") })?;
         let value: serde_json::Value = serde_json::from_slice(&bytes).expect("encoded JSON parses");
         self.0.formats.check(format, &value).map_err(|why| StorageError::Unrecognised { file: self.0.path.display().to_string(), reason: format!("a write refused: {why}") })?;
+        let (caller, parent) = (caller_span(), tracing::Span::current());
         let guard = self.0.append.clone().lock_owned().await;
         let inner = self.0.clone();
         let (writer, format, key) = (writer.clone(), format.to_string(), key.to_string());
+        let dispatch = tracing::dispatcher::get_default(|d| d.clone());
         blocking_io(move || {
             let mut guard = guard;
+            tracing::dispatcher::with_default(&dispatch, || inner.fold_before_append(caller, &parent))?;
             inner.append_line(&mut *guard, &writer, &format, &key, &bytes)
         })
         .await
@@ -737,11 +749,14 @@ impl StoreLog {
             None => serde_json::to_vec(&line.record).map_err(|e| StorageError::Io { file: file.clone(), reason: format!("the {} record at {:?} does not encode: {e}", line.format, line.key) })?,
         };
         self.0.formats.check(&line.format, &line.record).map_err(|why| StorageError::Unrecognised { file, reason: format!("a write refused: {why}") })?;
+        let (caller, parent) = (caller_span(), tracing::Span::current());
         let guard = self.0.append.clone().lock_owned().await;
         let inner = self.0.clone();
         let (format, key) = (line.format.clone(), line.key.clone());
+        let dispatch = tracing::dispatcher::get_default(|d| d.clone());
         blocking_io(move || {
             let mut guard = guard;
+            tracing::dispatcher::with_default(&dispatch, || inner.fold_before_append(caller, &parent))?;
             inner.append_written(&mut *guard, op, &format, &key, &bytes)
         })
         .await
@@ -807,6 +822,75 @@ impl Inner {
         };
         tracing::info_span!(parent: parent, "rdm.node.store.update.via-tail-read-waiting", file = %self.path.display(), caller, reader, held_by, held_reader, held_ms)
             .in_scope(|| tracing::info!("this tail read waits for the one in progress on the same file"));
+    }
+
+    /// A store whose fold has read nothing yet, on the open `file`.
+    fn unread(path: &Path, formats: Formats, file: Arc<std::fs::File>, observer: Option<Observer>, appends: bool) -> Arc<Self> {
+        Arc::new(Self {
+            path: path.to_path_buf(),
+            formats,
+            file,
+            io: Arc::new(DiskIo),
+            fold: Mutex::new(Fold::default()),
+            reading: Mutex::new(()),
+            reading_by: Mutex::new(None),
+            append: Arc::new(tokio::sync::Mutex::new(None)),
+            observer,
+            appends,
+            folded: std::sync::atomic::AtomicBool::new(false),
+            provider: None,
+        })
+    }
+
+    /// One read of `kind` for `reader`, called under `caller`, holding the read lock ([`Self::read_tail`]).
+    /// The first, from byte 0, is the store's fold of the whole file, recorded on [`OPEN_SPAN`] under
+    /// `parent`: a refused one leaves the fold as it was, and the next read folds from byte 0 again.
+    fn read_held(&self, kind: ReadKind, caller: &'static str, reader: &'static str, parent: &tracing::Span) -> Result<Option<(u64, u64)>, StorageError> {
+        if self.folded.load(std::sync::atomic::Ordering::Acquire) {
+            return self.read_tail(kind);
+        }
+        let span = tracing::info_span!(parent: parent, "rdm.node.store.resolve.via-fold", file = %self.path.display(), provider = tracing::field::Empty, caller, reader, bytes = tracing::field::Empty, lines = tracing::field::Empty, writers = tracing::field::Empty, duration = tracing::field::Empty, outcome = tracing::field::Empty, invalid_offset = tracing::field::Empty, cause = tracing::field::Empty);
+        if let Some(provider) = &self.provider {
+            span.record("provider", provider.as_str());
+        }
+        let began = std::time::Instant::now();
+        let read = self.read_tail(kind);
+        span.record("duration", began.elapsed().as_millis() as u64);
+        match &read {
+            Ok(_) => {
+                self.folded.store(true, std::sync::atomic::Ordering::Release);
+                let f = self.fold.lock().unwrap_or_else(|e| e.into_inner());
+                let writers: Vec<String> = f.ops.iter().map(|((n, i), seq)| format!("{n}/{i}:{seq}")).collect();
+                span.record("bytes", f.consumed).record("lines", f.lines).record("writers", writers.join(",")).record("outcome", "folded");
+            }
+            Err(e) => {
+                span.record("outcome", "refused").record("cause", e.to_string());
+                if let StorageError::Unrecognised { reason, .. } = e {
+                    if let Some(o) = reason.split("byte offset ").nth(1).and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next()) {
+                        span.record("invalid_offset", o);
+                    }
+                }
+            }
+        }
+        read
+    }
+
+    /// Before the first append to a store opened on its first read whose fold has read nothing, fold
+    /// the file from byte 0 as a tail read, holding the read lock: the writer resumes its sequence from
+    /// the file's own lines, never reusing an `op` (R-SR3; a storage change's copy holds the writer's
+    /// earlier lines on a file this process never wrote), and its pending append reconciles from the
+    /// offset this fold consumed. A store opened to append ([`StoreLog::open_append`]) reads nothing.
+    fn fold_before_append(&self, caller: &'static str, parent: &tracing::Span) -> Result<(), StorageError> {
+        if self.appends || self.folded.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        let _one = self.reading.lock().unwrap_or_else(|e| e.into_inner());
+        let _by = ReadingBy::begin(self, caller, "append");
+        if let Some((offset, held)) = self.read_held(ReadKind::Tail, caller, "append", parent)? {
+            tracing::info_span!(parent: parent, "rdm.node.store.update.via-tail-read-unended", file = %self.path.display(), caller, reader = "append", offset, held)
+                .in_scope(|| tracing::info!("a line another writer is still writing stays unconsumed for the next read"));
+        }
+        Ok(())
     }
 
     /// One read of `kind` (the open's fold or a tail read), holding the read lock: the lines from the

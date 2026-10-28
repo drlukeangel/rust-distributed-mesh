@@ -1496,15 +1496,13 @@ impl AcceptedStore {
         Ok(self.storage.fabric().await?.and_then(|r| r.topology_storage_provider))
     }
 
-    /// A Fabric identity heard in an entry answer (`from`), taken as this
-    /// admin's runtime state (nothing is written: the fabric-primary writes `fabric/`). One naming
-    /// another Fabric than the one held is not taken.
+    /// A Fabric identity heard in an entry answer (`from`), taken as this admin's runtime state
+    /// (nothing is written: the fabric-primary writes `fabric/`), never reading the store (Q227: a node
+    /// reads nothing from the store on create, start or rejoin; rdm#89). [`Self::record`] answers the
+    /// store's identity over it whenever the store holds one.
     pub async fn learn(&self, identity: FabricIdentity, from: &str) {
-        // An identity already held (on the store root, or learned) stands: the same Fabric's is
-        // nothing new, and another Fabric's is not this admin's.
-        if !matches!(self.record().await, Ok(None)) {
-            return;
-        }
+        // An identity already learned stands: the same Fabric's is nothing new, and another Fabric's is
+        // not this admin's.
         let mut learned = self.learned.lock().unwrap();
         if learned.is_some() {
             return;

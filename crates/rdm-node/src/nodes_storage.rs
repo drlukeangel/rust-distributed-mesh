@@ -471,8 +471,8 @@ type PathIndex = std::sync::Arc<std::sync::Mutex<BTreeMap<String, NodeId>>>;
 
 #[cfg(feature = "file-backend")]
 /// The nodes' records of the fabric's store root's `nodes.jsonl` (R-SR1), folded from byte 0 at the
-/// open and from the consumed offset at each read after it; the `path.name` index is the fold of the
-/// record lines.
+/// first read or append, never at the open (rdm#89, Q227), and from the consumed offset at each read
+/// after it; the `path.name` index is the fold of the record lines.
 #[derive(Debug, Clone)]
 pub struct FileNodeRows {
     records: crate::store_log::StoreLog,
@@ -481,7 +481,7 @@ pub struct FileNodeRows {
 
 #[cfg(feature = "file-backend")]
 impl FileNodeRows {
-    /// Open the store on the fabric's store `root` and fold it.
+    /// Open the store on the fabric's store `root`, reading none of it: its first read folds it.
     pub async fn open(root: &crate::store_root::StoreRoot) -> Result<Self, StorageError> {
         let paths: PathIndex = Default::default();
         let index = paths.clone();
@@ -492,7 +492,7 @@ impl FileNodeRows {
                 }
             }
         });
-        let records = crate::store_log::StoreLog::open_observed(&root.dir().join(crate::store_root::NODES_FILE), formats(), observe).await?;
+        let records = crate::store_log::StoreLog::open_observed_on_first_read(&root.dir().join(crate::store_root::NODES_FILE), formats(), observe).await?;
         Ok(Self { records, paths })
     }
 

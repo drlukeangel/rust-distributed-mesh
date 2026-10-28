@@ -175,9 +175,10 @@ impl StoreRoot {
         FileRecords::open(base, dir, writer).await
     }
 
-    /// Open the store file `file` of this root, reading `formats`.
+    /// Open the store file `file` of this root, reading `formats`, folded on its first read or append
+    /// and never at its open ([`crate::store_log::StoreLog::open_on_first_read`], rdm#89, Q227).
     pub async fn log(&self, file: &str, formats: crate::store_log::Formats) -> Result<crate::store_log::StoreLog, StorageError> {
-        crate::store_log::StoreLog::open(&self.dir.join(file), formats).await
+        crate::store_log::StoreLog::open_on_first_read(&self.dir.join(file), formats).await
     }
 
     /// Open the store file `file` of this root to append to it, reading none of it

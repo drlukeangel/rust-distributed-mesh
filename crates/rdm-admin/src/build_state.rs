@@ -2365,8 +2365,8 @@ fn store_io(e: crate::storage_error::StorageError) -> BuildStateError {
 #[cfg(feature = "file-backend")]
 impl FileJournal {
     /// Open the Build journal on the fabric's shared `root`, written by `writer` (R-BI6): its
-    /// `builds.jsonl`, appended straight to the file. Its attempt contexts are this admin's own, in
-    /// `own_data_dir`.
+    /// `builds.jsonl`, appended straight to the file and folded on its first read or append, never at
+    /// the open (rdm#89, Q227). Its attempt contexts are this admin's own, in `own_data_dir`.
     pub async fn open_on_root(root: &crate::store_root::StoreRoot, own_data_dir: &Path, writer: &crate::store_log::LogWriter) -> Result<Self, BuildStateError> {
         let contexts = crate::record_store::FileRecords::open(own_data_dir, CONTEXT_DIR, &writer.incarnation_id).await.map_err(|e| BuildStateError::Io(format!("attempt contexts: {e}")))?;
         let unread: Arc<Mutex<Vec<(String, StoredFact)>>> = Arc::default();
@@ -2376,7 +2376,7 @@ impl FileJournal {
                 queue.lock().unwrap_or_else(|e| e.into_inner()).push((l.key.clone(), stored));
             }
         });
-        let file = crate::store_log::StoreLog::open_observed(&root.dir().join(crate::store_root::BUILDS_FILE), crate::store_log::Formats::new().with::<StoredFact>(RECORD_FORMAT), observe).await.map_err(store_io)?;
+        let file = crate::store_log::StoreLog::open_observed_on_first_read(&root.dir().join(crate::store_root::BUILDS_FILE), crate::store_log::Formats::new().with::<StoredFact>(RECORD_FORMAT), observe).await.map_err(store_io)?;
         Ok(Self {
             file,
             unread,
@@ -3600,9 +3600,10 @@ mod tests {
         assert!(by.as_array().is_some_and(|b| b.len() == 2), "the lock names the birth that took it: {by}");
     }
 
-    /// CONTRACT (R-SR3): a line of `builds.jsonl` that is not a Build record refuses the journal's read
-    /// by name, the file and the offset named, never read as no record. Must NOT happen: the facts
-    /// before it answered as the journal.
+    /// CONTRACT (R-SR3; rdm#89: the journal opens without folding): a line of `builds.jsonl` that is not
+    /// a Build record refuses the journal's read by name, the file and the offset named, never read as
+    /// no record; a journal opened over it opens, reading nothing, and its first read is refused the
+    /// same way. Must NOT happen: the facts before it answered as the journal.
     #[tokio::test]
     async fn a_corrupt_build_line_is_refused_by_name() {
         let dir = tmp();
@@ -3611,7 +3612,8 @@ mod tests {
         let file = dir.join(crate::store_root::BUILDS_FILE);
         let at = std::fs::metadata(&file).unwrap().len() + 1;
         std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&file).unwrap(), b"\nnot json\n").unwrap();
-        let err = open_at(&dir).await.unwrap_err();
+        let reopened = open_at(&dir).await.expect("the open reads nothing");
+        let err = reopened.list_active().await.unwrap_err();
         assert!(matches!(&err, BuildStateError::Io(e) if e.contains(&file.display().to_string()) && e.contains(&format!("byte offset {at}"))), "{err}");
         let err = j.list_active().await.unwrap_err();
         assert!(matches!(&err, BuildStateError::Io(e) if e.contains(&format!("byte offset {at}"))), "{err}");

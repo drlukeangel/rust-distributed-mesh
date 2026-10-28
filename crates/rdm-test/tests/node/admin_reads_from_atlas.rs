@@ -218,7 +218,8 @@ async fn start_launched(launch: &Launch) -> Result<Running, String> {
 /// node-admin's topology stores open without folding): a Day-0 node-admin (mesh1.admin.1) is ready, then
 /// the first line of the fabric's `fabric.jsonl` no longer matches its checksum, so no fold from byte 0
 /// reads it (mesh1.admin.1 has read past it), and mesh1.admin.2, launched by it, starts. Its start opens
-/// all four topology stores and folds no `fabric.jsonl`: it comes up ReadyForTraffic, holding its own
+/// all four topology stores and folds no `fabric.jsonl` (its Fabric identity is its entry pull's, Q227):
+/// it comes up ReadyForTraffic, holding its own
 /// row from its mesh-primary's hydration sync; the folds its start makes are its reads', each folded:
 /// `meshes` and `nodes` by the recorded primaries' read (boot.rs, Q149) and `builds` by the current
 /// Build's (boot.rs, #3237's mesh ids). A reader's first read of `fabric.jsonl` then folds it and is

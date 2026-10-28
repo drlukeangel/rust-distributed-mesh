@@ -537,6 +537,63 @@ async fn the_open_span_carries_the_files_bytes_lines_and_duration() {
     assert!(open.1.get("cause").is_some_and(|c| c.contains("len")), "{open:?}");
 }
 
+/// CONTRACT (rdm#89; Q227: a node-admin reads nothing from the store on create, start or rejoin): a
+/// store opened on its first read over a file holding a line this build cannot fold opens, reading
+/// nothing; its first read folds the file from byte 0 and is refused by name with the line's offset; the fold stays where it was, so the next read is
+/// refused the same way, and the file is left as written. Must NOT happen: the open refused by a line
+/// it never needed, or a refused read answered as current.
+#[tokio::test]
+async fn a_store_opened_on_its_first_read_folds_nothing_at_open_and_its_first_read_refuses_by_name() {
+    let path = file("store-log-first-read");
+    let log = reopen(&path).await.unwrap();
+    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
+    let at = std::fs::metadata(&path).unwrap().len() + 1;
+    append_raw(&path, b"\n{\"len\":5}\n");
+    let written = std::fs::read(&path).unwrap();
+    let opened = StoreLog::open_on_first_read(&path, formats()).await.expect("the open reads nothing");
+    assert_eq!((opened.consumed(), opened.writers().len()), (0, 0), "the fold has read nothing");
+    let e = opened.latest_of("rec").await.expect_err("the first read folds the file and meets the line").to_string();
+    assert!(e.contains("nodes.jsonl") && e.contains(&format!("byte offset {at}")), "refused by name, naming the file and the offset: {e}");
+    let e = opened.latest("rec", "k").await.unwrap_err().to_string();
+    assert!(e.contains("nodes.jsonl") && e.contains(&format!("byte offset {at}")), "refused by name, naming the file and the offset: {e}");
+    assert_eq!(opened.consumed(), 0, "a refused fold leaves the fold where it was");
+    assert_eq!(std::fs::read(&path).unwrap(), written, "the file is left as written");
+}
+
+/// CONTRACT (rdm#89; R-SR3: "A writer must not reuse an op after restart: it resumes its sequence from
+/// durable evidence"): a writer's lines stand in a file its process holds no sequence of (a restart, or
+/// a storage change's copy onto a file it never wrote); a store opened on its first read appends for it
+/// with nothing read before: the append folds the file first, and its line continues the writer's
+/// sequence. Must NOT happen: an `op` written twice.
+#[tokio::test]
+async fn a_writers_first_append_on_a_store_opened_on_its_first_read_resumes_its_sequence() {
+    let path = file("store-log-first-append");
+    let log = reopen(&path).await.unwrap();
+    log.append(&writer("a"), "rec/1", "k", &rec("a", 1)).await.unwrap();
+    log.append(&writer("a"), "rec/1", "k", &rec("a", 2)).await.unwrap();
+    StoreLog::forget_issued(&path);
+    let opened = StoreLog::open_on_first_read(&path, formats()).await.unwrap();
+    opened.append(&writer("a"), "rec/1", "k", &rec("a", 3)).await.unwrap();
+    let a = writer("a");
+    assert_eq!(opened.writers().get(&(a.node_id.to_string(), a.incarnation_id.to_string())), Some(&2), "the first append folded the file before it wrote: the writer's greatest seq it read");
+    let seqs: Vec<u64> = reopen(&path).await.unwrap().lines().await.unwrap().iter().map(|l| l.op.as_ref().unwrap().seq).collect();
+    assert_eq!(seqs, vec![1, 2, 3], "the writer's sequence continues: every op is new");
+    assert_eq!(current(&opened, "k").await, Some(rec("a", 3)), "its next read folds its own line");
+}
+
+/// CONTRACT (rdm#89; R-SR4, #78: a tail read leaves another writer's unended line unconsumed): the
+/// first read of a store opened on its first read is a tail read from byte 0, so a line another writer
+/// is still writing at the end of the file leaves the lines before it answered, never a refusal. Must
+/// NOT happen: the first read refused by a write still in flight.
+#[tokio::test]
+async fn the_first_read_of_a_store_opened_on_its_first_read_leaves_a_line_still_being_written_unconsumed() {
+    let path = file("store-log-first-read-unended");
+    let (_log, _line, at) = two_lines_then_a_line_still_being_written(&path).await;
+    let opened = StoreLog::open_on_first_read(&path, formats()).await.unwrap();
+    assert_eq!(current(&opened, "k").await, Some(rec("a", 1)), "the lines before the unended object are answered");
+    assert_eq!(opened.consumed(), at, "the unended object stays unconsumed: the offset stands at its start");
+}
+
 type Spans = Vec<(String, BTreeMap<String, String>)>;
 
 /// The spans `f` records, each with its fields as recorded.
