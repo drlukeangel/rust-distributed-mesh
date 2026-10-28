@@ -457,7 +457,7 @@ impl BuildCarrier {
     /// `builds.get [id: build_id]`: the one Build named, whole; refused `unknown-build` when the
     /// fabric-primary holds none of that id.
     pub async fn build(&self, build_id: &BuildId) -> Result<Build, CallEnd> {
-        self.builds(&Filter::new().eq("id", [build_id.to_string()])).await?.into_iter().next().ok_or_else(|| refusal(BuildReply::UnknownBuild { build_id: build_id.to_string() }))
+        self.builds(&Filter::new().eq("id", [build_id.to_string()])).await?.into_iter().next().ok_or_else(|| refusal(rdm_core::reply::build::unknown_build(build_id.to_string())))
     }
 
     /// `build.delete`: a finished Build leaves history.

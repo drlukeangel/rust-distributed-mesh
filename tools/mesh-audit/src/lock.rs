@@ -668,7 +668,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             );
         }
         Ratchet::BuildWireIsAtomic => {
-            require(root, "crates/rdm-core/src/build.rs", &["const REQUEST_VARIANTS: u32 = 4;", "const REPLY_VARIANTS: u32 = 26;", "code: crate::outcome::Code"], ratchet, &mut out);
+            require(root, "crates/rdm-core/src/build.rs", &["const REQUEST_VARIANTS: u32 = 5;", "const REPLY_VARIANTS: u32 = 30;", "code: crate::outcome::Code"], ratchet, &mut out);
             require(root, "crates/rdm-core/tests/build_wire.rs", &["fn failure_codes_are_appended_and_retained_by_the_build_wire", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
         Ratchet::StoreLayoutWireIsAtomic => {
