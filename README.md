@@ -23,6 +23,16 @@ API and the product role binaries) that exercises them. The target crate layout 
 cargo build --tests
 ```
 
+A fresh clone builds with the Rust toolchain (`rust-toolchain.toml`) and a C compiler (`cc`, `c++`).
+Two tools are optional; `.cargo/config.toml` uses each one that is in `PATH`:
+
+- `sccache`: caches the vendor crates' compiles across checkouts (`scripts/rustc-wrapper.sh`) and the
+  C/C++ compiles (`scripts/cc-wrapper.sh`). Without it, plain `rustc`, `cc` and `c++` compile.
+- `mold` (Linux): the linker. Without it, the default linker links.
+
+A build without one of them names it once at its start (`rdm build: … is not in PATH …`). The
+gate (`scripts/rdm-gate-at.sh`) requires both and refuses by name without them.
+
 Stems run through the gate scripts, not raw `cargo test` (see `CLAUDE.md`, "Lanes, gate, landing").
 Spans go to the OTLP collector named by `OTEL_EXPORTER_OTLP_ENDPOINT`; every scenario's evidence
 is its Jaeger trace.

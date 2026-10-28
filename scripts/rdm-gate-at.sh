@@ -38,6 +38,12 @@ export RDM_REQUIRE_NETFAULT=1
 # Never export CARGO_TARGET_DIR: sccache folds it into every Rust cache key, splitting the cache
 # per worktree. Each worktree builds into its own ./target by default.
 unset CARGO_TARGET_DIR
+# The gate builds with sccache (vendor crates cached across lanes) and mold: a build without them is
+# optional elsewhere (scripts/rustc-wrapper.sh) but would change every gate's build time, so the gate
+# refuses by name instead of falling back.
+for tool in sccache mold; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "ABORT: the gate builds with $tool and $tool is not in PATH" >&2; exit 1; }
+done
 # OTLP over HTTP (e12.s80: the exporter is http-proto); 5318 is the collector's OTLP/HTTP port, 5317 its gRPC one.
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://192.168.68.99:5318
 # Ports: every node binds :0 and the OS assigns it (R-J1); a gate reserves no port range.

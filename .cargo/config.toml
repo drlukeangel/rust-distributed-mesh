@@ -3,7 +3,10 @@
 # worktree already built; workspace crates go to plain rustc (scripts/rustc-wrapper.sh) and compile
 # incrementally. Cargo applies incremental only to workspace members, never to a registry or git
 # crate, so every vendor crate stays cacheable. Measured 2026-10-12: an edit to admin.rs rebuilds the
-# gate's selection in 8.5 s incremental against 55.3 s without. Requires sccache in PATH.
+# gate's selection in 8.5 s incremental against 55.3 s without. sccache and mold are optional
+# (README.md, "Build and test"): the wrappers use each when it is in PATH and fall back to plain
+# rustc, cc and the default linker when it is not, naming the fallback once per cargo run. The lane
+# gate requires both (scripts/rdm-gate-at.sh).
 [build]
 # Per cargo invocation, so a memory budget across concurrent lanes: 10 keeps four agent lanes
 # and a gate inside the box (measured peak, 2026-10-08).
@@ -11,12 +14,8 @@ jobs = 10
 rustc-wrapper = "scripts/rustc-wrapper.sh"
 incremental = true
 
-[target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-
+# The linker: scripts/rustc-wrapper.sh passes `-C link-arg=-fuse-ld=mold` when mold is in PATH.
+# The C and C++ compilers: `sccache cc` / `sccache c++` when sccache is in PATH, plain otherwise.
 [env]
-CC = "sccache cc"
-CXX = "sccache c++"
+CC = { value = "scripts/cc-wrapper.sh", relative = true }
+CXX = { value = "scripts/c++-wrapper.sh", relative = true }

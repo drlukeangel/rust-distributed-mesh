@@ -28,7 +28,12 @@ MEMBERS=$(cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c '
 case " $MEMBERS " in *" $pkg "*) ;; *) echo "cells: $pkg is not a member of this workspace" >&2; exit 2 ;; esac
 sel=$(for p in $MEMBERS; do printf " -p %s" "$p"; done)
 s=$(date +%s.%N)
-if ! cargo build --message-format=json --tests --bins $sel > $art 2> $berr; then
+: > $berr
+# Cargo's stderr is opened for append, so scripts/rustc-wrapper.sh can name a missing optional tool
+# (sccache, mold) on it once (the wrapper writes no line into a file opened with `2>`).
+cargo build --message-format=json --tests --bins $sel > $art 2>> $berr; brc=$?
+grep '^rdm build: ' $berr >&2
+if [ $brc -ne 0 ]; then
   python3 -c 'import json,sys
 for l in open(sys.argv[1]):
     try: m=json.loads(l)

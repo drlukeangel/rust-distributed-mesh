@@ -11,14 +11,21 @@
 # or /mnt/e/noq parsed dynamically at run time), it delegates compilation to sccache (`exec sccache "$@"`) to benefit
 # from object caching; otherwise, for workspace member crates, it directly execs plain rustc (`exec "$@"`) to preserve
 # rustc's early-rmeta artifact notifications and restore inter-crate pipelining.
+#
+# sccache and mold are optional (README.md, "Build and test"). With mold in PATH every compile links
+# through it on Linux (`-C link-arg=-fuse-ld=mold`); without it, the platform's default linker links. Without
+# sccache every crate compiles with plain rustc (and C/C++ with plain cc/c++, scripts/cc-wrapper.sh).
+# A missing tool is named once per cargo run, on stderr, by the first compile that finds it missing.
+# The lane gate requires both (scripts/rdm-gate-at.sh).
 
 set -euo pipefail
 
-# If forced recompile of vendors is requested, refresh cache and bypass wrapper
-if [ "${RDM_RECOMPILE_VENDORS:-0}" = "1" ]; then
-    export SCCACHE_RECACHE=1
-    exec "$@"
-fi
+have_sccache=0; command -v sccache >/dev/null 2>&1 && have_sccache=1
+# mold is the Linux linker (the hosts the committed config named it for); elsewhere it is never looked for.
+have_mold=0; no_mold=0
+case "${OSTYPE:-}" in
+    linux*) if command -v mold >/dev/null 2>&1; then have_mold=1; else no_mold=1; fi ;;
+esac
 
 # Locate the crate source file argument (the first argument ending in .rs)
 src_file=""
@@ -34,6 +41,57 @@ done
 # If no source file was passed (e.g. rustc -vV, --print, or version queries), exec plain rustc
 if [ -z "$src_file" ]; then
     exec "$@"
+fi
+
+link_args=()
+[ "$have_mold" -eq 1 ] && link_args=(-C link-arg=-fuse-ld=mold)
+
+# Name a missing tool once per cargo run, on cargo's own stderr (/proc/<cargo pid>/fd/2): a line on
+# this compile's stderr goes into cargo's per-crate output cache and is replayed on every later build
+# of that crate, after the tool is installed too. Cargo is this wrapper's parent: its pid and start
+# time key one marker directory, made atomically (mkdir), so of the compiles cargo starts in parallel
+# exactly one prints; markers of cargo runs that have ended are removed. A compile a build script runs
+# (proc-macro2's probe) prints nothing. Cargo's stderr is written only where an append cannot overwrite
+# cargo's own lines: a terminal, a pipe, or a file cargo holds open for append (`2>>`); a file opened
+# with `2>` gets no line. Without /proc (macOS) the line goes on this compile's stderr.
+if [ "$have_sccache" -eq 0 ] || [ "$no_mold" -eq 1 ]; then
+    to=""; started=""
+    if [ -r "/proc/$PPID/stat" ]; then
+        fd2="/proc/$PPID/fd/2"
+        if [ "$(cat "/proc/$PPID/comm" 2>/dev/null)" = cargo ] && [ -w "$fd2" ]; then
+            if [ -p "$fd2" ] || [ -c "$fd2" ]; then
+                to="$fd2"
+            elif [ -f "$fd2" ]; then
+                flags="$(sed -n 's/^flags:[[:space:]]*//p' "/proc/$PPID/fdinfo/2" 2>/dev/null || true)"
+                if [ -n "$flags" ] && (( (8#$flags & 8#2000) != 0 )); then to="$fd2"; fi
+            fi
+            started="$(sed 's/.*) //' "/proc/$PPID/stat" 2>/dev/null | cut -d' ' -f20 || true)"
+        fi
+    else
+        to=/dev/stderr
+        started="$(ps -o lstart= -p "$PPID" 2>/dev/null | tr -s ' ' '_' || true)"
+    fi
+    notes="${TMPDIR:-/tmp}/rdm-build-notes.$(id -u)"
+    if [ -n "$to" ] && mkdir -p "$notes" 2>/dev/null && mkdir "$notes/$PPID.$started" 2>/dev/null; then
+        for m in "$notes"/*; do
+            pid="${m##*/}"; pid="${pid%%.*}"
+            kill -0 "$pid" 2>/dev/null || rmdir "$m" 2>/dev/null || true
+        done
+        missing=""
+        [ "$have_sccache" -eq 1 ] || missing="sccache is not in PATH: crates compile with plain rustc, C and C++ with plain cc and c++"
+        [ "$no_mold" -eq 0 ] || missing="${missing:+$missing; }mold is not in PATH: the default linker links"
+        printf 'rdm build: %s (both optional: README.md, "Build and test")\n' "$missing" >> "$to" 2>/dev/null || true
+    fi
+fi
+
+if [ "$have_sccache" -eq 0 ]; then
+    exec "$@" ${link_args[@]+"${link_args[@]}"}
+fi
+
+# If forced recompile of vendors is requested, refresh cache and bypass wrapper
+if [ "${RDM_RECOMPILE_VENDORS:-0}" = "1" ]; then
+    export SCCACHE_RECACHE=1
+    exec "$@" ${link_args[@]+"${link_args[@]}"}
 fi
 
 cargo_home="${CARGO_HOME:-$HOME/.cargo}"
@@ -73,7 +131,7 @@ else
 fi
 
 if [ "$is_external" -eq 0 ]; then
-    exec "$@"
+    exec "$@" ${link_args[@]+"${link_args[@]}"}
 fi
 
 # OUT_DIR is the ONE lane-varying input to an external crate's compile. Every other
@@ -160,4 +218,4 @@ if [ -n "${OUT_DIR:-}" ] && [ -d "$OUT_DIR" ]; then
     fi
 fi
 
-exec sccache "$@"
+exec sccache "$@" ${link_args[@]+"${link_args[@]}"}
