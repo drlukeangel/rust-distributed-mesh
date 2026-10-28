@@ -80,6 +80,9 @@ pub struct RunningNode {
     data_connections: rdm_transport::connections::ConnectionsRegistry,
     /// The listeners this birth bound from its launch (`RDM_LISTENERS`, Q151), held open for its life.
     listeners: Arc<Vec<(String, std::net::TcpListener)>>,
+    /// The nodes' rows of the provider this birth writes, opened on the first read
+    /// ([`RunningNode::node_row`]).
+    node_rows: Arc<dyn crate::nodes_storage::NodeRowsStorage>,
 }
 
 /// Bind each listener `assigned` names at its assigned address (port 0: the operating system selects
@@ -113,6 +116,28 @@ impl RunningNode {
     /// abandoned, and the row's map comes back at the next hydration sync).
     pub async fn config_update(&self, config: std::collections::BTreeMap<String, String>) -> std::result::Result<rdm_core::status::StatusReply, rdm_client::CallEnd> {
         self.own_config().update(config).await
+    }
+
+    /// Another node's whole row, read from the nodes storage by its `id` or its `path.name` (query.md §1,
+    /// Q237): a point read of the record its mesh-primary last wrote, with no call to any primary. The
+    /// store is opened on this birth's first read, never at its start, join or create (Q227); a row by
+    /// `path.name` is the one the `path.name` index names, a `Withdrawn` one answered as none. `None` when
+    /// no row was ever written there; a store that does not read is refused by name.
+    pub async fn node_row(&self, node: impl Into<crate::nodes_storage::IdOrName>) -> std::result::Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        use tracing::Instrument as _;
+        let node = node.into();
+        let (by, at) = match &node {
+            crate::nodes_storage::IdOrName::Id(id) => ("id", id.to_string()),
+            crate::nodes_storage::IdOrName::Name(name) => ("name", name.to_string()),
+        };
+        let span = tracing::info_span!("rdm.node.row.resolve.via-store", node = %self.topology_view.node_name(), by, at = %at, outcome = tracing::field::Empty, cause = tracing::field::Empty);
+        let read = node.read(self.node_rows.as_ref()).instrument(span.clone()).await;
+        match &read {
+            Ok(Some(_)) => span.record("outcome", "found"),
+            Ok(None) => span.record("outcome", "none"),
+            Err(e) => span.record("outcome", "refused").record("cause", e.to_string()),
+        };
+        read
     }
 
     /// [`Self::config_update`] as a handle that outlives the borrow: what an application task holds.
@@ -501,6 +526,8 @@ async fn start_booted(
     let topology_storage = crate::storage_backend::NodeStorageHandle::open(&providers, launch).await.map_err(|e| anyhow!("{e}"))?;
     step.record("writes_to", topology_storage.writes_to().as_str());
     let base_storage = topology_storage.connections();
+    // Other nodes' rows: nothing opened or read here (Q227), the store opened on the first read (Q237).
+    let node_rows = topology_storage.node_rows();
     let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
         rdm_core::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         decorate_storage(base_storage),
@@ -893,7 +920,7 @@ async fn start_booted(
                                     leave: None,
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, pre_node_ready_task: pre_node_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections, listeners: bound_listeners.clone() });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, pre_node_ready_task: pre_node_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections, listeners: bound_listeners.clone(), node_rows: node_rows.clone() });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },

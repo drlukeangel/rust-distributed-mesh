@@ -14,6 +14,13 @@ mesh's node records, held in memory, filled from the node records once at its st
 written by each op after that (Q203, Q204, Q224). A read makes no store read: the filter is matched
 against the atlas, and a nodes store that fails every read leaves the answer unchanged.
 
+A node reads another node's row from the nodes storage itself (Q237, Luke): a point read by `id` or
+by `name`, the store opened on the node's first read and never at its start, join or create, where
+the hydration sync from its mesh-primary gives it everything it needs (Q227, Q234). The row is the
+record: the mesh-primary writes it and its atlas in one step, so the store is never behind an atlas,
+and the read sees a node's own update as soon as its mesh-primary has written it. A scan of the store
+is never a node's. The store's reader must not meet a line still being written (#3222).
+
 One read per entity, each answering a list in a stable order: `fabrics.get`, `meshes.get`,
 `nodes.get`, `connections.get`. A filter is a list of `[property, [values…]]` pairs.
 
@@ -28,6 +35,12 @@ nodes.get  [["id", ["<node id>"]]]                                 one node
 nodes.get  []                                                      no filter: the fabric's topology
 meshes.get [["name", ["mesh1"]]]
 connections.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
+```
+
+From a node:
+
+```text
+node.node_row(id | name)                                           one row, from the nodes storage (Q237)
 ```
 
 The matching rules:

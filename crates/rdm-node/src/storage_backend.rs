@@ -1,8 +1,10 @@
-//! The storage backend a node runs on: its own connections rows (`connections.storage`). A node-admin's backend opens the admin's six boundaries (`rdm_admin::storage_backend`);
+//! The storage backend a node runs on: its own connections rows (`connections.storage`) and its point
+//! reads of other nodes' rows (`nodes.storage`, query.md §1, Q237). A node-admin's backend opens the admin's six boundaries (`rdm_admin::storage_backend`);
 //! a node opens this one at its boot. RDM standalone's is [`FileNodeBackend`] (the `file-backend`
 //! feature, the default), the rows as files on the fabric's store root. [`MemoryNodeBackend`] holds
 //! one process's rows.
 
+use crate::nodes_storage::NodeRowsStorage;
 use crate::storage::ConnectionsStorage;
 use async_trait::async_trait;
 use rdm_core::launch::Launch;
@@ -12,6 +14,9 @@ use std::sync::Arc;
 pub struct NodeStorage {
     /// The node's own connections rows.
     pub connections: Arc<dyn ConnectionsStorage>,
+    /// The nodes' rows, a point read by id or by `path.name` (query.md §1, Q237): the backend opens
+    /// them on the first read, never at the node's start, join or create (Q227).
+    pub node_rows: Arc<dyn NodeRowsStorage>,
     /// Where the rows are written now, as the boot's span records it.
     pub writes_to: String,
 }
@@ -24,7 +29,8 @@ pub trait NodeStorageBackend: Send + Sync {
 }
 
 /// RDM standalone's backend: the node's connection facts, its lines of the fabric's store root's
-/// `connections.jsonl` (R14, R-SR1), appended there from an open that reads none of it (Q227). Its place is the launch's store dir
+/// `connections.jsonl` (R14, R-SR1), appended there from an open that reads none of it (Q227), and the
+/// nodes' rows of the root's `nodes.jsonl`, folded on the first read of one (Q237). Its place is the launch's store dir
 /// (`RDM_STORE_DIR`), or the one it was registered at ([`Self::at`]).
 #[cfg(feature = "file-backend")]
 #[derive(Debug, Default, Clone)]
@@ -49,6 +55,7 @@ impl NodeStorageBackend for FileNodeBackend {
         let connections = crate::storage::FileConnectionsStorage::open(&root, &launch.name, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
+            node_rows: Arc::new(crate::nodes_storage::FileNodeRowsOnFirstRead::at(root)),
             writes_to: "store-root".into(),
         })
     }
@@ -145,6 +152,12 @@ impl NodeStorageHandle {
         Arc::new(ConnectionsThroughHandle(self.clone()))
     }
 
+    /// The nodes' rows, through this handle: every read goes to the provider the node writes at that
+    /// read, opened on its first read (query.md §1, Q237).
+    pub fn node_rows(self: &Arc<Self>) -> Arc<dyn NodeRowsStorage> {
+        Arc::new(NodeRowsThroughHandle(self.clone()))
+    }
+
     /// Replace the provider with the one this executable registers as `provider`, opened now, off the
     /// node's boot: from the swap every call goes to it, and this returns once every write admitted to
     /// the old provider has been answered there ("Finish outstanding writes"). A name the executable
@@ -185,13 +198,44 @@ impl ConnectionsStorage for ConnectionsThroughHandle {
     }
 }
 
-/// One process's rows: the node's connections held in memory, gone with its process.
+/// `nodes.storage`'s point reads through a node's [`NodeStorageHandle`].
+struct NodeRowsThroughHandle(Arc<NodeStorageHandle>);
+
+#[async_trait]
+impl NodeRowsStorage for NodeRowsThroughHandle {
+    async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().node_rows.node(node_id).await
+    }
+    async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().node_rows.node_at(name).await
+    }
+}
+
+/// The nodes' rows of a process that holds none: every read is refused by name.
+struct NoNodeRows;
+
+#[async_trait]
+impl NodeRowsStorage for NoNodeRows {
+    async fn node(&self, _: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        Err(no_node_rows())
+    }
+    async fn node_at(&self, _: &crate::model::PathName) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        Err(no_node_rows())
+    }
+}
+
+fn no_node_rows() -> crate::storage_error::StorageError {
+    crate::storage_error::StorageError::Refused { file: "nodes.storage".into(), reason: "the memory backend holds this process's own connections only: no node's row is read from it".into() }
+}
+
+/// One process's rows: the node's connections held in memory, gone with its process; it holds no
+/// node's row, and a read of one is refused by name.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MemoryNodeBackend;
 
 #[async_trait]
 impl NodeStorageBackend for MemoryNodeBackend {
     async fn open(&self, _launch: &Launch) -> Result<NodeStorage, String> {
-        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), writes_to: "memory".into() })
+        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), node_rows: Arc::new(NoNodeRows), writes_to: "memory".into() })
     }
 }
