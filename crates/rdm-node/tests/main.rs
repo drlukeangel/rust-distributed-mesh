@@ -7,6 +7,7 @@ mod connection_writes;
 #[cfg(feature = "file-backend")]
 mod connections_open;
 mod leadership;
+mod operations;
 #[cfg(feature = "file-backend")]
 mod storage_copy;
 #[cfg(feature = "file-backend")]

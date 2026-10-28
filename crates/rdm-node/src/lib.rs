@@ -22,6 +22,7 @@ pub mod node_name;
 pub mod node_rpc;
 pub mod node_self;
 pub mod nodes_storage;
+pub mod operation;
 pub mod rafka_time;
 pub mod blocking;
 pub mod durable_file;

@@ -22,6 +22,7 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 | [`PreNodeReadyState`](#t-rdm_node-node_hooks-PreNodeReadyState) | rdm-node | `crates/rdm-node/src/node_hooks.rs` |
 | [`ScopeStatus`](#t-rdm_core-model-ScopeStatus) | rdm-core | `crates/rdm-core/src/model.rs` |
 | [`ScopeStatus`](#t-rdm_core-views-ScopeStatus) | rdm-core | `crates/rdm-core/src/views.rs` |
+| [`State`](#t-rdm_node-operation-State) | rdm-node | `crates/rdm-node/src/operation.rs` |
 
 <a id="t-rdm_admin-build_state-BuildState"></a>
 
@@ -321,6 +322,21 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`Leaving`** | `leaving` |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
 | 3 | **`Dead`** | `dead` |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
 | 4 | **`Degraded`** | `degraded` |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
+
+<a id="t-rdm_node-operation-State"></a>
+
+### `State`
+
+`crates/rdm-node/src/operation.rs` · enum · 3 variants · rdm-node
+
+Where one operation stands, read by its id (`Operations::read`).
+
+| # | variant · field | serde name | type | serde | labels | doc |
+|---|---|---|---|---|---|---|
+| 0 | **`Unknown`** | (not serialized) |  |  | `name() = "unknown"` | The store holds no operation of that id. |
+| 1 | **`InFlight`** | (not serialized) |  |  | `name() = "in-flight"` | Recorded, its work not completed. |
+| 2 | **`Completed`** | (not serialized) |  |  | `name() = "completed"` | Completed, with its recorded output. |
+| 2.0 | `0` |  | `O` |  |  |  |
 
 ## Status strings
 
