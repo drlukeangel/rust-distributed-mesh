@@ -23,7 +23,7 @@ use crate::server::{Accepting, BoxFut, Erased, HandlerFault, PeerContext, Refusa
 use rdm_core::catalog::{CatalogEntry, Shape, OpOwner};
 use rdm_core::codes::ResetCode;
 use rdm_core::delivery::MAX_REORDER_POSITIONS;
-use rdm_core::outcome::{IndeterminateReason, NotSentReason, PreCommit, ResolveFailure, RpcOutcome};
+use rdm_core::outcome::{Committed, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, ResolveFailure, RpcOutcome, Unserved};
 use rdm_core::streaming::{FrameKind, FrameOrder, OrderState, StreamingProtocol};
 use std::future::Future;
 use std::marker::PhantomData;
@@ -336,6 +336,10 @@ impl ServerBuilder {
 pub enum StreamFailure {
     /// The request committed; the stream ended, reset or ran out of time before its terminal.
     Indeterminate(IndeterminateReason),
+    /// The receiver answered `421 UNSERVED_OP` after the request was written whole: the op was never
+    /// dispatched (node-rpc.md §23, §40), the outcome a unary call gets for the same reset. It is the
+    /// stream's first and only item; a refusal arriving before the request was whole is the open's.
+    Unserved(Unserved),
     /// A frame broke the stream order or did not decode.
     Violation(String),
 }
@@ -343,7 +347,31 @@ pub enum StreamFailure {
 impl StreamFailure {
     /// Standard code from the typed stream ending.
     pub fn code(&self) -> rdm_core::outcome::Code {
-        match self { Self::Indeterminate(reason) => reason.code(), Self::Violation(_) => rdm_core::outcome::Code::Internal }
+        match self {
+            Self::Indeterminate(reason) => reason.code(),
+            Self::Unserved(u) => RpcOutcome::<()>::Unserved(u.clone()).code(),
+            Self::Violation(_) => rdm_core::outcome::Code::Internal,
+        }
+    }
+
+    /// The typed ending's name, as the call span's `detail` carries it.
+    pub fn detail_name(&self) -> &'static str {
+        match self {
+            Self::Indeterminate(reason) => reason.detail_name(),
+            Self::Unserved(u) => RpcOutcome::<()>::Unserved(u.clone()).detail_name(),
+            Self::Violation(_) => "protocol-violation",
+        }
+    }
+
+    /// A reset of the committed request with `code`, classified as a unary call's is
+    /// (`Committed::reset`): `421` is `Unserved`, any other code `Indeterminate`.
+    fn of_reset(committed: Option<Committed>, code: u64) -> Self {
+        let Some(committed) = committed else { return Self::Indeterminate(IndeterminateReason::Reset(code)) };
+        match committed.reset::<()>(code) {
+            RpcOutcome::Unserved(u) => Self::Unserved(u),
+            RpcOutcome::Indeterminate(i) => Self::Indeterminate(i.reason().clone()),
+            other => unreachable!("Committed::reset ends Unserved or Indeterminate, never {}", other.name()),
+        }
     }
 }
 
@@ -381,6 +409,8 @@ pub struct ReplyStream<P: StreamingProtocol> {
     /// The path the attempt task ended on, once it said (i146 Q38): named if the stream's attempts end
     /// before its terminal.
     attempt_end: Option<AttemptEnd>,
+    /// The request's commit, taken by the reset that ends the stream, which it classifies.
+    committed: Option<Committed>,
     _p: PhantomData<fn() -> P>,
 }
 
@@ -444,7 +474,10 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                     None => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost("the stream ended before its terminal".into())))),
                 },
                 ev = self.owed.attempted.recv() => match ev {
-                    Some(Attempted::Reset(c)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::Reset(c)))),
+                    Some(Attempted::Reset(c)) => {
+                        let failure = StreamFailure::of_reset(self.committed.take(), c);
+                        return Some(self.fail(failure));
+                    }
                     Some(Attempted::ReceiverGone(why)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReceiverGone(why)))),
                     Some(Attempted::TransportLost(why)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost(why)))),
                     Some(Attempted::EndedPreCommit(_)) => {
@@ -485,11 +518,7 @@ impl<P: StreamingProtocol> ReplyStream<P> {
 
     fn fail(&mut self, f: StreamFailure) -> StreamItem<P::Reply> {
         self.done = true;
-        let (code, detail) = match &f {
-            StreamFailure::Indeterminate(reason) => (reason.code(), reason.detail_name()),
-            StreamFailure::Violation(_) => (rdm_core::outcome::Code::Internal, "protocol-violation"),
-        };
-        self.span.record("code", code.name()).record("detail", detail).record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+        self.span.record("code", f.code().name()).record("detail", f.detail_name()).record("elapsed_ms", self.started.elapsed().as_millis() as u64);
         // The owner has its end: the invocation is owed no longer.
         self.owed.guard.complete();
         if let Some(h) = &self.owed._task.0 {
@@ -501,7 +530,9 @@ impl<P: StreamingProtocol> ReplyStream<P> {
 
 impl NodeRpcClient {
     /// Invoke streaming protocol `P` on `target`. `Err` carries a pre-commit or early-refusal
-    /// outcome; `Ok` the committed stream.
+    /// outcome; `Ok` the committed stream. A `421 UNSERVED_OP` is `Err(Unserved)` when it stopped the
+    /// request before it was whole, and the stream's first item, [`StreamFailure::Unserved`], when it
+    /// arrived after.
     pub async fn call_stream<P: StreamingProtocol>(
         &self,
         target: &NodeTarget,
@@ -551,7 +582,8 @@ impl NodeRpcClient {
         let ended: RpcOutcome<P::Reply> = loop {
             tokio::select! {
                 ev = owed.attempted.recv() => match ev {
-                    Some(Attempted::Committed { .. }) => {
+                    Some(Attempted::Committed { frame_len }) => {
+                        let committed = pre.take().expect("pre-commit").commit(RequestFinished::after_complete_write(frame_len, frame_len).expect("a complete write"));
                         opening.complete();
                         finish("stream-open");
                         span.in_scope(|| tracing::info!("node rpc stream call opened"));
@@ -562,7 +594,7 @@ impl NodeRpcClient {
                         };
                         let evidence = owed.evidence.lock().unwrap().clone();
                         span.record("reused", evidence.reused);
-                        return Ok((ReplyStream { span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, _p: PhantomData }, evidence));
+                        return Ok((ReplyStream { span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: Some(committed), _p: PhantomData }, evidence));
                     }
                     Some(Attempted::NotSent(r)) => last = r,
                     Some(Attempted::SendDeadline(r)) => {
@@ -636,7 +668,7 @@ mod tests {
             attempts: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             _task: crate::client::AbortOnDrop(None),
         };
-        let mut stream = ReplyStream::<NodeCommand> { span: tracing::Span::none(), started: Instant::now(), owed, order: FrameOrder::new(), deadline: None, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, _p: PhantomData };
+        let mut stream = ReplyStream::<NodeCommand> { span: tracing::Span::none(), started: Instant::now(), owed, order: FrameOrder::new(), deadline: None, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: None, _p: PhantomData };
         let frame = NodeCommandReply::CommandAccepted { node_id: birth.node_id, incarnation: birth.incarnation };
         tx.send(SlotEvent::Frame(NodeCommand::encode_reply(&frame).unwrap(), None)).unwrap();
         assert!(matches!(stream.next().await, Some(StreamItem::Failed(StreamFailure::Violation(reason))) if reason == "a response frame carries no transport position"));

@@ -270,7 +270,10 @@ Ok(terminal_reply) // return it; the runtime sends the terminal frame
 ```
 
 On the caller, use `client.call_stream::<P>(target, request, options)`. Handle an opening failure
-separately from a stream that opens and later fails. Once it opens:
+separately from a stream that opens and later fails. A target that does not serve the op (`421`)
+shows up either way: as the open's `Unserved`, when its refusal arrives before the request is
+written whole, or as the stream's first item, `StreamFailure::Unserved`, when it arrives after. Both
+are the same definitive outcome: nothing was dispatched. Once it opens:
 
 ```rust,ignore
 while let Some(item) = stream.next().await {
@@ -322,7 +325,7 @@ application resumption after a new invocation are different: define the latter i
 The protocol declaration helper is available: `rdm_core::protocol_variants!` (§2). The conformance
 harness is available: `rdm_test::conformance::unary::<P>` and `rdm_test::conformance::streaming::<P>`
 run a protocol by naming its type, given its registration and the requests it answers (named
-refusals, frame limits, duplicate delivery, ordering, backpressure, cancellation, loss of the reply,
+refusals, frame limits, an unserved op, duplicate delivery, ordering, backpressure, cancellation, loss of the reply,
 and for a stream the consumer's acknowledgement after its record); `BrokerData` and `Count` run it as
 their own cells. The compiled consumer example is available:
 [`demo/src/consumer_example.rs`](../../demo/src/consumer_example.rs) holds an application service in an

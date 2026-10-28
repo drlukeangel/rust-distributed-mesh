@@ -36,7 +36,8 @@
 //!
 //! On the demo estate (`scripts/demo-estate.sh example`) the `rshape-example` executable runs this
 //! as one compute and one broker; the other nodes run the R-shape roles, which do not serve these
-//! ops: a `Submit` to one ends `Unserved`, and the caller passes that node over.
+//! ops: a `Submit` to one ends `Unserved`, a records copy from one fails `Unserved` on its first
+//! item ([`ReadFailure::Unserved`]), and the caller passes that node over.
 
 use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
 use rdm_core::filter::Filter;
@@ -467,6 +468,16 @@ pub fn register(b: ServerBuilder, service: Arc<ExampleService>, gate: PreNodeRea
         })
 }
 
+/// Why a read of [`ExampleRecords`] ended without its terminal.
+#[derive(Debug)]
+pub enum ReadFailure {
+    /// The node does not serve the op (`421`), answered as the stream's first item: nothing was
+    /// dispatched, as an open that ends `Unserved`.
+    Unserved,
+    /// A refusal, a frame that could not be recorded, or the stream's failure.
+    Ended(String),
+}
+
 /// Read an [`ExampleRecords`] stream to its end. Each frame is handed to `record` with its position
 /// and acknowledged only once `record` returned `Ok`: what is acknowledged is recorded first (§6).
 /// Returns the terminal's `next`, or why the stream ended without one; a `record` error ends the
@@ -474,25 +485,26 @@ pub fn register(b: ServerBuilder, service: Arc<ExampleService>, gate: PreNodeRea
 pub async fn read_records(
     mut stream: ReplyStream<ExampleRecords>,
     mut record: impl FnMut(Option<(&DeliveryId, u32)>, FrameKind, &RecordsFrame) -> std::io::Result<()>,
-) -> Result<u64, String> {
+) -> Result<u64, ReadFailure> {
     let mut next = None;
     while let Some(item) = stream.next().await {
         match item {
             StreamItem::Frame(kind, frame) => {
-                record(stream.position(), kind, &frame).map_err(|e| format!("the frame could not be recorded: {e}"))?;
+                record(stream.position(), kind, &frame).map_err(|e| ReadFailure::Ended(format!("the frame could not be recorded: {e}")))?;
                 stream.accepted().await;
                 match frame {
                     RecordsFrame::Through { next: n } => next = Some(n),
                     RecordsFrame::Started { .. } | RecordsFrame::Entry { .. } => {}
-                    refusal => return Err(format!("refused {}", ExampleRecords::reply_detail(&refusal))),
+                    refusal => return Err(ReadFailure::Ended(format!("refused {}", ExampleRecords::reply_detail(&refusal)))),
                 }
             }
+            StreamItem::Failed(StreamFailure::Unserved(_)) => return Err(ReadFailure::Unserved),
             // The recorded entries stand; nothing past them is assumed.
-            StreamItem::Failed(StreamFailure::Indeterminate(reason)) => return Err(format!("indeterminate: {}", reason.detail_name())),
-            StreamItem::Failed(failure) => return Err(format!("{failure:?}")),
+            StreamItem::Failed(StreamFailure::Indeterminate(reason)) => return Err(ReadFailure::Ended(format!("indeterminate: {}", reason.detail_name()))),
+            StreamItem::Failed(failure) => return Err(ReadFailure::Ended(format!("{failure:?}"))),
         }
     }
-    next.ok_or_else(|| "the stream ended without its terminal".into())
+    next.ok_or_else(|| ReadFailure::Ended("the stream ended without its terminal".into()))
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -665,6 +677,11 @@ impl Caller {
                 })
                 .await;
                 copied.insert(path.clone(), next);
+                // The node does not serve the op: chosen no more, as an open that ends Unserved.
+                if let Err(ReadFailure::Unserved) = ended {
+                    unserved.insert(node);
+                    return tracing::info!(target: "rshape", node = %path, outcome = "Unserved", detail = "unserved-op", "the record copy did not open");
+                }
                 tracing::info!(target: "rshape", node = %path, from, next, ended = ?ended, "a serving node's record copied");
             }
             Err((outcome, _)) => {

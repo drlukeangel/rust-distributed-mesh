@@ -373,7 +373,8 @@ async fn admission_of_stream(end: Result<rdm_transport::stream::ReplyStream<rdm_
     while let Some(item) = stream.next().await {
         let frame = match item {
             rdm_transport::stream::StreamItem::Frame(_, frame) => frame,
-            rdm_transport::stream::StreamItem::Failed(f) => return CommandAdmission::Indeterminate { code: match &f { rdm_transport::stream::StreamFailure::Indeterminate(c) => c.code(), _ => Code::Internal }, reason: format!("{f:?}") },
+            rdm_transport::stream::StreamItem::Failed(f @ rdm_transport::stream::StreamFailure::Unserved(_)) => return CommandAdmission::Refused { code: f.code(), reply: format!("Unserved: {f:?}") },
+            rdm_transport::stream::StreamItem::Failed(f) => return CommandAdmission::Indeterminate { code: f.code(), reason: format!("{f:?}") },
         };
         let result = match &frame {
             // A stop's primitives' acknowledgements and node.mesh.left (Q205): progress, recorded by the

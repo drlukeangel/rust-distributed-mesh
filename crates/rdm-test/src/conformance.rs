@@ -7,8 +7,8 @@
 //! The checks: each named refusal answered (the reserved constructors classified, the runtime's
 //! `not_ready`, `busy` and `connections_deleting`, the protocol's own named refusals); the request
 //! over its ceiling refused `Malformed(TooLarge)`, and one no variant decodes
-//! `Malformed(UnknownVariant)`; a duplicate delivery suppressed; a reply lost after acceptance
-//! delivered once; and for a streaming protocol its frames in order, the 64-frame bound holding the
+//! `Malformed(UnknownVariant)`; a node whose registration omits the protocol answering it
+//! `Unserved`; a duplicate delivery suppressed; a reply lost after acceptance delivered once; and for a streaming protocol its frames in order, the 64-frame bound holding the
 //! producer, a caller dropped mid-stream releasing the invocation, and the consumer's
 //! acknowledgement after its record: `accepted` called before the terminal is recorded fails the
 //! check ([`StreamRecord`]).
@@ -26,7 +26,7 @@ use rdm_core::protocol::NodeProtocol;
 use rdm_core::streaming::{FrameKind, StreamingProtocol};
 use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::admission::Limits;
-use rdm_transport::stream::{ReplyStream, StreamItem};
+use rdm_transport::stream::{ReplyStream, StreamFailure, StreamItem};
 use rdm_transport::{
     Budget, CallOptions, CarriedIdentity, Decode, Delivery, DeliveryStats, NodeRpcClient, NodeRpcServer, NodeTarget, Pacing, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder,
     ServerStats, StaticResolver,
@@ -104,6 +104,9 @@ pub enum Check {
     UnknownVariant,
     /// Each of the protocol's own named refusals is answered by its name.
     NamedRefusals,
+    /// A node whose registration omits the protocol answers it `Unserved`, naming its op, and
+    /// dispatches nothing: a stream's is the open's `Unserved` or the stream's one item.
+    Unserved,
     /// A second delivery of one request (its identity) is acked without dispatch: the handler runs once.
     DuplicateSuppressed,
     /// A reply lost after the request's acceptance is delivered on a new stream; the handler runs once.
@@ -133,6 +136,7 @@ impl Check {
             Self::TooLarge => "too-large",
             Self::UnknownVariant => "unknown-variant",
             Self::NamedRefusals => "named-refusals",
+            Self::Unserved => "unserved",
             Self::DuplicateSuppressed => "duplicate-suppressed",
             Self::ReplyLostAfterAcceptance => "reply-lost-after-acceptance",
             Self::FramesInOrder => "frames-in-order",
@@ -153,6 +157,7 @@ pub const UNARY: &[Check] = &[
     Check::TooLarge,
     Check::UnknownVariant,
     Check::NamedRefusals,
+    Check::Unserved,
     Check::DuplicateSuppressed,
     Check::ReplyLostAfterAcceptance,
 ];
@@ -166,6 +171,7 @@ pub const STREAMING: &[Check] = &[
     Check::TooLarge,
     Check::UnknownVariant,
     Check::NamedRefusals,
+    Check::Unserved,
     Check::FramesInOrder,
     Check::BoundHoldsProducer,
     Check::CallerDropped,
@@ -302,6 +308,7 @@ where
                         }
                         Err(why) => Err(why),
                     },
+                    Check::Unserved => unary_unserved(f).await,
                     Check::DuplicateSuppressed => unary_duplicate(f).await,
                     Check::ReplyLostAfterAcceptance => unary_reply_lost(f).await,
                     other => Err(format!("{} is a streaming check", other.name())),
@@ -355,6 +362,7 @@ where
                         }
                         Err(why) => Err(why),
                     },
+                    Check::Unserved => stream_unserved(f).await,
                     Check::DuplicateSuppressed => stream_duplicate(f).await,
                     Check::ReplyLostAfterAcceptance => stream_reply_lost(f).await,
                     Check::BoundHoldsProducer => bound_holds_producer(f).await,
@@ -726,6 +734,46 @@ fn named(answers: Vec<(String, &'static str, Answer)>) -> Result<(), String> {
 
 /// One identity, delivered twice: the first answered, the second (after the first's acceptance)
 /// acked without dispatch. The identity is the client's own birth's, as a resend carries it.
+/// A rig whose node's registration omits the protocol: it serves nothing of its own.
+async fn omitted(op: u8) -> Result<Rig, String> {
+    let nothing: Serve = Arc::new(|b| b);
+    Rig::new(&nothing, op, false).await
+}
+
+async fn unary_unserved<P>(f: &Unary<P>) -> Result<(), String>
+where
+    P: NodeProtocol,
+    P::Request: Clone + Debug + 'static,
+    P::Reply: Debug,
+{
+    let r = omitted(P::OP).await?;
+    match r.client.call::<P>(&r.target, &f.answered, &options()).await.0 {
+        RpcOutcome::Unserved(u) if u.op() == P::OP => r.dispatched_exactly(0),
+        other => Err(format!("a node that does not serve the protocol answered {}: {other:?}", other.name())),
+    }
+}
+
+async fn stream_unserved<P>(f: &Streaming<P>) -> Result<(), String>
+where
+    P: StreamingProtocol,
+    P::Request: Clone + Debug + 'static,
+    P::Reply: Debug,
+{
+    let r = omitted(P::OP).await?;
+    match r.client.call_stream::<P>(&r.target, &f.answered, &options()).await {
+        Err((RpcOutcome::Unserved(u), _)) if u.op() == P::OP => {}
+        Err((other, _)) => return Err(format!("a node that does not serve the protocol answered the open {}: {other:?}", other.name())),
+        Ok((mut s, _)) => match tokio::time::timeout(FRAME_BOUND, s.next()).await {
+            Ok(Some(StreamItem::Failed(StreamFailure::Unserved(u)))) if u.op() == P::OP => match tokio::time::timeout(FRAME_BOUND, s.next()).await {
+                Ok(None) => {}
+                other => return Err(format!("the unserved failure is the stream's one item; after it: {other:?}")),
+            },
+            other => return Err(format!("a node that does not serve the protocol answered the stream's first item {other:?}")),
+        },
+    }
+    r.dispatched_exactly(0)
+}
+
 fn one_identity(r: &Rig) -> CallOptions {
     let id = DeliveryId { sender: r.client.delivery().me().clone(), delivery_seq: 1 };
     CallOptions { carried: Some(CarriedIdentity { id, forget_below: 1 }), ..options() }

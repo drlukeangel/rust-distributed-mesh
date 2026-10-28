@@ -17,8 +17,7 @@ use rdm_core::PathName;
 use rdm_transport::stream::{ReplyStream, StreamFailure, StreamItem};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt};
-use rdm_core::codes::ResetCode;
-use rdm_core::outcome::{IndeterminateReason, RpcOutcome};
+use rdm_core::outcome::RpcOutcome;
 use rdm_core::protocol::NodeProtocol;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
@@ -358,8 +357,8 @@ impl BuildCarrier {
                 Err((other, _)) => return Err(ended(other).err().unwrap_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Internal, reason: "an early reply that is no refusal".into() })),
                 Ok((mut stream, _)) => match stream.next().await {
                     Some(StreamItem::Frame(_, f)) => (f, Some(stream)),
-                    // The reserved reset 421 is how a node that does not serve the op answers: nothing was dispatched.
-                    Some(StreamItem::Failed(StreamFailure::Indeterminate(IndeterminateReason::Reset(code)))) if code == u64::from(ResetCode::UnservedOp.code()) => return Err(CallEnd::Unserved { op: Build::OP }),
+                    // A node that does not serve the op answers 421: nothing was dispatched.
+                    Some(StreamItem::Failed(StreamFailure::Unserved(_))) => return Err(CallEnd::Unserved { op: Build::OP }),
                     Some(StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the stream broke before its Started frame: {f:?}") }),
                     None => return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the stream ended before its Started frame".into() }),
                 },

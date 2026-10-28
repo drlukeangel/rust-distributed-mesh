@@ -1751,7 +1751,8 @@ impl StatusAuthority {
             let mut joined_outcome: Option<&'static str> = None;
             let frame = match item {
                 Ok(frame) => frame,
-                Err(f) => return A::Indeterminate { code: match &f { rdm_transport::stream::StreamFailure::Indeterminate(c) => c.code(), _ => Code::Internal }, reason: format!("{} stream: {f:?}", request_name(start)) },
+                Err(f @ rdm_transport::stream::StreamFailure::Unserved(_)) => return A::Refused { code: f.code(), reply: format!("Unserved: {f:?}") },
+                Err(f) => return A::Indeterminate { code: f.code(), reason: format!("{} stream: {f:?}", request_name(start)) },
             };
             let position = frames.position();
             let result = match &frame {
@@ -1999,10 +2000,7 @@ impl StatusAuthority {
                         return if accepted { CarryEnd::Incomplete { reported, reason, code: <NodeCommand as rdm_core::protocol::NodeProtocol>::classify_reply(&other).code() } } else { CarryEnd::RefusedByNode(other) };
                     }
                     Err(f) => {
-                        let code = match &f {
-                            rdm_transport::stream::StreamFailure::Indeterminate(cause) => cause.code(),
-                            rdm_transport::stream::StreamFailure::Violation(_) => rdm_core::outcome::Code::Internal,
-                        };
+                        let code = f.code();
                         let reason = format!("{me_name}'s node.connections.delete stream to {} broke {}: {f:?}", subject.name, if accepted { "after the node accepted it" } else { "before the node accepted it" });
                         tracing::Span::current().record("detail", reason.as_str());
                         return if accepted { CarryEnd::Incomplete { reported, reason, code } } else { CarryEnd::Lost { reason, code } };

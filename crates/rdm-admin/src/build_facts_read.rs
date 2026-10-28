@@ -14,7 +14,7 @@
 use crate::build::BuildId;
 use crate::build_state::{BuildFact, BuildStateAdapter};
 use crate::fabric_builds::{encode_chunks, BuildMessage};
-use rdm_transport::stream::{ReplySink, NotStarted, StreamItem};
+use rdm_transport::stream::{ReplySink, NotStarted, StreamFailure, StreamItem};
 use rdm_transport::{NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::build_facts::{BuildFacts, BuildFactsReply, BuildFactsRequest};
 use rdm_core::catalog::OpOwner;
@@ -259,6 +259,7 @@ async fn read_facts(client: &NodeRpcClient, target: &NodeTarget, req: &BuildFact
             }
             StreamItem::Frame(_, BuildFactsReply::End { build_id: b, facts, chunks: n, complete }) => end = Some((b, facts, n, complete)),
             StreamItem::Frame(_, other) => return Err(FetchFailure::Refused(format!("an unexpected frame in the stream: {}", other.name()))),
+            StreamItem::Failed(StreamFailure::Unserved(u)) => return Err(FetchFailure::Refused(format!("the node does not serve Build facts: {u:?}"))),
             StreamItem::Failed(f) => return Err(FetchFailure::Interrupted(format!("the stream failed before its end: {f:?}"))),
         }
     }
