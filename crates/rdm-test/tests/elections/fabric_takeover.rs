@@ -562,11 +562,15 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     })
     .await;
     intact();
+    // The teardown begins here. estate.stop() signals the fabric-primary first, and an admin that outlives it
+    // reads it exited and may open its recovery: that is the teardown's work, not the executor's, so what is
+    // read against the running fabric-primary below ends at this instant.
+    let stop_at = now_ns();
     estate.stop().await;
     let spans = estate.spans();
-    let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "step") == "TerminateRuntime" && attr(sp, "node") == fp && at(sp) >= cut_at).collect();
+    let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "step") == "TerminateRuntime" && attr(sp, "node") == fp && at(sp) >= cut_at && at(sp) < stop_at).collect();
     assert!(terminated.is_empty(), "the running fabric-primary's runtime was not terminated: {terminated:#?}");
-    let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == fp_id && attr(sp, "outcome") == "admitted").collect();
+    let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == fp_id && attr(sp, "outcome") == "admitted" && at(sp) < stop_at).collect();
     assert!(opened.is_empty(), "no recovery was opened for the running fabric-primary: {opened:#?}");
     // The isolated admin's ladder went to the provider reached through no carrier: `via-unreached` is the
     // ladder nobody answered, direct or through a peer. Its `carriers` are the peers it asked (offline.rs
