@@ -15,7 +15,7 @@
 
 use crate::build_log;
 use rdm_client::NodeStatus;
-use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -98,6 +98,19 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     // The recovery is an attempt of mesh1's drift lane (R-BI7: the mesh-primary runs it in its own
     // mesh's lane, numbered there; the Build's own attempt is the fabric lane's, the restart's above).
     let lane_before = build_log::projection(&build_log::log_read(&estate.carrier().await, &accepted).await.unwrap_or_else(|end| panic!("{end}")), &accepted).and_then(|b| b.lanes.get("mesh1").map(|l| u64::from(l.attempt))).unwrap_or(0);
+    // The kill is a fault and the killed process flushes nothing (`Estate::kill_node`): what its evidence
+    // file holds is what its exporter wrote before the kill. The served calls read below of this process
+    // (the first birth's, and the same birth's after its stop and start, which ran in it) are in the
+    // evidence before it is killed.
+    let first_inc = first["incarnation_id"].clone();
+    wait_for("the first birth's served calls are exported before its process is killed", Duration::from_secs(30), || async {
+        let spans = estate.spans();
+        let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
+        let count = |op: &str, outcome: &str| served.iter().filter(|s| s["attributes"]["incarnation_id"] == first_inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).count();
+        // Two gets served the value: one before the stop, and the restarted birth's after its start.
+        (count("put", "stored") > 0 && count("compare-and-swap", "mismatch") > 0 && count("put", "too-large") > 0 && count("get", "value") >= 2).then_some(())
+    })
+    .await;
     estate.kill_node(NODE).await;
     let recovered = estate
         .until_node(NODE, "the recovered node holds the path", crate::node_recovery_due(), |n| {
