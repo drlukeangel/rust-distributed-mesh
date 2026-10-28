@@ -54,52 +54,17 @@ impl NodeProtocol for Count {
     const NAME: &'static str = "count";
     const MAX_REQUEST_FRAME_BYTES: usize = 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 256 * 1024;
-    const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 9;
     type Request = CountRequest;
     type Reply = CountFrame;
 
-    fn reply_detail(reply: &Self::Reply) -> &'static str {
-        match reply {
-            CountFrame::Started => "started",
-            CountFrame::Item { .. } => "item",
-            CountFrame::Done { .. } => "done",
-            CountFrame::PeerUnresolved { .. } => "peer-unresolved",
-            CountFrame::NotReady { .. } => "not-ready",
-            CountFrame::Busy { .. } => "busy",
-            CountFrame::ConnectionsDeleting { .. } => "connections-deleting",
-            CountFrame::Malformed { .. } => "malformed",
-            CountFrame::Unauthorized { .. } => "unauthorized",
+    rdm_core::protocol_variants! {
+        request CountRequest { Count }
+        reply CountFrame {
+            Started = "started" => ReplyKind::Success,
+            Item = "item" => ReplyKind::Success,
+            Done = "done" => ReplyKind::Success,
+            @reserved,
         }
-    }
-    fn classify_reply(r: &CountFrame) -> ReplyKind {
-        match r {
-            CountFrame::Started | CountFrame::Item { .. } | CountFrame::Done { .. } => ReplyKind::Success,
-            CountFrame::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
-            CountFrame::NotReady { .. } => ReplyKind::NotReady,
-            CountFrame::Busy { .. } => ReplyKind::Busy,
-            CountFrame::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
-            CountFrame::Malformed { kind } => ReplyKind::Malformed(*kind),
-            CountFrame::Unauthorized { .. } => ReplyKind::Unauthorized,
-        }
-    }
-    fn peer_unresolved(reason: String) -> CountFrame {
-        CountFrame::PeerUnresolved { reason }
-    }
-    fn not_ready(reason: String) -> CountFrame {
-        CountFrame::NotReady { reason }
-    }
-    fn busy(reason: String) -> CountFrame {
-        CountFrame::Busy { reason }
-    }
-    fn connections_deleting(reason: String) -> CountFrame {
-        CountFrame::ConnectionsDeleting { reason }
-    }
-    fn malformed(kind: MalformedKind) -> CountFrame {
-        CountFrame::Malformed { kind }
-    }
-    fn unauthorized(reason: String) -> CountFrame {
-        CountFrame::Unauthorized { reason }
     }
 }
 

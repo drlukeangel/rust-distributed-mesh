@@ -114,6 +114,11 @@ fn read(code: Code) -> bool { matches!(code, Code::PermissionDenied | Code::Unau
                 with self.subTest(path=path, source=source): self.assertNotEqual(check(path, source), '')
         source = 'impl NodeProtocol for P { fn unauthorized(reason: String) -> Reply { Reply::Unauthorized { reason } } }'
         self.assertEqual(check('crates/rdm-core/src/codec.rs', source), '')
+        source = 'macro_rules! protocol_variants { ($rep:ident) => { fn unauthorized(reason: String) -> Self::Reply { $rep::Unauthorized { reason } } }; }'
+        self.assertEqual(check('crates/rdm-core/src/protocol.rs', source), '')
+        for source in ['macro_rules! other_helper { ($rep:ident) => { fn unauthorized(reason: String) -> Self::Reply { $rep::Unauthorized { reason } } }; }',
+                       'macro_rules! protocol_variants { ($rep:ident) => { fn handle() -> Self::Reply { $rep::Unauthorized { reason } } }; }']:
+            with self.subTest(source=source): self.assertNotEqual(check('crates/rdm-core/src/protocol.rs', source), '')
         source = 'fn read(why: &NotAuthority) { match why { NotAuthority::SenderNotSubject { .. } => (), _ => () } }'
         self.assertEqual(check('crates/rdm-core/src/read.rs', source), '')
 

@@ -117,3 +117,298 @@ pub trait NodeProtocol: 'static + Send + Sync {
         decode_enum(bytes, Self::REPLY_VARIANTS)
     }
 }
+
+/// Declare a protocol's variants inside its `impl NodeProtocol` block: the request enum's variants
+/// and the reply enum's, each list in its enum's declaration order (its postcard position), with
+/// `@reserved` where the reply enum declares the six reserved variants (Node RPC envelope,
+/// Section 2), in this order: `PeerUnresolved { reason: String }`, `NotReady { reason: String }`,
+/// `Busy { reason: String }`, `ConnectionsDeleting { reason: String }`,
+/// `Malformed { kind: MalformedKind }`, `Unauthorized { reason: String }`.
+///
+/// It writes `REQUEST_VARIANTS` and `REPLY_VARIANTS` (each list's length, `@reserved` six),
+/// `classify_reply` and `reply_detail` (each application variant's own code and name, written
+/// `Variant = "name" => code`; each reserved variant's standard code and name) and the six reserved
+/// constructors. The enums stay the application's own, declared beside it with every variant
+/// written out: the helper adds no variant and moves none. Its matches carry no wildcard arm, so a
+/// variant declared and not listed, or listed and not declared, does not compile.
+///
+/// ```
+/// use rdm_core::outcome::{Code, MalformedKind, ReplyKind};
+/// use rdm_core::protocol::NodeProtocol;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Serialize, Deserialize)]
+/// pub enum ShuffleRequest { Record { record: Vec<u8> } }
+///
+/// #[derive(Serialize, Deserialize)]
+/// pub enum ShuffleReply {
+///     Recorded { offset: u64 },
+///     Stale { current: u64 },
+///     PeerUnresolved { reason: String },
+///     NotReady { reason: String },
+///     Busy { reason: String },
+///     ConnectionsDeleting { reason: String },
+///     Malformed { kind: MalformedKind },
+///     Unauthorized { reason: String },
+/// }
+///
+/// pub struct CgShuffleRecord;
+///
+/// impl NodeProtocol for CgShuffleRecord {
+///     const OP: u8 = 0x25;
+///     const NAME: &'static str = "cg-shuffle-record";
+///     const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
+///     const MAX_REPLY_FRAME_BYTES: usize = 4 * 1024;
+///     type Request = ShuffleRequest;
+///     type Reply = ShuffleReply;
+///
+///     rdm_core::protocol_variants! {
+///         request ShuffleRequest { Record }
+///         reply ShuffleReply {
+///             Recorded = "recorded" => ReplyKind::Success,
+///             Stale = "stale" => ReplyKind::new(Code::FailedPrecondition),
+///             @reserved,
+///         }
+///     }
+/// }
+///
+/// assert_eq!((CgShuffleRecord::REQUEST_VARIANTS, CgShuffleRecord::REPLY_VARIANTS), (1, 8));
+/// ```
+///
+/// A reply variant declared and not listed (`Stale`) does not compile:
+///
+/// ```compile_fail
+/// use rdm_core::outcome::{MalformedKind, ReplyKind};
+/// use rdm_core::protocol::NodeProtocol;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Serialize, Deserialize)]
+/// pub enum ShuffleRequest { Record { record: Vec<u8> } }
+///
+/// #[derive(Serialize, Deserialize)]
+/// pub enum ShuffleReply {
+///     Recorded { offset: u64 },
+///     Stale { current: u64 },
+///     PeerUnresolved { reason: String },
+///     NotReady { reason: String },
+///     Busy { reason: String },
+///     ConnectionsDeleting { reason: String },
+///     Malformed { kind: MalformedKind },
+///     Unauthorized { reason: String },
+/// }
+///
+/// pub struct CgShuffleRecord;
+///
+/// impl NodeProtocol for CgShuffleRecord {
+///     const OP: u8 = 0x25;
+///     const NAME: &'static str = "cg-shuffle-record";
+///     const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
+///     const MAX_REPLY_FRAME_BYTES: usize = 4 * 1024;
+///     type Request = ShuffleRequest;
+///     type Reply = ShuffleReply;
+///
+///     rdm_core::protocol_variants! {
+///         request ShuffleRequest { Record }
+///         reply ShuffleReply {
+///             Recorded = "recorded" => ReplyKind::Success,
+///             @reserved,
+///         }
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! protocol_variants {
+    (
+        request $req:ident { $($r:ident),* $(,)? }
+        reply $rep:ident {
+            $( $a:ident = $a_name:literal => $a_code:expr , )*
+            @reserved
+            $( , $b:ident = $b_name:literal => $b_code:expr )* $(,)?
+        }
+    ) => {
+        const REQUEST_VARIANTS: u32 = {
+            // Every request variant is listed: a declared variant the list misses does not compile.
+            #[allow(dead_code)]
+            fn every_request_variant_listed(request: &$req) {
+                match request {
+                    $( $req::$r { .. } => {} )*
+                }
+            }
+            <[&str]>::len(&[$(stringify!($r)),*]) as u32
+        };
+        const REPLY_VARIANTS: u32 = <[&str]>::len(&[
+            $(stringify!($a),)*
+            "PeerUnresolved", "NotReady", "Busy", "ConnectionsDeleting", "Malformed", "Unauthorized"
+            $(, stringify!($b))*
+        ]) as u32;
+
+        fn classify_reply(reply: &Self::Reply) -> $crate::outcome::ReplyKind {
+            match reply {
+                $( $rep::$a { .. } => $a_code, )*
+                $rep::PeerUnresolved { .. } => $crate::outcome::ReplyKind::PeerUnresolved,
+                $rep::NotReady { .. } => $crate::outcome::ReplyKind::NotReady,
+                $rep::Busy { .. } => $crate::outcome::ReplyKind::Busy,
+                $rep::ConnectionsDeleting { .. } => $crate::outcome::ReplyKind::ConnectionsDeleting,
+                $rep::Malformed { kind } => $crate::outcome::ReplyKind::Malformed(*kind),
+                $rep::Unauthorized { .. } => $crate::outcome::ReplyKind::Unauthorized,
+                $( $rep::$b { .. } => $b_code, )*
+            }
+        }
+
+        fn reply_detail(reply: &Self::Reply) -> &'static str {
+            match reply {
+                $( $rep::$a { .. } => $a_name, )*
+                $rep::PeerUnresolved { .. } => "peer-unresolved",
+                $rep::NotReady { .. } => "not-ready",
+                $rep::Busy { .. } => "busy",
+                $rep::ConnectionsDeleting { .. } => "connections-deleting",
+                $rep::Malformed { .. } => "malformed",
+                $rep::Unauthorized { .. } => "unauthorized",
+                $( $rep::$b { .. } => $b_name, )*
+            }
+        }
+
+        fn peer_unresolved(reason: ::std::string::String) -> Self::Reply {
+            $rep::PeerUnresolved { reason }
+        }
+        fn not_ready(reason: ::std::string::String) -> Self::Reply {
+            $rep::NotReady { reason }
+        }
+        fn busy(reason: ::std::string::String) -> Self::Reply {
+            $rep::Busy { reason }
+        }
+        fn connections_deleting(reason: ::std::string::String) -> Self::Reply {
+            $rep::ConnectionsDeleting { reason }
+        }
+        fn malformed(kind: $crate::outcome::MalformedKind) -> Self::Reply {
+            $rep::Malformed { kind }
+        }
+        fn unauthorized(reason: ::std::string::String) -> Self::Reply {
+            $rep::Unauthorized { reason }
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::outcome::Code;
+    use serde::Deserialize;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    enum ShapeRequest {
+        Put { v: u32 },
+        Get,
+    }
+
+    /// Application variants before and after the six, one of each variant form.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    enum ShapeReply {
+        Done,
+        Refused { why: String },
+        PeerUnresolved { reason: String },
+        NotReady { reason: String },
+        Busy { reason: String },
+        ConnectionsDeleting { reason: String },
+        Malformed { kind: MalformedKind },
+        Unauthorized { reason: String },
+        Late(u32),
+    }
+
+    struct Shape;
+
+    impl NodeProtocol for Shape {
+        const OP: u8 = 0x7E;
+        const NAME: &'static str = "shape";
+        const MAX_REQUEST_FRAME_BYTES: usize = 64;
+        const MAX_REPLY_FRAME_BYTES: usize = 64;
+        type Request = ShapeRequest;
+        type Reply = ShapeReply;
+
+        crate::protocol_variants! {
+            request ShapeRequest { Put, Get }
+            reply ShapeReply {
+                Done = "done" => ReplyKind::Success,
+                Refused = "refused" => ReplyKind::new(Code::FailedPrecondition),
+                @reserved,
+                Late = "late" => ReplyKind::Success,
+            }
+        }
+    }
+
+    /// A stamped reply encodes at `position`, decodes back, and carries its name and code.
+    fn stamped(reply: ShapeReply, position: u8, detail: &str, kind: ReplyKind) {
+        let bytes = Shape::encode_reply(&reply).expect("a reply encodes");
+        assert_eq!(bytes[0], position, "{detail} sits at its position in the reply enum");
+        assert_eq!(Shape::decode_reply(&bytes).as_ref(), Ok(&reply), "{detail} decodes to itself");
+        assert_eq!(Shape::reply_detail(&reply), detail);
+        assert_eq!(Shape::classify_reply(&reply), kind, "{detail}'s code");
+    }
+
+    /// CONTRACT: the helper's `peer_unresolved` builds the first reserved variant, at the position
+    /// `@reserved` holds, named `peer-unresolved`, classified NotFound.
+    #[test]
+    fn stamped_peer_unresolved_holds_its_position_and_code() {
+        stamped(Shape::peer_unresolved("r".into()), 2, "peer-unresolved", ReplyKind::PeerUnresolved);
+        assert_eq!(ReplyKind::PeerUnresolved.code(), Code::NotFound);
+    }
+
+    /// CONTRACT: `not_ready` builds the second reserved variant, named `not-ready`, Unavailable.
+    #[test]
+    fn stamped_not_ready_holds_its_position_and_code() {
+        stamped(Shape::not_ready("r".into()), 3, "not-ready", ReplyKind::NotReady);
+        assert_eq!(ReplyKind::NotReady.code(), Code::Unavailable);
+    }
+
+    /// CONTRACT: `busy` builds the third reserved variant, named `busy`, Unavailable.
+    #[test]
+    fn stamped_busy_holds_its_position_and_code() {
+        stamped(Shape::busy("r".into()), 4, "busy", ReplyKind::Busy);
+        assert_eq!(ReplyKind::Busy.code(), Code::Unavailable);
+    }
+
+    /// CONTRACT: `connections_deleting` builds the fourth reserved variant, named
+    /// `connections-deleting`, Unavailable.
+    #[test]
+    fn stamped_connections_deleting_holds_its_position_and_code() {
+        stamped(Shape::connections_deleting("r".into()), 5, "connections-deleting", ReplyKind::ConnectionsDeleting);
+        assert_eq!(ReplyKind::ConnectionsDeleting.code(), Code::Unavailable);
+    }
+
+    /// CONTRACT: `malformed` builds the fifth reserved variant, named `malformed`, its code the
+    /// malformed kind's own: every kind keeps it.
+    #[test]
+    fn stamped_malformed_holds_its_position_and_its_kind_code() {
+        for (kind, code) in [(MalformedKind::TooLarge, Code::ResourceExhausted), (MalformedKind::TypesOverCap, Code::ResourceExhausted), (MalformedKind::UnknownVariant, Code::InvalidArgument), (MalformedKind::Corrupt, Code::DataLoss)] {
+            stamped(Shape::malformed(kind), 6, "malformed", ReplyKind::Malformed(kind));
+            assert_eq!(ReplyKind::Malformed(kind).code(), code, "{kind:?}");
+        }
+    }
+
+    /// CONTRACT: `unauthorized` builds the sixth reserved variant, named `unauthorized`,
+    /// PermissionDenied: the codec position only (no mesh receiver sends it).
+    #[test]
+    fn stamped_unauthorized_holds_its_position_and_code() {
+        stamped(Shape::unauthorized("r".into()), 7, "unauthorized", ReplyKind::Unauthorized);
+        assert_eq!(ReplyKind::Unauthorized.code(), Code::PermissionDenied);
+    }
+
+    /// CONTRACT: the helper counts every variant it lists (`@reserved` six) and keeps each
+    /// application variant's own name and code on either side of the six, unit and tuple forms too;
+    /// the counts bound decoding.
+    #[test]
+    fn helper_counts_each_list_and_keeps_the_application_variants() {
+        assert_eq!((Shape::REQUEST_VARIANTS, Shape::REPLY_VARIANTS), (2, 9));
+        for (reply, position, detail, kind) in [
+            (ShapeReply::Done, 0u8, "done", ReplyKind::Success),
+            (ShapeReply::Refused { why: "w".into() }, 1, "refused", ReplyKind::new(Code::FailedPrecondition)),
+            (ShapeReply::Late(4), 8, "late", ReplyKind::Success),
+        ] {
+            stamped(reply, position, detail, kind);
+        }
+        assert_eq!(Shape::decode_reply(&[9]).err(), Some(DecodeFailure::UnknownVariant));
+        assert_eq!(Shape::decode_request(&[2]).err(), Some(DecodeFailure::UnknownVariant));
+        assert_eq!(Shape::decode_request(&Shape::encode_request(&ShapeRequest::Get).unwrap()), Ok(ShapeRequest::Get));
+        assert_eq!(Shape::decode_request(&Shape::encode_request(&ShapeRequest::Put { v: 1 }).unwrap()), Ok(ShapeRequest::Put { v: 1 }));
+    }
+}

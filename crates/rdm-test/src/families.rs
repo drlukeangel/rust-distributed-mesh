@@ -91,52 +91,16 @@ impl NodeProtocol for BrokerData {
     const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
     const FORWARDABLE: bool = true;
-    const REQUEST_VARIANTS: u32 = 2;
-    const REPLY_VARIANTS: u32 = 8;
     type Request = BrokerDataRequest;
     type Reply = BrokerDataReply;
 
-    fn reply_detail(reply: &Self::Reply) -> &'static str {
-        match reply {
-            BrokerDataReply::Appended { .. } => "appended",
-            BrokerDataReply::Value { .. } => "value",
-            BrokerDataReply::PeerUnresolved { .. } => "peer-unresolved",
-            BrokerDataReply::NotReady { .. } => "not-ready",
-            BrokerDataReply::Busy { .. } => "busy",
-            BrokerDataReply::ConnectionsDeleting { .. } => "connections-deleting",
-            BrokerDataReply::Malformed { .. } => "malformed",
-            BrokerDataReply::Unauthorized { .. } => "unauthorized",
+    rdm_core::protocol_variants! {
+        request BrokerDataRequest { Append, Read }
+        reply BrokerDataReply {
+            Appended = "appended" => ReplyKind::Success,
+            Value = "value" => ReplyKind::Success,
+            @reserved,
         }
-    }
-
-    fn classify_reply(reply: &Self::Reply) -> ReplyKind {
-        match reply {
-            BrokerDataReply::Appended { .. } | BrokerDataReply::Value { .. } => ReplyKind::Success,
-            BrokerDataReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
-            BrokerDataReply::NotReady { .. } => ReplyKind::NotReady,
-            BrokerDataReply::Busy { .. } => ReplyKind::Busy,
-            BrokerDataReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
-            BrokerDataReply::Malformed { kind } => ReplyKind::Malformed(*kind),
-            BrokerDataReply::Unauthorized { .. } => ReplyKind::Unauthorized,
-        }
-    }
-    fn peer_unresolved(reason: String) -> Self::Reply {
-        BrokerDataReply::PeerUnresolved { reason }
-    }
-    fn not_ready(reason: String) -> Self::Reply {
-        BrokerDataReply::NotReady { reason }
-    }
-    fn busy(reason: String) -> Self::Reply {
-        BrokerDataReply::Busy { reason }
-    }
-    fn connections_deleting(reason: String) -> Self::Reply {
-        BrokerDataReply::ConnectionsDeleting { reason }
-    }
-    fn malformed(kind: MalformedKind) -> Self::Reply {
-        BrokerDataReply::Malformed { kind }
-    }
-    fn unauthorized(reason: String) -> Self::Reply {
-        BrokerDataReply::Unauthorized { reason }
     }
 }
 

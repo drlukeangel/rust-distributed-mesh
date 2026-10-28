@@ -262,6 +262,22 @@ mod tests {
     }
 
     #[test]
+    fn the_wire_page_counts_the_variants_a_protocol_variants_invocation_lists() {
+        let root = rafka_mesh_audit::workspace_root();
+        let pages = pages(&root).unwrap();
+        let wire = page(&pages, "wire.md");
+        for (heading, (request, reply), (requests, replies)) in [("## 0x40 `broker-data`", ("BrokerDataRequest", "BrokerDataReply"), (2, 8)), ("## 0x73 `originate`", ("OriginateRequest", "OriginateReply"), (10, 18))] {
+            let at = wire.find(heading).unwrap_or_else(|| panic!("{heading}: a protocol declared through protocol_variants! keeps its section"));
+            let section = &wire[at..at + 1 + wire[at + 1..].find("\n## ").unwrap_or(wire.len() - at - 1)];
+            assert!(section.contains(&format!("| `REQUEST_VARIANTS` | `{requests}` |")), "{heading}: the request count the invocation lists:\n{section}");
+            assert!(section.contains(&format!("| `REPLY_VARIANTS` | `{replies}` |")), "{heading}: the reply count, @reserved six:\n{section}");
+            for (body, n) in [(request, requests), (reply, replies)] {
+                assert!(section.contains(&format!("### `{body}`")) && section.contains(&format!("enum · {n} variants")), "{heading}: {body} is listed with its {n} declared variants:\n{section}");
+            }
+        }
+    }
+
+    #[test]
     fn the_frames_page_lists_every_frame_variant_in_declaration_order() {
         let root = rafka_mesh_audit::workspace_root();
         let pages = pages(&root).unwrap();

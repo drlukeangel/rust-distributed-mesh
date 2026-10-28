@@ -53,6 +53,11 @@ fn ops(ws: &Workspace) -> anyhow::Result<Vec<Op<'_>>> {
                         syn::ImplItem::Type(t) => {
                             types.insert(t.ident.to_string(), &t.ty);
                         }
+                        syn::ImplItem::Macro(m) if m.mac.path.segments.last().is_some_and(|s| s.ident == "protocol_variants") => {
+                            let (requests, replies) = helper_counts(m.mac.tokens.clone()).ok_or_else(|| anyhow::anyhow!("{site}: impl NodeProtocol for {family}: its protocol_variants! lists no request and reply"))?;
+                            consts.entry("REQUEST_VARIANTS".to_string()).or_insert(requests.to_string());
+                            consts.entry("REPLY_VARIANTS".to_string()).or_insert(replies.to_string());
+                        }
                         _ => {}
                     }
                 }
@@ -81,6 +86,30 @@ fn ops(ws: &Workspace) -> anyhow::Result<Vec<Op<'_>>> {
 /// An integer literal as written (`0x1B`, `27`, `0x1B_u8`).
 fn parse_int(text: &str) -> Option<u64> {
     syn::parse_str::<syn::LitInt>(text).ok()?.base10_parse().ok()
+}
+
+/// The variant counts a `rdm_core::protocol_variants!` invocation writes: its `request` list's
+/// length and its `reply` list's, `@reserved` counting the six reserved variants.
+fn helper_counts(tokens: proc_macro2::TokenStream) -> Option<(usize, usize)> {
+    use proc_macro2::{Delimiter, TokenTree};
+    let count = |list: proc_macro2::TokenStream| {
+        let mut entries: Vec<Vec<TokenTree>> = vec![Vec::new()];
+        for t in list {
+            match &t {
+                TokenTree::Punct(p) if p.as_char() == ',' => entries.push(Vec::new()),
+                _ => entries.last_mut().expect("one entry is open").push(t),
+            }
+        }
+        entries.iter().filter_map(|e| e.first()).map(|t| if matches!(t, TokenTree::Punct(p) if p.as_char() == '@') { 6 } else { 1 }).sum::<usize>()
+    };
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    let list = |word: &str| {
+        tokens.windows(3).find_map(|w| match w {
+            [TokenTree::Ident(i), TokenTree::Ident(_), TokenTree::Group(g)] if i == word && g.delimiter() == Delimiter::Brace => Some(count(g.stream())),
+            _ => None,
+        })
+    };
+    Some((list("request")?, list("reply")?))
 }
 
 /// The `NodeProtocol` trait's constant defaults, as written.

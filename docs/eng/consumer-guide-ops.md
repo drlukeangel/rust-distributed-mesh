@@ -57,12 +57,29 @@ call, see [`Count` and its cells](../../crates/rdm-transport/tests/streaming.rs)
 examples, not a production durable-work implementation.
 
 Keep request/reply definitions and classification together. Derive `Serialize` and `Deserialize`
-for the enums; make every success and named refusal explicit and keep the declared variant counts
-consistent with their wire positions.
+for the enums; make every success and named refusal explicit, and list each variant in
+`rdm_core::protocol_variants!` in its wire position: the helper derives the variant counts.
 
 A protocol declaration has this shape:
 
 ```rust
+#[derive(Serialize, Deserialize)]
+pub enum ShuffleRequest {
+    Record { record: ShuffleRecord },
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum ShuffleReply {
+    Recorded { offset: u64 },                     // position 0
+    Stale { current: u64 },                       // position 1
+    PeerUnresolved { reason: String },            // positions 2 to 7: the six reserved variants, in this order
+    NotReady { reason: String },
+    Busy { reason: String },
+    ConnectionsDeleting { reason: String },
+    Malformed { kind: MalformedKind },
+    Unauthorized { reason: String },
+}
+
 pub struct CgShuffleRecord;
 
 impl NodeProtocol for CgShuffleRecord {
@@ -72,19 +89,20 @@ impl NodeProtocol for CgShuffleRecord {
     const MAX_REPLY_FRAME_BYTES: usize = 4 * 1024;
     // const FORWARDABLE: bool = false;              opt-in: carried through a peer (Forward 0x1A)
     // const SERVED_WHILE_CONNECTIONS_DELETING: bool = false;
-    const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 9;
     type Request = ShuffleRequest;                // a postcard enum
     type Reply = ShuffleReply;                    // a postcard enum
 
-    fn classify_reply(r: &ShuffleReply) -> ReplyKind { /* each variant's gRPC code */ }
-    fn reply_detail(r: &ShuffleReply) -> &'static str { /* each variant's name */ }
-    fn peer_unresolved(reason: String) -> ShuffleReply { ShuffleReply::PeerUnresolved { reason } }
-    fn not_ready(reason: String) -> ShuffleReply { ShuffleReply::NotReady { reason } }
-    fn busy(reason: String) -> ShuffleReply { ShuffleReply::Busy { reason } }
-    fn connections_deleting(reason: String) -> ShuffleReply { ShuffleReply::ConnectionsDeleting { reason } }
-    fn malformed(kind: MalformedKind) -> ShuffleReply { ShuffleReply::Malformed { kind } }
-    fn unauthorized(reason: String) -> ShuffleReply { ShuffleReply::Unauthorized { reason } }
+    // Writes REQUEST_VARIANTS (1), REPLY_VARIANTS (8), classify_reply, reply_detail and the six
+    // reserved constructors (peer_unresolved, not_ready, busy, connections_deleting, malformed,
+    // unauthorized).
+    rdm_core::protocol_variants! {
+        request ShuffleRequest { Record }
+        reply ShuffleReply {
+            Recorded = "recorded" => ReplyKind::Success,
+            Stale = "stale" => ReplyKind::new(Code::FailedPrecondition),
+            @reserved,
+        }
+    }
 }
 ```
 
@@ -99,12 +117,17 @@ impl NodeProtocol for CgShuffleRecord {
   a call ([node-rpc.md §25](../architecture/node-rpc.md)). `peer_unresolved` is a codec position your reply
   must carry; a caller whose resolver names no node sends nothing and gets the `NotSent` outcome,
   never this reply.
-- **`classify_reply`** maps each variant to its code (`ReplyKind::Success`, `ReplyKind::new(Code::NotFound)`, ...),
-  and **`reply_detail`** gives each its name for spans.
+- **`protocol_variants!`** lists each enum's variants in declaration order, `@reserved` standing for
+  the six where your reply declares them. It adds no variant and moves none: the enums, the six
+  included, are yours. Its matches carry no wildcard arm, so a variant declared and not listed, or
+  listed and not declared, does not compile.
+- **`classify_reply`** maps each variant to its code, and **`reply_detail`** gives each its name for
+  spans: the helper writes both, from each listed variant's `= "name" => code`
+  (`ReplyKind::Success`, `ReplyKind::new(Code::NotFound)`, ...) and the six's standard codes and names.
 - **`read_only`** (default `false`): return `true` for a request that changes nothing, so a caller may
   retry it after an `Indeterminate`.
-- **Evolution:** never append a field to an existing variant. New data is a new variant, and the
-  variant counts step up. Never reorder or reuse a discriminant.
+- **Evolution:** never append a field to an existing variant. New data is a new variant, listed in
+  the helper in its position, and the variant counts step up. Never reorder or reuse a discriminant.
 
 ## 3. Reserve it in the ledger and serve it
 

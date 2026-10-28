@@ -308,73 +308,26 @@ impl NodeProtocol for Originate {
     const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 65536;
     const FORWARDABLE: bool = false;
-    const REQUEST_VARIANTS: u32 = 10;
-    const REPLY_VARIANTS: u32 = 18;
     type Request = OriginateRequest;
     type Reply = OriginateReply;
 
-    fn reply_detail(reply: &Self::Reply) -> &'static str {
-        match reply {
-            OriginateReply::Called { .. } => "called",
-            OriginateReply::FaultArmed { .. } => "fault-armed",
-            OriginateReply::FaultReleased { .. } => "fault-released",
-            OriginateReply::Snapshot { .. } => "snapshot",
-            OriginateReply::BadDestination { .. } => "bad-destination",
-            OriginateReply::PeerUnresolved { .. } => "peer-unresolved",
-            OriginateReply::NotReady { .. } => "not-ready",
-            OriginateReply::Busy { .. } => "busy",
-            OriginateReply::ConnectionsDeleting { .. } => "connections-deleting",
-            OriginateReply::Malformed { .. } => "malformed",
-            OriginateReply::Unauthorized { .. } => "unauthorized",
-            OriginateReply::ProxyRecorded { .. } => "proxy-recorded",
-            OriginateReply::Dialed { .. } => "dialed",
-            OriginateReply::Streamed { .. } => "streamed",
-            OriginateReply::StreamFailed { .. } => "stream-failed",
-            OriginateReply::TransportStopMarked { .. } => "transport-stop-marked",
-            OriginateReply::DirectBlocked { .. } => "direct-blocked",
-            OriginateReply::OwnConfigUpdated { .. } => "own-config-updated",
+    rdm_core::protocol_variants! {
+        request OriginateRequest { Call, ArmFault, ReleaseFault, Snapshot, RecordProxy, Dial, Stream, StopTransport, BlockDirect, UpdateOwnConfig }
+        reply OriginateReply {
+            Called = "called" => ReplyKind::Success,
+            FaultArmed = "fault-armed" => ReplyKind::Success,
+            FaultReleased = "fault-released" => ReplyKind::Success,
+            Snapshot = "snapshot" => ReplyKind::Success,
+            BadDestination = "bad-destination" => ReplyKind::new(rdm_core::outcome::Code::InvalidArgument),
+            @reserved,
+            ProxyRecorded = "proxy-recorded" => ReplyKind::Success,
+            Dialed = "dialed" => ReplyKind::Success,
+            Streamed = "streamed" => ReplyKind::Success,
+            StreamFailed = "stream-failed" => ReplyKind::Success,
+            TransportStopMarked = "transport-stop-marked" => ReplyKind::Success,
+            DirectBlocked = "direct-blocked" => ReplyKind::Success,
+            OwnConfigUpdated = "own-config-updated" => ReplyKind::Success,
         }
-    }
-    fn classify_reply(reply: &OriginateReply) -> ReplyKind {
-        match reply {
-            OriginateReply::Called { .. } => ReplyKind::Success,
-            OriginateReply::FaultArmed { .. } => ReplyKind::Success,
-            OriginateReply::FaultReleased { .. } => ReplyKind::Success,
-            OriginateReply::Snapshot { .. } => ReplyKind::Success,
-            OriginateReply::BadDestination { .. } => ReplyKind::new(rdm_core::outcome::Code::InvalidArgument),
-            OriginateReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
-            OriginateReply::NotReady { .. } => ReplyKind::NotReady,
-            OriginateReply::Busy { .. } => ReplyKind::Busy,
-            OriginateReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
-            OriginateReply::Malformed { kind } => ReplyKind::Malformed(*kind),
-            OriginateReply::Unauthorized { .. } => ReplyKind::Unauthorized,
-            OriginateReply::ProxyRecorded { .. } => ReplyKind::Success,
-            OriginateReply::Dialed { .. } => ReplyKind::Success,
-            OriginateReply::Streamed { .. } => ReplyKind::Success,
-            OriginateReply::StreamFailed { .. } => ReplyKind::Success,
-            OriginateReply::TransportStopMarked { .. } => ReplyKind::Success,
-            OriginateReply::DirectBlocked { .. } => ReplyKind::Success,
-            OriginateReply::OwnConfigUpdated { .. } => ReplyKind::Success,
-        }
-    }
-
-    fn peer_unresolved(reason: String) -> OriginateReply {
-        OriginateReply::PeerUnresolved { reason }
-    }
-    fn not_ready(reason: String) -> OriginateReply {
-        OriginateReply::NotReady { reason }
-    }
-    fn busy(reason: String) -> OriginateReply {
-        OriginateReply::Busy { reason }
-    }
-    fn connections_deleting(reason: String) -> OriginateReply {
-        OriginateReply::ConnectionsDeleting { reason }
-    }
-    fn malformed(kind: MalformedKind) -> OriginateReply {
-        OriginateReply::Malformed { kind }
-    }
-    fn unauthorized(reason: String) -> OriginateReply {
-        OriginateReply::Unauthorized { reason }
     }
 }
 

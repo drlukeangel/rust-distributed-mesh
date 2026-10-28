@@ -93,6 +93,10 @@ def runtime_auth_codes(text):
             j = i + 1
             while j < len(ts) and vals[j] != ';': j += 1
             imports.append((i, j))
+        # rdm_core::protocol_variants! writes its body only into an `impl NodeProtocol` block: its
+        # reserved constructors are that impl's, exempt by the same kind.
+        if t == 'macro_rules' and vals[i + 1:i + 3] == ['!', 'protocol_variants'] and i + 3 in ends:
+            impls.append((i + 3, ends[i + 3], 'NodeProtocol'))
         if t not in ['fn', 'impl', 'enum'] or i + 1 >= len(ts): continue
         j = i + 2
         while j < len(ts) and vals[j] not in ['{', ';']: j += 1

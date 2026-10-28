@@ -715,7 +715,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.topology.update.via-predecessor-held` | `crates/rdm-admin/src/admin/records.rs` | 812 |
 | `rdm.node_admin.topology.update.via-row-name` | `crates/rdm-admin/src/admin/records.rs` | 790 |
 | `rdm.node_admin.topology.update.via-vanished-from-view` | `crates/rdm-admin/src/admin/boot.rs` | 3157 |
-| `rdm.node_rpc.broker_data.serve.via-append` | `crates/rdm-test/src/families.rs` | 179 |
+| `rdm.node_rpc.broker_data.serve.via-append` | `crates/rdm-test/src/families.rs` | 143 |
 | `rdm.node_rpc.connection.create.via-accept` | `crates/rdm-transport/src/server.rs` | 1058 |
 | `rdm.node_rpc.connection.create.via-dial` | `crates/rdm-transport/src/pool.rs` | 396 |
 | `rdm.node_rpc.connection.delete.via-hard-cut` | `crates/rdm-transport/src/pool.rs` | 284 |
