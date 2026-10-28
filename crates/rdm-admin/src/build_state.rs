@@ -391,6 +391,14 @@ pub struct Lane {
     /// The action each claimed attempt carried, by attempt.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attempt_actions: BTreeMap<u32, AttemptAction>,
+    /// The fabric lane's attempt when the lane's current attempt was claimed (folded in journal order):
+    /// where the mesh's own work in its lane stands among the fabric lane's attempts (Q250 sections).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub at_fabric_attempt: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Lane {
@@ -431,6 +439,7 @@ impl BuildProjection {
             steps: Vec::new(),
             reported: Default::default(),
             attempt_actions: BTreeMap::new(),
+            at_fabric_attempt: 0,
         });
         p.state = l.state;
         p.attempt = l.attempt;
@@ -838,6 +847,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                         steps: Vec::new(),
                         reported: Default::default(),
                         attempt_actions: BTreeMap::new(),
+                        at_fabric_attempt: 0,
                     });
                     if o.attempt == lane.attempt + 1 && !matches!(lane.state, BuildState::Running) {
                         lane.state = BuildState::Pending;
@@ -867,9 +877,11 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                 winners.insert(key, c.executor.clone());
                 if let Some(mesh) = &c.mesh {
                     // A drift lane's attempt exists only by its open: a claim of a lane never opened moves nothing.
+                    let fabric_attempt = out.get(&c.build_id).map(|p| p.attempt).unwrap_or(0);
                     if let Some(lane) = out.get_mut(&c.build_id).and_then(|p| p.lanes.get_mut(mesh)) {
                         if c.attempt == lane.attempt + 1 && !matches!(lane.state, BuildState::Complete) {
                             lane.attempt = c.attempt;
+                            lane.at_fabric_attempt = fabric_attempt;
                             lane.executor = Some(c.executor.clone());
                             lane.claimant = c.claimant.clone();
                             lane.state = BuildState::Running;

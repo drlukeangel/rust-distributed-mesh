@@ -949,9 +949,13 @@ pub(crate) fn crossed_admin(p: &BuildProjection, mesh: &str) -> Option<PathName>
     })
 }
 
-/// The last attempt of the Build an admin of `mesh` held; `0` when none did.
+/// The last attempt of the Build an admin of `mesh` held; `0` when none did. A completed attempt of
+/// the mesh's own lane its own admin ran (a section, Q250) is the mesh's own work at the fabric attempt
+/// the Build stood at when it was claimed.
 fn own_attempt(p: &BuildProjection, mesh: &str) -> u32 {
-    p.attempt_executors.iter().filter(|(_, e)| parse_path(e).is_some_and(|e| e.mesh == mesh)).map(|(a, _)| *a).max().unwrap_or(0)
+    let fabric = p.attempt_executors.iter().filter(|(_, e)| parse_path(e).is_some_and(|e| e.mesh == mesh)).map(|(a, _)| *a).max().unwrap_or(0);
+    let lane = p.lanes.get(mesh).filter(|l| l.state == BuildState::Complete && l.attempt > 0 && l.executor.as_deref().and_then(parse_path).is_some_and(|e| e.mesh == mesh)).map(|l| l.at_fabric_attempt).unwrap_or(0);
+    fabric.max(lane)
 }
 
 /// The node-admin the carrier-edge-lost verdict of `mesh` still owes a node.create (mesh-investigation.md
@@ -1363,7 +1367,7 @@ impl DriveEnv {
                 }
                 // The meshes whose own mesh-primary executes what is left of them are sent their sections,
                 // all at once (Q250); the fabric lane then plans what is left again.
-                match self.run_sections(&me, &turn, drive, &p, &crashed).await {
+                match self.run_sections(&me, &turn, drive, &p).await {
                     Sections::None => {}
                     Sections::Ran => continue,
                     Sections::End(end) => return end,
@@ -1885,8 +1889,9 @@ impl DriveEnv {
     /// attempt and to plan, carried by the call, so a run never waits for the store root.
     /// The sections of what is left of `p` (Q250): by mesh, in plan order, the plain creates whose
     /// executor is that mesh's own mesh-primary, never this fabric-primary. A mesh with any other
-    /// operation left, or held unheard (R-D1), sends no section: the fabric lane keeps its order.
-    fn sections(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology, crashed: &HashSet<String>) -> Vec<(PathName, Vec<BuildOperation>)> {
+    /// operation left, its first node-admin owed, or held unheard (R-D1, whatever its recovery's
+    /// verdict) sends no section: the fabric lane keeps its order, its waits and its recovery.
+    fn sections(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<(PathName, Vec<BuildOperation>)> {
         if p.deletes_fabric() || p.action.is_some() {
             return Vec::new();
         }
@@ -1896,7 +1901,7 @@ impl DriveEnv {
             let Some(node) = op.node().cloned() else { continue };
             let to = crate::executor::executor_for(&op, t);
             match to {
-                Some(to) if to != *me && !kept.contains(&node.mesh) && crate::executor::section_create(&op, t, &to) && self.peer_mesh_held(p, &op, crashed).is_none() => {
+                Some(to) if to != *me && !kept.contains(&node.mesh) && crate::executor::section_create(&op, t, &to) && !t.first_admin_of(&node) && self.unheard_peer(&op).is_none() => {
                     by.entry(node.mesh.clone()).or_insert_with(|| (to, Vec::new())).1.push(op);
                 }
                 _ => {
@@ -1911,10 +1916,10 @@ impl DriveEnv {
     /// Send every section of what is left of `p` to its mesh-primary at once, when two meshes or more
     /// are owed one or a mesh's section failed before, and wait for each to end (Q250). A section that fails stops none of the others; its mesh's operations are planned again
     /// on the next pass, and the same failure twice running stalls the drive naming it.
-    async fn run_sections(self: &Arc<Self>, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection, crashed: &HashSet<String>) -> Sections {
+    async fn run_sections(self: &Arc<Self>, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection) -> Sections {
         let sections = {
             let t = self.topology.read().await.clone();
-            self.sections(me, drive, p, &t, crashed)
+            self.sections(me, drive, p, &t)
         };
         // One mesh's section gains nothing over the fabric lane's own attempt at its mesh-primary: sections
         // are sent when two meshes or more are owed one, or to a mesh whose section failed, which is claimed
