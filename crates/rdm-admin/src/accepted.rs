@@ -1385,7 +1385,16 @@ fn plan_with(
             if creates_owed.contains_key(p) {
                 continue;
             }
-            if !observed.node(p).is_some_and(|n| n.status.is_live()) {
+            // A stopped birth (not live, still present: states.md "Stopped nodes") satisfies its path once
+            // this Build's create of the path is complete: the create's check reached it and held it
+            // (`AdminRunner::create`), and a completed operation is never planned again. A stopped birth
+            // no create of this Build has checked is planned, and the check decides: reached, held;
+            // unreached, deleted and the path created again.
+            let create_done = || {
+                let key = format!("node.create:{p}");
+                steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete)
+            };
+            if !observed.node(p).is_some_and(|n| n.status.is_live() || (n.stopped && create_done())) {
                 // The executable the path's entry names (a request named it).
                 ops.push(BuildOperation::CreateNode { node: p.clone(), over: None, executable: target_executable(topology, p).cloned() });
             }

@@ -557,7 +557,19 @@ impl AdminRunner {
         let executable = executable.or(stored.as_ref());
         match self.revise_predecessor(node).await {
             // The member answers: it is commanded back, never created over (node-recovery.md step 3).
-            FenceOutcome::Alive => return Ok(()),
+            // A stopped birth the check reached is still present (states.md "Stopped nodes"): this
+            // Build's create of its path is complete, and its `Complete` receipt is what the plan reads
+            // so the create is never planned again in this Build (`accepted::plan_with`).
+            FenceOutcome::Alive => {
+                let stopped = self.topology.read().await.node(node).is_some_and(|n| n.stopped);
+                if stopped && matches!(claim_for, crate::node_rows::ClaimFor::Create) {
+                    let operation = format!("node.create:{node}");
+                    let r = crate::build_state::BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete, output: None, executor: Some(self.held_name().to_string()) };
+                    self.builds.append_step_receipt(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation}: the stopped birth at {node} is held, and its Complete could not be recorded: {e}")))?;
+                    tracing::info_span!("rdm.node_admin.node.create.via-stopped-held", build_id = %build_id.log(), node = %node, attempt).in_scope(|| tracing::info!("the path's stopped birth answers: this Build's create of the path is complete and is not planned again"));
+                }
+                return Ok(());
+            }
             // An unreached birth holds the path's name until it is deleted (only a delete releases a
             // name, R-MN1): node.delete deletes it (`TerminateRuntime` first when its runtime runs), then
             // the create runs at the same path.name, over the inherited data dir when the delete read
