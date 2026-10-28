@@ -192,9 +192,8 @@ TREE_BANNED = [
     # rdm#88: the page's word is re-born (same path.name, new node.id); a mesh is never reborn. The plans keep it
     # in quotations as written, so the check holds the code and the pages.
     ("reborn", r"reborn", ["crates", "docs/architecture", "docs/reference"]),
-    # rdm#88: the word is revision; the Unix epoch (a time origin) is another sense and stays. docs/architecture
-    # is not scanned: node-rpc.md still names claim_epoch, a page change that waits on Luke.
-    ("epoch", r"(?<!unix[ _])(?<!_unix_)(?<!UNIX_)epoch", ["crates", "docs/reference"]),
+    # rdm#88: the word is revision; the Unix epoch (a time origin) is another sense and stays.
+    ("epoch", r"(?<!unix[ _])(?<!_unix_)(?<!UNIX_)epoch", ["crates", "docs/architecture", "docs/reference"]),
 ]
 for label, pattern, scope in TREE_BANNED:
     out = subprocess.run(["git", "grep", "-n", "-I", "-i", "-P", pattern, head, "--", *scope,
