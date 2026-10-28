@@ -479,34 +479,7 @@ impl BuildDoor {
             Err(BuildStateError::UnknownBuild(_)) => return Ok(rdm_core::reply::build::unknown_build(id.to_string())),
             Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: Build {id} could not be read: {e}"))),
         };
-        let steps: Vec<StepReceipt> = p
-            .steps
-            .iter()
-            .map(|s| StepReceipt {
-                attempt: s.attempt,
-                operation: s.operation.clone(),
-                step: s.step.clone(),
-                result: match &s.outcome {
-                    crate::build_state::StepOutcome::Complete => StepResult::Complete,
-                    crate::build_state::StepOutcome::Failed { reason, code, .. } => StepResult::Failed { reason: bounded_reason(reason.clone()), code: *code },
-                },
-            })
-            .collect();
-        // Chunks that each fit the reply frame with room to spare.
-        let mut chunks: Vec<Vec<StepReceipt>> = vec![Vec::new()];
-        let mut size = 0usize;
-        for s in steps.iter().cloned() {
-            let weight = 32 + s.operation.len() + s.step.len() + match &s.result {
-                StepResult::Complete => 0,
-                StepResult::Failed { reason , .. } => reason.len() + 1,
-            };
-            if size + weight > 32 * 1024 && !chunks.last().is_some_and(Vec::is_empty) {
-                chunks.push(Vec::new());
-                size = 0;
-            }
-            size += weight;
-            chunks.last_mut().expect("a chunk").push(s);
-        }
+        let (steps, chunks) = receipt_chunks(&p);
         let count = chunks.len() as u32;
         let mut sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt: p.attempt, disposition: Disposition::Attached }).await?;
         for (i, chunk) in chunks.into_iter().enumerate() {
@@ -514,17 +487,12 @@ impl BuildDoor {
         }
         Ok(BuildReply::Got {
             build_id: id.to_string(),
-            phase: match p.state {
-                BuildState::Pending => BuildPhase::Pending,
-                BuildState::Running => BuildPhase::Running,
-                BuildState::Complete => BuildPhase::Complete,
-                BuildState::Failed => BuildPhase::Failed,
-            },
+            phase: phase_of(p.state),
             attempt: p.attempt,
             executor: p.executor.clone(),
             reason: p.reason.as_str().to_string(),
             last_failure: p.last_failure.clone(),
-            steps: steps.len() as u32,
+            steps,
             chunks: count,
         })
     }
@@ -633,10 +601,149 @@ impl BuildDoor {
     }
 }
 
-/// `builds.get` (Q167 R-RD5), served by the fabric-primary from its own Build log.
-pub async fn serve_builds(_me: &PathName, _builds: &dyn crate::build_state::BuildStateAdapter, _filter: rdm_core::filter::Filter, _sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
-    // Not served yet: answered as a build that does not know the variant.
-    Ok(rdm_core::reply::build::malformed(rdm_core::outcome::MalformedKind::UnknownVariant))
+/// A Build's phase as the wire names it.
+fn phase_of(state: BuildState) -> BuildPhase {
+    match state {
+        BuildState::Pending => BuildPhase::Pending,
+        BuildState::Running => BuildPhase::Running,
+        BuildState::Complete => BuildPhase::Complete,
+        BuildState::Failed => BuildPhase::Failed,
+    }
+}
+
+/// The Build's receipts as the wire carries them, in chunks that each fit a reply frame with room to
+/// spare; always one chunk at least.
+fn receipt_chunks(p: &crate::build_state::BuildProjection) -> (u32, Vec<Vec<StepReceipt>>) {
+    let mut chunks: Vec<Vec<StepReceipt>> = vec![Vec::new()];
+    let mut size = 0usize;
+    for s in &p.steps {
+        let s = StepReceipt {
+            attempt: s.attempt,
+            operation: s.operation.clone(),
+            step: s.step.clone(),
+            result: match &s.outcome {
+                crate::build_state::StepOutcome::Complete => StepResult::Complete,
+                crate::build_state::StepOutcome::Failed { reason, code, .. } => StepResult::Failed { reason: bounded_reason(reason.clone()), code: *code },
+            },
+        };
+        let weight = 32 + s.operation.len() + s.step.len() + match &s.result {
+            StepResult::Complete => 0,
+            StepResult::Failed { reason, .. } => reason.len() + 1,
+        };
+        if size + weight > CHUNK_BYTES && !chunks.last().is_some_and(Vec::is_empty) {
+            chunks.push(Vec::new());
+            size = 0;
+        }
+        size += weight;
+        chunks.last_mut().expect("a chunk").push(s);
+    }
+    (p.steps.len() as u32, chunks)
+}
+
+/// The Build's topology as the wire carries it: every node's create spec in `path.name` order, in
+/// chunks that each fit a reply frame with room to spare (a spec's JSON is longer than its postcard);
+/// always one chunk at least.
+fn topology_chunks(p: &crate::build_state::BuildProjection) -> Vec<Vec<rdm_core::meta::NodeSpec>> {
+    let mut specs: Vec<&rdm_core::meta::NodeSpec> = p.topology.meshes.values().flat_map(|m| m.spec_by_path.values()).collect();
+    specs.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut chunks: Vec<Vec<rdm_core::meta::NodeSpec>> = vec![Vec::new()];
+    let mut size = 0usize;
+    for spec in specs {
+        let weight = serde_json::to_vec(spec).map(|v| v.len()).unwrap_or(CHUNK_BYTES);
+        if size + weight > CHUNK_BYTES && !chunks.last().is_some_and(Vec::is_empty) {
+            chunks.push(Vec::new());
+            size = 0;
+        }
+        size += weight;
+        chunks.last_mut().expect("a chunk").push(spec.clone());
+    }
+    chunks
+}
+
+/// What one chunk of a Build read carries at most: half the 64 KiB reply frame.
+const CHUNK_BYTES: usize = 32 * 1024;
+
+/// `builds.get` (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`"), served by the fabric-primary from
+/// its own Build log (its builds journal, which holds the Builds in flight and their history): every
+/// Build whose header matches every pair of `filter`, newest first by acceptance, each whole. The
+/// current Build is selected once for the read and every Build is read before `Started`, so a log that
+/// cannot be read is refused `NotReady` and nothing streams; the stream is `Started` naming the current
+/// Build, then per Build its `Topology` chunks, its `Steps` chunks and its `Build` header, then `End`.
+/// A forgotten Build has left the views and is passed over. A pair the Build header's schema refuses
+/// is `RejectedFilter`, naming it. One `rdm.node_admin.build.resolve.via-builds-get` span.
+pub async fn serve_builds(me: &PathName, builds: &dyn crate::build_state::BuildStateAdapter, filter: rdm_core::filter::Filter, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+    let span = tracing::info_span!(
+        "rdm.node_admin.build.resolve.via-builds-get",
+        node = %me,
+        properties = %filter.properties(),
+        current = tracing::field::Empty,
+        held = tracing::field::Empty,
+        builds = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    );
+    let reply = async {
+        if let Some(why) = filter.builds_refusal() {
+            return Ok(rdm_core::reply::build::rejected_filter(bounded_reason(why)));
+        }
+        let unreadable = |what: String, e: BuildStateError| rdm_core::reply::build::not_ready(format!("{me}: {what} could not be read for builds.get: {e}"));
+        let current = match builds.current_build().await {
+            Ok(c) => c.into_build_id(),
+            Err(e) => return Ok(unreadable("the current Build".into(), e)),
+        };
+        let order = match builds.accepted_newest_first().await {
+            Ok(o) => o,
+            Err(e) => return Ok(unreadable("the acceptance order".into(), e)),
+        };
+        let mut held = Vec::new();
+        for id in order {
+            match builds.read_build(&id).await {
+                Ok(p) => held.push(p),
+                Err(BuildStateError::UnknownBuild(_)) => {}
+                Err(e) => return Ok(unreadable(format!("Build {id}"), e)),
+            }
+        }
+        let started_attempt = current.as_ref().and_then(|c| held.iter().find(|p| p.build_id == *c)).map(|p| p.attempt).unwrap_or(0);
+        tracing::Span::current().record("current", current.as_ref().map(|c| c.to_string()).unwrap_or_default().as_str()).record("held", held.len());
+        let mut sink = started(sink, BuildReply::Started { build_id: current.as_ref().map(|c| c.to_string()).unwrap_or_default(), attempt: started_attempt, disposition: Disposition::Attached }).await?;
+        let mut streamed = 0u32;
+        for p in &held {
+            let header = rdm_core::build::BuildHeader {
+                build_id: p.build_id.to_string(),
+                phase: phase_of(p.state),
+                attempt: p.attempt,
+                executor: p.executor.clone(),
+                reason: p.reason.as_str().to_string(),
+                last_failure: p.last_failure.clone(),
+                current: current.as_ref() == Some(&p.build_id),
+            };
+            if !filter.matches(&header) {
+                continue;
+            }
+            let topology = topology_chunks(p);
+            let count = topology.len() as u32;
+            for (i, nodes) in topology.into_iter().enumerate() {
+                sink.data(BuildReply::Topology { build_id: header.build_id.clone(), chunk_index: i as u32, chunk_count: count, nodes }).await.map_err(gone)?;
+            }
+            let (steps, receipts) = receipt_chunks(p);
+            let chunks = receipts.len() as u32;
+            for (i, steps) in receipts.into_iter().enumerate() {
+                sink.data(BuildReply::Steps { build_id: header.build_id.clone(), chunk_index: i as u32, chunk_count: chunks, steps }).await.map_err(gone)?;
+            }
+            let rdm_core::build::BuildHeader { build_id, phase, attempt, executor, reason, last_failure, current } = header;
+            sink.data(BuildReply::Build { build_id, phase, attempt, executor, reason, last_failure, current, steps, chunks }).await.map_err(gone)?;
+            streamed += 1;
+        }
+        tracing::Span::current().record("builds", streamed);
+        Ok(BuildReply::End { builds: streamed })
+    }
+    .instrument(span.clone())
+    .await;
+    span.record("outcome", match &reply {
+        Ok(r) => r.name(),
+        Err(_) => "fault",
+    });
+    span.in_scope(|| tracing::info!("a builds.get read ended"));
+    reply
 }
 
 fn gone(e: rdm_transport::stream::SinkError) -> HandlerFault {

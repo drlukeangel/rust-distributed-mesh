@@ -212,7 +212,7 @@ sees only the catalog.
 | `0x1D` | join | rdm | live | canonical | `JoinNode` |
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
 | `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts`, `FetchCurrentBuild` |
-| `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete |
+| `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, builds.get, build.delete |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied` |
 | `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `LeaveMesh`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
@@ -271,7 +271,7 @@ Transport uncertainty is NotSent before the request commit cut and Indeterminate
 after it; both are statements about execution certainty, and under either the runtime keeps
 delivering the same invocation ([node-rpc.md §43](node-rpc.md#43-owed-messages-delivery-is-the-runtimes)),
 which authorises no new execution. A broken stream proves neither step failure nor completion. The Build's
-only durable step outcomes are Complete and Failed { step, reason }. build.get is a read for reattachment, never a resume. The caller resubmits the
+only durable step outcomes are Complete and Failed { step, reason }. builds.get [id: build_id] is a read for reattachment, never a resume. The caller resubmits the
 same build_id to the fabric-primary under the [Build carrier](#build-op-0x20-rdm). Reissuing a naturally
 idempotent uncertain step can settle it with AlreadyApplied. A Build adds durability, not
 visibility: without one, the caller still sees what completed, where it stopped and why on the
@@ -1305,8 +1305,8 @@ Contract source: `crates/rdm-core/src/build.rs::BuildRequest`.
 
 The `build` family is RDM-owned, live and canonical. RDM accepts, drives, reads and
 deletes Builds only through Node RPC. An older node answers `UNSERVED_OP` by name for
-`0x20`. Request ceiling 256 KiB; reply ceiling 64 KiB. REQUEST_VARIANTS is 4;
-REPLY_VARIANTS is 25. The [schema](#build-schema) gives both enums.
+`0x20`. Request ceiling 256 KiB; reply ceiling 64 KiB. REQUEST_VARIANTS is 5;
+REPLY_VARIANTS is 30. The [schema](#build-schema) gives both enums.
 
 ### Calls and direction
 
@@ -1314,7 +1314,7 @@ REPLY_VARIANTS is 25. The [schema](#build-schema) gives both enums.
 |---|---|---|---|
 | build.create | upward, caller → fabric-primary | submitted Build intent or node.create/stop/start/delete workflow; a preset is a Build input; existing build_id for resubmission | Started { build_id }, step frames, Complete or Failed { step, reason }; a fabric-primary change ends with FabricPrimaryMoved, the typed frame naming the new one |
 | build.attempt.run | downward, fabric-primary → executor named by executor_for | (build_id, attempt) and the Won claim | replay held Complete receipts, current Blocked if still blocked, then live step frames; a run that stops at another executor's operation ends HandedOff { to }; executor loss ends Indeterminate |
-| build.get | caller → fabric-primary | build_id | read accepted Build and receipts for reattachment after a cut; never progress polling |
+| builds.get | caller → fabric-primary | filter over id, current, phase, attempt, executor | a stream: Started naming the current Build, then per Build newest first Topology chunks, Steps chunks and its Build header, then End; each Build whole, its topology and receipts; the current Build selected once per read and its header marked current; a pair the Build header's schema refuses RejectedFilter, INVALID_ARGUMENT naming the pair; for reattachment after a cut, never progress polling |
 | build.delete | caller → fabric-primary | build_id | named deletion result or refusal; the current Build ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)) cannot be deleted |
 
 The fabric-primary accepts **every** Build and drives every topology Build: it claims each topology attempt through its claim door, then calls the executor named by
@@ -1330,7 +1330,7 @@ run in process at the fabric-primary and feed the same outer stream
 Every progress frame (Step, Blocked) carries the receipt key
 `(build_id, attempt, operation, step)` and receivers drop duplicates by that key. A caller
 watching a Build whose connection closes (`Budget::Stream`'s one end) reattaches by `build_id`:
-`build.get` for the receipts, then the outer stream again, resuming from the receipts; the break is
+`builds.get [id: build_id]` for the receipts, then the outer stream again, resuming from the receipts; the break is
 never a defect and never a new execution (Node RPC §34, §43).
 
 | Frame / outcome | Meaning |
@@ -1448,6 +1448,7 @@ pub enum BuildRequest {
     },
     Get { build_id: String },
     Delete { build_id: String },
+    GetBuilds { filter: Filter }, // builds.get: (property, values) pairs over the Build header (id, current, phase, attempt, executor)
 }
 
 pub enum Disposition {
@@ -1516,12 +1517,17 @@ pub enum BuildReply {
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
     FabricPrimaryMoved { build_id: String, fabric_primary: Option<String> },
+    NotClaimant { mesh: Option<String>, fabric_primary: Option<String>, mesh_primary: Option<String> },
+    Topology { build_id: String, chunk_index: u32, chunk_count: u32, nodes: Vec<NodeSpec> },
+    Build { build_id: String, phase: BuildPhase, attempt: u32, executor: Option<String>, reason: String, last_failure: Option<String>, current: bool, steps: u32, chunks: u32 },
+    End { builds: u32 },
+    RejectedFilter { reason: String },
 }
 ```
 
 A stream is one refusal, or Started, then Step, Blocked or Steps frames, then one
 terminal: Complete, Failed or FabricPrimaryMoved for Create; Complete, Failed, HandedOff or
-FabricPrimaryMoved for AttemptRun; Got for Get; Deleted for Delete.
+FabricPrimaryMoved for AttemptRun; Got for Get; Deleted for Delete; End for GetBuilds, after per Build its Topology and Steps chunks and its Build header.
 
 <a id="primaryupdate-op-0x21-rdm"></a>
 

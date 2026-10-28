@@ -619,6 +619,39 @@ mod tests {
         assert!(why.starts_with("nodes.get: the pair (kind, [gatway])"), "{why:?}");
     }
 
+    /// CONTRACT (Q167 R-RD5): `builds.get` filters on the Build header (`id`, `current`, `phase`,
+    /// `attempt`, `executor`): a phase by its lowercase page name, `current` a boolean, `attempt` its
+    /// digits, an executor absent from a Build no executor holds; a pair naming anything else (a
+    /// topology or receipt field, a node property) or a value the field cannot take is refused naming
+    /// the pair and `builds.get`. Must NOT happen: a phase spelt `Failed` accepted, or `tags` read as
+    /// matching nothing.
+    #[test]
+    fn a_builds_get_filter_matches_the_build_header_and_refuses_anything_else_naming_the_pair() {
+        use crate::build::{BuildHeader, BuildPhase};
+        let header = |id: &str, phase, current, executor: Option<&str>| BuildHeader { build_id: id.into(), phase, attempt: 2, executor: executor.map(Into::into), reason: "requested".into(), last_failure: None, current };
+        let (a, b) = (crate::BuildId::mint().to_string(), crate::BuildId::mint().to_string());
+        let rows = [header(&a, BuildPhase::Failed, false, None), header(&b, BuildPhase::Complete, true, Some("mesh1.admin.1"))];
+        let ids = |f: Filter| -> Vec<String> {
+            assert_eq!(f.builds_refusal(), None, "{f:?}");
+            rows.iter().filter(|r| f.matches(*r)).map(|r| r.build_id.clone()).collect()
+        };
+        assert_eq!(ids(Filter::new()), [a.clone(), b.clone()]);
+        assert_eq!(ids(Filter::new().eq("current", ["true"])), [b.clone()]);
+        assert_eq!(ids(Filter::new().eq("phase", ["failed", "pending"])), [a.clone()]);
+        assert_eq!(ids(Filter::new().eq("id", [a.clone()]).eq("attempt", ["2"])), [a.clone()]);
+        assert_eq!(ids(Filter::new().eq("executor", ["mesh1.admin.1"])), [b.clone()], "a Build no executor holds lacks the property");
+        for (f, wanted) in [
+            (Filter::new().eq("phase", ["Failed"]), "builds.get: the pair (phase, [Failed])"),
+            (Filter::new().eq("tags", ["gold"]), "builds.get: the pair (tags, [gold]) names no property of a Build header row"),
+            (Filter::new().eq("current", ["yes"]), "a boolean is true or false"),
+            (Filter::new().eq("attempt", ["two"]), "a number is decimal digits"),
+            (Filter::new().eq("id", Vec::<String>::new()), "names no value"),
+        ] {
+            let why = f.builds_refusal().unwrap_or_else(|| panic!("{f:?} is refused"));
+            assert!(why.contains(wanted), "{why:?} names {wanted:?}");
+        }
+    }
+
     /// CONTRACT: every lifecycle state, kind and provider a row can carry is a value its schema takes,
     /// by the name the row's own serialization gives it, so no row is unmatchable by its own state.
     #[test]
