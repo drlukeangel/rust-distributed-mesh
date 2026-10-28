@@ -42,7 +42,7 @@ pub enum Fault {
     /// SIGKILL: the runtime flushes nothing. It takes the witness that the fabric first reached
     /// ready: a death during fabric start is not tested (Q74, [`crate::estate::FabricReady`]).
     Kill(crate::estate::FabricReady),
-    /// SIGSTOP: the runtime is held, alive and silent.
+    /// SIGSTOP: the runtime is held, alive and silent; acknowledged once every task reads `T` ([`held`]).
     Stop,
     /// SIGCONT: the hold is released.
     Continue,
@@ -209,13 +209,14 @@ impl ExactRuntime {
         }
         let until = Instant::now() + Duration::from_secs(10);
         loop {
-            let state = proc_state(self.pid);
             let exited = gone(self.pid);
             let acked = match fault {
                 Fault::Kill(_) => exited,
-                Fault::Stop => state == Some('T'),
-                Fault::Continue => state.is_some_and(|c| c != 'T'),
+                Fault::Stop => held(self.pid),
+                Fault::Continue => proc_state(self.pid).is_some_and(|c| c != 'T'),
             };
+            // Read after the acknowledgement, so the state reported is the one acknowledged.
+            let state = proc_state(self.pid);
             if acked || Instant::now() >= until {
                 return if acked {
                     Ok(Applied { fault, runtime: self.clone(), state_after: if exited { None } else { state }, exited })
@@ -462,6 +463,23 @@ pub fn proc_state(pid: u32) -> Option<char> {
     stat.rsplit(')').next()?.split_whitespace().next()?.chars().next()
 }
 
+/// Every task of `pid`'s thread group reads stopped (`T`): the group is held. A SIGSTOP is held only
+/// then: `kill(2)` returns once the signal is queued, one task takes it and stops the others after, so
+/// the leader can read `T` while its siblings still run (rdm#149: a held mesh-primary served a
+/// declaration after its SIGSTOP returned). `false` when the process is gone.
+pub fn held(pid: u32) -> bool {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else { return false };
+    let mut any = false;
+    for t in tasks.flatten() {
+        any = true;
+        let stopped = std::fs::read_to_string(t.path().join("stat")).is_ok_and(|s| s.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('T')));
+        if !stopped {
+            return false;
+        }
+    }
+    any
+}
+
 /// utime + stime ticks the process has used: a stopped process uses none.
 pub fn cpu_ticks(pid: u32) -> u64 {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
@@ -507,6 +525,7 @@ mod tests {
         assert!(!gone(rt.pid), "nothing was signalled");
         let stopped = rt.apply(Fault::Stop).unwrap();
         assert_eq!(stopped.state_after, Some('T'));
+        assert!(held(rt.pid), "the stop is acknowledged once every task of the group reads T");
         assert_eq!(rt.apply(Fault::Continue).unwrap().exited, false);
         let killed = rt.apply(Fault::Kill(crate::estate::FabricReady(()))).unwrap();
         assert!(killed.exited);

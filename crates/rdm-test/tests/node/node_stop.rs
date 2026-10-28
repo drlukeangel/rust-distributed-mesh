@@ -1569,6 +1569,9 @@ async fn signal_stop_with_primary_held(test: &str, bound_ms: &str, release_after
     assert!(alive(pid));
     let send = |sig: &str, pid: u64| assert!(std::process::Command::new("kill").args([sig, &pid.to_string()]).status().unwrap().success(), "kill {sig} {pid}");
     send("-STOP", primary_pid as u64);
+    // Held only once every task of the admin reads `T`: kill(2) returns before the group stop completes,
+    // and an admin task still running then answers the node's first declaration (rdm#149).
+    wait_for("the Day-0 admin held: every task stopped", Duration::from_secs(10), || async { rdm_test::process_faults::held(primary_pid).then_some(()) }).await;
     let signalled = std::time::Instant::now();
     send("-TERM", pid);
     let ended = |pid: u64| std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |st| st.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')));
