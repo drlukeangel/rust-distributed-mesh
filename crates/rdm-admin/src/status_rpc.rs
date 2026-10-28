@@ -2251,7 +2251,19 @@ pub(crate) fn row_status_span(me: &impl std::fmt::Display, subject: &crate::mode
         Ok(None) => ("no-record", None),
         Err(_) => ("refused", None),
     };
-    tracing::info_span!("rdm.node_admin.node.update.via-row-status", node = %me, subject = %subject, node_id = %node_id, incarnation_id = %incarnation.as_str(), status = ?status, outcome, revision, error = %written.as_ref().err().map(String::as_str).unwrap_or(""), "otel.kind" = "internal")
+    row_status_span_as(me, subject, node_id, incarnation, status, outcome, revision, written.as_ref().err().map(String::as_str).unwrap_or(""));
+}
+
+/// The `rdm.node_admin.node.update.via-row-status` span of a status `me` refused before any write
+/// ([`crate::node_rows::NodeRows::status`]): its outcome names the refusal (`not-mesh-primary`), its
+/// `error` why, naming the writer.
+pub(crate) fn row_status_refused_span(me: &impl std::fmt::Display, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, refused: &crate::node_rows::RowRefused) {
+    row_status_span_as(me, subject, node_id, incarnation, status, refused.outcome(), None, &refused.to_string());
+}
+
+#[allow(clippy::too_many_arguments)]
+fn row_status_span_as(me: &impl std::fmt::Display, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, outcome: &str, revision: Option<u64>, error: &str) {
+    tracing::info_span!("rdm.node_admin.node.update.via-row-status", node = %me, subject = %subject, node_id = %node_id, incarnation_id = %incarnation.as_str(), status = ?status, outcome, revision, error = %error, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the node's status is written on its record"));
 }
 

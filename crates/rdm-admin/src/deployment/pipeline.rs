@@ -2177,7 +2177,7 @@ impl DeploymentPipeline<'_> {
                 traceparent: None,
                 tracestate: None,
             };
-            let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&req.node, op.clone()))).await?;
+            let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&req.node, op.clone(), false))).await?;
             self.lifecycle.deleting(&op).await;
             self.terminate_step(&mut run, &req.node, &req.handle).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
@@ -2253,7 +2253,10 @@ impl DeploymentPipeline<'_> {
         };
         // The receipt first, then the publish: the Build facts carry the overlay from the
         // moment it is announced, so a successor derives it from the same facts.
-        let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone()))).await?;
+        // An explicit delete of an unreached birth ends at its exact Exited when this executor does not write
+        // its mesh's rows (below): its NodeDeleting writes no row it does not write either.
+        let for_writer = matches!(unreached, Terminate::Explicit) && req.unreached;
+        let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone(), for_writer))).await?;
         self.lifecycle.deleting(&op).await;
         let terminal = if req.unreached || run.done.contains_key(DeleteStep::TerminateRuntime.name()) {
             // An unreached birth (node-recovery.md sequence step 3): nothing is sent to it and no node
@@ -2350,7 +2353,7 @@ impl DeploymentPipeline<'_> {
                 traceparent: None,
                 tracestate: None,
             };
-            let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone()))).await?;
+            let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone(), false))).await?;
             self.lifecycle.deleting(&op).await;
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Lenient, StopEnd::Stop { publish_stopped: true }).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
@@ -2392,19 +2395,29 @@ impl DeploymentPipeline<'_> {
         })
     }
 
-    /// `NodeDeleted`'s work (lifecycles/node-delete.md step 3, before node.deleted): the writer of the
-    /// mesh's rows writes `record`'s row `Deleted` at its `path.name`, the record and its config
-    /// kept; a refusal fails the step by name. `unreached`: the delete of an unreached birth
-    /// ([`crate::node_rows::NodeRows::deleted_unreached`]).
     /// The `NodeDeleting` step's row (states.md "Who sets each state": deleting from node.delete's adopted
-    /// claim): `Deleting` written on the node's record before the step's receipt.
-    async fn deleting_row(&self, record: &Node, op: LifecycleOp) -> Result<LifecycleOp, String> {
+    /// claim, by "the node's mesh-primary (the fabric-primary for a mesh with no primary)"): `Deleting`
+    /// written on the node's record before the step's receipt, by the writer of its mesh's rows alone
+    /// (node-identity-and-state.md §4.3). `for_writer`: an explicit delete of an unreached birth, which an
+    /// executor that does not write its mesh's rows runs to the exact Exited for its mesh's writer
+    /// ([`Self::delete_steps`]): there the step's receipt stands without the row, whose `Deleting` is that
+    /// writer's (mesh-delete.md "Resume after the primary's loss" step 3: completed receipts stand). Any
+    /// other refusal fails the step by name.
+    async fn deleting_row(&self, record: &Node, op: LifecycleOp, for_writer: bool) -> Result<LifecycleOp, String> {
         if let Some(rows) = self.sink.node_rows() {
-            rows.status(record, &op.incarnation, crate::model::NodeStatus::Deleting).await.map_err(|e| format!("{}: the Deleting row of {} is not written: {e}", record.name, record.node_id))?;
+            match rows.status(record, &op.incarnation, crate::model::NodeStatus::Deleting).await {
+                Ok(()) => {}
+                Err(crate::node_rows::RowRefused::NotMeshPrimary(_)) if for_writer => {}
+                Err(e) => return Err(format!("{}: the Deleting row of {} is not written: {e}", record.name, record.node_id)),
+            }
         }
         Ok(op)
     }
 
+    /// `NodeDeleted`'s work (lifecycles/node-delete.md step 3, before node.deleted): the writer of the
+    /// mesh's rows writes `record`'s row `Deleted` at its `path.name`, the record and its config
+    /// kept; a refusal fails the step by name. `unreached`: the delete of an unreached birth
+    /// ([`crate::node_rows::NodeRows::deleted_unreached`]).
     async fn deleted_row(&self, record: &Node, op: LifecycleOp, unreached: bool) -> Result<LifecycleOp, String> {
         if let Some(rows) = self.sink.node_rows() {
             let written = if unreached { rows.deleted_unreached(record, &op.operation).await } else { rows.deleted(record, &op.operation).await };

@@ -488,12 +488,33 @@ impl NodeRows {
         t.is_fabric_primary(&self.me_id) && !t.node_type_primary(&name.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id != *node_id)
     }
 
+    /// The writer check of the row of `node_id` at `name` in view `t`, the one predicate of a delete's
+    /// writes of the node's row (its `Deleting` status, its `Deleted` row): this admin writes it as the
+    /// writer of its mesh's rows or, `acting` (a node-admin's row), as the fabric-primary acting for a mesh
+    /// that holds no primary but that node; any other admin refuses it by name, naming the writer
+    /// (node-identity-and-state.md §4.3: "The fabric-primary writes a row only as acting primary of a mesh
+    /// with no primary. No other process writes a `Node` row"; R-OW1). Answers the name this admin holds.
+    fn row_writer_in(&self, t: &Topology, name: &PathName, node_id: &NodeId, acting: bool) -> Result<PathName, RowRefused> {
+        if acting && self.acting_for(t, name, node_id) {
+            return Ok(self.held_name_in(t));
+        }
+        match self.not_writer(t, &name.mesh, name) {
+            Some(why) => Err(RowRefused::NotMeshPrimary(why)),
+            None => Ok(self.held_name_in(t)),
+        }
+    }
+
+    /// [`Self::row_writer_in`] of `record`'s row over this admin's view as it is now, acting for a
+    /// node-admin's row.
+    async fn row_writer(&self, record: &Node) -> Result<PathName, RowRefused> {
+        self.row_writer_in(&*self.view.read().await, &record.name, &record.node_id, record.kind == NodeKind::NodeAdmin)
+    }
+
     /// Whether this admin writes the `Deleted` row of the unreached birth `record` now, over its view as it
     /// is now ([`Self::deleted_unreached`]): as the writer of its mesh's rows, or, for a node-admin, as the
     /// fabric-primary acting for a mesh with no primary but that node.
     pub async fn writes_unreached(&self, record: &Node) -> bool {
-        let t = self.view.read().await;
-        (record.kind == NodeKind::NodeAdmin && self.acting_for(&t, &record.name, &record.node_id)) || self.not_writer(&t, &record.name.mesh, &record.name).is_none()
+        self.row_writer(record).await.is_ok()
     }
 
     /// This admin's `path.name`.
@@ -722,13 +743,21 @@ impl NodeRows {
     }
 
     /// The status `status` of `record`'s birth `incarnation` on its record, written whole
-    /// ([`crate::storage::NodeRow::set_status`]): a node with no record held anywhere is written nothing.
-    /// One `rdm.node_admin.node.update.via-row-status` span.
-    pub async fn status(&self, record: &Node, incarnation: &IncarnationId, status: NodeStatus) -> Result<(), String> {
-        let me = self.held_name().await;
+    /// ([`crate::storage::NodeRow::set_status`]) by the writer of its mesh's rows, the writer check of
+    /// its `Deleted` row ([`Self::writes_unreached`]): any other admin refuses it by name, `not-mesh-primary`,
+    /// and writes nothing (node-identity-and-state.md §4.3; states.md "Who sets each state"). A node with
+    /// no record held anywhere is written nothing. One `rdm.node_admin.node.update.via-row-status` span.
+    pub async fn status(&self, record: &Node, incarnation: &IncarnationId, status: NodeStatus) -> Result<(), RowRefused> {
+        let me = match self.row_writer(record).await {
+            Ok(me) => me,
+            Err(refused) => {
+                crate::status_rpc::row_status_refused_span(&self.held_name().await, &record.name, &record.node_id, incarnation, status, &refused);
+                return Err(refused);
+            }
+        };
         let written = self.written.update_at_revision(&*self.storage, &record.node_id, None, |r| r.set_status(incarnation, status)).await;
         crate::status_rpc::row_status_span(&me, &record.name, &record.node_id, incarnation, status, &written);
-        written.map(|_| ())
+        written.map(|_| ()).map_err(|e| RowRefused::Unwritten(format!("{me}: the {status:?} status of {} ({}) is not written: {e}", record.name, record.node_id)))
     }
 
     /// `NodeDeleted` (lifecycles/node-delete.md step 3): the row at the node's `path.name` (its `.old`
@@ -802,17 +831,7 @@ impl NodeRows {
                 // other process writes a Node row" (node-identity-and-state.md §4.3): the fabric-primary
                 // writes the deleted node-admin's row itself only while its mesh holds no primary but that
                 // node; a mesh with an elected primary has its row written by that primary, its one writer.
-                let me = if fabric_recovery {
-                    let t = self.view.read().await;
-                    if self.acting_for(&t, name, node_id) {
-                        self.held_name_in(&t)
-                    } else {
-                        drop(t);
-                        self.writer_check(&name.mesh, name).await?
-                    }
-                } else {
-                    self.writer_check(&name.mesh, name).await?
-                };
+                let me = self.row_writer_in(&*self.view.read().await, name, node_id, fabric_recovery)?;
                 span.record("node", me.to_string().as_str());
                 let Some((config, tags, _)) = known? else {
                     return Err(RowRefused::Unwritten(format!("{me}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know")));
@@ -1607,4 +1626,103 @@ pub enum Moved {
         /// Why the release failed.
         why: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
+    use crate::storage::MemoryNodesStorage;
+
+    fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
+        let mut n = Node::allocated(name.parse().unwrap());
+        n.status = NodeStatus::Ready;
+        n.is_primary = primary;
+        n.is_fabric_primary = fabric_primary;
+        n.incarnation_id = Some(IncarnationId::mint());
+        n
+    }
+
+    fn view(nodes: Vec<Node>) -> Topology {
+        Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }, Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready }],
+            nodes,
+        }
+    }
+
+    /// The status `n`'s row carries in `storage`.
+    async fn status_of(storage: &MemoryNodesStorage, n: &Node) -> Option<NodeStatus> {
+        record_at(storage, &n.name).await.unwrap().map(|r| r.status)
+    }
+
+    /// CONTRACT: a node row's status is written only by its mesh's writer (node-identity-and-state.md
+    /// §4.3: "The fabric-primary writes a row only as acting primary of a mesh with no primary. No other
+    /// process writes a `Node` row"; states.md "Who sets each state": node deleting, "the node's
+    /// mesh-primary (the fabric-primary for a mesh with no primary)"). mesh2's final primary
+    /// `mesh2.admin.1` is lost and mesh2's election named `mesh2.admin.2`: the fabric-primary
+    /// `mesh1.admin.1`, the executor of the lost primary's explicit delete, writes neither its row's
+    /// `Deleting` nor `mesh2.rpc.1`'s, and both rows stay as they were; `mesh2.admin.2` writes
+    /// `mesh2.rpc.1`'s. With no primary in mesh2 but the lost one, the fabric-primary writes the lost
+    /// primary's own row as acting primary, and still not `mesh2.rpc.1`'s. Each status write agrees with the writer predicate of the same node's `Deleted`
+    /// row ([`NodeRows::writes_unreached`]). The `rdm.node_admin.node.update.via-row-status` spans name the
+    /// executor (`node`) and the outcome.
+    #[tokio::test]
+    async fn a_rows_status_is_written_only_by_its_meshs_writer() {
+        let capture = crate::span_capture::Capture::new("node-rows-status");
+        let _d = tracing::dispatcher::set_default(&capture.dispatch);
+        let fp = node("mesh1.admin.1", true, true);
+        let lost = node("mesh2.admin.1", false, false);
+        let elected = node("mesh2.admin.2", true, false);
+        let rpc = node("mesh2.rpc.1", false, false);
+        let storage = Arc::new(MemoryNodesStorage::default());
+        for n in [&lost, &rpc] {
+            write_record(&*storage, &crate::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), NodeStatus::Ready)).await.unwrap().unwrap();
+        }
+        let shared = Arc::new(RwLock::new(view(vec![fp.clone(), lost.clone(), elected.clone(), rpc.clone()])));
+        let at_fp = NodeRows::new(fp.name.clone(), fp.node_id.clone(), shared.clone(), storage.clone());
+        let at_writer = NodeRows::new(elected.name.clone(), elected.node_id.clone(), shared.clone(), storage.clone());
+        let root = tracing::info_span!("cell.row-status-writer");
+        let _in_root = root.enter();
+
+        let lost_inc = lost.incarnation_id.clone().unwrap();
+        let rpc_inc = rpc.incarnation_id.clone().unwrap();
+        // The fabric-primary, mesh2 holding an elected primary: neither row is its to write.
+        let fp_lost = at_fp.status(&lost, &lost_inc, NodeStatus::Deleting).await;
+        assert_eq!(at_fp.writes_unreached(&lost).await, false, "the Deleted row's predicate: the fabric-primary does not write mesh2.admin.1's row");
+        assert!(matches!(fp_lost, Err(RowRefused::NotMeshPrimary(_))), "the fabric-primary is not mesh2's writer: mesh2.admin.1's Deleting is refused: {fp_lost:?}");
+        assert_eq!(status_of(&storage, &lost).await, Some(NodeStatus::Ready), "nothing is written: the row stays as it was");
+        let fp_rpc = at_fp.status(&rpc, &rpc_inc, NodeStatus::Deleting).await;
+        assert!(matches!(fp_rpc, Err(RowRefused::NotMeshPrimary(_))), "nor mesh2.rpc.1's: {fp_rpc:?}");
+        assert_eq!(status_of(&storage, &rpc).await, Some(NodeStatus::Ready));
+        // mesh2's elected primary, its one writer, writes mesh2.rpc.1's Deleting.
+        assert!(at_writer.writes_unreached(&rpc).await);
+        at_writer.status(&rpc, &rpc_inc, NodeStatus::Deleting).await.unwrap_or_else(|e| panic!("mesh2's writer writes the row: {e}"));
+        assert_eq!(status_of(&storage, &rpc).await, Some(NodeStatus::Deleting));
+        // mesh2 holds no primary but the lost one: the fabric-primary writes the lost primary's own row as
+        // acting primary, and still no other row of mesh2, as its Deleted row's predicate says.
+        {
+            let mut t = shared.write().await;
+            t.nodes.retain(|n| n.name != elected.name);
+            t.nodes.iter_mut().filter(|n| n.name == lost.name).for_each(|n| n.is_primary = true);
+        }
+        assert!(at_fp.writes_unreached(&lost).await);
+        at_fp.status(&lost, &lost_inc, NodeStatus::Deleting).await.unwrap_or_else(|e| panic!("acting primary of mesh2: {e}"));
+        assert_eq!(status_of(&storage, &lost).await, Some(NodeStatus::Deleting));
+        assert_eq!(at_fp.writes_unreached(&rpc).await, false);
+        let fp_rpc = at_fp.status(&rpc, &rpc_inc, NodeStatus::Deleting).await;
+        assert!(matches!(fp_rpc, Err(RowRefused::NotMeshPrimary(_))), "{fp_rpc:?}");
+        drop(_in_root);
+        drop(root);
+
+        let captured = capture.named("rdm.node_admin.node.update.via-row-status");
+        let trace_id = captured.first().map(|s| s.trace_id.clone()).unwrap_or_default();
+        assert!(captured.iter().all(|s| s.trace_id == trace_id), "one trace, the cell's root");
+        let spans: Vec<(String, String, String)> = captured.into_iter().map(|s| (s.attributes["node"].clone(), s.attributes["subject"].clone(), s.attributes["outcome"].clone())).collect();
+        let expected = [("mesh1.admin.1", "mesh2.admin.1", "not-mesh-primary"), ("mesh1.admin.1", "mesh2.rpc.1", "not-mesh-primary"), ("mesh2.admin.2", "mesh2.rpc.1", "written"), ("mesh1.admin.1", "mesh2.admin.1", "written"), ("mesh1.admin.1", "mesh2.rpc.1", "not-mesh-primary")].map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()));
+        assert_eq!(spans, expected, "via-row-status: node (the executor) vs mesh2's writer");
+        for (node, subject, outcome) in &spans {
+            eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-row-status node={node} subject={subject} status=Deleting outcome={outcome}");
+        }
+    }
 }
