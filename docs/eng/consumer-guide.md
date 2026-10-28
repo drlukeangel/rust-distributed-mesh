@@ -59,6 +59,8 @@ nodes.get  [["tags", ["gold", "silver"]]]                         any of
 nodes.get  [["mesh", ["mesh1"]], ["kind", ["gateway"]]]           AND across pairs
 nodes.get  [["kind", ["admin"]], ["is_primary", ["true"]]]        every mesh-primary
 nodes.get  [["id", ["<node id>"]]]                                 "one node"
+nodes.get  [["path", ["mesh1.broker"]], ["name", ["1"]]]         one node by its path.name (mesh1.broker.1): `path` is
+                                                                   the part before the last dot, `name` the part after it
 nodes.get  []                                                      the fabric's topology
 meshes.get [["name", ["mesh1"]]]
 connections.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
