@@ -336,11 +336,20 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     // Step 7: the successor primary republishes the held MeshStatus, changed_at preserved, after its checklist.
     let scope = format!("mesh:{lost}");
     let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send");
+    // The held MeshStatus is the latest the lost admin published before the fault, as its own send or
+    // as the fabric heard it (a via-mesh-status with the lost admin as publisher): the SIGKILL loses
+    // the killed process's spans not yet exported, so its last send may live only in its receivers'.
+    let heard = named(&spans, "rdm.mesh.topology.update.via-mesh-status")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && sp["attributes"]["publisher"] == lost_admin.as_str());
     let held = sends
         .iter()
-        .filter(|sp| sp["attributes"]["scope"] == scope.as_str() && start(sp) < fault_ns)
-        .max_by_key(|sp| start(sp))
+        .copied()
+        .filter(|sp| sp["attributes"]["scope"] == scope.as_str() && sp["attributes"]["node"] == lost_admin.as_str())
+        .chain(heard)
+        .filter(|sp| start(sp) < fault_ns)
         .map(|sp| (s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])))
+        .max_by_key(|(_, at)| at.parse::<u64>().expect("a changed_at_rafka_ms"))
         .expect("the lost mesh published its MeshStatus before the fault");
     let republished: Vec<&&Value> = sends.iter().filter(|sp| sp["attributes"]["scope"] == scope.as_str() && start(sp) >= start(&decision)).collect();
     assert!(!republished.is_empty(), "the successor primary republishes the held MeshStatus (a via-status-send for {scope} after the decision): none");
