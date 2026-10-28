@@ -1339,11 +1339,16 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
 /// anything is accepted (proposal executable-bindings-at-create.md §2: "the fabric-primary refuses a
 /// missing file or a wrong sha by name at acceptance"; "an executable outside them is refused by name
 /// at acceptance"): each binding of a path `next` creates, or replaces because its row records another,
-/// first held, under the container provider, to `executable_dirs` (a containerized admin reads only
-/// what is mounted, so its place is checked before its file is read), then checked as its launch
-/// checks it (launch id, image, hash), each file hashed once.
+/// in the topology's order, first held, under the container provider, to `executable_dirs` (a
+/// containerized admin reads only what is mounted, so its place is checked before its file is read),
+/// then checked as its launch checks it: its launch id and image per kind, then its hash. Each distinct
+/// file (path and sha) is hashed once, however many kinds share it, and every one at once, each on the
+/// blocking pool (rdm#148); no file is read past the first binding refused before its file is read. The
+/// refusal is the first binding's in that order, whichever check refuses it.
 async fn named_executable_refusal(current: &crate::accepted::FabricTopology, next: &crate::accepted::FabricTopology, recorded: &crate::accepted::Recorded, provider: crate::model::ProviderKind, executable_dirs: &[std::path::PathBuf]) -> Option<BuildReject> {
     let mut checked: std::collections::BTreeSet<(std::path::PathBuf, String, String)> = std::collections::BTreeSet::new();
+    let mut to_hash: Vec<(&PathName, &rdm_core::binding::Binding)> = Vec::new();
+    let mut refused_unread = None;
     for (path, spec) in next.meshes.values().flat_map(|m| m.spec_by_path.iter()) {
         let Some(binding) = spec.executable.as_ref() else { continue };
         let created = !current.contains(path);
@@ -1354,13 +1359,30 @@ async fn named_executable_refusal(current: &crate::accepted::FabricTopology, nex
         if provider == crate::model::ProviderKind::Container && !executable_dirs.iter().any(|d| binding.executable.starts_with(d)) {
             let named = executable_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(",");
             let detail = format!("{} is outside every directory {} names ({named:?}): a containerized admin mounts only those, so no launch could read it", binding.executable.display(), rdm_core::launch::ENV_EXECUTABLE_DIRS);
-            return Some(BuildReject::ExecutableRefused { node: path.to_string(), detail });
+            refused_unread = Some(BuildReject::ExecutableRefused { node: path.to_string(), detail });
+            break;
         }
-        if let Err(detail) = crate::admin::runner::verify_binding(binding, path.kind, provider, "request").await {
-            return Some(BuildReject::ExecutableRefused { node: path.to_string(), detail });
+        if let Err(detail) = crate::admin::runner::binding_fits(binding, path.kind, provider) {
+            refused_unread = Some(BuildReject::ExecutableRefused { node: path.to_string(), detail });
+            break;
+        }
+        to_hash.push((path, binding));
+    }
+    // Each distinct file once, hashed as the first binding naming it (whose refusal names its launch id),
+    // spanned with every launch id that shares it.
+    let mut files: std::collections::BTreeMap<(&std::path::Path, &str), (&rdm_core::binding::Binding, Vec<&str>)> = std::collections::BTreeMap::new();
+    for (_, b) in &to_hash {
+        let (_, ids) = files.entry((b.executable.as_path(), b.sha256.as_str())).or_insert((b, Vec::new()));
+        if !ids.contains(&b.launch_id.as_str()) {
+            ids.push(b.launch_id.as_str());
         }
     }
-    None
+    let hashed: std::collections::BTreeMap<(&std::path::Path, &str), Result<(), String>> =
+        futures_util::future::join_all(files.iter().map(|(file, (b, ids))| async move { (*file, crate::admin::runner::hash_executable(b, &ids.join(","), "request").await) })).await.into_iter().collect();
+    to_hash
+        .iter()
+        .find_map(|(path, b)| hashed.get(&(b.executable.as_path(), b.sha256.as_str())).and_then(|r| r.clone().err()).map(|detail| BuildReject::ExecutableRefused { node: path.to_string(), detail }))
+        .or(refused_unread)
 }
 
 /// The first path `next` creates that names no executable (proposal executable-bindings-at-create.md
@@ -1809,6 +1831,108 @@ mod tests {
         assert_eq!(named_executable_refusal(&current, &with("mesh1.admin.1", gone), &recorded, ProviderKind::Process, &[]).await, None);
         assert_eq!(BuildReject::ExecutableRefused { node: "x".into(), detail: "y".into() }.reason(), "executable-refused");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A topology of mesh1 holding one node-admin, and that topology with each `(path, binding)` created.
+    fn creating(created: &[(&str, rdm_core::binding::Binding)]) -> (crate::accepted::FabricTopology, crate::accepted::FabricTopology) {
+        let current = crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])))].into() };
+        let mut next = current.clone();
+        let m = next.meshes.get_mut("mesh1").unwrap();
+        for (path, b) in created {
+            let p: PathName = path.parse().unwrap();
+            m.nodes.insert(p.clone());
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
+        }
+        (current, next)
+    }
+
+    /// An executable file `name` in `dir`, padded (sparse) to `len` bytes, bound as `launch_id`.
+    fn bound_file(dir: &std::path::Path, name: &str, launch_id: &str, len: u64) -> rdm_core::binding::Binding {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n# {name}\n")).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_len(len).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        rdm_core::binding::Binding { launch_id: launch_id.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
+    }
+
+    /// CONTRACT (rdm#148; build-deployment.md: every create names its executable, checked at acceptance
+    /// as its launch checks it): a request creating a broker, a gateway and a compute node on the one
+    /// file the three kinds share hashes that file once at acceptance: one
+    /// `rdm.node_admin.deployment.resolve.via-executable-hash` span with `from = request`, and each
+    /// kind's launch id is still checked. Must NOT happen: the shared file read once per kind.
+    #[tokio::test]
+    async fn a_file_several_kinds_share_is_hashed_once_at_acceptance() {
+        let dir = crate::test_support::tempdir("hash-once-shared");
+        let node = bound_file(&dir, "rdm-node", "broker", 4 << 20);
+        let as_kind = |id: &str| rdm_core::binding::Binding { launch_id: id.into(), ..node.clone() };
+        let (current, next) = creating(&[("mesh1.broker.1", as_kind("broker")), ("mesh1.gateway.1", as_kind("gateway")), ("mesh1.compute.1", as_kind("compute"))]);
+        let capture = crate::span_capture::Capture::new("rdm148-hash-once-shared");
+        let refused = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            named_executable_refusal(&current, &next, &crate::accepted::Recorded::new(), ProviderKind::Process, &[]).await
+        };
+        assert_eq!(refused, None, "the shared file is hash-true for every kind");
+        let hashes: Vec<_> = capture.named("rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|s| s.attributes.get("from").map(String::as_str) == Some("request")).collect();
+        assert_eq!(hashes.len(), 1, "one hash of the one file the three kinds share: {hashes:#?}");
+        assert_eq!(hashes[0].attributes.get("outcome").map(String::as_str), Some("hashed"), "{hashes:#?}");
+        // Each kind's launch id is still checked: the shared file bound for the node-admin at a broker path.
+        let (current, next) = creating(&[("mesh1.broker.1", as_kind("broker")), ("mesh1.gateway.1", as_kind("node_admin"))]);
+        match named_executable_refusal(&current, &next, &crate::accepted::Recorded::new(), ProviderKind::Process, &[]).await {
+            Some(BuildReject::ExecutableRefused { node, detail }) => assert_eq!(node, "mesh1.gateway.1", "{detail}"),
+            other => panic!("refused executable-refused at mesh1.gateway.1: {other:?}"),
+        }
+        eprintln!("span rdm.node_admin.deployment.resolve.via-executable-hash trace_id={} {:?}", hashes[0].trace_id, hashes[0].attributes);
+    }
+
+    /// CONTRACT (rdm#148): a request creating nodes on three distinct files hashes them at once at
+    /// acceptance, each on the blocking pool (Q30): three
+    /// `rdm.node_admin.deployment.resolve.via-executable-hash` spans with `from = request`, every one open
+    /// while every other is (the latest start before the earliest end). Must NOT happen: the files hashed
+    /// one after another, the acceptance waiting out the sum of their hashes.
+    #[tokio::test]
+    async fn distinct_files_a_request_names_are_hashed_at_once_at_acceptance() {
+        let dir = crate::test_support::tempdir("hash-once-distinct");
+        let (current, next) = creating(&[("mesh1.rpc.1", bound_file(&dir, "rpc", "rpc_node", 64 << 20)), ("mesh1.broker.1", bound_file(&dir, "broker", "broker", 64 << 20)), ("mesh1.gateway.1", bound_file(&dir, "gateway", "gateway", 64 << 20))]);
+        let capture = crate::span_capture::Capture::new("rdm148-hash-once-distinct");
+        let refused = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            named_executable_refusal(&current, &next, &crate::accepted::Recorded::new(), ProviderKind::Process, &[]).await
+        };
+        assert_eq!(refused, None, "every file is hash-true for its kind");
+        let hashes: Vec<_> = capture.named("rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|s| s.attributes.get("from").map(String::as_str) == Some("request")).collect();
+        assert_eq!(hashes.len(), 3, "one hash per distinct file: {hashes:#?}");
+        let (latest_start, earliest_end) = (hashes.iter().map(|s| s.start).max().unwrap(), hashes.iter().map(|s| s.end).min().unwrap());
+        assert!(latest_start < earliest_end, "the three hashes overlap in time: {:#?}", hashes.iter().map(|s| (s.attributes.get("executable"), s.start, s.end)).collect::<Vec<_>>());
+        eprintln!("span rdm.node_admin.deployment.resolve.via-executable-hash trace_id={} {:?}", hashes[0].trace_id, hashes.iter().map(|s| s.attributes.get("elapsed_ms")).collect::<Vec<_>>());
+    }
+
+    /// CONTRACT (rdm#148: the first refusal in the same order as before the hashes ran at once): of
+    /// several refused executables the one at the first path in the topology's order is returned,
+    /// whichever check refuses it: an earlier path's wrong sha before a later path's wrong launch id,
+    /// and an earlier path's wrong launch id before a later path's missing file. Must NOT happen: the
+    /// refusal of whichever hash finished first.
+    #[tokio::test]
+    async fn the_first_refused_executable_in_path_order_is_the_refusal() {
+        let dir = crate::test_support::tempdir("hash-once-order");
+        let (b, g) = (bound_file(&dir, "broker", "broker", 1 << 20), bound_file(&dir, "gateway", "gateway", 1 << 20));
+        let wrong_sha = rdm_core::binding::Binding { sha256: "0".repeat(64), ..b.clone() };
+        let wrong_kind = rdm_core::binding::Binding { launch_id: "compute".into(), ..g.clone() };
+        let missing = rdm_core::binding::Binding { executable: dir.join("absent"), ..g.clone() };
+        let rows = crate::accepted::Recorded::new();
+        // mesh1.broker.1 sorts before mesh1.gateway.1.
+        for (created, first, what) in [
+            ([("mesh1.broker.1", wrong_sha.clone()), ("mesh1.gateway.1", wrong_kind.clone())], "mesh1.broker.1", "a wrong sha before a wrong launch id"),
+            ([("mesh1.broker.1", rdm_core::binding::Binding { launch_id: "compute".into(), ..b.clone() }), ("mesh1.gateway.1", missing.clone())], "mesh1.broker.1", "a wrong launch id before a missing file"),
+            ([("mesh1.broker.1", b.clone()), ("mesh1.gateway.1", missing.clone())], "mesh1.gateway.1", "a later missing file once the earlier path passes"),
+        ] {
+            let (current, next) = creating(&created);
+            assert_eq!(next.meshes["mesh1"].spec_by_path.keys().find(|p| p.kind != NodeKind::NodeAdmin).map(|p| p.to_string()).as_deref(), Some("mesh1.broker.1"), "the topology's order");
+            match named_executable_refusal(&current, &next, &rows, ProviderKind::Process, &[]).await {
+                Some(BuildReject::ExecutableRefused { node, detail }) => assert_eq!(node, first, "{what}: {detail}"),
+                other => panic!("{what}: refused executable-refused: {other:?}"),
+            }
+        }
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md §2: "A containerized admin's executable

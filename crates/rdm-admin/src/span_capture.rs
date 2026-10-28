@@ -15,6 +15,10 @@ pub(crate) struct Captured {
     pub trace_id: String,
     /// Its attributes, rendered.
     pub attributes: std::collections::BTreeMap<String, String>,
+    /// When it opened.
+    pub start: std::time::SystemTime,
+    /// When it closed.
+    pub end: std::time::SystemTime,
 }
 
 /// The capture and the dispatcher that feeds it.
@@ -41,7 +45,7 @@ impl Capture {
             .unwrap()
             .into_iter()
             .filter(|s| s.name == name)
-            .map(|s| Captured { name: s.name.to_string(), trace_id: s.span_context.trace_id().to_string(), attributes: s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect() })
+            .map(|s| Captured { name: s.name.to_string(), trace_id: s.span_context.trace_id().to_string(), attributes: s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect(), start: s.start_time, end: s.end_time })
             .collect()
     }
 }

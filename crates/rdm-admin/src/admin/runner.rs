@@ -1789,15 +1789,34 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
 /// launching task woke just before waits in that worker's LIFO slot, which no other worker steals,
 /// until the worker is free (Q30).
 pub(crate) async fn verify_binding(binding: &rdm_core::binding::Binding, kind: NodeKind, provider: ProviderKind, from: &str) -> Result<(), String> {
-    let span = tracing::info_span!("rdm.node_admin.deployment.resolve.via-executable-hash", launch_id = %binding.launch_id, executable = %binding.executable.display(), sha256 = %binding.sha256, from, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-    if binding.launch_id != kind.name() {
+    let span = hash_span(&binding.launch_id, binding, from);
+    if let Err(e) = binding_fits(binding, kind, provider) {
         span.record("outcome", "refused");
+        return Err(e);
+    }
+    hashed(binding, span).await
+}
+
+/// Whether `binding` can launch a `kind` under `provider` before its file is read: its launch id is the
+/// kind's and its image the provider's. Refused by name otherwise.
+pub(crate) fn binding_fits(binding: &rdm_core::binding::Binding, kind: NodeKind, provider: ProviderKind) -> Result<(), String> {
+    if binding.launch_id != kind.name() {
         return Err(format!("the binding is for launch id `{}`, the node is a `{}`", binding.launch_id, kind.name()));
     }
-    if let Err(e) = binding.check_image(super::boot::provider_image(provider)) {
-        span.record("outcome", "refused");
-        return Err(e.to_string());
-    }
+    binding.check_image(super::boot::provider_image(provider)).map_err(|e| e.to_string())
+}
+
+/// `binding`'s file hashed now against its sha, on the blocking pool (Q30), spanned for `launch_ids`,
+/// every launch id whose binding names this file: one hash of a file several kinds share.
+pub(crate) async fn hash_executable(binding: &rdm_core::binding::Binding, launch_ids: &str, from: &str) -> Result<(), String> {
+    hashed(binding, hash_span(launch_ids, binding, from)).await
+}
+
+fn hash_span(launch_id: &str, binding: &rdm_core::binding::Binding, from: &str) -> tracing::Span {
+    tracing::info_span!("rdm.node_admin.deployment.resolve.via-executable-hash", launch_id = %launch_id, executable = %binding.executable.display(), sha256 = %binding.sha256, from, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty)
+}
+
+async fn hashed(binding: &rdm_core::binding::Binding, span: tracing::Span) -> Result<(), String> {
     let started = std::time::Instant::now();
     let b = binding.clone();
     let checked = crate::blocking::blocking_io(move || b.verify()).await;
