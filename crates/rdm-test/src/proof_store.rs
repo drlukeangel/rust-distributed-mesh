@@ -577,8 +577,12 @@ mod tests {
         d
     }
 
-    fn rand_suffix() -> u128 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    /// Unique within the process: tests run in parallel threads, and two calls in one clock tick would
+    /// otherwise share a directory and rename each other's temporary file away.
+    fn rand_suffix() -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("{}-{n}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())
     }
 
     fn get(s: &FileProofStore, k: &[u8]) -> ProofReply {
