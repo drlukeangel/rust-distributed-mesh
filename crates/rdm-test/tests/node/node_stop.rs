@@ -1660,6 +1660,7 @@ async fn a_signal_stops_last_span_is_in_the_evidence_on_tmpfs_and_kept_when_the_
     drop(estate);
     assert!(!evidence.exists(), "the estate's root is removed when it ends");
     assert_eq!(std::fs::read_to_string(kept.join(&file)).ok().as_deref(), Some(written.as_str()), "the kept {file} is the evidence file whole");
+}
 
 /// The signal stop of `node` its evidence names, by the closed spans of its leave: its `via-leave-tasks`
 /// and `via-leave-shutdown` (each naming the node) and the `rdm.mesh.node.delete.via-signal` span both are
