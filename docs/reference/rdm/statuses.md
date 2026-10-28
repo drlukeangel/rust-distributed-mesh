@@ -204,11 +204,11 @@ serde: `rename_all = "kebab-case"`
 | 6 | **`Dead`** | `dead` |  |  | True offline: half a floor after the mark the mesh primary's one tickle ladder reached nobody, |
 | 7 | **`Deleted`** | `deleted` |  |  | Deleted: the node's identity and name are released. Only the node's row carries it, written |
 | 8 | **`Withdrawn`** | `withdrawn` |  |  | Withdrawn: the create that claimed the name was withdrawn before its node ran (R-SR2). Only the |
-| 9 | **`Starting`** | `starting` |  |  | Starting: the node's row from the accepted node.start execution (inside node.create, or on a |
+| 9 | **`Starting`** | `starting` |  |  | Starting: the node's row from a stopped node's `CommandAccepted` on its start's `StartNode` |
 | 10 | **`ConnectionsDeleted`** | `connections-deleted` |  |  | Connections-deleted: the node's row once its node.connections.delete { All } completed |
 | 11 | **`Stopping`** | `stopping` |  |  | Stopping: the node's row once its stop's `CommandAccepted` admission frame arrived. |
 | 12 | **`Stopped`** | `stopped` |  |  | Stopped: the node's row once the matching stopped frame arrived: a live, stopped process. |
-| 13 | **`Deleting`** | `deleting` |  |  | Deleting: the node's row once node.delete's claim was adopted (published as NodeDeleting). |
+| 13 | **`Deleting`** | `deleting` |  |  | Deleting: the node's row once node.delete's claim was adopted (published as NodeDeleting); the |
 | 14 | **`Left`** | `left` |  |  | Left: the node's row once its node.mesh.leave's completion arrived (`MeshLeft`, or `StopMeshLeft` |
 
 <a id="t-rdm_core-views-NodeStatus"></a>
@@ -231,7 +231,7 @@ serde: `rename_all = "kebab-case"`
 | 5 | **`Reserved5`** | `reserved5` |  |  | Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting |
 | 6 | **`Dead`** | `dead` |  |  | True offline: the mesh primary's connect found no path on two ladders a staleness floor |
 | 7 | **`Deleted`** | `deleted` |  |  | Deleted: identity and name released; only the node's row carries it. |
-| 8 | **`Starting`** | `starting` |  |  | Starting: from the accepted node.start execution until its join is accepted (states.md "Who |
+| 8 | **`Starting`** | `starting` |  |  | Starting: from a stopped node's acknowledgement of its start (a create's from its launch) until |
 | 9 | **`ConnectionsDeleted`** | `connections-deleted` |  |  | Connections-deleted: its node.connections.delete { All } completed `Established`. |
 | 10 | **`Stopping`** | `stopping` |  |  | Stopping: its stop's admission arrived. |
 | 11 | **`Stopped`** | `stopped` |  |  | Stopped: a live, stopped process. |
