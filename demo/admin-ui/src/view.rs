@@ -77,7 +77,7 @@ pub async fn overview(admin: &Admin) -> Value {
 }
 
 /// A Build's header as the tabs draw it.
-fn receipts(b: &rdm_client::BuildReceipts) -> Value {
+fn receipts(b: &rdm_client::Build) -> Value {
     json!({ "build_id": b.build_id.to_string(), "phase": format!("{:?}", b.phase), "attempt": b.attempt, "reason": b.reason, "executor": b.executor, "last_failure": b.last_failure, "steps": b.steps.len() })
 }
 

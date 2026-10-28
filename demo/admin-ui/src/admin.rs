@@ -12,7 +12,7 @@
 
 use rdm_core::{NodeKind, PathName};
 use rdm_client::{
-    birth_of_view, Accepted, BuildCarrier, BuildId, BuildReceipts, Builds, CallEnd, Change, Connections, ConnectionsView, ExactBirth, FabricDesired, FabricView, Fabrics,
+    birth_of_view, Accepted, BuildCarrier, Build, BuildId, CallEnd, Change, Connections, ConnectionsView, ExactBirth, FabricDesired, FabricView, Fabrics,
     Filter, MeshDesired, MeshNode, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
 };
 use rdm_core::binding::{sha256_file, Binding};
@@ -188,8 +188,8 @@ impl Admin {
     }
 
     /// `build.get` of `id`: its receipts.
-    pub async fn build(&self, id: &BuildId) -> Result<BuildReceipts, CallEnd> {
-        Builds::new(self.carrier()).get(id).await
+    pub async fn build(&self, id: &BuildId) -> Result<Build, CallEnd> {
+        self.carrier().build(id).await
     }
 
     /// node.create of a `kind` node in `mesh`, at the lowest free ordinal of its kind.
