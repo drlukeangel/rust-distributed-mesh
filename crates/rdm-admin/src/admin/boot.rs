@@ -2487,7 +2487,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 };
                                                 // A refused caller (Q207) is decided by its path.name and this admin's atlas, and acts
                                                 // through this recovery submitter's terminate report and the heard-again door.
-                                                control.atlas.refused_callers(Arc::new(crate::refused_caller::RefusedCallers::new(node_id.clone(), recovery.clone(), heard_again_slot.clone())));
+                                                // Its verification at the root is owed to the fabric-primary the view names, sent again
+                                                // on each view installed (rdm#177).
+                                                let callers = Arc::new(crate::refused_caller::RefusedCallers::new(node_id.clone(), recovery.clone(), heard_again_slot.clone()));
+                                                callers.watch_views(records.subscribe_view());
+                                                control.atlas.refused_callers(callers);
                                                 // Fabric recovery (Q122): started by the seat watch in the fabric-primary's own mesh, and by mesh
                                                 // investigation's decision step from the backbone.
                                                 let fabric_recovery = Arc::new(

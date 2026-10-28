@@ -7,7 +7,10 @@
 //! refused `JoinMismatch` because the row at its path.name holds another node): decided from
 //! this admin's own atlas ([`crate::atlas::Atlas::refused_caller`]), and, at an admin that
 //! is not the fabric-primary, verified at the root through `fabrics.atlas.get` before anything acts (the
-//! root's answer wins: this admin may have missed an op). A caller deleted is reported to the
+//! root's answer wins: this admin may have missed an op). The read is owed to the root (node-rpc.md §43,
+//! rdm#177): sent to the fabric-primary this admin's view names, and sent again when a view is
+//! installed or after the resend schedule's next delay, a view naming no fabric-primary included, so a
+//! caller refused across a cut is decided once the fabric-primary enters the view. A caller deleted is reported to the
 //! fabric-primary, which terminates its runtime (`RecoverySubmitter::report_terminate`, the
 //! returned-birth path); a caller re-admitted is commanded back through `node.mesh.join`
 //! (`crate::heard_again`). One decision in flight per birth.
@@ -31,6 +34,8 @@ pub struct RefusedCallers {
     pub(crate) recovery: crate::admin::RecoverySubmitter,
     pub(crate) heard_again: crate::heard_again::HeardAgainSlot,
     in_flight: Mutex<BTreeSet<(String, String)>>,
+    /// The tick of this admin's installed view ([`Self::watch_views`]).
+    views: std::sync::OnceLock<tokio::sync::watch::Receiver<u64>>,
 }
 
 impl std::fmt::Debug for RefusedCallers {
@@ -41,7 +46,12 @@ impl std::fmt::Debug for RefusedCallers {
 
 impl RefusedCallers {
     pub(crate) fn new(node_id: NodeId, recovery: crate::admin::RecoverySubmitter, heard_again: crate::heard_again::HeardAgainSlot) -> Self {
-        Self { node_id, recovery, heard_again, in_flight: Mutex::default() }
+        Self { node_id, recovery, heard_again, in_flight: Mutex::default(), views: Default::default() }
+    }
+
+    /// Hold `views`, the tick of this admin's installed view.
+    pub(crate) fn watch_views(&self, views: tokio::sync::watch::Receiver<u64>) {
+        let _ = self.views.set(views);
     }
 
     /// Decide the caller birth `(node_id, incarnation)` refused at `door` (`declaration`, `digest` or `join`)
@@ -58,7 +68,8 @@ impl RefusedCallers {
             "rdm.node_admin.node.update.via-refused-caller",
             node = %me, door, node_id = %node_id, incarnation_id = %incarnation.as_str(),
             subject = tracing::field::Empty, decision = tracing::field::Empty, own = tracing::field::Empty,
-            root = tracing::field::Empty, needed = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
+            root = tracing::field::Empty, fabric_primary = tracing::field::Empty, sends = tracing::field::Empty,
+            needed = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
         );
         let decided = tracing::Instrument::instrument(self.decide_and_act(atlas, &span, node_id, incarnation), span.clone()).await;
         self.in_flight.lock().unwrap().remove(&key);
@@ -67,58 +78,37 @@ impl RefusedCallers {
     }
 
     async fn decide_and_act(&self, atlas: &Atlas, span: &tracing::Span, node_id: &NodeId, incarnation: &IncarnationId) -> (CallerDecision, String) {
-        // The topology's need: the current Build's paths, by mesh.
-        let planned: BTreeMap<String, Vec<PathName>> = match self.recovery.builds.current().await {
-            Ok(Some(b)) => b.topology.meshes.iter().map(|(m, t)| (m.clone(), t.nodes.iter().cloned().collect())).collect(),
-            Ok(None) => BTreeMap::new(),
-            Err(e) => {
-                span.record("outcome", "build-unread").record("detail", format!("the current Build could not be read: {e}").as_str());
-                return (CallerDecision::NoRecord, "build-unread".into());
+        // A caller this admin's atlas holds no record of, or of a mesh it is not primary for, is nothing
+        // to verify.
+        let first = match self.own_decision(atlas, span, node_id, incarnation).await {
+            Ok((own, ..)) => own,
+            Err(done) => return done,
+        };
+        // A node-admin that is not the fabric-primary verifies at the root before it acts.
+        let root = match self.root_atlas().await {
+            Ok(root) => root,
+            Err(why) => {
+                span.record("outcome", "root-unverified").record("detail", why.as_str());
+                span.record("decision", first.name());
+                return (first, "root-unverified".into());
             }
         };
-        let own = atlas.refused_caller(node_id, incarnation, &planned);
-        span.record("own", own.name());
-        if let Some(path) = own.path() {
-            span.record("subject", path.to_string().as_str());
-        }
-        let Some(path) = own.path().cloned() else {
-            span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", "this admin's atlas holds no record of the caller: it has no path.name to decide on");
-            return (own, "nothing-done".into());
+        // Taken again over what this admin holds once the root answered: the wait for it may have spanned
+        // a view, a Build or this admin's primary moving.
+        let (own, path, planned) = match self.own_decision(atlas, span, node_id, incarnation).await {
+            Ok(own) => own,
+            Err(done) => return done,
         };
-        if matches!(own, CallerDecision::NotMine { .. }) {
-            span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", format!("{} is not a mesh this admin is primary for", path.mesh).as_str());
-            return (own, "nothing-done".into());
-        }
-        // A node-admin that is not the fabric-primary verifies at the root before it acts.
-        let fabric_primary = self.recovery.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
-        let decided = match fabric_primary {
-            Some((_, fp_id)) if fp_id == self.node_id => {
+        let decided = match root {
+            None => {
                 span.record("root", "self");
                 own
             }
-            Some((fp_name, fp_id)) => {
-                let Some(client) = self.recovery.client.clone() else {
-                    span.record("decision", own.name()).record("outcome", "root-unverified").record("detail", "this admin has no node-RPC client to call the fabric-primary");
-                    return (own, "root-unverified".into());
-                };
-                let (out, _) = client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(fp_id), &rdm_core::status::StatusRequest::GetAtlas, &rdm_transport::CallOptions::default()).await;
-                match out.reply().map(|r| r.value().clone()) {
-                    Some(rdm_core::status::StatusReply::Atlas { atlas: root }) => {
-                        let needed = planned.get(&path.mesh).is_some_and(|p| p.contains(&path));
-                        let verified = own.clone().verified((node_id, incarnation), &root, needed);
-                        span.record("root", if verified == own { "agrees" } else { "differs" });
-                        verified
-                    }
-                    other => {
-                        let why = other.map(|r| r.name().to_string()).unwrap_or_else(|| out.name().to_string());
-                        span.record("decision", own.name()).record("outcome", "root-unverified").record("detail", format!("fabrics.atlas.get at {fp_name} ended {why}: nothing acts until the root answers").as_str());
-                        return (own, "root-unverified".into());
-                    }
-                }
-            }
-            None => {
-                span.record("decision", own.name()).record("outcome", "root-unverified").record("detail", "no fabric-primary in this admin's view to verify at");
-                return (own, "root-unverified".into());
+            Some(root) => {
+                let needed = planned.get(&path.mesh).is_some_and(|p| p.contains(&path));
+                let verified = own.clone().verified((node_id, incarnation), &root, needed);
+                span.record("root", if verified == own { "agrees" } else { "differs" });
+                verified
             }
         };
         span.record("decision", decided.name());
@@ -149,6 +139,59 @@ impl RefusedCallers {
         span.record("outcome", outcome.as_str());
         (decided, outcome)
     }
+
+    /// This admin's own decision on the caller birth `(node_id, incarnation)`, with its `path.name` and
+    /// the current Build's paths by mesh; `Err` with the decision's end when there is nothing to act on:
+    /// the Build unread, no record of the caller, or a mesh this admin is not primary for.
+    async fn own_decision(&self, atlas: &Atlas, span: &tracing::Span, node_id: &NodeId, incarnation: &IncarnationId) -> Result<(CallerDecision, PathName, BTreeMap<String, Vec<PathName>>), (CallerDecision, String)> {
+        // The topology's need: the current Build's paths, by mesh.
+        let planned: BTreeMap<String, Vec<PathName>> = match self.recovery.builds.current().await {
+            Ok(Some(b)) => b.topology.meshes.iter().map(|(m, t)| (m.clone(), t.nodes.iter().cloned().collect())).collect(),
+            Ok(None) => BTreeMap::new(),
+            Err(e) => {
+                span.record("outcome", "build-unread").record("detail", format!("the current Build could not be read: {e}").as_str());
+                return Err((CallerDecision::NoRecord, "build-unread".into()));
+            }
+        };
+        let own = atlas.refused_caller(node_id, incarnation, &planned);
+        span.record("own", own.name());
+        if let Some(path) = own.path() {
+            span.record("subject", path.to_string().as_str());
+        }
+        let Some(path) = own.path().cloned() else {
+            span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", "this admin's atlas holds no record of the caller: it has no path.name to decide on");
+            return Err((own, "nothing-done".into()));
+        };
+        if matches!(own, CallerDecision::NotMine { .. }) {
+            span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", format!("{} is not a mesh this admin is primary for", path.mesh).as_str());
+            return Err((own, "nothing-done".into()));
+        }
+        Ok((own, path, planned))
+    }
+
+    /// The root's atlas to verify a decision against: `fabrics.atlas.get` owed to the fabric-primary this
+    /// admin's view names until it answers (node-rpc.md §43; `crate::node_config::owed`): sent again to
+    /// the fabric-primary the view names when a view is installed or after the resend schedule's next
+    /// delay, a view naming none, a refusal that the receiver is not the fabric-primary and a
+    /// fabric-primary holding no atlas yet included. `None` when this admin is the fabric-primary: it
+    /// decides from its own atlas. `Err` names why nothing verifies the decision: no node-RPC client,
+    /// or an answer that is not an atlas.
+    async fn root_atlas(&self) -> Result<Option<rdm_core::views::AtlasView>, String> {
+        let first = self.recovery.topology.read().await.clone();
+        if first.is_fabric_primary(&self.node_id) {
+            return Ok(None);
+        }
+        let Some(client) = self.recovery.client.clone() else {
+            return Err("this admin has no node-RPC client to call the fabric-primary".into());
+        };
+        let me = self.recovery.held_name();
+        match crate::node_config::owed(&client, self.views.get().cloned(), &me, &self.node_id, &first, &self.recovery.topology, &rdm_core::status::StatusRequest::GetAtlas, crate::node_config::Hop::Root).await {
+            crate::node_config::Owed::InProcess(_) => Ok(None),
+            crate::node_config::Owed::Answered(rdm_core::status::StatusReply::Atlas { atlas }) => Ok(Some(atlas)),
+            crate::node_config::Owed::Answered(other) => Err(format!("fabrics.atlas.get at the fabric-primary answered {}: nothing acts until the root answers its atlas", other.name())),
+            crate::node_config::Owed::Gone(_) => Err("fabrics.atlas.get was withdrawn".into()),
+        }
+    }
 }
 
 impl Atlas {
@@ -177,8 +220,14 @@ mod tests {
     /// through a recovery submitter that holds no Build door and no client: the decision's terminate
     /// report is spanned and its open refused naming the missing door.
     async fn atlas_deciding(admin: &Node, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>) -> Arc<Atlas> {
+        atlas_deciding_over(admin, topology, rows, builds, None).await.0
+    }
+
+    /// [`atlas_deciding`] over the admin's own mesh, its recovery submitter calling on `client`; with the
+    /// refused callers it installed.
+    async fn atlas_deciding_over(admin: &Node, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>, client: Option<Arc<rdm_transport::NodeRpcClient>>) -> (Arc<Atlas>, Arc<RefusedCallers>) {
         let atlas = Arc::new(Atlas::default());
-        atlas.scope(&**rows, ["mesh1".to_string()].into()).await.unwrap();
+        atlas.scope(&**rows, [admin.name.mesh.clone()].into()).await.unwrap();
         let recovery = crate::admin::RecoverySubmitter {
             me: admin.name.clone(),
             topology: topology.clone(),
@@ -187,14 +236,15 @@ mod tests {
             nodes_storage: rows.clone(),
             written: Default::default(),
             door: Default::default(),
-            client: None,
+            client,
             builds: builds.clone(),
             data_root: Default::default(),
             gone_dirs: Default::default(),
             resubmits: Default::default(),
         };
-        atlas.refused_callers(Arc::new(RefusedCallers::new(admin.node_id.clone(), recovery, Default::default())));
-        atlas
+        let callers = Arc::new(RefusedCallers::new(admin.node_id.clone(), recovery, Default::default()));
+        atlas.refused_callers(callers.clone());
+        (atlas, callers)
     }
 
     /// The one `rdm.node_admin.node.update.via-refused-caller` span's attributes, once the decision's
@@ -210,6 +260,46 @@ mod tests {
             spans = capture.spans().expect("the cell's spans can be read");
         }
         (of(&spans), spans)
+    }
+
+    /// The status door of `admin` over `topology`, `rows` and `builds`: no certs, no app channels.
+    fn status_door_of(admin: &Node, fabric_id: rdm_core::FabricId, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>) -> crate::status_rpc::StatusAuthority {
+        crate::status_rpc::StatusAuthority {
+            certs: None,
+            app_channels: None,
+            declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
+            stopped: Default::default(),
+            me: admin.name.clone(),
+            node_id: admin.node_id.clone(),
+            fabric_id,
+            topology: topology.clone(),
+            declared: Default::default(),
+            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
+            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
+            mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
+            commands: Arc::new(crate::node_commands::CommandView::default()),
+            own: Default::default(),
+            mesh_deleter: Default::default(),
+            hold_next_reply: Default::default(),
+            wake: Default::default(),
+            fabric_states: Default::default(),
+            atlas: Default::default(),
+            fabric_recovery: Default::default(),
+            nodes_storage: rows.clone(),
+            caches: Default::default(),
+            configs: Default::default(),
+            republish: Default::default(),
+            configure: Default::default(),
+            pre_node_ready: Default::default(),
+            rename: Default::default(),
+            row_moved: Default::default(),
+            loads: None,
+            digest_view: None,
+            builds: builds.clone(),
+        }
     }
 
     fn birth(path: &str, kind: NodeKind) -> Node {
@@ -259,45 +349,10 @@ mod tests {
             rows.put_node(&r).await.unwrap();
         }
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
-        let authority = crate::status_rpc::StatusAuthority {
-            certs: None,
-            app_channels: None,
-            declaration_seam: None,
-            command_frame_seam: None,
-            operation_effects: Default::default(),
-            stopped: Default::default(),
-            me: admin.name.clone(),
-            node_id: admin.node_id.clone(),
-            fabric_id,
-            topology: topology.clone(),
-            declared: Default::default(),
-            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
-            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
-            mesh_ids: Arc::new(BTreeMap::new),
-            durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandView::default()),
-            own: Default::default(),
-            mesh_deleter: Default::default(),
-            hold_next_reply: Default::default(),
-            wake: Default::default(),
-            fabric_states: Default::default(),
-            atlas: Default::default(),
-            fabric_recovery: Default::default(),
-            nodes_storage: rows.clone(),
-            caches: Default::default(),
-            configs: Default::default(),
-            republish: Default::default(),
-            configure: Default::default(),
-            pre_node_ready: Default::default(),
-            rename: Default::default(),
-            row_moved: Default::default(),
-            loads: None,
-            digest_view: None,
-            builds: builds.clone(),
-        };
-        let _ = authority.atlas.set(atlas.clone());
+        let status = status_door_of(&admin, fabric_id, &topology, &rows, &builds);
+        let _ = status.atlas.set(atlas.clone());
         let declare = StatusRequest::DeclareNodeState { node_id: caller.node_id.clone(), incarnation: caller_inc.clone(), state: NodeState::Stopped, operation: None };
-        let reply = authority.apply_from(None, None, &declare).await;
+        let reply = status.apply_from(None, None, &declare).await;
         assert_eq!(reply, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "the deleted birth's declaration is refused at once");
         // The decision runs on its own task: it ends once its one span closes.
         let (d, spans) = decided(&capture).await;
@@ -425,6 +480,113 @@ mod tests {
         assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some("mesh1.admin.1: its Build door is not built yet")), "{d}");
         let reported = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-returned-reported").map(|s| s["attributes"].clone()).unwrap_or_else(|| panic!("the caller was reported for node.terminate: {spans:?}"));
         assert_eq!((reported["returned"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh1.rpc.2"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the terminate report names the exact birth: {reported}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (node-rpc-envelope.md:726: a primary that refuses a status declaration's caller birth
+    /// `SubjectUnknown` then decides that birth; node-investigation.md: a node-admin that is not the
+    /// fabric-primary verifies its decision at the root with `fabrics.atlas.get` before it acts; Q207;
+    /// rdm#177, the 1a6d0af25 release red): mesh2's primary,
+    /// mesh2.admin.2, is cut from the fabric-primary, so its view names none, and a new birth of
+    /// mesh2.admin.1 the fabric-primary created declares Ready to it. The declaration is refused
+    /// `SubjectUnknown` at once and the caller's decision is owed to the root: nothing is asked while no
+    /// view names a fabric-primary, and once a view naming it is installed the decision is verified there
+    /// (its atlas holds the birth at mesh2.admin.1) and the caller is re-admitted (`re-admit`, root
+    /// `agrees`; the rig builds no heard-again door, so `no-heard-again`), in one decision.
+    /// Must NOT happen: the decision ended `root-unverified` with nothing deciding it again (the red: the
+    /// declarer's retry ended on the refusal, the birth never declares again, and the Build's claim on it
+    /// is withdrawn), or a second decision of the same birth.
+    #[tokio::test]
+    async fn a_caller_refused_with_no_fabric_primary_in_view_is_decided_once_the_fabric_primary_enters_the_view() {
+        use rdm_core::views::{AtlasNodeView, AtlasView};
+        let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-root").expect("the cell's evidence file can be created");
+        let mut admin = birth("mesh2.admin.2", NodeKind::NodeAdmin);
+        admin.is_primary = true;
+        let mut fp = birth("mesh1.admin.1", NodeKind::NodeAdmin);
+        fp.is_primary = true;
+        fp.is_fabric_primary = true;
+        let mut caller = birth("mesh2.admin.1", NodeKind::NodeAdmin);
+        caller.status = NodeStatus::Pending;
+        let caller_inc = caller.incarnation_id.clone().unwrap();
+        let fabric_id = rdm_core::FabricId::mint();
+        let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
+        let meshes: Vec<crate::model::Mesh> = ["mesh1", "mesh2"].into_iter().map(|m| crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: m.into(), status: crate::model::ScopeStatus::Pending }).collect();
+        // The current Build names the caller's path: it is needed.
+        let planned = Topology { fabric: fabric.clone(), meshes: meshes.clone(), nodes: vec![fp.clone(), admin.clone(), caller.clone()] };
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        // mesh2.admin.2's view across the cut: itself only, no fabric-primary.
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes, nodes: vec![admin.clone()] }));
+        // The node records of mesh2: the admin's and the caller's, both live.
+        let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
+        for n in [&admin, &caller] {
+            let mut r = NodeRow::new(n.name.clone(), n.node_id.clone(), n.status);
+            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+            rows.put_node(&r).await.unwrap();
+        }
+        // The fabric-primary: its door answers fabrics.atlas.get from its atlas, which holds the caller's
+        // birth at mesh2.admin.1, and counts the reads.
+        let fp_key = iroh::SecretKey::generate();
+        let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let fp_addr = fp_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        let root = AtlasView { nodes: vec![AtlasNodeView { name: caller.name.clone(), node_id: caller.node_id.clone(), incarnation_id: Some(caller_inc.clone()), status: rdm_core::views::NodeStatus::Pending, stopped: false, accepted: None, observed: None }] };
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = asked.clone();
+        let server = rdm_transport::ServerBuilder::new()
+            .serve::<rdm_core::status::Status, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
+                let (root, counted) = (root.clone(), counted.clone());
+                async move {
+                    Ok(match req {
+                        StatusRequest::GetAtlas => {
+                            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            StatusReply::Atlas { atlas: root }
+                        }
+                        other => StatusReply::NotReady { reason: format!("the cell's fabric-primary answers fabrics.atlas.get only, not {}", other.op()) },
+                    })
+                }
+            })
+            .build(rdm_transport::ServedBirth { node_id: fp.node_id.to_string(), incarnation: fp.incarnation_id.as_ref().unwrap().as_str().to_string() })
+            .unwrap();
+        let _router = iroh::protocol::Router::builder(fp_ep).accept(rdm_transport::ALPN, server).spawn();
+        let resolver = Arc::new(rdm_transport::StaticResolver::new());
+        resolver.insert(rdm_transport::ResolvedNode { node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, resolver));
+        let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, Some(client)).await;
+        let (views, installed) = tokio::sync::watch::channel(0u64);
+        callers.watch_views(installed);
+        let status = status_door_of(&admin, fabric_id, &topology, &rows, &builds);
+        let _ = status.atlas.set(atlas.clone());
+        let declare = StatusRequest::DeclareNodeState { node_id: caller.node_id.clone(), incarnation: caller_inc.clone(), state: NodeState::Ready, operation: None };
+        let reply = status.apply_from(None, None, &declare).await;
+        assert_eq!(reply, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "the declaration of a birth mesh2's primary does not hold is refused at once");
+        // The decision's first look: on the cell's one thread every step that waits on nothing runs here.
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0, "no fabric-primary is asked while no view names one");
+        // The cut heals: a view naming the fabric-primary is installed.
+        topology.write().await.nodes.push(fp.clone());
+        views.send_modify(|v| *v += 1);
+        let of = |spans: &[serde_json::Value]| spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.update.via-refused-caller").map(|s| s["attributes"].clone()).collect::<Vec<_>>();
+        let mut spans = capture.spans().expect("the cell's spans can be read");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while of(&spans).iter().all(|d| d["outcome"] == "root-unverified") && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            spans = capture.spans().expect("the cell's spans can be read");
+        }
+        let decisions = of(&spans);
+        assert_eq!(decisions.len(), 1, "one decision of the birth: {decisions:?}");
+        let d = &decisions[0];
+        assert_eq!(d["door"], "declaration", "{d}");
+        assert_eq!(d["subject"], "mesh2.admin.1", "decided at the caller's path.name: {d}");
+        assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that declared: {d}");
+        assert_eq!(d["root"], "agrees", "verified at the fabric-primary once a view names it: {d}");
+        assert_eq!(d["decision"], "re-admit", "nothing else at its path.name, its record live and the Build needing it: re-admitted (Q207): {d}");
+        assert_eq!(d["outcome"], "no-heard-again", "the rig builds no heard-again door: {d}");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1, "the root was read once");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

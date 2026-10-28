@@ -106,7 +106,7 @@ impl SentBy {
 }
 
 /// The primary an owed property command goes to ([`NodeConfigs::owed`]).
-enum Hop<'a> {
+pub(crate) enum Hop<'a> {
     /// Down to `subject`'s mesh-primary (the fabric-primary's command).
     Down(&'a crate::model::Node),
     /// Up to the fabric-primary (a caller's command at an admin that is not it).
@@ -114,10 +114,14 @@ enum Hop<'a> {
     /// Up to the fabric-primary, owed by this admin while it is `mesh`'s primary (the push of a node's
     /// row, Q235): withdrawn once it is not.
     Push(&'a str),
+    /// Up to the fabric-primary for its atlas (`fabrics.atlas.get`), a refused caller's verification at
+    /// the root (Q207, node-investigation.md): a fabric-primary holding no atlas yet answers it once it
+    /// holds one.
+    Root,
 }
 
 /// How an owed property command ended ([`NodeConfigs::owed`]).
-enum Owed {
+pub(crate) enum Owed {
     Answered(StatusReply),
     InProcess(Topology),
     Gone(Topology),
@@ -504,11 +508,11 @@ impl ReadTo {
 
 /// [`NodeConfigs::owed`] over `client`, woken by `views`, the tick of the admin's installed view.
 #[allow(clippy::too_many_arguments)]
-async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::watch::Receiver<u64>>, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, req: &StatusRequest, hop: Hop<'_>) -> Owed {
+pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::watch::Receiver<u64>>, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, req: &StatusRequest, hop: Hop<'_>) -> Owed {
     {
         let (field, to_whom) = match hop {
             Hop::Down(_) => ("mesh_primary", "the mesh-primary"),
-            Hop::Up | Hop::Push(_) => ("fabric_primary", "the fabric-primary"),
+            Hop::Up | Hop::Push(_) | Hop::Root => ("fabric_primary", "the fabric-primary"),
         };
         // A clone remembers the version its source last saw: only a view installed from now on wakes a resend.
         if let Some(rx) = views.as_mut() {
@@ -536,7 +540,7 @@ async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::watch::Rece
                     tracing::Span::current().record("route", "withdrawn");
                     return Owed::Gone(view);
                 }
-                Hop::Up | Hop::Push(_) => {
+                Hop::Up | Hop::Push(_) | Hop::Root => {
                     if view.is_fabric_primary(me_id) {
                         tracing::Span::current().record("route", "in-process");
                         tracing::Span::current().record(field, me.to_string().as_str());
@@ -560,16 +564,16 @@ async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::watch::Rece
                     tracing::Span::current().record("route", "owed");
                     match hop {
                         Hop::Down(_) => tracing::info!(to = %name, send = sends, outcome = %outcome, "{} sent down to the mesh-primary", req.op()),
-                        Hop::Up | Hop::Push(_) => tracing::info!(to = %name, send = sends, outcome = %outcome, "{} carried up to the fabric-primary", req.op()),
+                        Hop::Up | Hop::Push(_) | Hop::Root => tracing::info!(to = %name, send = sends, outcome = %outcome, "{} carried up to the fabric-primary", req.op()),
                     }
                     match out {
                         rdm_core::outcome::RpcOutcome::Reply(r) => match (r.into_value(), &hop) {
                             // Down: any refusal that the receiver is not the primary is the primary changing. Up: only
                             // `ReceiverNotPrimary` is; any other answer (a subject the fabric-primary does not hold) is the caller's.
                             (StatusReply::RejectedNotPrimary { why }, Hop::Down(_)) => format!("{name} answered rejected-not-primary ({})", why.as_str()),
-                            (StatusReply::RejectedNotPrimary { why: why @ NotPrimary::ReceiverNotPrimary { .. } }, Hop::Up | Hop::Push(_)) => format!("{name} answered rejected-not-primary ({})", why.as_str()),
-                            // A fabric-primary holding no atlas yet takes the push once it holds one.
-                            (StatusReply::NotReady { reason }, Hop::Push(_)) => format!("{name} answered not-ready ({reason})"),
+                            (StatusReply::RejectedNotPrimary { why: why @ NotPrimary::ReceiverNotPrimary { .. } }, Hop::Up | Hop::Push(_) | Hop::Root) => format!("{name} answered rejected-not-primary ({})", why.as_str()),
+                            // A fabric-primary holding no atlas yet takes the push, and answers the read, once it holds one.
+                            (StatusReply::NotReady { reason }, Hop::Push(_) | Hop::Root) => format!("{name} answered not-ready ({reason})"),
                             (answered, _) => return Owed::Answered(answered),
                         },
                         // An Owed call ends without a reply only when its receiver is proven gone, or
