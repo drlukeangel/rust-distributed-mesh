@@ -47,8 +47,8 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    only by a node-admin, under that schema's resolution order and backoff. The
    facts are absorbed through the Build log; the step completes when the Ready check holds
    the required facts, never on a received frame alone. A node-admin started by a launch, and
-   any node-admin started after a stop, checks the facts its Build log holds and reads no
-   Build record from the store (Q227). Refresh rafka-time **last**, so it
+   any node-admin started after a stop: its Build-floor check reads the facts its Build log
+   holds, never the store (Q227). Refresh rafka-time **last**, so it
    is current when the node re-enters.
 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot nor a
    Blocked hook permits it. That frame is the node's report: the mesh-primary sets
