@@ -1150,8 +1150,8 @@ One reply frame of a node command's stream. Positional order is part of the wire
 | `NAME` | `"broker-data"` |
 | `FORWARDABLE` | `true` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | trait default `false` |
-| `REQUEST_VARIANTS` | `2` |
-| `REPLY_VARIANTS` | `8` |
+| `REQUEST_VARIANTS` | not set |
+| `REPLY_VARIANTS` | not set |
 | `MAX_REQUEST_FRAME_BYTES` | `64 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
@@ -1419,8 +1419,8 @@ A declare probe answer.
 | `NAME` | `"originate"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | trait default `false` |
-| `REQUEST_VARIANTS` | `10` |
-| `REPLY_VARIANTS` | `18` |
+| `REQUEST_VARIANTS` | not set |
+| `REPLY_VARIANTS` | not set |
 | `MAX_REQUEST_FRAME_BYTES` | `4096` |
 | `MAX_REPLY_FRAME_BYTES` | `65536` |
 

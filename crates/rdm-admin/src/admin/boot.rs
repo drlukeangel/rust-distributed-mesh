@@ -2536,7 +2536,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 heard_changes.borrow_and_update();
                                                 let view = topology.read().await.clone();
                                                 let holds_seat = view.is_mesh_primary(&mesh, &me_id);
-                                                // The births only a durable runtime row names (`TenureRows`).
+                                                // The births only a durable runtime row names: the mesh-primary's alone, from its mesh's
+                                                // rows read once as it takes the role (`TenureRows`); an admin that is no primary reads
+                                                // none. A birth the view holds is marked from this admin's own digest view, so a
+                                                // successor tickles on the window already running.
                                                 let durable = {
                                                     let rows = tenure_rows.for_tick(holds_seat, &*recovery.nodes_storage, &recovery.held_name(), &mesh).await;
                                                     let planned = records.planned();

@@ -471,9 +471,10 @@ pub struct StatusAuthority {
     /// The mesh ids this admin holds, by mesh name.
     pub mesh_ids: Arc<dyn Fn() -> BTreeMap<String, MeshId> + Send + Sync>,
     /// The births this admin's offline tick watches through durable rows alone (`durable_births`: a
-    /// birth of a planned path its view holds nothing at, one born while this admin was silent),
-    /// refreshed every tick (`Records::durable`): a declaration for one is decided as for a birth the
-    /// view holds (Q11).
+    /// birth of a planned path its view holds nothing at, one born while this admin was silent), as its
+    /// last tick held them (`Records::durable`), none unless this admin is its mesh's primary (the rows
+    /// read once as it takes the role, `TenureRows`): a declaration for one is decided as for a birth
+    /// the view holds (Q11).
     pub durable: Arc<Mutex<Vec<crate::model::Node>>>,
     /// The commands this admin sent (as an owning mesh-admin) and awaits a completion call for.
     pub commands: Arc<crate::node_commands::CommandView>,
@@ -558,9 +559,16 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
     let me_name = auth.held_name_in(view);
     match req {
         StatusRequest::DeclareNodeState { node_id, incarnation, state, operation } => {
+            // The role first: an admin that is no mesh-primary, and runs no fabric recovery, answers that
+            // it is not the primary, whatever it holds of the subject (node-status.md "Status report").
+            let recovering = auth.fabric_recovery.get().is_some_and(|read| read(view).is_some_and(|fr| crate::fabric_recovery::executes_for(Some(read), view, &me_name, &fr.target.mesh)));
+            if !me.is_primary && !recovering {
+                let mesh = view.births().find(|n| n.node_id == *node_id).map_or(me.mesh.as_str(), |n| n.mesh.as_str());
+                return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("mesh-primary of {mesh}") }), None);
+            }
             // The subject, as this admin's view holds it, else as its offline tick watches it through
             // durable rows alone (a birth born while this admin was silent, Q11): this admin is its
-            // authority all the same, and its view takes the birth in once its digest is installed.
+            // mesh-primary all the same, and its view takes the birth in once its digest is installed.
             let watched;
             let subject = match view.births().find(|n| n.node_id == *node_id) {
                 Some(n) => n,

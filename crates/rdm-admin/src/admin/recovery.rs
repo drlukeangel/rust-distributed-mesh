@@ -516,7 +516,15 @@ pub(crate) fn submit_span(me: &PathName, node: &Node, incarnation: &IncarnationI
 /// The silence-status memo of the mesh primary's tick: what it last put per node.
 pub(crate) type WrittenSilence = HashMap<NodeId, (Option<IncarnationId>, Option<NodeStatus>)>;
 
-/// The durable runtime rows the offline tick watches births from ([`durable_births`]).
+/// The durable runtime rows of its own mesh the offline tick of a mesh-primary watches births from
+/// ([`durable_births`]). Only the mesh-primary runs node investigation on its mesh's births
+/// (fabric-node-lifecycle-elections.md §4.1; node-recovery.md step 2: "Only the mesh-primary acts"), so
+/// only it reads them: once, at the first tick that finds this admin its mesh's primary, and held while it
+/// keeps the role. A row written after that read is a launch in a mesh whose mesh-primary runs every
+/// attempt (node-recovery.md "Execution"), and the launching admin writes it (build.md §5.3): this
+/// admin's own executor, whose records put the birth in its view. An admin that is not its mesh's primary
+/// holds none and reads none; the role lost, the rows go, and a later tenure reads them again. A read
+/// that is refused holds none, so the next tick reads again.
 #[derive(Debug, Default)]
 pub(crate) struct TenureRows {
     rows: Option<Vec<crate::storage::RuntimeRow>>,
@@ -524,22 +532,33 @@ pub(crate) struct TenureRows {
 
 impl TenureRows {
     /// The rows for one tick of the admin `reader` of `mesh`, `primary` when its view names it its
-    /// mesh's primary, read from `nodes`.
+    /// mesh's primary: those this tenure read from `nodes`, read now at its first tick.
     pub(crate) async fn for_tick(&mut self, primary: bool, nodes: &dyn crate::storage::NodesStorage, reader: &PathName, mesh: &str) -> &[crate::storage::RuntimeRow] {
-        let _ = (primary, mesh);
-        self.rows = read_runtime_rows(nodes, reader).await;
+        if !primary {
+            self.rows = None;
+            return &[];
+        }
+        if self.rows.is_none() {
+            self.rows = read_runtime_rows(nodes, reader, mesh).await;
+        }
         self.rows.as_deref().unwrap_or_default()
     }
 }
 
-/// Every durable runtime row `nodes` holds, read for `reader`; `None` when the read is refused, named
-/// on its own span.
-async fn read_runtime_rows(nodes: &dyn crate::storage::NodesStorage, reader: &PathName) -> Option<Vec<crate::storage::RuntimeRow>> {
+/// The durable runtime rows of `mesh` that `nodes` holds, read for `reader` as it takes its mesh's
+/// primary role: one `rdm.node_admin.node.resolve.via-runtime-rows-read` naming how many; `None` when the
+/// read is refused, named on its own span.
+async fn read_runtime_rows(nodes: &dyn crate::storage::NodesStorage, reader: &PathName, mesh: &str) -> Option<Vec<crate::storage::RuntimeRow>> {
     match nodes.runtimes().await {
-        Ok(rows) => Some(rows),
+        Ok(rows) => {
+            let rows: Vec<crate::storage::RuntimeRow> = rows.into_iter().filter(|r| r.name.mesh == mesh).collect();
+            tracing::info_span!("rdm.node_admin.node.resolve.via-runtime-rows-read", reader = %reader, mesh, store = "nodes.storage", rows = rows.len() as u64)
+                .in_scope(|| tracing::info!("this admin took its mesh's primary role: its mesh's durable runtime rows are read once and held while it keeps the role"));
+            Some(rows)
+        }
         Err(e) => {
             tracing::info_span!("rdm.node_admin.node.reject.via-runtime-rows-unreadable", reader = %reader, store = "nodes.storage", error = %e)
-                .in_scope(|| tracing::info!("the durable runtime rows could not be read: this tick watches the view's births only"));
+                .in_scope(|| tracing::info!("the durable runtime rows could not be read: this tick watches the view's births only, and the next tick reads them again"));
             None
         }
     }

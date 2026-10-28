@@ -782,7 +782,8 @@ fn mesh_primary_refuses_every_backward_move_by_name() {
 
 /// CONTRACT (#2805, adversary): a declaration to a receiver that does not hold the seat it needs
 /// is refused naming the seat, whoever sends it (nothing checks who is calling, node-rpc.md §14); a
-/// subject the view does not hold is refused as unknown;
+/// node declaration to an admin that is no primary is refused naming the role it lacks before any
+/// subject is looked up, a subject no view holds included (rust-distributed-mesh#99);
 /// a stale Fabric id and a stale Mesh id are refused naming the id the receiver holds. What must
 /// NOT happen: any of these applied, or answered as a transport failure.
 #[test]
@@ -827,9 +828,10 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
         let r = reply(&call(&rig, &rpc, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh1".into(), state: MeshState::Pending }, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed.starts_with("the mesh-primary of mesh1")), "{r:?}");
-        // A subject the view does not hold, from a stranger the view does not hold either.
+        // A subject the view does not hold, from a stranger the view does not hold either: the
+        // receiver, no primary, says so before it looks for the subject.
         let r = reply(&call(&rig, &stranger, &decl_node(&stranger), &CallOptions::default()).await);
-        not_primary(&r, "subject-unknown");
+        assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh1"), "{r:?}");
         // Stale ids: another Fabric's event at the mesh primary; another Mesh id for a held name.
         let mp_receiver = birth("mesh1.admin.3", NodeKind::NodeAdmin, "mesh1", true, false);
         let held = MeshId::mint();

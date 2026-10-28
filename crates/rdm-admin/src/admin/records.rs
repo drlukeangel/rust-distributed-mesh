@@ -322,7 +322,8 @@ pub struct Records {
     /// stand only for a birth still in it (`RecoverySubmitter::offline`).
     pub offline: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
     /// The births the offline tick watches through durable rows alone (`durable_births`), as its last
-    /// pass read them: shared with the status authority, which decides their declarations (Q11).
+    /// pass held them: none unless this admin is its mesh's primary (`TenureRows`). Shared with the
+    /// status door, which decides their declarations (Q11).
     pub durable: Arc<Mutex<Vec<Node>>>,
     /// The births a command of this admin's executor never reached for a reachability reason, marked
     /// `PendingReconnect` at once (node-tickle.md step 1): read by the mesh primary's tick.
