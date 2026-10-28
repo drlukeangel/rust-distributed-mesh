@@ -1581,7 +1581,7 @@ mod tests {
     /// CONTRACT (build.md: "when the executor is lost with the attempt unfinished, after the provider's
     /// inspection of the executor's exact runtime answers `exited` or `os-stopped`: `running`,
     /// `unproven` and silence never let another claimant take it"; Q239 A narrowed): the fabric-primary
-    /// proves a lost executor `mesh2.admin.1` departed by its exact runtime as the provider reads it.
+    /// proves a lost executor `mesh2.admin.1` exited or os-stopped by its exact runtime as the provider reads it.
     /// Exited and os-stopped: proven, and the view is projected again for the next attempt. Running
     /// and unproven (the provider's `Unknown`): refused naming the verdict, nothing projected. Must NOT
     /// happen: an os-stopped executor's attempt held, or a running or unproven one's taken.
