@@ -3277,7 +3277,8 @@ Each open i143 unit, its rafka-v2 issue and where it stands. A unit leaves this 
 | rdm#87 | Q167 R-RD5: builds.get with the filter | open; its source waits on Luke's answer below |
 
 Open with Luke or the architects (no unit until ruled):
-- Q231: does RDM hand the causing trace context to the application at its notices (an accepted Connection, a deletion op)? dev recommendation B.
+- Q231: decided A (Luke, 2026-10-28): the caller's trace context passes end to end and is handed to the application at its notices (LifecycleOp, the accepted Connection); building rdm#115.
+- rdm#87 (builds.get's source): decided by Luke's atlas words ("the fabric atlas is the union of what ops are currently executing and the current topology state"; "external query read from atlas"; "only FP reads the builds"): current and in-flight Builds from the fabric-primary's atlas, history from its builds journal.
 - The source of builds.get and connections.get (R-RD5 store-backed stream, R-RD7 the node's own log) against "reads answer from the Atlas".
 - states.md:13 names the node's state `ready-for-traffic`; Q233 and the query page say `ready`.
 - fabric-recovery.md:60-61 (a reached lost fabric-primary "is commanded back through node.mesh.join") against node-mesh-join.md:22 (only the fabric-primary commands a mesh-primary); the code follows node-mesh-join.
