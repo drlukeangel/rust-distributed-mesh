@@ -2550,7 +2550,7 @@ mod tests {
     /// holding another birth of its name, and any view while the authority is not filled leave the
     /// door closed. Must NOT happen: the door opened only by the view-rebuild task, which starts after
     /// the declarer and a Build-log catch-up, so the admin declares itself ready to its primary while
-    /// its router answers every state command NotReady (gate red, tree b24a4303,
+    /// its router answers every state command NotReady (gate red at b24a4303,
     /// fabric_states__rounds trace 95adb727: mesh1.admin.2 declared Ready at 788604, its door
     /// opened at 788637, and mesh1.admin.1's three commit-state sends had all come back NotReady).
     #[tokio::test]

@@ -316,7 +316,7 @@ fn install_subscriber(tracer: opentelemetry_sdk::trace::Tracer) {
     // emit a DEBUG firehose (binding / path selection / socket transports /
     // hyparview internals). tracing-opentelemetry's `on_event` appends every
     // captured event to the *currently-active* span's event buffer, which is
-    // only freed when that span CLOSES. iroh's actor loops (magicsock, relay,
+    // only freed when that span CLOSES. iroh's actor loops (magicsock,
     // gossip-net) are long-lived `#[instrument]` spans that never close for the
     // process lifetime — so their event buffers grew without bound. dhat proved
     // it: with QUIC connections bounded (leak #1 fixed), tracing/otel still grew

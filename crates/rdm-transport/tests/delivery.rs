@@ -1485,7 +1485,7 @@ fn every_frame_of_a_stream_carries_its_stream_id_and_sequence() {
     let received: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.stream.update.via-received-frame").collect();
     assert_eq!(received.len(), 3);
     for (seq, span) in received.iter().enumerate() {
-        assert_eq!(span["attributes"]["invocation_id"], id, "the owner sees the authoritative stream identity: {span}");
+        assert_eq!(span["attributes"]["invocation_id"], id, "the owner sees the stream identity: {span}");
         assert_eq!(span["attributes"]["seq"].as_str(), Some(seq.to_string().as_str()), "the header's position: {span}");
     }
 }

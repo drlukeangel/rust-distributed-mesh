@@ -188,7 +188,7 @@ fn read_chunks(topology: &[rdm_transport::snapshot::SourceSnapshot], mesh: &str)
     .collect()
 }
 
-/// CONTRACT (gossip.md §3.1 `MeshTopology` / `MeshTopologyDelta`: "Own-mesh members receive authoritative
+/// CONTRACT (gossip.md §3.1 `MeshTopology` / `MeshTopologyDelta`: "Own-mesh members receive
 /// statuses through the primary's versioned member projection ... For an own-mesh birth, liveness,
 /// endpoints with freshness and the runtime fact come from its Digest and status from the
 /// projection; NodeStopped and NodeDeleting stay immediate events"): through real

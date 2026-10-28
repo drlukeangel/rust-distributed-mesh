@@ -666,7 +666,7 @@ mod tests {
         assert_eq!(fabric(&a), fabric(&b));
     }
 
-    // ---- Sticky seats (R-A2): a living holder keeps its seat; the holder record is an input. ----
+    // ---- R-A2: a living holder keeps its seat; the holder record is an input. ----
 
     fn born(path: &str, node_id: &str, inc: &str, status: NodeStatus) -> Node {
         let mut n = Node::allocated(path.parse().unwrap());

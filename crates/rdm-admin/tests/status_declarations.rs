@@ -2021,7 +2021,7 @@ fn a_name_outside_the_grammar_or_the_path_name_shape_is_refused_by_name_and_noth
 /// the node with `renamed_from: mesh1.rpc.2`, `mesh1.rpc.2` still holds it, and the birth is told
 /// nothing yet. The same command again releases the old key, tells the birth its name and ends
 /// `NameUpdated` on its `Applied`. What must NOT happen: `NodeRowRefused` (which says nothing was
-/// written) after the put, a second row written, or the put rolled back.
+/// written) after the put, a second row written, or the put undone.
 #[test]
 fn a_rename_whose_release_fails_ends_incomplete_with_both_keys_held_and_its_retry_finishes_the_release() {
     let cap = capture();

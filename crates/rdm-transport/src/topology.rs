@@ -3201,7 +3201,7 @@ impl TopologyView {
 
     /// The member record of the birth at `endpoint` (its iroh key) in a source projection this node
     /// installed: from its own Mesh's primary (the Mesh channel, a topology read) or, at a node-admin,
-    /// from the backbone. The projection is the authoritative member record (gossip.md §3.1); the
+    /// from the backbone. The projection is the member projection (gossip.md §3.1); the
     /// heartbeat view is not read. `None` when no projection this node holds names the key.
     pub fn projected_member_at(&self, endpoint: &str) -> Option<MeshDigest> {
         [&self.view.mesh_rx, &self.view.backbone_rx].into_iter().find_map(|rx| rx.lock().unwrap().member_at(endpoint))
@@ -4979,7 +4979,7 @@ impl DigestView {
     }
 
     /// The mesh-primary's projection lists the own-mesh birth `d` with its status (gossip.md §3.1:
-    /// own-mesh members receive authoritative statuses through the primary's versioned member
+    /// own-mesh members receive statuses through the primary's versioned member
     /// projection): the status is held for the birth, and the held digest, liveness, endpoints and
     /// runtime as its own heartbeat said, takes that status. Nothing else of `d` is taken. `false`
     /// when nothing moved.

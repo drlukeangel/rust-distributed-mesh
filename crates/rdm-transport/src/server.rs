@@ -183,7 +183,7 @@ pub(crate) fn apply_context(span: &tracing::Span, peer: &PeerContext) {
     }
 }
 
-/// Counters a functional test or an operator can read (pre-body refusals are
+/// Counters a functional test or a caller can read (pre-body refusals are
 /// counted, not root-spanned per call; node-rpc.md §38.1).
 #[derive(Debug, Default)]
 pub struct ServerStats {

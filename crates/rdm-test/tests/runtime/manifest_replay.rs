@@ -622,7 +622,7 @@ fn cell(command: String) -> Value {
 /// CONTRACT: the acceptance runner refuses, each by its own named rule and with the refused
 /// receipt written, a cell that matches no test, a cell left ignored, a cell that leaves no
 /// result or no span artifact, an estate that ran on another provider than its job's, a receipt
-/// whose source sha is not the tree's or whose artifact bytes changed, a consumer cell whose
+/// whose source sha is not the checkout's or whose artifact bytes changed, a consumer cell whose
 /// executables are not the build manifest's or whose estate ran on built-ins, a registry that
 /// declares a second generic runner or receipt schema, and a job id registered twice. A clean
 /// execution writes exactly the canonical receipt: job, issue, layer, source sha, dirty paths,
@@ -683,7 +683,7 @@ fn acceptance_runner_rejects_invalid_job_execution_receipts() {
     let want = sha256_file(&stage.join("rshape-x")).unwrap();
     let manifest = |hash: &str| {
         let p = stage.join("build-manifest.json");
-        // The candidate is this tree's commit: the runner refuses a manifest naming a commit the repository
+        // The candidate is this checkout's commit: the runner refuses a manifest naming a commit the repository
         // does not hold, or whose source differs from the run's, before any hash is compared
         // (scripts/i143-acceptance-gate.sh consumer_candidate_reason).
         std::fs::write(&p, json!({ "candidate_sha": candidate_sha(), "binaries": { "rshape-x": hash } }).to_string()).unwrap();

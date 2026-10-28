@@ -1453,7 +1453,7 @@ impl DriveEnv {
                 }
                 Inner::SeatYielded => {
                     dspan.record("outcome", "seat-yielded");
-                    // The target is sticky: `may_act` ends the drive SeatLost naming the new holder.
+                    // The target is kept: `may_act` ends the drive SeatLost naming the new holder.
                     return match self.may_act(drive).await {
                         Some(end) => end,
                         None => self.stalled(&me, drive, format!("{me}: attempt {attempt} of Build {id} stopped at a seat target that the gate no longer reports")),

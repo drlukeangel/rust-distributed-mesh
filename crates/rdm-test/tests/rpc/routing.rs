@@ -2,7 +2,7 @@
 //! evidence only.
 //!
 //! The probe stands in for a domain: `--target` is the exact final node it selected. The leg is
-//! the operator's here (`Direct`, `--via <carrier>` = `ViaPeer`, `--no-route` = `NoActiveRoute`),
+//! the caller's here (`Direct`, `--via <carrier>` = `ViaPeer`, `--no-route` = `NoActiveRoute`),
 //! standing in for connections' answer; that the seam takes its leg from a resolved
 //! `EffectiveRoute` and never moves the selection is proven in `rafka-node-rpc/tests/routing.rs`.
 //! The evidence names the same final target at the selector's output (the probe's argument),

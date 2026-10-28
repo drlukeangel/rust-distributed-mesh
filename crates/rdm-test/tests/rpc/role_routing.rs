@@ -1,7 +1,7 @@
 //! i143.e11.s7 process E2E: routing/proxy, lite, on the role shape (PRD §13.1).
 //!
 //! `{node_admin: 1, broker: 2, gateway: 2}`. The probe stands in for a gateway's domain: `--target`
-//! is the exact broker it selected, and the leg is the operator's (`Direct`, `--via <gateway>` =
+//! is the exact broker it selected, and the leg is the caller's (`Direct`, `--via <gateway>` =
 //! `ViaPeer` through another gateway, `--no-route` = `NoActiveRoute`). From public surfaces and
 //! span evidence only:
 //! 1. Direct: the selected broker served, nobody else.

@@ -230,7 +230,7 @@ fn a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "the node the Failed fact names left its path");
 }
 
-/// CONTRACT: a destination that deleted (retired) is no current birth: the Direct fact toward it
+/// CONTRACT: a destination that deleted is no current birth: the Direct fact toward it
 /// is not the current edge and a Proxy to it is targeted by name.
 #[test]
 fn a_direct_fact_and_a_proxy_naming_a_deleted_destination_are_not_current() {

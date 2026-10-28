@@ -1501,7 +1501,7 @@ pub enum RenameRefused {
 /// its receipts: a retry, or a successor writer resuming it, finds `to` claimed by this node and
 /// continues from the record write; a record already at `to` is a move made before, and the release its
 /// `renamed_from` names is finished when still pending ([`finish_release`]). A release that fails after
-/// the write leaves both names held and answers [`Moved::ReleasePending`]: nothing is rolled back and no
+/// the write leaves both names held and answers [`Moved::ReleasePending`]: nothing is undone and no
 /// second record is written. The record written starts from the one the writer holds, its facts kept;
 /// a node it holds no record of is written from `record`'s config. The one writer of a rename (R13:
 /// `node.name.update` is one write path, `crate::node_name_update`). Answers what it did and the

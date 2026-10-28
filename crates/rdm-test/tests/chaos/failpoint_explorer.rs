@@ -6,7 +6,7 @@
 //! A real estate whose `node_admin` launch id is bound to the testkit's `faulted-node-admin`: the
 //! public node-admin runtime with the testkit's stall decorators wired in through `Wiring`
 //! (`rdm_test::admin_faults`). Every stall is armed, acknowledged, observed and
-//! released through that admin's door; the Builds that trigger them are the ones an operator makes
+//! released through that admin's door; the Builds that trigger them are the ones a caller makes
 //! (`node.create` / `node.delete` / `build.create` accepted by the fabric-primary ->
 //! executor reconcile -> node operation -> deployment pipeline), driven through the typed objects over
 //! Node RPC. The Build "as the admin behind a door holds it" is that admin's own Build log, read over

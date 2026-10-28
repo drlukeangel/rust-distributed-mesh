@@ -427,7 +427,7 @@ impl OperationRunner for Recovered {
 }
 
 /// CONTRACT (R-D1, Luke 10-08: "Loss of peer-mesh control-plane visibility targets lifecycle
-/// mutation for every node in that mesh ... Only the peer-mesh investigation may authorize
+/// mutation for every node in that mesh ... Only the peer-mesh investigation may begin
 /// restoration of the mesh's first recovering node-admin; once mesh authority is restored, that mesh
 /// performs its own ordinary-node reconciliation"; mesh-investigation.md steps 5-6): mesh2's only
 /// node-admin is proven exited, so the fabric-primary of mesh1 is the executor of mesh2's work in

@@ -1,4 +1,4 @@
-//! A real node.topology.get installs the recovery floor; subsequent gossip cannot roll it back.
+//! A real node.topology.get installs the recovery floor; subsequent gossip cannot move it back.
 use tracing::Instrument;
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PublisherId, Seat, Primary};
@@ -104,7 +104,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         for frame in frames.drain(..) {
             serial+=1;send(&sender,&receiver,frame,serial,&author).await;
             assert_eq!(receiver.held_source_version("mesh1"),Some((publisher.clone(),100)));
-            for held in &before {assert_eq!(receiver.digest_view.get(held.node.node_id.as_str()).unwrap().0,*held,"no category rolls back the read-installed birth");}
+            for held in &before {assert_eq!(receiver.digest_view.get(held.node.node_id.as_str()).unwrap().0,*held,"no category moves back the read-installed birth");}
             assert_eq!((receiver.mesh_status("mesh1"),receiver.fabric_status()),statuses);
             assert_eq!(receiver.primaries().cohort("mesh1",NodeKind::RpcNode),Some(seat_of(&holder,10)));
             assert_eq!(receiver.primaries().mesh("mesh1"),Some(seat_of(&own,10)));assert_eq!(receiver.primaries().fabric(),Some(seat_of(&own,10)));

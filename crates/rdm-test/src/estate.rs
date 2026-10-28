@@ -334,7 +334,7 @@ pub(crate) fn package_of(name: &str) -> &'static str {
     }
 }
 
-/// Whether the binary at `exe` was built from the source this tree holds now. Cargo writes beside every
+/// Whether the binary at `exe` was built from the source this checkout holds now. Cargo writes beside every
 /// binary a dep-info file (`<name>.d`) listing each source file the binary was compiled from; the binary is
 /// stale when any of them is newer than it. A binary with no dep-info file beside it (copied in from another
 /// build, as a consumer's executables are, and judged by their recorded hashes instead) has no fingerprint here
@@ -377,7 +377,7 @@ pub fn binary_is_fresh(name: &str, exe: &Path) -> Result<(), String> {
         Some((changed, path)) if changed > built => {
             let age = changed.duration_since(built).map(|d| d.as_secs()).unwrap_or(0);
             Err(format!(
-                "REFUSED: {name} at {} was built before {path} changed ({age} s after the binary); this tree's source is not the binary's. Rebuild with `cargo build -p {} --bin {name}`",
+                "REFUSED: {name} at {} was built before {path} changed ({age} s after the binary); this checkout's source is not the binary's. Rebuild with `cargo build -p {} --bin {name}`",
                 exe.display(),
                 package_of(name)
             ))
@@ -1053,14 +1053,14 @@ impl Estate {
     }
 
     /// Start a node-admin on `data_dir` it ran on before: it finds its own row in nodes.storage and
-    /// restarts as the same logical node. Only the operator's environment is given (provider,
+    /// restarts as the same logical node. Only the caller's environment is given (provider,
     /// binaries, evidence); identity, Mesh and Fabric come from its storage. Returns its
     /// `path.name`.
     pub fn restart_admin(&mut self, data_dir: &Path) -> rdm_client::PathName {
         self.restart_admin_with(data_dir, &[])
     }
 
-    /// [`Self::restart_admin`] with more operator environment (the recovery flags
+    /// [`Self::restart_admin`] with more caller environment (the recovery flags
     /// `RDM_MESH_PRIMARY` and `RDM_FABRIC_PRIMARY`).
     pub fn restart_admin_with(&mut self, data_dir: &Path, operator_env: &[(&str, &str)]) -> rdm_client::PathName {
         let (exe, env) = self.admin_launch(data_dir, operator_env);

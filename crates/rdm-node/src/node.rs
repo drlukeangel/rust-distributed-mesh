@@ -1783,7 +1783,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // birth (a hook blocked on its authority's word runs again on it).
             let blocker = me.pre_node_ready.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             // The sender is the birth that holds the call's endpoint key in the member projection this
-            // node installed (gossip.md §3.1, the authoritative member record), never the heartbeat
+            // node installed (gossip.md §3.1, the member projection), never the heartbeat
             // view, which holds a member only once its own digest reached this node.
             let sender = me.topology_view.projected_member_at(&peer.endpoint_id.to_string());
             // A sender no projection this node holds names is named by the one fact it holds of it: its endpoint.

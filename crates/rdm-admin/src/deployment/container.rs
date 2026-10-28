@@ -935,7 +935,7 @@ mod tests {
     /// record a spawn writes says a launch whose container is gone ran, only when it names that launch;
     /// none, or one naming another launch, says never launched; one that cannot be read or parsed is
     /// refused by name. Must NOT happen: an unreadable record read as "never launched", which would
-    /// relaunch a birth that ran.
+    /// start a birth that ran again.
     #[test]
     fn a_launch_record_says_a_launch_ran_only_when_it_names_it_and_an_unreadable_one_is_refused() {
         let dir = std::env::temp_dir().join(format!("container-launch-record-{}", crate::model::DeploymentId::mint().as_str()));

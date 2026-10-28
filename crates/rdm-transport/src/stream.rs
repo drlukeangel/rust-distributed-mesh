@@ -401,7 +401,7 @@ pub struct ReplyStream<P: StreamingProtocol> {
     done: bool,
     /// The acks of the frames handed over and not yet recovered by the owner, in order.
     unrecovered: Vec<AckOnRecovery>,
-    /// The authoritative transport position of the last frame handed to this owner.
+    /// The transport position of the last frame handed to this owner.
     position: Option<(rdm_core::framing::DeliveryId, u32)>,
     /// The terminal was handed over: the invocation completes once the owner recovers it.
     terminal_handed: bool,

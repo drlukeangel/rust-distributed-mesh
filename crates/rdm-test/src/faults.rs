@@ -121,7 +121,7 @@ pub fn candidate_sha() -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// The executable `name` in `dir`, built, present and built from the source this tree holds now
+/// The executable `name` in `dir`, built, present and built from the source this checkout holds now
 /// ([`crate::estate::binary_is_fresh`]): a stale one is refused by name with its rebuild command.
 pub fn executable_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let p = dir.join(name);
@@ -165,7 +165,7 @@ mod tests {
 
     // CONTRACT: the faulted estate's executables are judged fresh like every other binary an estate
     // launches (`estate::binary_is_fresh`): a faulted-node-admin older than a source file its dep-info
-    // lists is refused by name with its rebuild command, never launched as this tree's code.
+    // lists is refused by name with its rebuild command, never launched as this checkout's code.
     #[test]
     fn a_faulted_node_admin_older_than_its_source_is_refused_by_name() {
         let dir = std::env::temp_dir().join(format!("rdm-stale-faulted-{}", std::process::id()));

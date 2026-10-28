@@ -203,6 +203,12 @@ TREE_BANNED = [
     # rdm#88: the investigation's exited verdict (CLAUDE.md: exit proof / proven exit). gossip.md still says "runtime-exit
     # proof", a page edit that waits on the lead, so docs/architecture is not scanned for it yet.
     ("exit proof", r"exit[ _-]?proof|proven[ _-]exit\b", ["crates", "docs/reference"]),
+    # rdm#88 stage 2: the small words are at zero in crates/. The iroh log target `transports::relay` and the std call
+    # `thread::park(` are not RDM's words and stay; the pages' own hits (gossip.md) wait on the lead's text.
+    ("relay", r"(?<![:A-Za-z_])relay(?![A-Za-z_])", ["crates"]),
+    ("park", r"(?<![:A-Za-z_])park(s|ed|ing)?(?![A-Za-z_(])", ["crates"]),
+    ("tree", r"(?<![A-Za-z_-])trees?(?![A-Za-z_-])", ["crates"]),
+    ("small words", r"\b(relaunch|operator|sticky|authorize|authoritative)\b", ["crates"]),
 ]
 for label, pattern, scope in TREE_BANNED:
     out = subprocess.run(["git", "grep", "-n", "-I", "-i", "-P", pattern, head, "--", *scope,

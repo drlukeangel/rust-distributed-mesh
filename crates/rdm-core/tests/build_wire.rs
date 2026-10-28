@@ -366,9 +366,9 @@ fn failure_codes_are_appended_and_retained_by_the_build_wire() {
     assert_eq!(Build::decode_reply(&bytes("05 01 62 02 01 6f 01 73 01 72 11")), Err(DecodeFailure::Corrupt));
 }
 
-/// CONTRACT (proposal executable-bindings-at-create.md §1: "Removed: `BuildChange::Roll` ... (their
-/// positional slots reserved, no format move)"; §4: "a `Roll` change refused as unknown; the Build wire's
-/// reserved slots decode as before"): a request a caller of the removed operation sends (change position
+/// CONTRACT (proposal executable-bindings-at-create.md §1: the removed change's
+/// positional slots reserved, no format move; §4: the removed change refused as unknown, the Build wire's
+/// reserved slots decode as before): a request a caller of the removed operation sends (change position
 /// 14, its set after it) decodes as `UnknownVariant`, never a change; the change after it keeps its
 /// position (`Reconcile` = 0f).
 #[test]

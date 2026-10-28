@@ -112,7 +112,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
 }
 
 /// CONTRACT: an older MeshStatus of the held declared subject is refused with via-stale,
-/// including both ordering keys, and cannot roll back the held projection.
+/// including both ordering keys, and cannot move the held projection back.
 #[test]
 fn an_older_mesh_status_is_refused_with_a_named_stale_span() {
     let spans = mesh_status_receipt("rdm-mesh-status-stale", "deleting", 99);
@@ -182,7 +182,7 @@ fn fabric_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serd
 
 
 /// CONTRACT: an older FabricStatus is refused by name with its subject and both keys;
-/// the held fabric status cannot roll back.
+/// the held fabric status cannot move back.
 #[test]
 fn an_older_fabric_status_is_refused_with_a_named_stale_span() {
     let spans = fabric_status_receipt("rdm-fabric-status-stale", "deleting", 99);

@@ -1129,7 +1129,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
 const DELETE_CELL: &str = "container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end";
 
 /// CONTRACT (#2784, fabric loss): on a real Docker estate of two meshes (two node-admins and three
-/// rpc nodes each) the mesh that holds the fabric seat is lost the way an operator loses it: one
+/// rpc nodes each) the mesh that holds the fabric seat is lost the way a caller loses it: one
 /// Build deletes it, executed by an admin outside it. While the Build runs, every surviving admin
 /// is asked who holds the fabric and the advertised endpoint is asked at once; an advertised
 /// endpoint is always a control endpoint of a birth of this run. Fabric authority moves to a ready

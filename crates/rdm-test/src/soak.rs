@@ -873,8 +873,8 @@ fn now_ns() -> u64 {
 
 /// The node-admins' spans as they are written: each poll reads the new bytes of every node-admin
 /// evidence file since the last poll and keeps the spans `keep` selects, in start order. A wait that
-/// polls every few hundred milliseconds reads this, never `Estate::spans` (the whole tree: at
-/// `4aa58cf0` the partition soak's tree reached 1.5 GB and every poll of the cut's re-feed wait
+/// polls every few hundred milliseconds reads this, never `Estate::spans` (the whole span set: at
+/// `4aa58cf0` the partition soak's span set reached 1.5 GB and every poll of the cut's re-feed wait
 /// parsed it, 4-5 s each, through which the driver's own reads of the fabric-primary starved: 84 gaps
 /// of 3.5-5 s between its requests, the cut waits growing from 10 s to 72 s, and round 41's
 /// `node.get` unanswered within its 2 s).

@@ -1736,7 +1736,7 @@ mod decided_mesh {
     use super::*;
     use rdm_admin::investigate::PeerMesh;
 
-    /// CONTRACT (R-D1, Luke 10-08: "Only the peer-mesh investigation may authorize restoration of the
+    /// CONTRACT (R-D1, Luke 10-08: "Only the peer-mesh investigation may begin restoration of the
     /// mesh's first recovering node-admin; once mesh authority is restored, that mesh performs its own
     /// ordinary-node reconciliation"; mesh-recovery.md:8-9: "A lost member of a mesh with a live
     /// mesh-primary is node recovery, driven by that mesh-primary"): both node-admins of the peer mesh

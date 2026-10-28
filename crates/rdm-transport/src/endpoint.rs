@@ -23,7 +23,7 @@ pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
 }
 
 /// The process's one endpoint: one identity, one physical UDP socket, at
-/// exactly the transport address node-admin assigned (relay off, no
+/// exactly the transport address node-admin assigned (relay_mode Disabled, no
 /// discovery, the shared `transport_config`). Node RPC and gossip
 /// share it by ALPN. A request names its target in the first section of its framing;
 /// the socket decides nothing and there is never a second one.
@@ -44,7 +44,7 @@ pub async fn bind_with_alpns(secret: SecretKey, addr: SocketAddr, app_alpns: &[V
         .alpns(alpns)
         .relay_mode(RelayMode::Disabled)
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
-        // One explicit address, no relay, no portmapper: there is no default route to learn and no
+        // One explicit address, relay_mode Disabled, no portmapper: there is no default route to learn and no
         // interface list to expand, so the bind starts no interface enumeration (R-B2).
         .network_monitor(false)
         .transport_config(transport_config())
@@ -98,7 +98,7 @@ pub async fn bind_exact(secret: SecretKey, addr: SocketAddr, alpns: Vec<Vec<u8>>
         .alpns(alpns)
         .relay_mode(RelayMode::Disabled)
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
-        // One explicit address, no relay, no portmapper: there is no default route to learn and no
+        // One explicit address, relay_mode Disabled, no portmapper: there is no default route to learn and no
         // interface list to expand, so the bind starts no interface enumeration (R-B2).
         .network_monitor(false)
         .transport_config(transport)

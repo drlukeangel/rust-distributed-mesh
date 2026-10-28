@@ -118,8 +118,8 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         let stale_config = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default(), revision: 2 };
         assert_eq!(call(stale_config).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() }, "a config for another birth is refused with the one held");
         // The reserved Reserved6 is refused by name; node.connections.delete { All } is answered with its receipt.
-        let retired = StatusRequest::Reserved6 { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: "node.connections.delete:mesh1.rpc.1".into() };
-        assert!(matches!(call(retired).await, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name");
+        let reserved = StatusRequest::Reserved6 { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: "node.connections.delete:mesh1.rpc.1".into() };
+        assert!(matches!(call(reserved).await, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name");
         let all = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
         let deleted = common::node_command_completion(&observer.client, &target, &all).await;
         assert!(matches!(&deleted, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Established { .. }), held, .. } if held.is_empty()), "{deleted:?}");

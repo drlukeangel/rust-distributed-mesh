@@ -4,7 +4,7 @@
 //! A declaration is a fact about this admin or its Mesh with a natural key; the declarer holds
 //! the ones not yet answered and resolves the authority from the current view at every sweep (the
 //! fabric-primary moves; the key does not). A declaration is sent when it becomes owed, and again
-//! only on an eligible event (R-S2): the authoritative destination changes to a deliverable birth,
+//! only on an eligible event (R-S2): the destination changes to a deliverable birth,
 //! a failed delivery gains a viable route, or the authority addresses this admin with its down op
 //! (`DeclareWake::addressed_by`). A typed reply is terminal, `RejectedNotPrimary` included, and a
 //! target going unreachable sends nothing. One `DeclareWake` wakes the declarer; no timer does.

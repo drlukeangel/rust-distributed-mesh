@@ -153,7 +153,7 @@ impl AdminRunner {
                 recorded = crate::mesh_delete::admitted_of(&steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))?;
             }
         }
-        // The final primary's authoritative provider domain: access before anything is dismantled
+        // The final primary's provider domain: access before anything is dismantled
         // (its node.delete, executed by this fabric-primary, proves its exit through it).
         let (_, final_handle) = self.handle_for(&primary).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: no provider proof path for its final primary: {e}"))?;
         let final_fact = final_handle.fact().ok_or_else(|| format!("{outer} is refused before {mesh} is dismantled: the final primary {} has no exact runtime handle", primary.name))?;

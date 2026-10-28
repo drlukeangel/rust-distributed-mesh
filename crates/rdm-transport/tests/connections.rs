@@ -2528,7 +2528,7 @@ async fn the_carrier_choice_is_kept_until_a_named_event_and_spread_by_source() {
     )
     .await;
 
-    // Sticky: a second open() still uses `first_carrier` because the held Proxy is valid:
+    // Kept: a second open() still uses `first_carrier` because the held Proxy is valid:
     let accept2 = tokio::spawn(async move {
         let c = acceptor_d.accept().await.unwrap();
         (c, acceptor_d)

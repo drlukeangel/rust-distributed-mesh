@@ -188,7 +188,7 @@ impl FabricBuildStateAdapter {
     /// Whether this admin's Build log still decides anything: refused by name once the committed
     /// seat record names another live birth, else the holder the open record names. The
     /// fabric-primary's drive passes this before every dispatch; it holds the gate only for the
-    /// check, because an attempt lasts as long as its steps and the target is sticky.
+    /// check, because an attempt lasts as long as its steps and the target is kept.
     pub async fn target_check(&self) -> Result<Option<String>, BuildStateError> {
         self.authority.enter_naming().await.map(|(_, holder)| holder)
     }

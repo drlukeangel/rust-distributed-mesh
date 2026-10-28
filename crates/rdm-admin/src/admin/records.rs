@@ -352,7 +352,7 @@ pub struct Records {
     /// This admin is entering an existing mesh and has not yet been told who holds the seats: it
     /// computes none until its entry read has (ruling R-A2).
     pub(crate) entering: std::sync::atomic::AtomicBool,
-    /// The fabric state this admin projects: authoritative on the fabric-primary, the last
+    /// The fabric state this admin projects: the fabric-primary's own, the last
     /// published state on every other admin (`crate::fabric_status`).
     pub(crate) fabric_state: Mutex<crate::fabric_state::FabricState>,
     /// What keeps the fabric in its state, named (`None`: nothing, or not the fabric-primary).

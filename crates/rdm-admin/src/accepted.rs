@@ -3146,8 +3146,8 @@ mod tests {
     /// CONTRACT (proposal executable-bindings-at-create.md §1 "Corrected": "the durable-format move's decoder
     /// fills each path's executable in an accepted Build written before the field from that Build's old
     /// per-kind set, by the path's kind, once, so the source is converted before it is removed, and that
-    /// fill is the desired topology only, never a birth's record"; "Removed: ... `TopologyChange::Roll`
-    /// (their positional slots reserved, no format move)"; durable format moved): a topology the journal
+    /// fill is the desired topology only, never a birth's record"; the removed change's
+    /// positional slots reserved, no format move; durable format moved): a topology the journal
     /// holds with the fabric's old per-kind set decodes with each entry that names none filled from the
     /// set by its kind, an entry that names one kept, a kind the set does not bind left with none; it
     /// writes back with no set, and reads back equal. A stored change of the removed operation (`kind:

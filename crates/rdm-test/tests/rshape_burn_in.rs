@@ -724,7 +724,7 @@ fn write_views(v: Views<'_>, spans_index: Vec<Value>, spans: &[Value]) {
             "primaries-history.jsonl": "the fabric record and the nodes' primary flags at each checkpoint",
             "route-history.jsonl": "every route.resolve span of the run (route, carrier, target, outcome)",
             "runtime-history.jsonl": "each birth's own ready-span runtime facts beside the provider's observation of its runtime",
-            "spans/": "a copy of every span file the estate wrote, unchanged (estate/<feature>/<test>/spans is authoritative)",
+            "spans/": "a copy of every span file the estate wrote, unchanged (estate/<feature>/<test>/spans is the one read)",
         },
     });
     for (k, val) in v.extra.as_object().cloned().unwrap_or_default() {
@@ -3087,7 +3087,7 @@ fn live_and_distinct(node: &str, old: &Rt, new: &Rt) -> Value {
 }
 
 /// The restarted birth runs in the runtime it ran in before the restart, alive (node-stop.md, node-start.md: the live
-/// process stops and rejoins; no relaunch).
+/// process stops and rejoins; no new birth).
 fn live_and_same(node: &str, before: &Rt, after: &Rt) -> Value {
     assert!(before.is(after), "{node}: a restart keeps the runtime, and the node now runs in another: before {:?}, after {:?}", before.record(), after.record());
     match after {
@@ -3564,7 +3564,7 @@ async fn restart_run(cell: &str, shape: Shape) {
 /// accepted Build). Each restarted node is the same logical node (same NodeId, same EndpointId, same
 /// path.name, the value stored in its data dir before the restart still there) in the same exact birth
 /// (the same IncarnationId) on the same runtime (node-stop.md, node-start.md: the live process stops and rejoins, no
-/// relaunch): the provider (the process table's start token, or the container daemon) shows the runtime it
+/// new birth): the provider (the process table's start token, or the container daemon) shows the runtime it
 /// ran in before still running the bound bytes. Routing comes back on that birth: an exact write is served
 /// by it, the gateways that held a pooled edge to the broker hold one to it again after its stop deleted
 /// their connections, and a call over that held connection is answered by it. At every checkpoint exactly

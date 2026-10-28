@@ -52,8 +52,8 @@ pub enum LifecycleState {
     Leaving,
     /// Dead: it is gone.
     Dead,
-    /// Retired: it has been taken out of service.
-    Retired,
+    /// Deleted: it has been taken out of service (node.delete).
+    Deleted,
 }
 
 /// Which transition a hook attaches to.

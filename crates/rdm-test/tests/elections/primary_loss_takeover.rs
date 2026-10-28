@@ -4,7 +4,7 @@
 //! estate's manifest and every process's spans land under it, feature `i143-2892`, test the
 //! cell's name).
 //!
-//! The fabric-primary's mesh is lost the way an operator loses it: a Build deletes the mesh that
+//! The fabric-primary's mesh is lost the way a caller loses it: a Build deletes the mesh that
 //! holds the fabric seat (`{mesh1, mesh2}` -> the other mesh), executed by an admin outside it.
 //! Fabric authority leaves with that Build, through the rectifier; the former holder's runtimes
 //! end only after, by the delete pipeline's own terminate. While it runs, every survivor admin

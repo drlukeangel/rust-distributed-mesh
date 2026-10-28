@@ -388,9 +388,9 @@ impl MemoryConnectionsSink {
         if settles {
             let at = self.clock.fetch_add(1, Ordering::SeqCst);
             let owed = rdm_core::reconnect::owed_direct_restored(&self.held.lock().unwrap(), at);
-            for retired in owed {
-                self.history.lock().unwrap().push(retired.clone());
-                let _ = self.held.lock().unwrap().apply(retired);
+            for ended in owed {
+                self.history.lock().unwrap().push(ended.clone());
+                let _ = self.held.lock().unwrap().apply(ended);
             }
         }
         row
